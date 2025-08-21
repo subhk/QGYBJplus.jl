@@ -63,8 +63,8 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
     ds = NCD.Dataset(path, "c")
     try
         ds.dim["x"] = nx; ds.dim["y"] = ny; ds.dim["z"] = nz
-        vR = ds["BR"] = NCD.defVar(ds, "BR", Float64, ("x","y","z"))
-        vI = ds["BI"] = NCD.defVar(ds, "BI", Float64, ("x","y","z"))
+        vR = ds["LAr"] = NCD.defVar(ds, "LAr", Float64, ("x","y","z"))
+        vI = ds["LAi"] = NCD.defVar(ds, "LAi", Float64, ("x","y","z"))
         norm = nx*ny
         bufR = Array{Float64}(undef, nx, ny, nz)
         bufI = Array{Float64}(undef, nx, ny, nz)
@@ -84,7 +84,7 @@ end
 
 Read real-space psi from NetCDF and set spectral S.psi via forward FFT.
 """
-function ncread_psi!(S::State, G::Grid, plans; path)
+function ncread_psi!(S::State, G::Grid, plans; path="psi000.in.nc")
     NCD = _require_netcdf()
     ds = NCD.Dataset(path, "r")
     try
@@ -101,12 +101,12 @@ end
 
 Read real-space BR and BI and set spectral S.B accordingly.
 """
-function ncread_la!(S::State, G::Grid, plans; path)
+function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc")
     NCD = _require_netcdf()
     ds = NCD.Dataset(path, "r")
     try
-        BRr = Array(ds["BR"])
-        BIr = Array(ds["BI"])
+        BRr = Array(ds["LAr"])
+        BIr = Array(ds["LAi"])
         BRk = similar(S.B); BIk = similar(S.B)
         fft_forward!(BRk, BRr, plans)
         fft_forward!(BIk, BIr, plans)
@@ -122,4 +122,3 @@ end
 end # module
 
 using .IO: ncdump_psi, ncdump_la, ncread_psi!, ncread_la!
-

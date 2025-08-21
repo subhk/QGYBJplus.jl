@@ -90,9 +90,22 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         end
     end
 
-    # Recover psi, A, velocities
+    # Recover psi, A (YBJ+ or normal), velocities
     invert_q_to_psi!(S, G; a)
-    invert_B_to_A!(S, G, par, a)
+    if par.ybj_plus
+        invert_B_to_A!(S, G, par, a)
+    else
+        # Normal YBJ path: optionally remove mean B, compute sigma and A
+        # Build BRk/BIk from updated B
+        BRk2 = similar(S.B); BIk2 = similar(S.B)
+        @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
+            BRk2[i,j,k] = Complex(real(S.B[i,j,k]), 0)
+            BIk2[i,j,k] = Complex(imag(S.B[i,j,k]), 0)
+        end
+        sumB!(S.B, G; Lmask=L)
+        sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L)
+        compute_A!(S.A, S.C, BRk2, BIk2, sigma, par, G; Lmask=L)
+    end
     compute_velocities!(S, G; plans)
     return S
 end
@@ -180,7 +193,19 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         end
     end
     invert_q_to_psi!(Snp1, G; a)
-    invert_B_to_A!(Snp1, G, par, a)
+    if par.ybj_plus
+        invert_B_to_A!(Snp1, G, par, a)
+    else
+        # Normal YBJ path for Snp1
+        BRk3 = similar(Snp1.B); BIk3 = similar(Snp1.B)
+        @inbounds for kk in 1:nz, jj in 1:ny, ii in 1:nx
+            BRk3[ii,jj,kk] = Complex(real(Snp1.B[ii,jj,kk]), 0)
+            BIk3[ii,jj,kk] = Complex(imag(Snp1.B[ii,jj,kk]), 0)
+        end
+        sumB!(Snp1.B, G; Lmask=L)
+        sigma2 = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L)
+        compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L)
+    end
     compute_velocities!(Snp1, G; plans)
     return Snp1
 end

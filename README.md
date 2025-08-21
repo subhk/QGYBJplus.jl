@@ -37,6 +37,12 @@ Getting started in Julia
   first_projection_step!(S, G, par, plans; a, dealias_mask=L)
   Snp1 = deepcopy(S); Snm1 = deepcopy(S)
   leapfrog_step!(Snp1, S, Snm1, G, par, plans; a, dealias_mask=L)
+
+Examples
+--------
+
+- Run `examples/demo_ybj_plus.jl` for a short YBJ+ run that writes NetCDF outputs.
+- Run `examples/demo_ybj_normal.jl` to use the normal YBJ branch (`ybj_plus=false`).
   ```
 
 Porting roadmap
