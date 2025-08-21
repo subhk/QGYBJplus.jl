@@ -1,0 +1,18 @@
+name: CompatHelper
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  CompatHelper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run CompatHelper
+        uses: JuliaRegistries/CompatHelper@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Set to true if you want PRs to carry labels
+          # add-labels: true
+

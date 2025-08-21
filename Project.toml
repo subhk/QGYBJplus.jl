@@ -1,0 +1,9 @@
+name = "QGYBJ"
+uuid = "961669e7-04c5-4537-a859-b8655c92fdd1"
+authors = ["Subhajit Kar <subhajitkar19@gmail.com>"]
+version = "0.1.0"
+license = "MIT"
+
+[compat]
+julia = "1.9"
+
