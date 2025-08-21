@@ -11,7 +11,7 @@ catch
     @info "MPI/PencilArrays/PencilFFTs not loaded yet. You can still use serial mode."
 end
 
-# Public API
+# Public API - Core functionality
 export QGParams, Grid, State,
        init_grid, init_state, init_pencil_decomposition!,
        plan_transforms!, fft_forward!, fft_backward!,
@@ -27,6 +27,16 @@ export QGParams, Grid, State,
         ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz
 
+# Public API - New user interface
+export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig, ModelConfig,
+       create_domain_config, create_stratification_config, create_initial_condition_config, 
+       create_output_config, create_model_config,
+       QGYBJSimulation, setup_simulation, run_simulation!,
+       create_simple_config, run_simple_simulation,
+       OutputManager, write_state_file, read_initial_psi, read_initial_waves, read_stratification_profile,
+       StratificationProfile, ConstantN, SkewedGaussian, TanhProfile,
+       create_stratification_profile, compute_stratification_profile
+
 include("parameters.jl")
 include("grid.jl")
 include("transforms.jl")
@@ -40,5 +50,8 @@ include("initconds.jl")
 include("ybj_normal.jl")
 include("io.jl")
 include("diagnostics.jl")
+
+# New user interface modules
+include("model_interface.jl")
 
 end # module
