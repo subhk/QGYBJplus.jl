@@ -126,7 +126,9 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         no_dispersion = config.no_dispersion,
         passive_scalar = config.passive_scalar,
         ybj_plus = config.ybj_plus,
-        no_feedback = config.no_feedback,
+        no_feedback = config.no_wave_feedback || config.no_feedback,  # Handle both flags
+        fixed_flow = config.fixed_mean_flow,
+        no_wave_feedback = config.no_wave_feedback,
         # Skewed Gaussian parameters (from config)
         N02_sg = config.stratification.N02_sg,
         N12_sg = config.stratification.N12_sg,

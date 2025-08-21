@@ -396,5 +396,9 @@ function print_config_summary(config::ModelConfig)
     println("  Linear: $(config.linear)")
     println("  Inviscid: $(config.inviscid)")
     println("  YBJ+: $(config.ybj_plus)")
-    println("  No feedback: $(config.no_feedback)")
+    println("  No wave feedback: $(config.no_wave_feedback)")
+    println("  Fixed mean flow: $(config.fixed_mean_flow)")
+    if config.no_feedback != config.no_wave_feedback
+        println("  Warning: Legacy no_feedback differs from no_wave_feedback")
+    end
 end

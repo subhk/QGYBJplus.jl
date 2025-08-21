@@ -72,8 +72,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         end
     end
 
-    # Feedback q* = q - qw
-    if !par.no_feedback
+    # Feedback q* = q - qw (wave feedback on mean flow)
+    wave_feedback_enabled = !par.no_feedback && !par.no_wave_feedback
+    if wave_feedback_enabled
         qwk = similar(S.q)
         # Rebuild BRk/BIk from updated S.B for qw
         @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
@@ -91,7 +92,10 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     end
 
     # Recover psi, A (YBJ+ or normal), velocities
-    invert_q_to_psi!(S, G; a)
+    # Only update psi if mean flow is not fixed
+    if !par.fixed_flow
+        invert_q_to_psi!(S, G; a)
+    end
     if par.ybj_plus
         invert_B_to_A!(S, G, par, a)
     else
@@ -120,8 +124,10 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
                         G::Grid, par::QGParams, plans; a, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(dealias_mask) ? trues(nx,ny) : dealias_mask
-    # Ensure ψ and velocities for Sn are updated
-    invert_q_to_psi!(Sn, G; a)
+    # Ensure ψ and velocities for Sn are updated (only if mean flow evolves)
+    if !par.fixed_flow
+        invert_q_to_psi!(Sn, G; a)
+    end
     compute_velocities!(Sn, G; plans)
     # Nonlinear terms
     nqk  = similar(Sn.q)
@@ -139,11 +145,13 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     convol_waqg!(nqk, nBRk, nBIk, Sn.u, Sn.v, Sn.q, BRk, BIk, G, plans; Lmask=L)
     refraction_waqg!(rBRk, rBIk, BRk, BIk, Sn.psi, G, plans; Lmask=L)
     dissipation_q_nv!(dqk, Snm1.q, par, G)
+    
     # Special cases
     if par.inviscid; dqk .= 0; end
     if par.linear; nqk .= 0; nBRk .= 0; nBIk .= 0; end
     if par.no_dispersion; Sn.A .= 0; end
     if par.passive_scalar; Sn.A .= 0; rBRk .= 0; rBIk .= 0; end
+    if par.fixed_flow; nqk .= 0; end  # No mean flow advection if flow is fixed
     # Leapfrog with integrating factors and full YBJ+ terms
     qtemp = similar(Sn.q)
     BRtemp = similar(Sn.B); BItemp = similar(Sn.B)
@@ -174,8 +182,9 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
         Snp1.B[i,j,k] = Complex(real(BRtemp[i,j,k]),0) + im*Complex(real(BItemp[i,j,k]),0)
     end
-    # Feedback q* = q - qw then ψ, A, velocities
-    if !par.no_feedback
+    # Feedback q* = q - qw then ψ, A, velocities (wave feedback on mean flow)
+    wave_feedback_enabled = !par.no_feedback && !par.no_wave_feedback
+    if wave_feedback_enabled
         qwk = similar(Snp1.q)
         # Rebuild BRk/BIk from Snp1.B for qw
         BRk2 = similar(Snp1.B); BIk2 = similar(Snp1.B)
@@ -192,7 +201,11 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             end
         end
     end
-    invert_q_to_psi!(Snp1, G; a)
+    
+    # Only update psi if mean flow is not fixed
+    if !par.fixed_flow
+        invert_q_to_psi!(Snp1, G; a)
+    end
     if par.ybj_plus
         invert_B_to_A!(Snp1, G, par, a)
     else

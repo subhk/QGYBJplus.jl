@@ -49,6 +49,10 @@ Base.@kwdef struct QGParams{T}
     passive_scalar::Bool
     ybj_plus::Bool
     no_feedback::Bool
+    
+    # Wave-mean flow interaction controls
+    fixed_flow::Bool              # true: mean flow doesn't evolve (psi constant in time)
+    no_wave_feedback::Bool        # true: waves don't feedback on mean flow (qw = 0)
 
     # Skewed Gaussian params (test1 values)
     N02_sg::T
@@ -80,7 +84,7 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     ilap1w = 2; ilap2w = 6
     nuz = T(0.0)
     inviscid=false; linear=false; no_dispersion=false; passive_scalar=false
-    ybj_plus=true; no_feedback=true
+    ybj_plus=true; no_feedback=true; fixed_flow=false; no_wave_feedback=true
     # Test1 skewed Gaussian defaults (nondimensional, L3 = 2π domain)
     N02_sg = T(0.537713935783168)
     N12_sg = T(2.684198470106461)
@@ -91,6 +95,6 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                          linear_vert_structure, Bu, stratification, W2F, gamma,
                          nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
                          nuz, inviscid, linear, no_dispersion, passive_scalar,
-                         ybj_plus, no_feedback,
+                         ybj_plus, no_feedback, fixed_flow, no_wave_feedback,
                          N02_sg, N12_sg, sigma_sg, z0_sg, alpha_sg)
 end
