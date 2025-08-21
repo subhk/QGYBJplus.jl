@@ -8,8 +8,6 @@ module Transforms
 using ..QGYBJ: Grid
 using LinearAlgebra
 
-const HasPencil = Base.find_package("PencilFFTs") !== nothing
-
 Base.@kwdef mutable struct Plans
     backend::Symbol                  # :pencil or :fftw
     # PencilFFTs plans
@@ -26,19 +24,19 @@ end
 Create forward/backward FFT plans appropriate to the environment.
 """
 function plan_transforms!(G::Grid)
-    if HasPencil && G.decomp !== nothing
+    try
         import PencilFFTs
-        # Plan complex-to-complex FFTs along (x,y)
-        p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
-        ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
-        return Plans(backend=:pencil, p_forward=p, p_backward=ip)
-    else
-        using FFTW
-        # Per z-slab plans
-        fwd = nothing; bwd = nothing
-        # Lazily use r2c/c2r wrappers on the fly; store markers
-        return Plans(backend=:fftw, f_forward=fwd, f_backward=bwd)
+        if G.decomp !== nothing
+            # Plan complex-to-complex FFTs along (x,y)
+            p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
+            ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
+            return Plans(backend=:pencil, p_forward=p, p_backward=ip)
+        end
+    catch
+        # fall through to FFTW
     end
+    using FFTW
+    return Plans(backend=:fftw)
 end
 
 """
@@ -81,4 +79,3 @@ end
 end # module
 
 using .Transforms: Plans, plan_transforms!, fft_forward!, fft_backward!
-

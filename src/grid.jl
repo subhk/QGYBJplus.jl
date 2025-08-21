@@ -51,17 +51,6 @@ function init_grid(par::QGParams)
     end
 
     decomp = nothing
-    try
-        if Base.find_package("PencilArrays") !== nothing
-            # Create a simple pencil decomposition over (x,y,z)
-            import MPI
-            using PencilArrays
-            comm = MPI.COMM_WORLD
-            decomp = PencilArrays.PencilDecomposition((nx, ny, nz), comm)
-        end
-    catch
-        # serial mode
-    end
 
     return Grid{T, typeof(kh2)}(nx, ny, nz, par.Lx, par.Ly, dx, dy, z, dz, kx, ky, kh2, decomp)
 end
@@ -77,6 +66,24 @@ function compute_wavenumbers!(G::Grid)
     G.ky .= [j <= ny÷2 ? (2π/G.Ly)*(j-1) : (2π/G.Ly)*(j-1-ny) for j in 1:ny]
     @inbounds for j in 1:ny, i in 1:nx
         G.kh2[i,j] = G.kx[i]^2 + G.ky[j]^2
+    end
+    return G
+end
+
+"""
+    init_pencil_decomposition!(G)
+
+Attempt to initialize a PencilArrays pencil decomposition using MPI if
+available. Safe to call even without MPI; leaves `G.decomp` as `nothing`.
+"""
+function init_pencil_decomposition!(G::Grid)
+    try
+        import MPI
+        import PencilArrays
+        comm = MPI.COMM_WORLD
+        G.decomp = PencilArrays.PencilDecomposition((G.nx, G.ny, G.nz), comm)
+    catch
+        # stay in serial mode
     end
     return G
 end
