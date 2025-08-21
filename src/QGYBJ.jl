@@ -19,10 +19,12 @@ export QGParams, Grid, State,
        invert_q_to_psi!, compute_velocities!,
        default_params, setup_model,
        a_ell_ut, dealias_mask,
-        invert_B_to_A!,
-        jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
-        init_random_psi!,
-        first_projection_step!, leapfrog_step!
+       invert_B_to_A!,
+       jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
+       init_random_psi!,
+        first_projection_step!, leapfrog_step!,
+        sumB!, compute_sigma, compute_A!,
+        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!
 
 include("parameters.jl")
 include("grid.jl")
@@ -34,5 +36,7 @@ include("runtime.jl")
 include("nonlinear.jl")
 include("timestep.jl")
 include("initconds.jl")
+include("ybj_normal.jl")
+include("io.jl")
 
 end # module
