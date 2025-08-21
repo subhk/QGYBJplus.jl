@@ -31,6 +31,24 @@ Base.@kwdef struct QGParams{T}
     # Derived and model choices
     Bu::T                        # Burger-like parameter (Fr^2/Ro^2)
     stratification::Symbol       # :constant_N or :skewed_gaussian
+    # Wave/flow magnitude ratio squared (Uw/U)^2 for qw feedback
+    W2F::T
+    # Robert–Asselin filter parameter
+    gamma::T
+
+    # Horizontal hyperdiffusion parameters (two-operator form)
+    nuh1::T; nuh2::T; ilap1::Int; ilap2::Int
+    nuh1w::T; nuh2w::T; ilap1w::Int; ilap2w::Int
+    # Vertical diffusion of q (regular viscosity)
+    nuz::T
+
+    # Switches
+    inviscid::Bool
+    linear::Bool
+    no_dispersion::Bool
+    passive_scalar::Bool
+    ybj_plus::Bool
+    no_feedback::Bool
 
     # Skewed Gaussian params (test1 values)
     N02_sg::T
@@ -51,6 +69,18 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                            stratification::Symbol=:constant_N)
     T = Float64
     Bu = (Fr^2)/(Ro^2)
+    W2F = T( (2.5e-5/0.25)^2 )  # test1 default (Uw_scale/U_scale)^2
+    gamma = T(1e-3)
+    # Map test1 hyperdiffusion defaults (coarse analogue)
+    nuh1 = T(0.01)
+    nuh2 = T(10.0)
+    ilap1 = 2; ilap2 = 6
+    nuh1w = T(0.0)
+    nuh2w = T(10.0)
+    ilap1w = 2; ilap2w = 6
+    nuz = T(0.0)
+    inviscid=false; linear=false; no_dispersion=false; passive_scalar=false
+    ybj_plus=true; no_feedback=true
     # Test1 skewed Gaussian defaults (nondimensional, L3 = 2π domain)
     N02_sg = T(0.537713935783168)
     N12_sg = T(2.684198470106461)
@@ -58,6 +88,9 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     z0_sg = T(6.121537923499139)
     alpha_sg = T(-5.338431587899242)
     return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, Ro, Fr, f0, nu_h, nu_v,
-                         linear_vert_structure, Bu, stratification,
+                         linear_vert_structure, Bu, stratification, W2F, gamma,
+                         nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
+                         nuz, inviscid, linear, no_dispersion, passive_scalar,
+                         ybj_plus, no_feedback,
                          N02_sg, N12_sg, sigma_sg, z0_sg, alpha_sg)
 end
