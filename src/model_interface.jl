@@ -210,6 +210,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         state_old,
         plans,
         output_manager,
+        parallel_config,
         stratification_profile,
         N2_profile,
         T(0),  # current_time
@@ -302,8 +303,13 @@ function check_and_output!(sim::QGYBJSimulation)
     if should_output_psi(sim.output_manager, sim.current_time) || 
        should_output_waves(sim.output_manager, sim.current_time)
         
-        write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
-                        sim.current_time; params=sim.params)
+        if sim.parallel_config.use_mpi
+            write_parallel_state_file(sim.output_manager.base_manager, sim.state, sim.grid, sim.plans,
+                                    sim.current_time, sim.parallel_config; params=sim.params)
+        else
+            write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
+                            sim.current_time; params=sim.params)
+        end
     end
 end
 
