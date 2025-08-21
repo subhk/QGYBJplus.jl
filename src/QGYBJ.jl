@@ -35,7 +35,10 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        create_simple_config, run_simple_simulation,
        OutputManager, write_state_file, read_initial_psi, read_initial_waves, read_stratification_profile,
        StratificationProfile, ConstantN, SkewedGaussian, TanhProfile,
-       create_stratification_profile, compute_stratification_profile
+       create_stratification_profile, compute_stratification_profile,
+       # Parallel interface
+       ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
+       setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file
 
 include("parameters.jl")
 include("grid.jl")
