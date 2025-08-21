@@ -38,5 +38,6 @@ include("timestep.jl")
 include("initconds.jl")
 include("ybj_normal.jl")
 include("io.jl")
+include("diagnostics.jl")
 
 end # module

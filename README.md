@@ -43,6 +43,19 @@ Examples
 
 - Run `examples/demo_ybj_plus.jl` for a short YBJ+ run that writes NetCDF outputs.
 - Run `examples/demo_ybj_normal.jl` to use the normal YBJ branch (`ybj_plus=false`).
+
+MPI/PencilArrays
+----------------
+
+- Install `MPI`, `PencilArrays`, and `PencilFFTs` in your environment.
+- Launch the MPI demo:
+  - mpiexec -n 4 julia --project examples/demo_mpi.jl
+- The code will initialize a pencil decomposition and prefer PencilFFTs for transforms if available.
+
+Continuous Integration
+----------------------
+
+- GitHub Actions runs tests on Julia 1.9–1.11 (see `.github/workflows/ci.yml`).
   ```
 
 Porting roadmap

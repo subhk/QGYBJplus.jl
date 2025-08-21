@@ -27,13 +27,17 @@ function plan_transforms!(G::Grid)
     try
         import PencilFFTs
         if G.decomp !== nothing
-            # Plan complex-to-complex FFTs along (x,y)
-            p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
-            ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
-            return Plans(backend=:pencil, p_forward=p, p_backward=ip)
+            # Plan along (x,y). Different PencilFFTs versions may vary; try common API.
+            try
+                p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
+                ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
+                return Plans(backend=:pencil, p_forward=p, p_backward=ip)
+            catch err
+                @info "PencilFFTs planning fallback", err
+            end
         end
-    catch
-        # fall through to FFTW
+    catch err
+        @info "PencilFFTs not available; using FFTW", err
     end
     using FFTW
     return Plans(backend=:fftw)
