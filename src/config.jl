@@ -136,7 +136,13 @@ Base.@kwdef struct ModelConfig{T}
     no_dispersion::Bool = false
     passive_scalar::Bool = false
     ybj_plus::Bool = true
-    no_feedback::Bool = false
+    
+    # Wave-mean flow interaction controls
+    no_wave_feedback::Bool = false     # true: waves don't affect mean flow (qw = 0)
+    fixed_mean_flow::Bool = false      # true: mean flow doesn't evolve in time
+    
+    # Legacy compatibility
+    no_feedback::Bool = false          # Deprecated: use no_wave_feedback instead
 end
 
 """
