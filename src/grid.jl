@@ -36,7 +36,8 @@ function init_grid(par::QGParams)
     nx, ny, nz = par.nx, par.ny, par.nz
     dx = par.Lx / nx
     dy = par.Ly / ny
-    z = range(0, 1; length=nz) |> collect |> T.
+    # Match Fortran nondimensional vertical domain L3 = 2π
+    z = range(0, 2π; length=nz) |> collect |> T.
     dz = diff(z)
 
     # Wavenumbers (2π periodic domain)
@@ -133,4 +134,3 @@ function init_state(G::Grid; T=Float64)
     w   = allocate_field(T, G; complex=false);   fill!(w, 0)
     return State{T, typeof(u), typeof(q)}(q, psi, A, u, v, w)
 end
-

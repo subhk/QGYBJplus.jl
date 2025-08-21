@@ -10,55 +10,65 @@ module Elliptic
 using ..QGYBJ: Grid, State
 
 """
-    invert_q_to_psi!(S, G; a, b)
+    invert_q_to_psi!(S, G; a)
 
-Invert spectral PV `q(kx,ky,z)` to obtain `psi(kx,ky,z)`. The vertical operator
-coefficients `a(z)` and `b(z)` should be provided as vectors of length `nz` and
-`nz` respectively (interpreted with second-order finite differences). For a
-basic QG model with constant stratification, set `a .= 1`, `b .= 0`.
+Invert spectral PV `q(kx,ky,z)` to obtain `psi(kx,ky,z)` using the
+coefficients from the Fortran scheme with Neumann ψ_z=0 at top/bottom:
+discrete system with diagonals
+  iz=1:   d = -(a[1]   + kh2*dz^2),   du = a[1]
+  1<iz<n: d = -(a[iz]+a[iz-1] + kh2*dz^2), du=a[iz], dl=a[iz-1]
+  iz=n:   d = -(a[n-1] + kh2*dz^2),   dl = a[n-1]
+and RHS = dz^2 * q.
 """
-function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, b::AbstractVector)
+function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector)
     nx, ny, nz = G.nx, G.ny, G.nz
     @assert length(a) == nz
-    @assert length(b) == nz
     ψ = S.psi
     q = S.q
 
-    # Build constant vertical stencil coefficients (Thomas algorithm) per (i,j)
-    dl = zeros(eltype(a), nz)   # lower diag
-    d  = zeros(eltype(a), nz)   # main diag
-    du = zeros(eltype(a), nz)   # upper diag
+    dl = zeros(eltype(a), nz)
+    d  = zeros(eltype(a), nz)
+    du = zeros(eltype(a), nz)
 
-    # Interior points: a d2/dz2 + b d/dz - kh2 ψ
-    # Using second-order central differences on uniform z for now
-    # Handle simple boundary conditions ψ_z = 0 at top/bottom (Neumann)
-    dz = G.dz
-    # For now assume uniform dz for stencil estimates (extend later)
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    Δ2 = Δ^2
 
     for j in 1:ny, i in 1:nx
         kh2 = G.kh2[i,j]
-        # Fill diagonals
-        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
-        # Top boundary (Neumann): approximate ∂ψ/∂z = 0 -> ψ₀ = ψ₁
-        d[1]  = a[1]/Δ^2 + kh2
-        du[1] = -a[1]/Δ^2
-        # Interior
-        @inbounds for k in 2:nz-1
-            dzz = a[k]/Δ^2
-            dz1 = b[k]/(2Δ)
-            dl[k] = -dzz - dz1
-            d[k]  =  2dzz + kh2
-            du[k] = -dzz + dz1
+        if kh2 == 0
+            @inbounds ψ[i,j,:] .= 0
+            continue
         end
-        # Bottom boundary (Neumann): ψ_{nz} = ψ_{nz-1}
-        dl[nz] = -a[nz]/Δ^2
-        d[nz]  = a[nz]/Δ^2 + kh2
+        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
+        # Build tri-diagonal
+        d[1]  = -(a[1] + kh2*Δ2)
+        du[1] =  a[1]
+        @inbounds for k in 2:nz-1
+            dl[k] = a[k-1]
+            d[k]  = -(a[k] + a[k-1] + kh2*Δ2)
+            du[k] = a[k]
+        end
+        dl[nz] = a[nz-1]
+        d[nz]  = -(a[nz-1] + kh2*Δ2)
 
-        # RHS is q(i,j,:)
-        rhs = view(q, i, j, :)
-        sol = view(ψ, i, j, :)
-        thomas_solve!(sol, dl, d, du, rhs)
+        # RHS = Δ^2 * q
+        rhs = similar(view(q, i, j, :), eltype(a))
+        @inbounds for k in 1:nz
+            rhs[k] = Δ2 * real(q[i,j,k])
+        end
+        solr = copy(rhs)
+        thomas_solve!(solr, dl, d, du, rhs)
+
+        rhs_i = similar(solr)
+        @inbounds for k in 1:nz
+            rhs_i[k] = Δ2 * imag(q[i,j,k])
+        end
+        soli = copy(rhs_i)
+        thomas_solve!(soli, dl, d, du, rhs_i)
+
+        @inbounds for k in 1:nz
+            ψ[i,j,k] = solr[k] + im*soli[k]
+        end
     end
     return S
 end
@@ -92,4 +102,3 @@ end
 end # module
 
 using .Elliptic: invert_q_to_psi!
-
