@@ -135,15 +135,24 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         alpha_sg = config.stratification.alpha_sg
     )
     
-    # Initialize grid and state
-    @info "Initializing grid and state"
-    grid = init_grid(params)
-    state = init_state(params)
-    state_old = init_state(params)  # For leapfrog time stepping
+    # Initialize grid and state with parallel support
+    if parallel_config.use_mpi && should_print
+        @info "Initializing parallel grid and state"
+    elseif should_print
+        @info "Initializing grid and state"
+    end
     
-    # Set up transforms
-    @info "Setting up FFT plans"
-    plans = plan_transforms!(grid, state)
+    if parallel_config.use_mpi
+        grid = init_parallel_grid(params, parallel_config)
+        state = init_parallel_state(grid, parallel_config)
+        state_old = init_parallel_state(grid, parallel_config)
+        plans = setup_parallel_transforms(grid, parallel_config)
+    else
+        grid = init_grid(params)
+        state = init_state(grid)
+        state_old = init_state(grid)
+        plans = plan_transforms!(grid)
+    end
     
     # Set up stratification
     @info "Setting up stratification profile"
@@ -160,15 +169,33 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
     end
     
     # Initialize fields
-    @info "Initializing model fields"
-    initialize_from_config(config, grid, state, plans)
+    if should_print
+        @info "Initializing model fields"
+    end
     
-    # Check initial conditions
-    ic_diagnostics = check_initial_conditions(state, grid, plans)
+    if parallel_config.use_mpi
+        parallel_initialize_fields!(state, grid, plans, config, parallel_config)
+    else
+        initialize_from_config(config, grid, state, plans)
+    end
     
-    # Set up output management
-    @info "Setting up output management"
-    output_manager = OutputManager(config.output, params)
+    # Check initial conditions (only on rank 0 to avoid spam)
+    ic_diagnostics = if should_print
+        check_initial_conditions(state, grid, plans)
+    else
+        Dict("skipped" => "parallel rank > 0")
+    end
+    
+    # Set up output management with parallel support
+    if should_print
+        @info "Setting up output management"
+    end
+    
+    output_manager = if parallel_config.use_mpi
+        ParallelOutputManager(config.output, params, parallel_config)
+    else
+        OutputManager(config.output, params)
+    end
     
     # Initialize diagnostics
     diagnostics = Dict{String, Any}(
