@@ -16,6 +16,7 @@ include("config.jl")
 include("netcdf_io.jl")
 include("initialization.jl")
 include("stratification.jl")
+include("parallel_interface.jl")
 
 """
     QGYBJSimulation{T}
