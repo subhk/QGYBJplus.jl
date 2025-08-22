@@ -230,7 +230,102 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params)
     return S
 end
 
+"""
+    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+
+Compute TOTAL velocity field for particle advection: QG velocity + wave velocity.
+This is the proper velocity field for advecting particles in QG-YBJ simulations.
+
+Total velocity components:
+- Horizontal: u_total = u_QG + u_wave, v_total = v_QG + v_wave  
+- Vertical: w_total from QG omega equation or YBJ formulation
+
+The wave velocities come from the Stokes drift and wave-induced corrections:
+u_wave = Real[(∂A*/∂x)A + A*(∂A/∂x)], v_wave = Real[(∂A*/∂y)A + A*(∂A/∂y)]
+
+For YBJ formulation, see equations in QG_YBJp.pdf.
+"""
+function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+    # First compute QG velocities
+    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w)
+    
+    # Add wave-induced velocities
+    compute_wave_velocities!(S, G; plans=plans, params=params)
+    
+    return S
+end
+
+"""
+    compute_wave_velocities!(S, G; plans=nothing, params=nothing)
+
+Compute wave-induced horizontal velocities and add them to the existing QG velocities.
+Based on the YBJ formulation for wave-mean flow interaction.
+
+Wave velocities from Stokes drift and wave corrections:
+u_wave = Real[(∂A*/∂x)A + A*(∂A/∂x)]
+v_wave = Real[(∂A*/∂y)A + A*(∂A/∂y)]
+
+where A is the wave envelope amplitude.
+"""
+function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    
+    # Set up plans if needed
+    if plans === nothing
+        plans = plan_transforms!(G)
+    end
+    
+    # Use wave amplitude A for wave velocity computation
+    Ak = S.A  # Wave amplitude in spectral space
+    
+    # Compute horizontal derivatives of A: ∂A/∂x, ∂A/∂y
+    dA_dx_k = similar(Ak)
+    dA_dy_k = similar(Ak)
+    
+    @inbounds for k in axes(Ak,3), j in 1:ny, i in 1:nx
+        ikx = im * G.kx[i]
+        iky = im * G.ky[j]
+        dA_dx_k[i,j,k] = ikx * Ak[i,j,k]
+        dA_dy_k[i,j,k] = iky * Ak[i,j,k]
+    end
+    
+    # Compute wave velocity contributions in spectral space
+    # u_wave = Real[(∂A*/∂x)A + A*(∂A/∂x)] = Real[2 * Real(A* ∂A/∂x)]
+    # v_wave = Real[(∂A*/∂y)A + A*(∂A/∂y)] = Real[2 * Real(A* ∂A/∂y)]
+    u_wave_k = similar(Ak)
+    v_wave_k = similar(Ak)
+    
+    @inbounds for k in axes(Ak,3), j in 1:ny, i in 1:nx
+        if G.kh2[i,j] > 0  # Dealias
+            # Wave velocity contributions
+            u_wave_k[i,j,k] = 2.0 * real(conj(Ak[i,j,k]) * dA_dx_k[i,j,k])
+            v_wave_k[i,j,k] = 2.0 * real(conj(Ak[i,j,k]) * dA_dy_k[i,j,k])
+        else
+            u_wave_k[i,j,k] = 0.0
+            v_wave_k[i,j,k] = 0.0
+        end
+    end
+    
+    # Transform to real space
+    u_wave_real = similar(S.u)
+    v_wave_real = similar(S.v)
+    
+    fft_backward!(u_wave_real, u_wave_k, plans)
+    fft_backward!(v_wave_real, v_wave_k, plans)
+    
+    # Normalization
+    norm = nx * ny
+    
+    # Add wave velocities to existing QG velocities
+    @inbounds for k in 1:nz
+        S.u[:,:,k] .+= real.(u_wave_real[:,:,k]) ./ norm
+        S.v[:,:,k] .+= real.(v_wave_real[:,:,k]) ./ norm
+    end
+    
+    return S
+end
+
 end # module
 
-using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!
+using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!
 

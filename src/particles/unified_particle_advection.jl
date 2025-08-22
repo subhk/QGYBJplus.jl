@@ -2,9 +2,14 @@
 Unified particle advection module for QG-YBJ simulations.
 
 This module provides Lagrangian particle tracking that automatically handles
-both serial and parallel execution. Particles are advected using the total 
-velocity field (QG + YBJ) with options for vertical velocity from either 
+both serial and parallel execution. Particles are advected using the TOTAL 
+velocity field (QG + wave velocities) with options for vertical velocity from either 
 QG omega equation or YBJ formulation.
+
+Total velocity field includes:
+- QG velocities: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
+- Wave velocities: u_wave, v_wave from Stokes drift and wave corrections
+- Vertical velocity: w from QG omega equation or YBJ w₀ formulation
 
 The system automatically detects MPI availability and handles:
 - Domain decomposition and particle migration  
@@ -15,7 +20,7 @@ The system automatically detects MPI availability and handles:
 
 module UnifiedParticleAdvection
 
-using ..QGYBJ: Grid, State, compute_velocities!, ParallelConfig, plan_transforms!
+using ..QGYBJ: Grid, State, compute_total_velocities!, ParallelConfig, plan_transforms!
 
 export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 
@@ -450,15 +455,16 @@ end
 """
     update_velocity_fields!(tracker, state, grid)
 
-Update velocity fields from fluid state and exchange halos if parallel.
+Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
+Computes the complete velocity field needed for proper QG-YBJ particle advection.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T}, 
                                 state::State, grid::Grid) where T
-    # Compute velocities with chosen vertical velocity formulation
-    compute_velocities!(state, grid; 
-                       plans=tracker.plans,
-                       compute_w=true,
-                       use_ybj_w=tracker.config.use_ybj_w)
+    # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
+    compute_total_velocities!(state, grid; 
+                              plans=tracker.plans,
+                              compute_w=true,
+                              use_ybj_w=tracker.config.use_ybj_w)
     
     # Copy to tracker workspace
     tracker.u_field .= state.u

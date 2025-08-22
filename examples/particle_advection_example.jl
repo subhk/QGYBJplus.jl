@@ -5,11 +5,15 @@ This example demonstrates the unified particle advection system that automatical
 handles both serial and parallel execution:
 
 1. Setting up particles on a horizontal region at constant z-level
-2. Advecting particles using total velocity (QG + YBJ) 
+2. Advecting particles using TOTAL velocity (QG + wave velocities + vertical)
 3. Comparing QG vs YBJ vertical velocity effects on particles
 4. Saving particle trajectories to NetCDF files
 5. Automatic MPI detection and domain decomposition
 6. Particle migration between MPI domains
+
+The particles are advected by the complete velocity field:
+- Horizontal: u_total = u_QG + u_wave, v_total = v_QG + v_wave
+- Vertical: w from QG omega equation or YBJ formulation
 """
 
 using QGYBJ
@@ -118,9 +122,10 @@ function particle_advection_example()
     initialize_particles!(tracker_2d, particle_config_2d)
     
     # Report local particle counts (in parallel, each rank reports its local count)
-    println("  QG particles (local): $(tracker_qg.particles.np)")
-    println("  YBJ particles (local): $(tracker_ybj.particles.np)")
-    println("  2D particles (local): $(tracker_2d.particles.np)")
+    println("  QG particles (local): $(tracker_qg.particles.np) [QG vertical velocity]")
+    println("  YBJ particles (local): $(tracker_ybj.particles.np) [YBJ vertical velocity]")
+    println("  2D particles (local): $(tracker_2d.particles.np) [horizontal only]")
+    println("  All particles use TOTAL velocity = QG + wave velocities")
     
     if tracker_qg.is_parallel
         println("  Running in parallel mode with $(tracker_qg.nprocs) processes")
