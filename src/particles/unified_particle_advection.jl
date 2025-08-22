@@ -447,7 +447,87 @@ function interpolate_velocity_at_position(x::T, y::T, z::T,
 end
 
 """
-Local velocity interpolation (serial case or fallback).
+    interpolate_velocity_advanced_local(x, y, z, tracker)
+
+Advanced interpolation for serial case using high-order schemes.
+"""
+function interpolate_velocity_advanced_local(x::T, y::T, z::T, 
+                                           tracker::ParticleTracker{T}) where T
+    
+    # Set up grid info and boundary conditions
+    grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
+                Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz)
+    
+    boundary_conditions = (periodic_x=tracker.config.periodic_x,
+                          periodic_y=tracker.config.periodic_y,
+                          periodic_z=false)
+    
+    # Use advanced interpolation
+    u_interp, v_interp, w_interp = interpolate_velocity_advanced(
+        x, y, z,
+        tracker.u_field, tracker.v_field, tracker.w_field,
+        grid_info, boundary_conditions,
+        tracker.config.interpolation_method
+    )
+    
+    # For 2D advection, set w to zero
+    if !tracker.config.use_3d_advection
+        w_interp = 0.0
+    end
+    
+    return u_interp, v_interp, w_interp
+end
+
+"""
+    interpolate_velocity_with_halos_advanced(x, y, z, tracker, halo_info)
+
+Advanced interpolation using halo data for parallel case.
+"""
+function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T, 
+                                                 tracker::ParticleTracker{T},
+                                                 halo_info::HaloInfo{T}) where T
+    
+    # For high-order interpolation, we need extended halos
+    if tracker.config.interpolation_method == TRICUBIC || tracker.config.interpolation_method == ADAPTIVE
+        # Check if we have enough halo width for tricubic (needs at least 2)
+        if halo_info.halo_width < 2
+            @warn "Insufficient halo width for tricubic interpolation, falling back to trilinear"
+            return interpolate_velocity_with_halos(x, y, z, tracker, halo_info)
+        end
+        
+        # Use extended arrays for high-order interpolation
+        grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
+                    Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz)
+        
+        boundary_conditions = (periodic_x=tracker.config.periodic_x,
+                              periodic_y=tracker.config.periodic_y,
+                              periodic_z=false)
+        
+        # Adjust position for extended grid coordinates
+        local_domain = tracker.local_domain
+        x_local = x - local_domain.x_start
+        
+        u_interp, v_interp, w_interp = interpolate_velocity_advanced(
+            x_local, y, z,
+            halo_info.u_extended, halo_info.v_extended, halo_info.w_extended,
+            grid_info, boundary_conditions,
+            tracker.config.interpolation_method
+        )
+        
+        # For 2D advection, set w to zero
+        if !tracker.config.use_3d_advection
+            w_interp = 0.0
+        end
+        
+        return u_interp, v_interp, w_interp
+    else
+        # Use original halo interpolation for trilinear
+        return interpolate_velocity_with_halos(x, y, z, tracker, halo_info)
+    end
+end
+
+"""
+Local velocity interpolation (fallback for compatibility).
 """
 function interpolate_velocity_local(x::T, y::T, z::T, 
                                   tracker::ParticleTracker{T}) where T
