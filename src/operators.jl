@@ -35,6 +35,7 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     end
     # Inverse FFT to real space
     if plans === nothing
+        # Use unified transform planning (handles both serial and parallel)
         plans = plan_transforms!(G)
     end
     tmpu = similar(ψk)

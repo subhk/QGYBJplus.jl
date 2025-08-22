@@ -39,7 +39,6 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
        # Parallel interface
        ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
-       setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file,
        # Unified particle advection system (handles both serial and parallel automatically)
        ParticleConfig, ParticleState, ParticleTracker, create_particle_config,
        initialize_particles!, advect_particles!, interpolate_velocity_at_position,

@@ -109,9 +109,9 @@ function particle_advection_example()
     # 3. Initialize unified particle trackers (automatically handles serial/parallel)
     println("Initializing unified particle trackers...")
     
-    tracker_qg = ParticleTracker(particle_config_qg, sim.grid)
-    tracker_ybj = ParticleTracker(particle_config_ybj, sim.grid)
-    tracker_2d = ParticleTracker(particle_config_2d, sim.grid)
+    tracker_qg = ParticleTracker(particle_config_qg, sim.grid, sim.parallel_config)
+    tracker_ybj = ParticleTracker(particle_config_ybj, sim.grid, sim.parallel_config)
+    tracker_2d = ParticleTracker(particle_config_2d, sim.grid, sim.parallel_config)
     
     initialize_particles!(tracker_qg, particle_config_qg)
     initialize_particles!(tracker_ybj, particle_config_ybj)

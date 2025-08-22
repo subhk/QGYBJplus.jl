@@ -130,6 +130,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     v_field::Array{T,3}
     w_field::Array{T,3}
     
+    # Transform plans (for velocity computation)
+    plans
+    
     # Parallel information (automatically detected)
     comm::Any           # MPI communicator (nothing for serial)
     rank::Int          # MPI rank (0 for serial)
@@ -152,12 +155,25 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     is_io_rank::Bool
     gather_for_io::Bool
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid) where T
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
-        # Detect parallel environment
-        comm, rank, nprocs, is_parallel = detect_parallel_environment()
+        # Use provided parallel config or detect environment
+        if parallel_config !== nothing && parallel_config.use_mpi
+            try
+                import MPI
+                comm = parallel_config.comm
+                rank = MPI.Comm_rank(comm)
+                nprocs = MPI.Comm_size(comm)
+                is_parallel = true
+            catch e
+                @warn "Failed to import MPI: $e"
+                comm, rank, nprocs, is_parallel = detect_parallel_environment()
+            end
+        else
+            comm, rank, nprocs, is_parallel = detect_parallel_environment()
+        end
         
         # Set up domain decomposition if parallel
         local_domain = is_parallel ? compute_local_domain(grid, rank, nprocs) : nothing
@@ -171,6 +187,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         v_field = zeros(T, grid.nx, grid.ny, grid.nz)
         w_field = zeros(T, grid.nx, grid.ny, grid.nz)
         
+        # Set up transform plans (using unified interface)
+        plans = plan_transforms!(grid, parallel_config)
+        
         # Set up halo exchange system for parallel runs
         halo_info = is_parallel ? setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T) : nothing
         
@@ -179,7 +198,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.Lz/grid.nz,
-            u_field, v_field, w_field,
+            u_field, v_field, w_field, plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
@@ -189,7 +208,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid) where T = ParticleTracker{T}(config, grid)
+ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T)
@@ -437,6 +456,7 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid) where T
     # Compute velocities with chosen vertical velocity formulation
     compute_velocities!(state, grid; 
+                       plans=tracker.plans,
                        compute_w=true,
                        use_ybj_w=tracker.config.use_ybj_w)
     

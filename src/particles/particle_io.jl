@@ -6,7 +6,7 @@ Handles NetCDF output of particle trajectories with proper metadata.
 
 module ParticleIO
 
-using ..ParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
+using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file
