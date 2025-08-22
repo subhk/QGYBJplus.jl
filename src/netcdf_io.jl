@@ -510,6 +510,7 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         save_psi=true,
         save_waves=false,
         save_velocities=false,
+        save_vertical_velocity=false,
         save_vorticity=false
     )
     
@@ -538,6 +539,7 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         save_psi=false,
         save_waves=true,
         save_velocities=false,
+        save_vertical_velocity=false,
         save_vorticity=false
     )
     
