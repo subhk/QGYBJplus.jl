@@ -246,7 +246,118 @@ config = create_model_config(
     no_dispersion=false,           # true: No wave dispersion
     passive_scalar=false,          # true: Waves as passive scalars
     ybj_plus=true,                 # true: Use YBJ+ formulation
-    no_feedback=false              # true: No wave-mean flow feedback
+    
+    # Wave-mean flow interaction controls
+    no_wave_feedback=false,        # true: Waves don't affect mean flow (qw = 0)
+    fixed_mean_flow=false,         # true: Mean flow doesn't evolve in time
+    
+    # Legacy compatibility
+    no_feedback=false              # Deprecated: use no_wave_feedback instead
+)
+```
+
+## Wave-Mean Flow Interaction Controls
+
+The QG-YBJ model includes sophisticated controls for wave-mean flow interactions, allowing you to isolate different physical processes:
+
+### **Full Coupling (Default)**
+```julia
+config = create_model_config(...,
+    no_wave_feedback=false,        # Waves affect mean flow
+    fixed_mean_flow=false          # Mean flow evolves
+)
+```
+- Complete wave-mean flow interaction
+- Waves generate potential vorticity forcing (qw ≠ 0)
+- Mean flow evolves due to its own nonlinearity AND wave feedback
+- Most physically realistic for studying wave-mean flow dynamics
+
+### **Fixed Mean Flow**
+```julia
+config = create_model_config(...,
+    no_wave_feedback=true,         # Waves don't affect mean flow
+    fixed_mean_flow=true           # Mean flow doesn't evolve
+)
+```
+- Mean flow remains constant in time
+- Waves evolve in a prescribed, static background
+- Useful for studying wave propagation and breaking
+- Equivalent to solving wave equation in fixed background state
+
+### **No Wave Feedback**
+```julia
+config = create_model_config(...,
+    no_wave_feedback=true,         # Waves don't affect mean flow
+    fixed_mean_flow=false          # Mean flow can still evolve
+)
+```
+- Mean flow evolves due to its own nonlinear dynamics only
+- Waves evolve independently (no feedback qw = 0)
+- Allows studying separate evolution of waves and mean flow
+- Useful for process isolation studies
+
+### **Wave-Only Dynamics**
+```julia
+config = create_model_config(...,
+    no_wave_feedback=true,         # Waves don't affect mean flow
+    fixed_mean_flow=true,          # Mean flow doesn't evolve
+    # Initialize with zero or minimal mean flow
+    psi_amplitude=0.0
+)
+```
+- Pure wave dynamics in quiescent background
+- No mean flow present or evolving
+- Ideal for studying wave-wave interactions
+- Equivalent to solving just the wave equation
+
+### **Linear Wave Evolution**
+```julia
+config = create_model_config(...,
+    no_wave_feedback=true,         # Waves don't affect mean flow
+    fixed_mean_flow=true,          # Mean flow doesn't evolve
+    linear=true                    # Linear wave dynamics only
+)
+```
+- Linear wave equation in prescribed flow
+- No wave-wave interactions
+- Useful for studying wave refraction, dispersion
+- Allows analytical comparison and validation
+
+### **Practical Examples**
+
+**Studying Wave Breaking:**
+```julia
+# Strong jet with small wave perturbations
+initial_conditions = create_initial_condition_config(
+    psi_type=:analytical,          # Prescribed jet
+    wave_type=:random,
+    psi_amplitude=0.3,             # Strong mean flow
+    wave_amplitude=0.01            # Small wave amplitude
+)
+
+config = create_model_config(...,
+    fixed_mean_flow=true,          # Keep jet fixed
+    no_wave_feedback=true          # Waves don't affect jet
+)
+```
+
+**Mean Flow Adjustment:**
+```julia
+# Start with out-of-balance initial condition
+config = create_model_config(...,
+    no_wave_feedback=false,        # Allow wave feedback
+    fixed_mean_flow=false,         # Allow mean flow evolution
+    wave_amplitude=0.1             # Significant wave field
+)
+```
+
+**Process Isolation:**
+```julia
+# Study mean flow turbulence without waves
+config = create_model_config(...,
+    no_wave_feedback=true,         # No wave effects
+    fixed_mean_flow=false,         # Mean flow evolves
+    wave_amplitude=0.0             # No waves
 )
 ```
 
