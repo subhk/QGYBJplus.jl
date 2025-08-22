@@ -25,6 +25,10 @@ export ParticleConfig, ParticleState, ParticleTracker,
 include("halo_exchange.jl")
 using .HaloExchange
 
+# Include advanced interpolation schemes
+include("interpolation_schemes.jl")
+using .InterpolationSchemes
+
 """
 Configuration for particle initialization and advection.
 """
@@ -46,6 +50,9 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     
     # Integration method
     integration_method::Symbol = :rk4  # :euler, :rk2, :rk4
+    
+    # Interpolation method
+    interpolation_method::InterpolationMethod = TRILINEAR  # TRILINEAR, TRICUBIC, ADAPTIVE
     
     # Boundary conditions
     periodic_x::Bool = true
@@ -425,18 +432,18 @@ end
 """
     interpolate_velocity_at_position(x, y, z, tracker)
 
-Interpolate velocity at particle position with cross-domain capability.
+Interpolate velocity at particle position with advanced schemes and cross-domain capability.
 """
 function interpolate_velocity_at_position(x::T, y::T, z::T, 
                                         tracker::ParticleTracker{T}) where T
     
     # Use halo-aware interpolation if available (parallel case)
     if tracker.is_parallel && tracker.halo_info !== nothing
-        return interpolate_velocity_with_halos(x, y, z, tracker, tracker.halo_info)
+        return interpolate_velocity_with_halos_advanced(x, y, z, tracker, tracker.halo_info)
     end
     
-    # Fallback to local interpolation (serial case or when halo exchange fails)
-    return interpolate_velocity_local(x, y, z, tracker)
+    # Use advanced interpolation for serial case
+    return interpolate_velocity_advanced_local(x, y, z, tracker)
 end
 
 """
