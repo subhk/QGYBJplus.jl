@@ -21,6 +21,10 @@ export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 
        advect_particles!, interpolate_velocity_at_position
 
+# Include halo exchange for cross-domain interpolation
+include("halo_exchange.jl")
+using .HaloExchange
+
 """
 Configuration for particle initialization and advection.
 """
@@ -122,6 +126,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     send_buffers::Vector{Vector{T}}
     recv_buffers::Vector{Vector{T}}
     
+    # Halo exchange system for cross-domain interpolation
+    halo_info::Union{Nothing,HaloInfo{T}}
+    
     # I/O settings
     save_counter::Int
     last_save_time::T
@@ -147,6 +154,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         v_field = zeros(T, grid.nx, grid.ny, grid.nz)
         w_field = zeros(T, grid.nx, grid.ny, grid.nz)
         
+        # Set up halo exchange system for parallel runs
+        halo_info = is_parallel ? setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T) : nothing
+        
         new{T}(
             config, particles,
             grid.nx, grid.ny, grid.nz,
@@ -156,12 +166,27 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
+            halo_info,
             0, zero(T), rank == 0, true
         )
     end
 end
 
 ParticleTracker(config::ParticleConfig{T}, grid::Grid) where T = ParticleTracker{T}(config, grid)
+
+"""
+    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T)
+
+Helper function to set up halo exchange system.
+"""
+function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T}) where T
+    try
+        return HaloInfo{T}(grid, rank, nprocs, comm)
+    catch e
+        @warn "Failed to set up halo exchange: $e"
+        return nothing
+    end
+end
 
 """
     detect_parallel_environment()
