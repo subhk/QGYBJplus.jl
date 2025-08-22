@@ -72,12 +72,12 @@ function demo_stratified_simulation()
     # Domain with higher vertical resolution for stratification
     domain = create_domain_config(nx=128, ny=128, nz=64, Lx=6π, Ly=6π, Lz=2π)
     
-    # Tropopause-like stratification
+    # Pycnocline-like stratification
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.01,                   # Weak stratification below
-        N_strat=0.04,                  # Strong stratification above
-        z_trop=0.6,                    # Tropopause at 60% of domain height
+        N_upper=0.01,                   # Weak stratification in upper ocean
+        N_lower=0.04,                  # Strong stratification in deep ocean
+        z_pycno=0.6,                    # Pycnocline at 60% of domain depth
         width=0.05                     # Sharp transition
     )
     

@@ -24,12 +24,12 @@ function demo_parallel_basic()
         Lx=8π, Ly=8π, Lz=2π
     )
     
-    # Tropopause-like stratification
+    # Pycnocline-like stratification
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.01,
-        N_strat=0.03,
-        z_trop=0.6,
+        N_upper=0.01,
+        N_lower=0.03,
+        z_pycno=0.6,
         width=0.05
     )
     

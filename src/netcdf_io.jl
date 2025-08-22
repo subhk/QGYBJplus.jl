@@ -45,16 +45,19 @@ mutable struct OutputManager{T}
     save_vorticity::Bool
     save_diagnostics::Bool
     
+    # Parallel configuration (optional)
+    parallel_config
+    
     # Metadata
     run_info::Dict{String,Any}
 end
 
 """
-    OutputManager(config::OutputConfig, params::QGParams)
+    OutputManager(config::OutputConfig, params::QGParams, parallel_config=nothing)
 
-Create output manager from configuration.
+Create output manager from configuration with optional parallel support.
 """
-function OutputManager(config, params::QGParams{T}) where T
+function OutputManager(config, params::QGParams{T}, parallel_config=nothing) where T
     # Create output directory if it doesn't exist
     mkpath(config.output_dir)
     
@@ -87,6 +90,7 @@ function OutputManager(config, params::QGParams{T}) where T
         hasfield(typeof(config), :save_vertical_velocity) ? config.save_vertical_velocity : false,
         config.save_vorticity,
         config.save_diagnostics,
+        parallel_config,
         run_info
     )
 end
@@ -119,11 +123,31 @@ function should_output_diagnostics(manager::OutputManager, time::Real)
 end
 
 """
-    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing)
 
 Write complete state to NetCDF file with standardized naming.
+Unified interface for both serial and parallel I/O.
 """
-function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing)
+    # Use parallel_config from manager if not provided
+    if parallel_config === nothing
+        parallel_config = manager.parallel_config
+    end
+    
+    # Route to appropriate I/O method
+    if parallel_config !== nothing && parallel_config.use_mpi && G.decomp !== nothing
+        return write_parallel_state_file(manager, S, G, plans, time, parallel_config; params=params)
+    else
+        return write_serial_state_file(manager, S, G, plans, time; params=params)
+    end
+end
+
+"""
+    write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+
+Write state file in serial mode.
+"""
+function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
     # Generate filename
     filename = @sprintf(manager.state_file_pattern, manager.psi_counter)
     filepath = joinpath(manager.output_dir, filename)

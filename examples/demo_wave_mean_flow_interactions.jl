@@ -22,9 +22,9 @@ function demo_coupled_wave_mean_flow()
     
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.01,
-        N_strat=0.03,
-        z_trop=0.5,
+        N_upper=0.01,
+        N_lower=0.03,
+        z_pycno=0.5,
         width=0.1
     )
     
@@ -207,9 +207,9 @@ function demo_linear_wave_evolution()
     
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.005,
-        N_strat=0.025,
-        z_trop=0.4,
+        N_upper=0.005,
+        N_lower=0.025,
+        z_pycno=0.4,
         width=0.08
     )
     

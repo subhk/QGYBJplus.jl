@@ -193,11 +193,8 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         @info "Setting up output management"
     end
     
-    output_manager = if parallel_config.use_mpi
-        ParallelOutputManager(config.output, params, parallel_config)
-    else
-        OutputManager(config.output, params)
-    end
+    # Create unified output manager that handles both serial and parallel I/O
+    output_manager = OutputManager(config.output, params, parallel_config)
     
     # Initialize diagnostics
     diagnostics = Dict{String, Any}(
@@ -301,17 +298,12 @@ end
 Check if output is needed and write files.
 """
 function check_and_output!(sim::QGYBJSimulation)
-    # State output
+    # State output - unified interface handles both serial and parallel
     if should_output_psi(sim.output_manager, sim.current_time) || 
        should_output_waves(sim.output_manager, sim.current_time)
         
-        if sim.parallel_config.use_mpi
-            write_parallel_state_file(sim.output_manager.base_manager, sim.state, sim.grid, sim.plans,
-                                    sim.current_time, sim.parallel_config; params=sim.params)
-        else
-            write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
-                            sim.current_time; params=sim.params)
-        end
+        write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
+                        sim.current_time, sim.parallel_config; params=sim.params)
     end
 end
 
