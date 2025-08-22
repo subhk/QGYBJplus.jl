@@ -19,7 +19,9 @@ using ..QGYBJ: Grid, State, compute_velocities!
 
 export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 
-       advect_particles!, interpolate_velocity_at_position
+       advect_particles!, interpolate_velocity_at_position,
+       # Advanced interpolation methods
+       InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC
 
 # Include halo exchange for cross-domain interpolation
 include("halo_exchange.jl")
