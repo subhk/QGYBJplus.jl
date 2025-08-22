@@ -150,29 +150,15 @@ function particle_advection_example()
             leapfrog_step!(sim.state, sim.grid, sim.params, sim.plans)
         end
         
-        # Compute velocities for particle advection
-        # QG vertical velocity
-        compute_velocities!(sim.state, sim.grid; 
-                           plans=sim.plans, 
-                           params=sim.params, 
-                           compute_w=true, 
-                           use_ybj_w=false)
+        # Unified particle advection (automatically handles velocities and parallel migration)
         
-        # Advect QG particles
+        # Advect QG particles (automatically computes QG vertical velocity)
         advect_particles!(tracker_qg, sim.state, sim.grid, sim.config.dt)
         
-        # YBJ vertical velocity
-        compute_velocities!(sim.state, sim.grid; 
-                           plans=sim.plans, 
-                           params=sim.params, 
-                           compute_w=true, 
-                           use_ybj_w=true)
-        
-        # Advect YBJ particles
+        # Advect YBJ particles (automatically computes YBJ vertical velocity)
         advect_particles!(tracker_ybj, sim.state, sim.grid, sim.config.dt)
         
-        # 2D advection (w=0)
-        sim.state.w .= 0.0  # Ensure w=0 for 2D case
+        # Advect 2D particles (automatically sets w=0 for 2D case)
         advect_particles!(tracker_2d, sim.state, sim.grid, sim.config.dt)
         
         # Output particle positions
