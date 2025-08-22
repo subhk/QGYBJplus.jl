@@ -63,6 +63,9 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     use_ybj_w::Bool = false           # Use YBJ vs QG vertical velocity
     use_3d_advection::Bool = true     # Include vertical advection
     
+    # Advection timing control
+    particle_advec_time::T = 0.0      # Start advecting particles at this time (0.0 = from beginning)
+    
     # Integration method
     integration_method::Symbol = :rk4  # :euler, :rk2, :rk4
     
