@@ -14,6 +14,11 @@ handles both serial and parallel execution:
 The particles are advected by the complete velocity field:
 - Horizontal: u_total = u_QG + u_wave, v_total = v_QG + v_wave
 - Vertical: w from QG omega equation or YBJ formulation
+
+Advanced features:
+- particle_advec_time: Control when particles start moving (0.0 = immediate)
+- Delayed release allows flow field to develop before particle advection
+- See delayed_particle_advection_example.jl for detailed demonstration
 """
 
 using QGYBJ
@@ -85,6 +90,7 @@ function particle_advection_example()
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
+        particle_advec_time=0.0,  # Start advecting immediately
         use_ybj_w=false,      # Use QG omega equation for w
         use_3d_advection=true,
         integration_method=:rk4
@@ -96,6 +102,7 @@ function particle_advection_example()
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
+        particle_advec_time=0.0,  # Start advecting immediately
         use_ybj_w=true,       # Use YBJ formulation for w
         use_3d_advection=true,
         integration_method=:rk4
@@ -107,6 +114,7 @@ function particle_advection_example()
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
+        particle_advec_time=0.0,  # Start advecting immediately
         use_ybj_w=false,
         use_3d_advection=false,  # Pure 2D advection (w=0)
         integration_method=:rk4
@@ -160,13 +168,13 @@ function particle_advection_example()
         # Unified particle advection (automatically handles velocities and parallel migration)
         
         # Advect QG particles (automatically computes QG vertical velocity)
-        advect_particles!(tracker_qg, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_qg, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Advect YBJ particles (automatically computes YBJ vertical velocity)
-        advect_particles!(tracker_ybj, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_ybj, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Advect 2D particles (automatically sets w=0 for 2D case)
-        advect_particles!(tracker_2d, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_2d, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Output particle positions
         if step % output_every == 0

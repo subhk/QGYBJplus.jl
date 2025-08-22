@@ -16,6 +16,12 @@ The system automatically detects MPI availability and handles:
 - Periodic boundary conditions
 - Distributed I/O
 - Load balancing
+
+Advanced features:
+- Delayed particle release: Use particle_advec_time to control when particles start moving
+- Multiple integration schemes: Euler, RK2, RK4 with adjustable interpolation methods
+- Flexible I/O: Configurable save intervals and trajectory tracking
+- Boundary handling: Periodic and reflective boundary conditions
 """
 
 module UnifiedParticleAdvection
@@ -46,6 +52,21 @@ using .EnhancedParticleConfig
 
 """
 Configuration for particle initialization and advection.
+
+Key parameters:
+- Spatial domain: x_min/max, y_min/max, z_level for initial particle placement
+- Particle count: nx_particles × ny_particles 
+- Physics options: use_ybj_w (vertical velocity), use_3d_advection
+- Timing control: particle_advec_time - when to start advecting particles
+- Integration: method (:euler, :rk2, :rk4) and interpolation scheme
+- Boundaries: periodic_x/y, reflect_z for boundary conditions
+- I/O: save_interval and max_save_points for trajectory output
+
+Advanced timing control:
+- particle_advec_time=0.0: Start advecting immediately (default)
+- particle_advec_time>0.0: Keep particles stationary until this time
+- Useful for letting flow field develop before particle release
+- Enables study of transient vs established flow patterns
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     # Spatial domain for particle initialization
@@ -86,6 +107,24 @@ end
     create_particle_config(; kwargs...)
 
 Convenience constructor for ParticleConfig.
+
+Common usage patterns:
+```julia
+# Immediate particle release (default)
+config = create_particle_config(
+    x_min=0.0, x_max=2π, y_min=0.0, y_max=2π,
+    nx_particles=10, ny_particles=10,
+    particle_advec_time=0.0  # Start immediately
+)
+
+# Delayed particle release - let flow develop first
+config = create_particle_config(
+    x_min=π/2, x_max=3π/2, y_min=π/2, y_max=3π/2,
+    nx_particles=8, ny_particles=8,
+    particle_advec_time=0.5,  # Wait 0.5 time units
+    use_ybj_w=true           # Use YBJ vertical velocity
+)
+```
 """
 function create_particle_config(::Type{T}=Float64; kwargs...) where T
     return ParticleConfig{T}(; kwargs...)
@@ -415,13 +454,50 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
 end
 
 """
-    advect_particles!(tracker, state, grid, dt)
+    advect_particles!(tracker, state, grid, dt, current_time=nothing)
 
 Advect particles using unified serial/parallel interface.
+Respects the particle_advec_time setting - particles remain stationary until this time.
+
+Parameters:
+- tracker: ParticleTracker instance
+- state: Current fluid state
+- grid: Grid information  
+- dt: Time step
+- current_time: Current simulation time (if not provided, uses tracker's internal time)
 """
 function advect_particles!(tracker::ParticleTracker{T}, 
-                          state::State, grid::Grid, dt::T) where T
+                          state::State, grid::Grid, dt::T, current_time=nothing) where T
     
+    # Use simulation time if provided, otherwise use tracker's internal time
+    if current_time !== nothing
+        sim_time = T(current_time)
+        # Update tracker time to match simulation
+        tracker.particles.time = sim_time
+    else
+        sim_time = tracker.particles.time
+    end
+    
+    # Check if we should start advecting particles yet
+    advec_start_time = tracker.config.particle_advec_time
+    
+    if sim_time < advec_start_time
+        # Particles remain stationary - only update time
+        if current_time === nothing
+            tracker.particles.time += dt
+        else
+            tracker.particles.time = T(current_time) + dt
+        end
+        
+        # Still save state if needed (for tracking stationary phase)
+        if should_save_particles(tracker)
+            save_particle_state!(tracker)
+        end
+        
+        return tracker
+    end
+    
+    # Normal advection process starts here
     # Update velocity fields
     update_velocity_fields!(tracker, state, grid)
     
@@ -444,8 +520,12 @@ function advect_particles!(tracker::ParticleTracker{T},
     # Apply boundary conditions
     apply_boundary_conditions!(tracker)
     
-    # Update time
-    tracker.particles.time += dt
+    # Update time (use simulation time if provided)
+    if current_time !== nothing
+        tracker.particles.time = T(current_time) + dt
+    else
+        tracker.particles.time += dt
+    end
     
     # Save state if needed
     if should_save_particles(tracker)

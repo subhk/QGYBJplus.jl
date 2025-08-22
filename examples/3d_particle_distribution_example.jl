@@ -96,6 +96,7 @@ function test_uniform_3d_grid(sim)
         π/2, 3π/2,      # y-range: central region  
         π/6, 5π/6,      # z-range: mid-water column
         6, 6, 4,        # nx, ny, nz particles
+        particle_advec_time=0.0,  # Start immediately
         use_ybj_w=true,
         interpolation_method=TRICUBIC,
         integration_method=:rk4
@@ -277,13 +278,15 @@ function run_short_simulation!(sim, tracker, output_name)
     # Run simulation
     nsteps = 50
     for step in 1:nsteps
+        current_time = step * sim.config.dt
+        
         if step == 1
             first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
         else
             leapfrog_step!(sim.state, sim.grid, sim.params, sim.plans)
         end
         
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
         
         if step % 10 == 0
             displacement = sqrt.(
@@ -377,9 +380,10 @@ function demonstrate_layered_vs_3d_comparison()
     println("   Z-levels: 3 (uniform grid)")
     
     # Quick advection test
+    current_time = sim.config.dt
     for tracker in [tracker_single, tracker_layered, tracker_3d]
         first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
     end
     
     println("\\n✅ Comparison completed - all patterns work correctly!")
