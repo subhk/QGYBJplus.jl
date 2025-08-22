@@ -145,6 +145,15 @@ layered_config = create_layered_distribution(
     0.0, 2π, 0.0, 2π, [π/4, π/2, 3π/4], 6, 6  # 3 z-levels, 6x6 particles each
 )
 # After simulation: use write_particle_trajectories_by_zlevel() to save each depth separately
+
+# Automatic file splitting for long simulations
+config = create_particle_config(
+    x_min=0.0, x_max=2π, y_min=0.0, y_max=2π,
+    nx_particles=10, ny_particles=10,
+    max_save_points=1000,    # Points per file
+    auto_split_files=true    # Create new files automatically when max reached
+)
+# Or use: enable_auto_file_splitting!(tracker, "long_simulation", max_points_per_file=1000)
 ```
 """
 function create_particle_config(::Type{T}=Float64; kwargs...) where T
@@ -1154,6 +1163,131 @@ Returns true when: (current_time - last_save_time) >= save_interval
 """
 function should_save_particles(tracker::ParticleTracker{T}) where T
     return (tracker.particles.time - tracker.last_save_time) >= tracker.config.save_interval
+end
+
+"""
+    enable_auto_file_splitting!(tracker, base_filename; max_points_per_file=1000)
+
+Enable automatic file splitting for long particle trajectories.
+
+When enabled, the tracker will automatically create new files when max_save_points
+is reached, allowing unlimited trajectory length with manageable file sizes.
+
+Parameters:
+- tracker: ParticleTracker instance
+- base_filename: Base name for output files (without .nc extension)
+- max_points_per_file: Maximum trajectory points per file (default: 1000)
+
+Files created:
+- "base_filename.nc" (first segment)
+- "base_filename_part1.nc" (second segment)
+- "base_filename_part2.nc" (third segment), etc.
+
+Example:
+```julia
+tracker = ParticleTracker(config, grid, parallel_config)
+enable_auto_file_splitting!(tracker, "long_simulation", max_points_per_file=500)
+
+# Run long simulation - files will be created automatically
+for step in 1:10000
+    advect_particles!(tracker, state, grid, dt, current_time)
+end
+
+# Final segment saved with:
+finalize_trajectory_files!(tracker)
+```
+"""
+function enable_auto_file_splitting!(tracker::ParticleTracker, base_filename::String; 
+                                     max_points_per_file::Int=1000)
+    # Update tracker configuration
+    tracker.base_output_filename = base_filename
+    tracker.auto_file_splitting = true
+    tracker.output_file_sequence = 0
+    
+    # Update particle config for new max_save_points if provided
+    if max_points_per_file != tracker.config.max_save_points
+        # Create new config with updated max_save_points and auto_split_files
+        new_config = ParticleConfig(
+            tracker.config.x_min, tracker.config.x_max,
+            tracker.config.y_min, tracker.config.y_max,
+            tracker.config.z_min, tracker.config.z_max,
+            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
+            tracker.config.z_level,
+            
+            # Copy other settings
+            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
+            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
+            tracker.config.particle_advec_time,
+            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
+            tracker.config.integration_method, tracker.config.interpolation_method,
+            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
+            
+            # Updated I/O settings
+            tracker.config.save_interval,
+            max_points_per_file,      # New max_save_points
+            true                      # Enable auto_split_files
+        )
+        
+        tracker.config = new_config
+    else
+        # Just enable auto splitting with existing config
+        tracker.config = ParticleConfig(
+            tracker.config.x_min, tracker.config.x_max,
+            tracker.config.y_min, tracker.config.y_max,
+            tracker.config.z_min, tracker.config.z_max,
+            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
+            tracker.config.z_level,
+            
+            # Copy other settings
+            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
+            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
+            tracker.config.particle_advec_time,
+            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
+            tracker.config.integration_method, tracker.config.interpolation_method,
+            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
+            
+            # Updated I/O settings
+            tracker.config.save_interval,
+            tracker.config.max_save_points,
+            true                      # Enable auto_split_files
+        )
+    end
+    
+    println("✅ Auto file splitting enabled:")
+    println("  Base filename: $base_filename")
+    println("  Max points per file: $max_points_per_file")
+    println("  Files will be created: $(base_filename).nc, $(base_filename)_part1.nc, ...")
+    
+    return tracker
+end
+
+"""
+    finalize_trajectory_files!(tracker; final_metadata=Dict())
+
+Save final trajectory segment for auto-splitting trackers.
+
+Call this at the end of long simulations to ensure the final trajectory 
+segment is saved to file.
+"""
+function finalize_trajectory_files!(tracker::ParticleTracker; final_metadata::Dict=Dict())
+    if !tracker.config.auto_split_files || isempty(tracker.particles.time_history)
+        return tracker
+    end
+    
+    println("Finalizing trajectory files...")
+    
+    # Save final segment
+    split_and_save_trajectory_segment!(tracker)
+    
+    total_files = tracker.output_file_sequence + 1
+    total_points = tracker.save_counter
+    
+    println("✅ Trajectory finalization complete:")
+    println("  Total files created: $total_files")
+    println("  Total trajectory points: $total_points")
+    println("  Average points per file: $(round(total_points/total_files, digits=1))")
+    
+    return tracker
 end
 
 end # module UnifiedParticleAdvection

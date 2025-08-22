@@ -168,6 +168,13 @@ function particle_saving_interval_example()
     println("      max_save_points=1000,   # Limit trajectory length")
     println("      ...)")
     
+    println("\\n🔗 RELATED FEATURES:")
+    println("  • Auto file splitting: Set auto_split_files=true to create new files")
+    println("    when max_save_points is reached (unlimited trajectory length)")
+    println("  • Z-level separation: Use write_particle_trajectories_by_zlevel()")
+    println("    to save different depths to separate files")
+    println("  • See auto_file_splitting_example.jl and multilevel_particle_example.jl")
+    
     println("\\n✅ Particle saving interval feature demonstrated!")
     
     return trackers

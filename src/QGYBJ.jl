@@ -44,6 +44,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        initialize_particles!, advect_particles!, interpolate_velocity_at_position,
        write_particle_trajectories, read_particle_trajectories, write_particle_snapshot, 
        create_particle_output_file, write_particle_trajectories_by_zlevel,
+       enable_auto_file_splitting!, finalize_trajectory_files!,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        # 3D particle distributions
