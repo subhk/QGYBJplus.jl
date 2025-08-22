@@ -397,7 +397,7 @@ end
 """
     update_velocity_fields!(tracker, state, grid)
 
-Update velocity fields from fluid state.
+Update velocity fields from fluid state and exchange halos if parallel.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T}, 
                                 state::State, grid::Grid) where T
@@ -411,16 +411,39 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     tracker.v_field .= state.v
     tracker.w_field .= state.w
     
+    # Exchange halo data for cross-domain interpolation
+    if tracker.is_parallel && tracker.halo_info !== nothing
+        exchange_velocity_halos!(tracker.halo_info, 
+                               tracker.u_field, 
+                               tracker.v_field, 
+                               tracker.w_field)
+    end
+    
     return tracker
 end
 
 """
     interpolate_velocity_at_position(x, y, z, tracker)
 
-Interpolate velocity at particle position with proper boundary handling.
+Interpolate velocity at particle position with cross-domain capability.
 """
 function interpolate_velocity_at_position(x::T, y::T, z::T, 
                                         tracker::ParticleTracker{T}) where T
+    
+    # Use halo-aware interpolation if available (parallel case)
+    if tracker.is_parallel && tracker.halo_info !== nothing
+        return interpolate_velocity_with_halos(x, y, z, tracker, tracker.halo_info)
+    end
+    
+    # Fallback to local interpolation (serial case or when halo exchange fails)
+    return interpolate_velocity_local(x, y, z, tracker)
+end
+
+"""
+Local velocity interpolation (serial case or fallback).
+"""
+function interpolate_velocity_local(x::T, y::T, z::T, 
+                                  tracker::ParticleTracker{T}) where T
     
     # Handle periodic boundaries
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
