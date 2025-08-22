@@ -24,7 +24,6 @@ export QGParams, Grid, State,
        init_random_psi!,
         first_projection_step!, leapfrog_step!,
         sumB!, compute_sigma, compute_A!,
-        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz
 
 # Public API - New user interface
@@ -36,6 +35,8 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        OutputManager, write_state_file, read_initial_psi, read_initial_waves, read_stratification_profile,
        StratificationProfile, ConstantN, SkewedGaussian, TanhProfile,
        create_stratification_profile, compute_stratification_profile,
+       # Legacy I/O compatibility functions (now implemented in netcdf_io.jl)
+       ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
        # Parallel interface
        ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
        setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file
@@ -51,10 +52,10 @@ include("nonlinear.jl")
 include("timestep.jl")
 include("initconds.jl")
 include("ybj_normal.jl")
-include("io.jl")
 include("diagnostics.jl")
 
 # New user interface modules
 include("model_interface.jl")
+include("netcdf_io.jl")  # Enhanced NetCDF I/O with legacy compatibility
 
 end # module

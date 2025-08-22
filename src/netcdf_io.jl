@@ -473,3 +473,94 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
         end
     end
 end
+
+# =============================================================================
+# Compatibility wrappers for legacy io.jl functions
+# These provide backward compatibility while using the enhanced NetCDF I/O system
+# =============================================================================
+
+"""
+    ncdump_psi(S, G, plans; path="psi.out.nc")
+
+Legacy compatibility wrapper for writing stream function to NetCDF.
+Uses the enhanced I/O system internally.
+"""
+function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
+    @info "Using legacy ncdump_psi (compatibility mode)"
+    
+    # Create a temporary output manager for this operation
+    output_dir = dirname(path)
+    filename = basename(path)
+    
+    manager = OutputManager(
+        output_dir=output_dir,
+        state_file_pattern=filename,
+        save_psi=true,
+        save_waves=false,
+        save_velocities=false,
+        save_vorticity=false
+    )
+    
+    # Write the state file
+    write_state_file(manager, S, G, plans, 0.0)
+    
+    return path
+end
+
+"""
+    ncdump_la(S, G, plans; path="la.out.nc")
+
+Legacy compatibility wrapper for writing L+A wave field to NetCDF.
+Uses the enhanced I/O system internally.
+"""
+function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
+    @info "Using legacy ncdump_la (compatibility mode)"
+    
+    # Create a temporary output manager for this operation
+    output_dir = dirname(path)
+    filename = basename(path)
+    
+    manager = OutputManager(
+        output_dir=output_dir,
+        state_file_pattern=filename,
+        save_psi=false,
+        save_waves=true,
+        save_velocities=false,
+        save_vorticity=false
+    )
+    
+    # Write the state file
+    write_state_file(manager, S, G, plans, 0.0)
+    
+    return path
+end
+
+"""
+    ncread_psi!(S, G, plans; path="psi000.in.nc")
+
+Legacy compatibility wrapper for reading stream function from NetCDF.
+Uses the enhanced I/O system internally.
+"""
+function ncread_psi!(S::State, G::Grid, plans; path="psi000.in.nc")
+    @info "Using legacy ncread_psi! (compatibility mode)"
+    
+    # Use the enhanced read function
+    S.psi .= read_initial_psi(path, G, plans)
+    
+    return S
+end
+
+"""
+    ncread_la!(S, G, plans; path="la000.in.nc")
+
+Legacy compatibility wrapper for reading L+A wave field from NetCDF.
+Uses the enhanced I/O system internally.
+"""
+function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc")
+    @info "Using legacy ncread_la! (compatibility mode)"
+    
+    # Use the enhanced read function
+    S.B .= read_initial_waves(path, G, plans)
+    
+    return S
+end
