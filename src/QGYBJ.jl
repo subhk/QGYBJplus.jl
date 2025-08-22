@@ -39,7 +39,12 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
        # Parallel interface
        ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
-       setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file
+       setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file,
+       # Particle advection system
+       ParticleConfig, ParticleState, ParticleTracker, create_particle_config,
+       initialize_particles!, advect_particles!, interpolate_velocity_at_position,
+       write_particle_trajectories, read_particle_trajectories, write_particle_snapshot, 
+       create_particle_output_file
 
 include("parameters.jl")
 include("grid.jl")
@@ -57,5 +62,9 @@ include("diagnostics.jl")
 # New user interface modules
 include("model_interface.jl")
 include("netcdf_io.jl")  # Enhanced NetCDF I/O with legacy compatibility
+
+# Particle advection system
+include("particles/particle_advection.jl")
+include("particles/particle_io.jl")
 
 end # module
