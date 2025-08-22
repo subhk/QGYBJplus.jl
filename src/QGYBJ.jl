@@ -46,7 +46,11 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        write_particle_trajectories, read_particle_trajectories, write_particle_snapshot, 
        create_particle_output_file,
        # Advanced interpolation methods
-       InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC
+       InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
+       # 3D particle distributions
+       ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
+       initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
+       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution
 
 include("parameters.jl")
 include("grid.jl")

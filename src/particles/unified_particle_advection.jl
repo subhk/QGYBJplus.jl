@@ -21,7 +21,11 @@ export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 
        advect_particles!, interpolate_velocity_at_position,
        # Advanced interpolation methods
-       InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC
+       InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
+       # 3D particle distributions
+       ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
+       initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
+       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution
 
 # Include halo exchange for cross-domain interpolation
 include("halo_exchange.jl")
@@ -30,6 +34,10 @@ using .HaloExchange
 # Include advanced interpolation schemes
 include("interpolation_schemes.jl")
 using .InterpolationSchemes
+
+# Include enhanced 3D particle configuration
+include("enhanced_particle_config.jl")
+using .EnhancedParticleConfig
 
 """
 Configuration for particle initialization and advection.
@@ -268,6 +276,23 @@ function initialize_particles!(tracker::ParticleTracker{T},
         # Initialize all particles (serial case)
         initialize_particles_serial!(tracker, config)
     end
+    
+    # Save initial state
+    save_particle_state!(tracker)
+    
+    return tracker
+end
+
+"""
+    initialize_particles!(tracker, config3d)
+
+Initialize particles using enhanced 3D configuration.
+"""
+function initialize_particles!(tracker::ParticleTracker{T}, 
+                              config::ParticleConfig3D{T}) where T
+    
+    # Use 3D initialization
+    initialize_particles_3d!(tracker, config)
     
     # Save initial state
     save_particle_state!(tracker)
