@@ -148,7 +148,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         grid = init_parallel_grid(params, parallel_config)
         state = init_parallel_state(grid, parallel_config)
         state_old = init_parallel_state(grid, parallel_config)
-        plans = setup_parallel_transforms(grid, parallel_config)
+        plans = plan_transforms!(grid, parallel_config)
     else
         grid = init_grid(params)
         state = init_state(grid)

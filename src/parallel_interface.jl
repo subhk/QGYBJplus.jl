@@ -162,39 +162,6 @@ function init_parallel_state(grid::Grid, pconfig::ParallelConfig; T=Float64)
     return State{T, typeof(u), typeof(q)}(q, psi, A, B, C, u, v, w)
 end
 
-"""
-    setup_parallel_transforms(grid::Grid, pconfig::ParallelConfig)
-
-Set up FFT plans for parallel execution.
-"""
-function setup_parallel_transforms(grid::Grid, pconfig::ParallelConfig)
-    if grid.decomp !== nothing
-        try
-            import PencilFFTs
-            
-            # Create plans for the pencil decomposition
-            # Transform in x and y dimensions (dims 1 and 2)
-            forward_plan = PencilFFTs.PencilFFTPlan(grid.decomp, Complex{Float64}; 
-                                                   transform=(PencilFFTs.Transforms.FFT(),
-                                                            PencilFFTs.Transforms.FFT()),
-                                                   transform_dims=(1, 2))
-            
-            backward_plan = PencilFFTs.PencilIFFTPlan(grid.decomp, Complex{Float64};
-                                                     transform=(PencilFFTs.Transforms.IFFT(),
-                                                              PencilFFTs.Transforms.IFFT()),
-                                                     transform_dims=(1, 2))
-            
-            return Plans(backend=:pencil, p_forward=forward_plan, p_backward=backward_plan)
-            
-        catch e
-            @warn "Failed to create PencilFFTs plans: $e"
-        end
-    end
-    
-    # Fallback to FFTW
-    using FFTW
-    return Plans(backend=:fftw)
-end
 
 """
     gather_array_for_io(arr, grid::Grid, pconfig::ParallelConfig)
@@ -421,7 +388,7 @@ function parallel_initialization_from_config(config, pconfig)
     state_old = init_parallel_state(grid, pconfig)
     
     # Set up parallel transforms
-    plans = setup_parallel_transforms(grid, pconfig)
+    plans = plan_transforms!(grid, pconfig)
     
     # Initialize fields (need parallel-aware initialization)
     parallel_initialize_fields!(state, grid, plans, config, pconfig)
