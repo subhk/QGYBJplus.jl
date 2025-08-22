@@ -46,6 +46,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     if par.passive_scalar
         S.A .= 0; S.C .= 0; rBRk .= 0; rBIk .= 0
     end
+    if par.fixed_flow; nqk .= 0; end  # No mean flow advection if flow is fixed
 
     # Store old fields
     qok  = copy(S.q)
@@ -61,8 +62,16 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             kx = G.kx[i]; ky = G.ky[j]; kh2 = G.kh2[i,j]
             If = int_factor(kx, ky, par; waves=false)
             Ifw = int_factor(kx, ky, par; waves=true)
-            S.q[i,j,k] = ( qok[i,j,k] - par.dt*nqk[i,j,k] + par.dt*dqk[i,j,k] ) * exp(-If)
-            # Combine real/imag updates into complex B
+            
+            # Update q only if mean flow is not fixed
+            if par.fixed_flow
+                # Keep q unchanged - no evolution of mean flow
+                S.q[i,j,k] = qok[i,j,k]
+            else
+                S.q[i,j,k] = ( qok[i,j,k] - par.dt*nqk[i,j,k] + par.dt*dqk[i,j,k] ) * exp(-If)
+            end
+            
+            # Always update wave field (B)
             BRnew = ( BRok[i,j,k] - par.dt*nBRk[i,j,k] - par.dt*(0.5/(par.Bu*par.Ro))*kh2*Complex(imag(S.A[i,j,k]),0) + par.dt*0.5*rBIk[i,j,k] ) * exp(-Ifw)
             BInew = ( BIok[i,j,k] - par.dt*nBIk[i,j,k] + par.dt*(0.5/(par.Bu*par.Ro))*kh2*Complex(real(S.A[i,j,k]),0) - par.dt*0.5*rBRk[i,j,k] ) * exp(-Ifw)
             S.B[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
@@ -160,7 +169,15 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             kx = G.kx[i]; ky = G.ky[j]; kh2 = G.kh2[i,j]
             If  = int_factor(kx, ky, par; waves=false)
             Ifw = int_factor(kx, ky, par; waves=true)
-            qtemp[i,j,k]  = Snm1.q[i,j,k]*exp(-2If) - 2*par.dt*nqk[i,j,k]*exp(-If) + 2*par.dt*dqk[i,j,k]*exp(-2If)
+            
+            # Update q only if mean flow is not fixed
+            if par.fixed_flow
+                qtemp[i,j,k] = Sn.q[i,j,k]  # Keep current q unchanged
+            else
+                qtemp[i,j,k] = Snm1.q[i,j,k]*exp(-2If) - 2*par.dt*nqk[i,j,k]*exp(-If) + 2*par.dt*dqk[i,j,k]*exp(-2If)
+            end
+            
+            # Always update wave field (B)
             BRtemp[i,j,k] = Complex(real(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBRk[i,j,k] + (0.5/(par.Bu*par.Ro))*kh2*Complex(imag(Sn.A[i,j,k]),0) - 0.5*rBIk[i,j,k] )*exp(-Ifw)
             BItemp[i,j,k] = Complex(imag(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBIk[i,j,k] - (0.5/(par.Bu*par.Ro))*kh2*Complex(real(Sn.A[i,j,k]),0) + 0.5*rBRk[i,j,k] )*exp(-Ifw)
         else

@@ -389,7 +389,30 @@ function parallel_initialization_from_config(config, pconfig)
         Ro = config.Ro,
         Fr = config.Fr,
         f0 = config.f0,
-        # ... other parameters
+        nu_h = config.nu_h,
+        nu_v = config.nu_v,
+        linear_vert_structure = 0,
+        Bu = (config.Fr^2) / (config.Ro^2),
+        stratification = config.stratification.type,
+        W2F = T(1e-6),
+        gamma = T(1e-3),
+        nuh1 = T(0.01), nuh2 = T(10.0), ilap1 = 2, ilap2 = 6,
+        nuh1w = T(0.0), nuh2w = T(10.0), ilap1w = 2, ilap2w = 6,
+        nuz = T(0.0),
+        inviscid = config.inviscid,
+        linear = config.linear,
+        no_dispersion = config.no_dispersion,
+        passive_scalar = config.passive_scalar,
+        ybj_plus = config.ybj_plus,
+        no_feedback = config.no_wave_feedback || config.no_feedback,
+        fixed_flow = config.fixed_mean_flow,
+        no_wave_feedback = config.no_wave_feedback,
+        # Skewed Gaussian parameters (from config)
+        N02_sg = config.stratification.N02_sg,
+        N12_sg = config.stratification.N12_sg,
+        sigma_sg = config.stratification.sigma_sg,
+        z0_sg = config.stratification.z0_sg,
+        alpha_sg = config.stratification.alpha_sg
     )
     
     # Initialize parallel grid and state
