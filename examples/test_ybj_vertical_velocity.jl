@@ -214,7 +214,7 @@ function test_ybj_wave_dependence()
     println("    W with no waves: $w_no_waves")
     println("    Ratio: $(w_with_changes / max(w_no_waves, 1e-12))")
     
-    println("  ✓ YBJ material derivative test completed")
+    println("  ✓ YBJ wave dependence test completed")
     
     return (w_with_changes, w_no_waves)
 end
@@ -227,7 +227,7 @@ function run_all_ybj_tests()
         # Run all tests
         S_qg, S_ybj, w_qg_rms, w_ybj_rms, w_diff_rms = test_ybj_vs_qg_vertical_velocity()
         scaling_results = test_ybj_velocity_scaling()
-        w_change, w_no_change = test_ybj_material_derivative()
+        w_change, w_no_change = test_ybj_wave_dependence()
         
         println("\n✅ All YBJ vertical velocity tests completed!")
         
