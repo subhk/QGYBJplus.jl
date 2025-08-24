@@ -68,9 +68,7 @@ function particle_advection_example()
     config = create_model_config(
         domain, stratification, initial_conditions, output,
         total_time=1.0,
-        dt=2e-3,
-        Ro=0.1,
-        Fr=0.1
+        dt=2e-3
     )
     
     # Set up simulation

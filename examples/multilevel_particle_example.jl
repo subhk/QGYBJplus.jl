@@ -42,8 +42,7 @@ function multilevel_particle_example()
     config = create_model_config(
         domain, stratification, initial_conditions, output,
         total_time=0.5,        # Moderate simulation time
-        dt=1e-3,
-        Ro=0.1, Fr=0.1
+        dt=1e-3
     )
     
     sim = setup_simulation(config)
