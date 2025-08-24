@@ -71,14 +71,18 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
 end
 
 """
-    compute_vertical_velocity!(S, G, plans, params)
+    compute_vertical_velocity!(S, G, plans, params; N2_profile=nothing)
 
 Compute QG ageostrophic vertical velocity by solving the omega equation:
 ∇²w + (N²/f²)(∂²w/∂z²) = 2 J(ψ_z, ∇²ψ)
 
 This is the diagnostic vertical velocity from quasi-geostrophic theory.
+The full 3D elliptic equation is solved using a tridiagonal solver for each horizontal wavenumber.
+
+Optional parameters:
+- N2_profile: Vector of N²(z) values. If not provided, uses constant N² = 1.0.
 """
-function compute_vertical_velocity!(S::State, G::Grid, plans, params)
+function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     
     # Get RHS of omega equation
@@ -94,9 +98,16 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params)
         f = 1.0  # Default
     end
     
-    # Get N² profile - try to access from simulation context
-    # For now use constant N² = 1, but this should be replaced with actual profile
-    N2_profile = ones(eltype(S.psi), nz)
+    # Get N² profile - use provided profile or default to constant
+    if N2_profile === nothing
+        N2_profile = ones(eltype(S.psi), nz)
+    else
+        # Ensure N2_profile has correct length and type
+        if length(N2_profile) != nz
+            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=1.0"
+            N2_profile = ones(eltype(S.psi), nz)
+        end
+    end
     
     # Solve the full omega equation: ∇²w + (N²/f²)(∂²w/∂z²) = RHS
     # This is a 3D elliptic equation solved as a tridiagonal system for each (kx,ky)
