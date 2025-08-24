@@ -6,6 +6,7 @@ This file wires spectral-to-real conversions and simple diagnostic operators.
 """
 module Operators
 
+using LinearAlgebra
 using ..QGYBJ: Grid, State
 using ..QGYBJ: fft_forward!, fft_backward!, plan_transforms!, compute_wavenumbers!
 
@@ -77,7 +78,8 @@ Compute QG ageostrophic vertical velocity by solving the omega equation:
 ∇²w + (N²/f²)(∂²w/∂z²) = 2 J(ψ_z, ∇²ψ)
 
 This is the diagnostic vertical velocity from quasi-geostrophic theory.
-The full 3D elliptic equation is solved using a tridiagonal solver for each horizontal wavenumber.
+The full 3D elliptic equation is solved using LAPACK's tridiagonal solver (gtsv!)
+for each horizontal wavenumber, matching the Fortran implementation.
 
 Optional parameters:
 - N2_profile: Vector of N²(z) values. If not provided, uses constant N² = 1.0.
@@ -158,30 +160,44 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
                     rhs[iz] = rhsk[i,j,k]
                 end
                 
-                # Solve tridiagonal system using Thomas algorithm
-                # Make working copies to avoid modifying original arrays
+                # Solve tridiagonal system using LAPACK (same as Fortran code)
+                # For complex RHS, solve real and imaginary parts separately
+                using LinearAlgebra.LAPACK: gtsv!
+                
+                # Prepare arrays for LAPACK gtsv! (modifies input arrays)
+                dl_work = copy(dl)  # Sub-diagonal
+                d_work = copy(d)    # Diagonal  
+                du_work = copy(du)  # Super-diagonal
+                
+                # Split complex RHS into real and imaginary parts
+                rhs_real = real.(rhs)
+                rhs_imag = imag.(rhs)
+                
+                # Solve real part: A * x_real = rhs_real
+                try
+                    gtsv!(dl_work, d_work, du_work, rhs_real)
+                    sol_real = rhs_real  # gtsv! overwrites RHS with solution
+                catch e
+                    @warn "LAPACK gtsv failed for real part: $e, using zeros"
+                    sol_real = zeros(eltype(d), n_interior)
+                end
+                
+                # Reset arrays for imaginary part (gtsv! modifies them)
+                dl_work = copy(dl)
                 d_work = copy(d)
-                rhs_work = copy(rhs)
+                du_work = copy(du)
                 
-                # Forward elimination
-                for iz in 2:n_interior
-                    if abs(d_work[iz-1]) > 1e-14  # Avoid division by very small numbers
-                        factor = dl[iz-1] / d_work[iz-1]
-                        d_work[iz] -= factor * du[iz-1]
-                        rhs_work[iz] -= factor * rhs_work[iz-1]
-                    end
+                # Solve imaginary part: A * x_imag = rhs_imag  
+                try
+                    gtsv!(dl_work, d_work, du_work, rhs_imag)
+                    sol_imag = rhs_imag  # gtsv! overwrites RHS with solution
+                catch e
+                    @warn "LAPACK gtsv failed for imaginary part: $e, using zeros"
+                    sol_imag = zeros(eltype(d), n_interior)
                 end
                 
-                # Back substitution
-                solution = zeros(Complex{eltype(S.psi)}, n_interior)
-                if abs(d_work[n_interior]) > 1e-14
-                    solution[n_interior] = rhs_work[n_interior] / d_work[n_interior]
-                    for iz in (n_interior-1):-1:1
-                        if abs(d_work[iz]) > 1e-14
-                            solution[iz] = (rhs_work[iz] - du[iz] * solution[iz+1]) / d_work[iz]
-                        end
-                    end
-                end
+                # Combine real and imaginary solutions
+                solution = complex.(sol_real, sol_imag)
                 
                 # Store solution in wk (interior points)
                 for iz in 1:n_interior
