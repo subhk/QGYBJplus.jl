@@ -81,38 +81,103 @@ This is the diagnostic vertical velocity from quasi-geostrophic theory.
 function compute_vertical_velocity!(S::State, G::Grid, plans, params)
     nx, ny, nz = G.nx, G.ny, G.nz
     
-    # For simple implementation, use existing omega_eqn_rhs! to get RHS
-    # Then solve the elliptic equation for w
+    # Get RHS of omega equation
     using ..QGYBJ: omega_eqn_rhs!
     
     rhsk = similar(S.psi)
     omega_eqn_rhs!(rhsk, S.psi, G, plans)
     
-    # Solve ∇²w + (N²/f²)(∂²w/∂z²) = RHS
-    # For now, implement a simplified version focusing on horizontal structure
-    wk = similar(S.psi)
-    
-    # Use normalized parameters (dimensionless)
-    # All non-dimensional parameters set to unity for simplified oceanographic model
-    
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        kh2 = G.kh2[i,j]
-        
-        if kh2 > 0  # Avoid division by zero at k=0
-            # Simplified omega equation solver
-            # ∇²w ≈ RHS (neglecting vertical structure for now)
-            wk[i,j,k] = -rhsk[i,j,k] / kh2
-        else
-            wk[i,j,k] = 0.0
-        end
+    # Get stratification parameters
+    if params !== nothing && hasfield(typeof(params), :f0)
+        f = params.f0
+    else
+        f = 1.0  # Default
     end
     
-    # Apply boundary conditions: w = 0 at top and bottom
-    if nz > 1
-        wk[:,:,1] .= 0.0    # Bottom
-        wk[:,:,nz] .= 0.0   # Top
+    # Get N² profile - try to access from simulation context
+    # For now use constant N² = 1, but this should be replaced with actual profile
+    N2_profile = ones(eltype(S.psi), nz)
+    
+    # Solve the full omega equation: ∇²w + (N²/f²)(∂²w/∂z²) = RHS
+    # This is a 3D elliptic equation solved as a tridiagonal system for each (kx,ky)
+    
+    wk = similar(S.psi)
+    fill!(wk, 0.0)
+    
+    dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
+    f2 = f^2
+    
+    # For each horizontal wavenumber (kx, ky), solve tridiagonal system
+    @inbounds for j in 1:ny, i in 1:nx
+        kh2 = G.kh2[i,j]
+        
+        if kh2 > 0 && nz > 2  # Need at least 3 levels for tridiagonal
+            # Set up tridiagonal system for vertical levels 2:(nz-1)
+            # Boundary conditions: w = 0 at k=1 and k=nz
+            n_interior = nz - 2  # Interior points
+            
+            if n_interior > 0
+                # Tridiagonal matrix coefficients
+                d = zeros(eltype(S.psi), n_interior)      # diagonal
+                dl = zeros(eltype(S.psi), n_interior-1)   # lower diagonal  
+                du = zeros(eltype(S.psi), n_interior-1)   # upper diagonal
+                rhs = zeros(Complex{eltype(S.psi)}, n_interior)  # RHS vector
+                
+                # Fill tridiagonal system based on Fortran implementation
+                for iz in 1:n_interior
+                    k = iz + 1  # Actual z-level (2 to nz-1)
+                    
+                    # N² coefficient: a_ell_ut = 1.0/N² (normalized Bu=1)
+                    a_ell = 1.0 / N2_profile[k]
+                    
+                    # Diagonal term: -(N²/f²)/dz² - kh2
+                    # In Fortran: d(iz) = -(... + dz*dz*kh2/a_ell_ut(iz))
+                    # Here: d(iz) = -(N²/f²)/dz² - kh2
+                    d[iz] = -(N2_profile[k]/f2)/(dz*dz) - kh2
+                    
+                    # Off-diagonal terms (simplified density weighting = 1)
+                    if iz > 1
+                        dl[iz-1] = (N2_profile[k]/f2)/(dz*dz)
+                    end
+                    if iz < n_interior
+                        du[iz] = (N2_profile[k]/f2)/(dz*dz)
+                    end
+                    
+                    # RHS
+                    rhs[iz] = rhsk[i,j,k]
+                end
+                
+                # Solve tridiagonal system using Thomas algorithm
+                # Forward elimination
+                for iz in 2:n_interior
+                    factor = dl[iz-1] / d[iz-1]
+                    d[iz] -= factor * du[iz-1]
+                    rhs[iz] -= factor * rhs[iz-1]
+                end
+                
+                # Back substitution
+                solution = zeros(Complex{eltype(S.psi)}, n_interior)
+                solution[n_interior] = rhs[n_interior] / d[n_interior]
+                for iz in (n_interior-1):-1:1
+                    solution[iz] = (rhs[iz] - du[iz] * solution[iz+1]) / d[iz]
+                end
+                
+                # Store solution in wk (interior points)
+                for iz in 1:n_interior
+                    k = iz + 1
+                    wk[i,j,k] = solution[iz]
+                end
+            end
+            
+        elseif kh2 > 0 && nz <= 2
+            # Simple 2D case - approximate with ∇²w = RHS
+            for k in 1:nz
+                wk[i,j,k] = -rhsk[i,j,k] / kh2
+            end
+        end
+        
+        # Boundary conditions are automatically satisfied (wk initialized to 0)
+        # wk[i,j,1] = 0 and wk[i,j,nz] = 0
     end
     
     # Transform to real space
