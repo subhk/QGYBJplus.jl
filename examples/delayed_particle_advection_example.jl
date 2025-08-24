@@ -42,9 +42,7 @@ function delayed_particle_advection_example()
     config = create_model_config(
         domain, stratification, initial_conditions, output,
         total_time=2.0,        # Longer simulation to see delayed effect
-        dt=2e-3,
-        Ro=0.1,
-        Fr=0.1
+        dt=2e-3
     )
     
     sim = setup_simulation(config)
