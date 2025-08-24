@@ -159,18 +159,28 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
                 end
                 
                 # Solve tridiagonal system using Thomas algorithm
+                # Make working copies to avoid modifying original arrays
+                d_work = copy(d)
+                rhs_work = copy(rhs)
+                
                 # Forward elimination
                 for iz in 2:n_interior
-                    factor = dl[iz-1] / d[iz-1]
-                    d[iz] -= factor * du[iz-1]
-                    rhs[iz] -= factor * rhs[iz-1]
+                    if abs(d_work[iz-1]) > 1e-14  # Avoid division by very small numbers
+                        factor = dl[iz-1] / d_work[iz-1]
+                        d_work[iz] -= factor * du[iz-1]
+                        rhs_work[iz] -= factor * rhs_work[iz-1]
+                    end
                 end
                 
                 # Back substitution
                 solution = zeros(Complex{eltype(S.psi)}, n_interior)
-                solution[n_interior] = rhs[n_interior] / d[n_interior]
-                for iz in (n_interior-1):-1:1
-                    solution[iz] = (rhs[iz] - du[iz] * solution[iz+1]) / d[iz]
+                if abs(d_work[n_interior]) > 1e-14
+                    solution[n_interior] = rhs_work[n_interior] / d_work[n_interior]
+                    for iz in (n_interior-1):-1:1
+                        if abs(d_work[iz]) > 1e-14
+                            solution[iz] = (rhs_work[iz] - du[iz] * solution[iz+1]) / d_work[iz]
+                        end
+                    end
                 end
                 
                 # Store solution in wk (interior points)
