@@ -16,9 +16,7 @@ Base.@kwdef struct QGParams{T}
     dt::T
     nt::Int
 
-    # Physical parameters (nondimensionalize as appropriate)
-    Ro::T              # Rossby number
-    Fr::T              # Froude number
+    # Physical parameters
     f0::T              # Coriolis parameter
 
     # Viscosity/hyperviscosity
@@ -29,7 +27,6 @@ Base.@kwdef struct QGParams{T}
     linear_vert_structure::Int  # mapping from Fortran param
 
     # Derived and model choices
-    Bu::T                        # Burger-like parameter (Fr^2/Ro^2)
     stratification::Symbol       # :constant_N or :skewed_gaussian
     # Wave/flow magnitude ratio squared (Uw/U)^2 for qw feedback
     W2F::T
@@ -68,11 +65,10 @@ end
 Construct a reasonable default parameter set for experimentation.
 """
 function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
-                           dt=1e-3, nt=10_000, Ro=0.1, Fr=0.1, f0=1.0,
+                           dt=1e-3, nt=10_000, f0=1.0,
                            nu_h=0.0, nu_v=0.0, linear_vert_structure=0,
                            stratification::Symbol=:constant_N)
     T = Float64
-    Bu = (Fr^2)/(Ro^2)
     W2F = T( (2.5e-5/0.25)^2 )  # test1 default (Uw_scale/U_scale)^2
     gamma = T(1e-3)
     # Map test1 hyperdiffusion defaults (coarse analogue)
@@ -91,8 +87,8 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     sigma_sg = T(0.648457170048730)
     z0_sg = T(6.121537923499139)
     alpha_sg = T(-5.338431587899242)
-    return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, Ro, Fr, f0, nu_h, nu_v,
-                         linear_vert_structure, Bu, stratification, W2F, gamma,
+    return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, f0, nu_h, nu_v,
+                         linear_vert_structure, stratification, W2F, gamma,
                          nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
                          nuz, inviscid, linear, no_dispersion, passive_scalar,
                          ybj_plus, no_feedback, fixed_flow, no_wave_feedback,

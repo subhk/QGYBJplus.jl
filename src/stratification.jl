@@ -4,7 +4,7 @@ Stratification profile module for QG-YBJ model.
 Provides various stratification profiles including:
 - Constant N²
 - Skewed Gaussian (from Fortran test cases)
-- Tanh profiles (tropopause-like)
+- Tanh profiles (pycnocline-like)
 - Exponential profiles
 - Piecewise profiles
 - Custom profiles from files
@@ -44,12 +44,12 @@ end
 """
     TanhProfile{T} <: StratificationProfile{T}
 
-Hyperbolic tangent profile (tropopause-like).
+Hyperbolic tangent profile (pycnocline-like).
 """
 struct TanhProfile{T} <: StratificationProfile{T}
-    N_trop::T    # Tropospheric N
-    N_strat::T   # Stratospheric N
-    z_trop::T    # Tropopause height
+    N_upper::T    # Upper ocean N
+    N_lower::T   # Deep ocean N
+    z_pycno::T    # Pycnocline depth
     width::T     # Transition width
 end
 
@@ -107,9 +107,9 @@ function create_stratification_profile(config)
         
     elseif config.type == :tanh_profile
         return TanhProfile{T}(
-            config.N_trop,
-            config.N_strat,
-            config.z_trop,
+            config.N_upper,
+            config.N_lower,
+            config.z_pycno,
             config.width
         )
         
@@ -158,10 +158,10 @@ Evaluate N² for tanh profile.
 """
 function evaluate_N2(profile::TanhProfile{T}, z::Real) where T
     # Normalized height
-    ζ = (z - profile.z_trop) / profile.width
+    ζ = (z - profile.z_pycno) / profile.width
     
-    # Smooth transition between troposphere and stratosphere
-    N_interp = profile.N_trop + (profile.N_strat - profile.N_trop) * 
+    # Smooth transition between upper and deep ocean
+    N_interp = profile.N_upper + (profile.N_lower - profile.N_upper) * 
                (1 + tanh(ζ)) / 2
     
     return N_interp^2
@@ -315,7 +315,7 @@ function create_standard_profiles()
     profiles[:weak] = ConstantN{T}(0.2)
     
     # Tropopause-like
-    profiles[:tropopause] = TanhProfile{T}(0.01, 0.025, 0.6, 0.05)
+    profiles[:pycnocline] = TanhProfile{T}(0.01, 0.025, 0.6, 0.05)
     
     # Ocean-like (exponential)
     profiles[:ocean] = ExponentialProfile{T}(0.02, 0.3, 0.001)

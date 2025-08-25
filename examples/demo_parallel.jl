@@ -24,12 +24,12 @@ function demo_parallel_basic()
         Lx=8π, Ly=8π, Lz=2π
     )
     
-    # Tropopause-like stratification
+    # Pycnocline-like stratification
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.01,
-        N_strat=0.03,
-        z_trop=0.6,
+        N_upper=0.01,
+        N_lower=0.03,
+        z_pycno=0.6,
         width=0.05
     )
     
@@ -55,8 +55,6 @@ function demo_parallel_basic()
     # Model configuration
     config = create_model_config(
         domain, stratification, initial_conditions, output,
-        Ro=0.05,                       # Smaller Rossby number for more interesting dynamics
-        Fr=0.15,
         dt=5e-4,                       # Smaller time step for stability
         total_time=20.0,
         linear=false,

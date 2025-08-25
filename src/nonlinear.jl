@@ -152,7 +152,7 @@ end
 """
     compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=true)
 
-Compute wave feedback q^w combining (i/2)J(B*,B) and −(1/4)∇²|B|², then scale by Ro*W2F.
+Compute wave feedback q^w combining (i/2)J(B*,B) and −(1/4)∇²|B|², then scale by W2F.
 """
 function compute_qw!(qwk, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -195,7 +195,7 @@ function compute_qw!(qwk, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         else
             qwk[i,j,k] = 0
         end
-        qwk[i,j,k] *= par.Ro * par.W2F
+        qwk[i,j,k] *= par.W2F  # Ro normalization removed
     end
     return qwk
 end

@@ -40,7 +40,7 @@ end
     compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask) -> sigma
 
 Compute vertical integral sigma(kx,ky) used by the normal YBJ method,
-following Fortran: sigma = Bu*Ro * sum_z [ (rBRk + 2 nBIk)/kh^2 + i (rBIk - 2 nBRk)/kh^2 ].
+following Fortran: sigma = sum_z [ (rBRk + 2 nBIk)/kh^2 + i (rBIk - 2 nBRk)/kh^2 ].
 """
 function compute_sigma(par::QGParams, G::Grid,
                        nBRk, nBIk, rBRk, rBIk; Lmask=nothing)
@@ -54,7 +54,7 @@ function compute_sigma(par::QGParams, G::Grid,
             for k in 1:nz
                 s += ( rBRk[i,j,k] + 2*nBIk[i,j,k] + im*( rBIk[i,j,k] - 2*nBRk[i,j,k] ) )/kh2
             end
-            sigma[i,j] = par.Bu * par.Ro * s
+            sigma[i,j] = s  # Normalized (Bu*Ro = 1.0)
         else
             sigma[i,j] = 0
         end

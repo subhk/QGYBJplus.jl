@@ -6,7 +6,7 @@ coefficients matching the Fortran test1 setup.
 """
     a_ell_ut(par, G) -> Vector
 
-Compute `a_ell_ut(z) = Bu / N^2(z)` on unstaggered levels, using
+Compute `a_ell_ut(z) = 1.0 / N^2(z)` on unstaggered levels, using
 `par.stratification` with constants from parameters_test1.
 """
 function a_ell_ut(par::QGParams, G::Grid)
@@ -14,14 +14,14 @@ function a_ell_ut(par::QGParams, G::Grid)
     a = similar(G.z)
     if par.stratification === :constant_N
         @inbounds for k in 1:nz
-            a[k] = par.Bu / 1.0
+            a[k] = 1.0 / 1.0  # Normalized
         end
     elseif par.stratification === :skewed_gaussian
         N02 = par.N02_sg; N12 = par.N12_sg; σ = par.sigma_sg; z0 = par.z0_sg; α = par.alpha_sg
         @inbounds for k in 1:nz
             z = G.z[k]
             N2 = N12*exp(-((z - z0)^2)/(σ^2))*(1 + erf(α*(z - z0)/(σ*sqrt(2.0)))) + N02
-            a[k] = par.Bu / N2
+            a[k] = 1.0 / N2  # Normalized
         end
     else
         error("Unsupported stratification: $(par.stratification)")

@@ -37,12 +37,12 @@ function init_grid(par::QGParams)
     dx = par.Lx / nx
     dy = par.Ly / ny
     # Match Fortran nondimensional vertical domain L3 = 2π
-    z = range(0, 2π; length=nz) |> collect |> T.
+    z = T.(collect(range(0, 2π; length=nz)))
     dz = diff(z)
 
     # Wavenumbers (2π periodic domain)
-    kx = [i <= nx÷2 ? (2π/par.Lx)*(i-1) : (2π/par.Lx)*(i-1-nx) for i in 1:nx] |> T.
-    ky = [j <= ny÷2 ? (2π/par.Ly)*(j-1) : (2π/par.Ly)*(j-1-ny) for j in 1:ny] |> T.
+    kx = T.([i <= nx÷2 ? (2π/par.Lx)*(i-1) : (2π/par.Lx)*(i-1-nx) for i in 1:nx])
+    ky = T.([j <= ny÷2 ? (2π/par.Ly)*(j-1) : (2π/par.Ly)*(j-1-ny) for j in 1:ny])
 
     # kh^2 grid
     kh2 = Array{T}(undef, nx, ny)

@@ -108,12 +108,12 @@ function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector)
         end
         dl[nz] = a[nz-1]
         d[nz]  = -(a[nz-1] + (kh2*Δ2)/4)
-        # RHS = Δ2 * Bu * B
+        # RHS = Δ2 * B (Bu = 1.0)
         rhs_r = similar(dl)
         rhs_i = similar(dl)
         @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * par.Bu * real(B[i,j,k])
-            rhs_i[k] = Δ2 * par.Bu * imag(B[i,j,k])
+            rhs_r[k] = Δ2 * real(B[i,j,k])
+            rhs_i[k] = Δ2 * imag(B[i,j,k])
         end
         solr = copy(rhs_r)
         soli = copy(rhs_i)

@@ -41,8 +41,6 @@ function test_vertical_velocity_computation()
         domain, stratification, initial_conditions, output,
         total_time=2.0,  # Short test
         dt=1e-3,
-        Ro=0.1,
-        Fr=0.1
     )
     
     # Set up simulation

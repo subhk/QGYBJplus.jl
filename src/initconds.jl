@@ -7,7 +7,7 @@ Provides a simple random-phase ring in k-space with optional vertical structure.
     init_random_psi!(S, G; initial_k=5, amp_width=2.0, linear_vert_structure=0)
 
 Populate real-space ψ with a random-phase Gaussian ring at |k|≈initial_k, then
-apply optional vertical structure: 0=QG-consistent kz~kh/sqrt(Bu), 1=linear in z,
+apply optional vertical structure: 0=QG-consistent kz~kh, 1=linear in z,
 2=constant kz=1. Returns S with ψ set in spectral space.
 """
 function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_vert_structure=0, par::QGParams=default_params())
@@ -33,7 +33,7 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
                 kz = 1.0
                 ψr[i,j,k] += amp * cos(ikx*(i-1)*2π/nx + iky*(j-1)*2π/ny + kz*z + phase)
             else
-                kz = kh/sqrt(par.Bu)
+                kz = kh  # Normalized (Bu = 1.0)
                 ψr[i,j,k] += amp * cos(ikx*(i-1)*2π/nx + iky*(j-1)*2π/ny + kz*z + phase)
             end
         end

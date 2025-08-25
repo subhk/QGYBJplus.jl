@@ -72,8 +72,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             end
             
             # Always update wave field (B)
-            BRnew = ( BRok[i,j,k] - par.dt*nBRk[i,j,k] - par.dt*(0.5/(par.Bu*par.Ro))*kh2*Complex(imag(S.A[i,j,k]),0) + par.dt*0.5*rBIk[i,j,k] ) * exp(-Ifw)
-            BInew = ( BIok[i,j,k] - par.dt*nBIk[i,j,k] + par.dt*(0.5/(par.Bu*par.Ro))*kh2*Complex(real(S.A[i,j,k]),0) - par.dt*0.5*rBRk[i,j,k] ) * exp(-Ifw)
+            BRnew = ( BRok[i,j,k] - par.dt*nBRk[i,j,k] - par.dt*0.5*kh2*Complex(imag(S.A[i,j,k]),0) + par.dt*0.5*rBIk[i,j,k] ) * exp(-Ifw)
+            BInew = ( BIok[i,j,k] - par.dt*nBIk[i,j,k] + par.dt*0.5*kh2*Complex(real(S.A[i,j,k]),0) - par.dt*0.5*rBRk[i,j,k] ) * exp(-Ifw)
             S.B[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
         else
             S.q[i,j,k] = 0
@@ -178,8 +178,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             end
             
             # Always update wave field (B)
-            BRtemp[i,j,k] = Complex(real(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBRk[i,j,k] + (0.5/(par.Bu*par.Ro))*kh2*Complex(imag(Sn.A[i,j,k]),0) - 0.5*rBIk[i,j,k] )*exp(-Ifw)
-            BItemp[i,j,k] = Complex(imag(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBIk[i,j,k] - (0.5/(par.Bu*par.Ro))*kh2*Complex(real(Sn.A[i,j,k]),0) + 0.5*rBRk[i,j,k] )*exp(-Ifw)
+            BRtemp[i,j,k] = Complex(real(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBRk[i,j,k] + 0.5*kh2*Complex(imag(Sn.A[i,j,k]),0) - 0.5*rBIk[i,j,k] )*exp(-Ifw)
+            BItemp[i,j,k] = Complex(imag(Snm1.B[i,j,k]),0)*exp(-2Ifw) - 2*par.dt*( nBIk[i,j,k] - 0.5*kh2*Complex(real(Sn.A[i,j,k]),0) + 0.5*rBRk[i,j,k] )*exp(-Ifw)
         else
             qtemp[i,j,k] = 0; BRtemp[i,j,k] = 0; BItemp[i,j,k] = 0
         end

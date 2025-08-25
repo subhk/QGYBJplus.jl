@@ -77,12 +77,12 @@ function init_parallel_grid(params::QGParams, pconfig::ParallelConfig)
     nx, ny, nz = params.nx, params.ny, params.nz
     dx = params.Lx / nx
     dy = params.Ly / ny
-    z = range(0, 2π; length=nz) |> collect |> T.
+    z = T.(collect(range(0, 2π; length=nz)))
     dz = diff(z)
 
     # Wavenumbers
-    kx = [i <= nx÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx] |> T.
-    ky = [j <= ny÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny] |> T.
+    kx = T.([i <= nx÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
+    ky = T.([j <= ny÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny])
 
     # Initialize decomposition
     decomp = nothing
@@ -162,39 +162,6 @@ function init_parallel_state(grid::Grid, pconfig::ParallelConfig; T=Float64)
     return State{T, typeof(u), typeof(q)}(q, psi, A, B, C, u, v, w)
 end
 
-"""
-    setup_parallel_transforms(grid::Grid, pconfig::ParallelConfig)
-
-Set up FFT plans for parallel execution.
-"""
-function setup_parallel_transforms(grid::Grid, pconfig::ParallelConfig)
-    if grid.decomp !== nothing
-        try
-            import PencilFFTs
-            
-            # Create plans for the pencil decomposition
-            # Transform in x and y dimensions (dims 1 and 2)
-            forward_plan = PencilFFTs.PencilFFTPlan(grid.decomp, Complex{Float64}; 
-                                                   transform=(PencilFFTs.Transforms.FFT(),
-                                                            PencilFFTs.Transforms.FFT()),
-                                                   transform_dims=(1, 2))
-            
-            backward_plan = PencilFFTs.PencilIFFTPlan(grid.decomp, Complex{Float64};
-                                                     transform=(PencilFFTs.Transforms.IFFT(),
-                                                              PencilFFTs.Transforms.IFFT()),
-                                                     transform_dims=(1, 2))
-            
-            return Plans(backend=:pencil, p_forward=forward_plan, p_backward=backward_plan)
-            
-        catch e
-            @warn "Failed to create PencilFFTs plans: $e"
-        end
-    end
-    
-    # Fallback to FFTW
-    using FFTW
-    return Plans(backend=:fftw)
-end
 
 """
     gather_array_for_io(arr, grid::Grid, pconfig::ParallelConfig)
@@ -220,153 +187,7 @@ function gather_array_for_io(arr, grid::Grid, pconfig::ParallelConfig)
     end
 end
 
-"""
-    write_parallel_state_file(manager, state, grid, plans, time, pconfig; params=nothing)
-
-Write state file with parallel I/O support.
-"""
-function write_parallel_state_file(manager, state, grid, plans, time, pconfig; params=nothing)
-    import NCDatasets
-    using Printf
-    using Dates
-    
-    # Generate filename
-    filename = @sprintf(manager.state_file_pattern, manager.psi_counter)
-    filepath = joinpath(manager.output_dir, filename)
-    
-    if pconfig.use_mpi && grid.decomp !== nothing
-        import MPI
-        rank = MPI.Comm_rank(pconfig.comm)
-        
-        if pconfig.parallel_io
-            # Use parallel NetCDF I/O
-            write_parallel_netcdf_file(filepath, state, grid, plans, time, pconfig; params=params)
-        else
-            # Gather to rank 0 and write
-            if rank == 0
-                gathered_state = gather_state_for_io(state, grid, pconfig)
-                write_gathered_state_file(filepath, gathered_state, grid, plans, time; params=params)
-            end
-            MPI.Barrier(pconfig.comm)
-        end
-    else
-        # Serial I/O - use existing function
-        write_state_file(manager, state, grid, plans, time; params=params)
-        return filepath
-    end
-    
-    manager.psi_counter += 1
-    manager.last_psi_output = time
-    
-    if pconfig.use_mpi
-        rank = MPI.Comm_rank(pconfig.comm)
-        if rank == 0
-            @info "Wrote parallel state file: $filename (t=$time)"
-        end
-    else
-        @info "Wrote state file: $filename (t=$time)"
-    end
-    
-    return filepath
-end
-
-"""
-    write_parallel_netcdf_file(filepath, state, grid, plans, time, pconfig; params=nothing)
-
-Write NetCDF file using parallel I/O.
-"""
-function write_parallel_netcdf_file(filepath, state, grid, plans, time, pconfig; params=nothing)
-    import NCDatasets
-    import MPI
-    
-    # Convert spectral fields to real space (each process handles its portion)
-    psir = similar(state.psi, Float64)
-    fft_backward!(psir, state.psi, plans)
-    
-    BRr = similar(state.B, Float64)
-    BIr = similar(state.B, Float64)
-    fft_backward!(BRr, real.(state.B), plans)
-    fft_backward!(BIr, imag.(state.B), plans)
-    
-    norm_factor = grid.nx * grid.ny
-    
-    # Create parallel NetCDF file
-    NCDatasets.Dataset(filepath, "c"; mpi_comm=pconfig.comm) do ds
-        # Define dimensions
-        ds.dim["x"] = grid.nx
-        ds.dim["y"] = grid.ny
-        ds.dim["z"] = grid.nz
-        ds.dim["time"] = 1
-        
-        # Create coordinate variables
-        x_var = defVar(ds, "x", Float64, ("x",))
-        y_var = defVar(ds, "y", Float64, ("y",))
-        z_var = defVar(ds, "z", Float64, ("z",))
-        time_var = defVar(ds, "time", Float64, ("time",))
-        
-        # Set coordinate values (only on rank 0)
-        rank = MPI.Comm_rank(pconfig.comm)
-        if rank == 0
-            dx = 2π / grid.nx
-            dy = 2π / grid.ny
-            dz = 2π / grid.nz
-            
-            x_var[:] = collect(0:dx:(2π-dx))
-            y_var[:] = collect(0:dy:(2π-dy))
-            z_var[:] = collect(0:dz:(2π-dz))
-            time_var[1] = time
-        end
-        
-        # Create data variables
-        psi_var = defVar(ds, "psi", Float64, ("x", "y", "z"))
-        LAr_var = defVar(ds, "LAr", Float64, ("x", "y", "z"))
-        LAi_var = defVar(ds, "LAi", Float64, ("x", "y", "z"))
-        
-        # Write data (each process writes its portion)
-        # This requires careful handling of local vs global indices
-        local_ranges = PencilArrays.range_local(grid.decomp)
-        
-        psi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(psir) / norm_factor
-        LAr_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BRr) / norm_factor
-        LAi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BIr) / norm_factor
-        
-        # Add attributes (only on rank 0)
-        if rank == 0
-            ds.attrib["title"] = "QG-YBJ Model State (Parallel)"
-            ds.attrib["created_at"] = string(Dates.now())
-            ds.attrib["model_time"] = time
-            ds.attrib["n_processes"] = MPI.Comm_size(pconfig.comm)
-        end
-    end
-end
-
-"""
-    gather_state_for_io(state, grid, pconfig)
-
-Gather distributed state to rank 0.
-"""
-function gather_state_for_io(state, grid, pconfig)
-    if grid.decomp === nothing
-        return state
-    end
-    
-    # This would gather all distributed arrays to rank 0
-    # Implementation depends on specific PencilArrays version
-    try
-        import PencilArrays
-        
-        gathered_psi = PencilArrays.gather(state.psi)
-        gathered_B = PencilArrays.gather(state.B)
-        
-        # Create new state with gathered arrays (only meaningful on rank 0)
-        # This is a simplified version - full implementation would handle all fields
-        return (psi=gathered_psi, B=gathered_B)
-        
-    catch e
-        @warn "Failed to gather state: $e"
-        return state
-    end
-end
+# Parallel I/O functions moved to netcdf_io.jl for unified interface
 
 """
     parallel_initialization_from_config(config, pconfig)
@@ -386,13 +207,10 @@ function parallel_initialization_from_config(config, pconfig)
         Ly = config.domain.Ly,
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
-        Ro = config.Ro,
-        Fr = config.Fr,
         f0 = config.f0,
         nu_h = config.nu_h,
         nu_v = config.nu_v,
         linear_vert_structure = 0,
-        Bu = (config.Fr^2) / (config.Ro^2),
         stratification = config.stratification.type,
         W2F = T(1e-6),
         gamma = T(1e-3),
@@ -421,13 +239,13 @@ function parallel_initialization_from_config(config, pconfig)
     state_old = init_parallel_state(grid, pconfig)
     
     # Set up parallel transforms
-    plans = setup_parallel_transforms(grid, pconfig)
+    plans = plan_transforms!(grid, pconfig)
     
     # Initialize fields (need parallel-aware initialization)
     parallel_initialize_fields!(state, grid, plans, config, pconfig)
     
-    # Set up output manager with parallel awareness
-    output_manager = ParallelOutputManager(config.output, params, pconfig)
+    # Set up output manager with parallel awareness  
+    output_manager = OutputManager(config.output, params, pconfig)
     
     return params, grid, state, state_old, plans, output_manager
 end
@@ -516,30 +334,4 @@ function init_parallel_random_waves!(Bk, grid, amplitude, pconfig)
     end
 end
 
-"""
-    ParallelOutputManager
-
-Output manager with parallel I/O support.
-"""
-mutable struct ParallelOutputManager{T}
-    base_manager::OutputManager{T}
-    pconfig::ParallelConfig
-    
-    function ParallelOutputManager(output_config, params::QGParams{T}, pconfig::ParallelConfig) where T
-        base = OutputManager(output_config, params)
-        return new{T}(base, pconfig)
-    end
-end
-
-# Delegate most methods to base manager
-function should_output_psi(pm::ParallelOutputManager, time::Real)
-    return should_output_psi(pm.base_manager, time)
-end
-
-function should_output_waves(pm::ParallelOutputManager, time::Real)
-    return should_output_waves(pm.base_manager, time)
-end
-
-function should_output_diagnostics(pm::ParallelOutputManager, time::Real)
-    return should_output_diagnostics(pm.base_manager, time)
-end
+# ParallelOutputManager removed - now using unified OutputManager in netcdf_io.jl

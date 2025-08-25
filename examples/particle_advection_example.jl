@@ -5,11 +5,20 @@ This example demonstrates the unified particle advection system that automatical
 handles both serial and parallel execution:
 
 1. Setting up particles on a horizontal region at constant z-level
-2. Advecting particles using total velocity (QG + YBJ) 
+2. Advecting particles using TOTAL velocity (QG + wave velocities + vertical)
 3. Comparing QG vs YBJ vertical velocity effects on particles
 4. Saving particle trajectories to NetCDF files
 5. Automatic MPI detection and domain decomposition
 6. Particle migration between MPI domains
+
+The particles are advected by the complete velocity field:
+- Horizontal: u_total = u_QG + u_wave, v_total = v_QG + v_wave
+- Vertical: w from QG omega equation or YBJ formulation
+
+Advanced features:
+- particle_advec_time: Control when particles start moving (0.0 = immediate)
+- Delayed release allows flow field to develop before particle advection
+- See delayed_particle_advection_example.jl for detailed demonstration
 """
 
 using QGYBJ
@@ -59,9 +68,7 @@ function particle_advection_example()
     config = create_model_config(
         domain, stratification, initial_conditions, output,
         total_time=1.0,
-        dt=2e-3,
-        Ro=0.1,
-        Fr=0.1
+        dt=2e-3
     )
     
     # Set up simulation
@@ -73,15 +80,20 @@ function particle_advection_example()
     # Test region: central part of domain at mid-depth
     z_level = π/2  # Mid-depth
     
-    # Particle configuration with QG vertical velocity
+    # Particle configuration with QG vertical velocity  
+    # Note: All configurations use TOTAL velocity = QG + wave velocities
+    # The use_ybj_w flag only affects vertical velocity computation
     particle_config_qg = create_particle_config(
         x_min=π/2, x_max=3π/2,
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
-        use_ybj_w=false,      # Use QG omega equation
+        particle_advec_time=0.0,  # Start advecting immediately
+        use_ybj_w=false,      # Use QG omega equation for w
         use_3d_advection=true,
-        integration_method=:rk4
+        integration_method=:euler,  # Simple timestep: x = x + dt*u
+        save_interval=0.05,   # Save particle positions every 0.05 time units
+        max_save_points=500   # Limit trajectory length
     )
     
     # Particle configuration with YBJ vertical velocity
@@ -90,9 +102,12 @@ function particle_advection_example()
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
-        use_ybj_w=true,       # Use YBJ formulation
+        particle_advec_time=0.0,  # Start advecting immediately
+        use_ybj_w=true,       # Use YBJ formulation for w
         use_3d_advection=true,
-        integration_method=:rk4
+        integration_method=:euler,  # Simple timestep: x = x + dt*u
+        save_interval=0.05,   # Save particle positions every 0.05 time units
+        max_save_points=500   # Limit trajectory length
     )
     
     # 2D advection for comparison
@@ -101,26 +116,30 @@ function particle_advection_example()
         y_min=π/2, y_max=3π/2,
         z_level=z_level,
         nx_particles=8, ny_particles=8,
+        particle_advec_time=0.0,  # Start advecting immediately
         use_ybj_w=false,
         use_3d_advection=false,  # Pure 2D advection (w=0)
-        integration_method=:rk4
+        integration_method=:euler,  # Simple timestep: x = x + dt*u
+        save_interval=0.05,   # Save particle positions every 0.05 time units
+        max_save_points=500   # Limit trajectory length
     )
     
     # 3. Initialize unified particle trackers (automatically handles serial/parallel)
     println("Initializing unified particle trackers...")
     
-    tracker_qg = ParticleTracker(particle_config_qg, sim.grid)
-    tracker_ybj = ParticleTracker(particle_config_ybj, sim.grid)
-    tracker_2d = ParticleTracker(particle_config_2d, sim.grid)
+    tracker_qg = ParticleTracker(particle_config_qg, sim.grid, sim.parallel_config)
+    tracker_ybj = ParticleTracker(particle_config_ybj, sim.grid, sim.parallel_config)
+    tracker_2d = ParticleTracker(particle_config_2d, sim.grid, sim.parallel_config)
     
     initialize_particles!(tracker_qg, particle_config_qg)
     initialize_particles!(tracker_ybj, particle_config_ybj)
     initialize_particles!(tracker_2d, particle_config_2d)
     
     # Report local particle counts (in parallel, each rank reports its local count)
-    println("  QG particles (local): $(tracker_qg.particles.np)")
-    println("  YBJ particles (local): $(tracker_ybj.particles.np)")
-    println("  2D particles (local): $(tracker_2d.particles.np)")
+    println("  QG particles (local): $(tracker_qg.particles.np) [QG vertical velocity]")
+    println("  YBJ particles (local): $(tracker_ybj.particles.np) [YBJ vertical velocity]")
+    println("  2D particles (local): $(tracker_2d.particles.np) [horizontal only]")
+    println("  All particles use TOTAL velocity = QG + wave velocities")
     
     if tracker_qg.is_parallel
         println("  Running in parallel mode with $(tracker_qg.nprocs) processes")
@@ -153,13 +172,13 @@ function particle_advection_example()
         # Unified particle advection (automatically handles velocities and parallel migration)
         
         # Advect QG particles (automatically computes QG vertical velocity)
-        advect_particles!(tracker_qg, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_qg, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Advect YBJ particles (automatically computes YBJ vertical velocity)
-        advect_particles!(tracker_ybj, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_ybj, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Advect 2D particles (automatically sets w=0 for 2D case)
-        advect_particles!(tracker_2d, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker_2d, sim.state, sim.grid, sim.config.dt, current_time)
         
         # Output particle positions
         if step % output_every == 0
@@ -188,6 +207,10 @@ function particle_advection_example()
                                 metadata=Dict("vertical_velocity" => "YBJ formulation"))
     write_particle_trajectories("trajectories_2d.nc", tracker_2d,
                                 metadata=Dict("vertical_velocity" => "none (2D advection)"))
+    
+    # BONUS: If particles were initialized at multiple z-levels, you can save each depth separately:
+    # z_level_files = write_particle_trajectories_by_zlevel("particles_by_depth", tracker_qg)
+    # This creates: particles_by_depth_z1.571.nc (one file per z-level)
     
     # 7. Analysis and comparison
     println("Particle trajectory analysis:")
@@ -289,6 +312,8 @@ function simple_particle_test()
     
     # Run a few steps
     for step in 1:10
+        current_time = step * sim.config.dt
+        
         if step == 1
             first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
         else
@@ -301,7 +326,7 @@ function simple_particle_test()
                            compute_w=true, 
                            use_ybj_w=true)
         
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
         
         if step % 5 == 0
             spread = compute_particle_spread(tracker)

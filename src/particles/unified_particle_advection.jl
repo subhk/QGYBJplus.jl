@@ -2,20 +2,37 @@
 Unified particle advection module for QG-YBJ simulations.
 
 This module provides Lagrangian particle tracking that automatically handles
-both serial and parallel execution. Particles are advected using the total 
-velocity field (QG + YBJ) with options for vertical velocity from either 
+both serial and parallel execution. Particles are advected using the TOTAL 
+velocity field (QG + wave velocities) with options for vertical velocity from either 
 QG omega equation or YBJ formulation.
+
+Total velocity field includes:
+- QG velocities: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
+- Wave velocities: u_wave, v_wave from Stokes drift and wave corrections
+- Vertical velocity: w from QG omega equation or YBJ w₀ formulation
 
 The system automatically detects MPI availability and handles:
 - Domain decomposition and particle migration  
 - Periodic boundary conditions
 - Distributed I/O
 - Load balancing
+
+Advanced features:
+- Delayed particle release: Use particle_advec_time to control when particles start moving
+- Time synchronization: Particles sync with simulation time when current_time is provided
+- Multiple integration schemes: Euler, RK2, RK4 with adjustable interpolation methods
+- Flexible I/O: Configurable save intervals and trajectory tracking
+- Boundary handling: Periodic and reflective boundary conditions
+
+Time synchronization:
+- Pass current_time to advect_particles! for proper synchronization with fluid simulation
+- particle_advec_time is compared against simulation time, not particle internal time
+- Ensures particles respond to flow conditions at the correct simulation time
 """
 
 module UnifiedParticleAdvection
 
-using ..QGYBJ: Grid, State, compute_velocities!
+using ..QGYBJ: Grid, State, compute_total_velocities!, ParallelConfig, plan_transforms!
 
 export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 
@@ -41,6 +58,21 @@ using .EnhancedParticleConfig
 
 """
 Configuration for particle initialization and advection.
+
+Key parameters:
+- Spatial domain: x_min/max, y_min/max, z_level for initial particle placement
+- Particle count: nx_particles × ny_particles 
+- Physics options: use_ybj_w (vertical velocity), use_3d_advection
+- Timing control: particle_advec_time - when to start advecting particles
+- Integration: method (:euler, :rk2, :rk4) and interpolation scheme
+- Boundaries: periodic_x/y, reflect_z for boundary conditions
+- I/O: save_interval and max_save_points for trajectory output
+
+Advanced timing control:
+- particle_advec_time=0.0: Start advecting immediately (default)
+- particle_advec_time>0.0: Keep particles stationary until this time
+- Useful for letting flow field develop before particle release
+- Enables study of transient vs established flow patterns
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     # Spatial domain for particle initialization
@@ -58,8 +90,11 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     use_ybj_w::Bool = false           # Use YBJ vs QG vertical velocity
     use_3d_advection::Bool = true     # Include vertical advection
     
+    # Advection timing control
+    particle_advec_time::T = 0.0      # Start advecting particles at this time (0.0 = from beginning)
+    
     # Integration method
-    integration_method::Symbol = :rk4  # :euler, :rk2, :rk4
+    integration_method::Symbol = :euler  # :euler, :rk2, :rk4
     
     # Interpolation method
     interpolation_method::InterpolationMethod = TRILINEAR  # TRILINEAR, TRICUBIC, ADAPTIVE
@@ -69,15 +104,57 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     periodic_y::Bool = true
     reflect_z::Bool = true            # Reflect at vertical boundaries
     
-    # I/O configuration
-    save_interval::T = 0.1           # Time interval for saving trajectories
-    max_save_points::Int = 1000      # Maximum trajectory points to save
+    # I/O configuration - Controls particle trajectory saving rate
+    save_interval::T = 0.1           # Time interval for saving trajectories (e.g., 0.1 = save every 0.1 time units)
+    max_save_points::Int = 1000      # Maximum trajectory points to save per file
+    auto_split_files::Bool = false   # Automatically create new files when max_save_points is reached
 end
 
 """
     create_particle_config(; kwargs...)
 
 Convenience constructor for ParticleConfig.
+
+Common usage patterns:
+```julia
+# Immediate particle release (default)
+config = create_particle_config(
+    x_min=0.0, x_max=2π, y_min=0.0, y_max=2π,
+    nx_particles=10, ny_particles=10,
+    particle_advec_time=0.0  # Start immediately
+)
+
+# Delayed particle release - let flow develop first
+config = create_particle_config(
+    x_min=π/2, x_max=3π/2, y_min=π/2, y_max=3π/2,
+    nx_particles=8, ny_particles=8,
+    particle_advec_time=0.5,  # Wait 0.5 time units
+    use_ybj_w=true           # Use YBJ vertical velocity
+)
+
+# Control trajectory saving rate (independent of simulation timestep)
+config = create_particle_config(
+    x_min=0.0, x_max=2π, y_min=0.0, y_max=2π,
+    nx_particles=10, ny_particles=10,
+    save_interval=0.1,       # Save particle positions every 0.1 time units
+    max_save_points=500      # Limit trajectory length to prevent memory overflow
+)
+
+# Multiple z-levels with automatic file separation by depth
+layered_config = create_layered_distribution(
+    0.0, 2π, 0.0, 2π, [π/4, π/2, 3π/4], 6, 6  # 3 z-levels, 6x6 particles each
+)
+# After simulation: use write_particle_trajectories_by_zlevel() to save each depth separately
+
+# Automatic file splitting for long simulations
+config = create_particle_config(
+    x_min=0.0, x_max=2π, y_min=0.0, y_max=2π,
+    nx_particles=10, ny_particles=10,
+    max_save_points=1000,    # Points per file
+    auto_split_files=true    # Create new files automatically when max reached
+)
+# Or use: enable_auto_file_splitting!(tracker, "long_simulation", max_points_per_file=1000)
+```
 """
 function create_particle_config(::Type{T}=Float64; kwargs...) where T
     return ParticleConfig{T}(; kwargs...)
@@ -130,6 +207,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     v_field::Array{T,3}
     w_field::Array{T,3}
     
+    # Transform plans (for velocity computation)
+    plans
+    
     # Parallel information (automatically detected)
     comm::Any           # MPI communicator (nothing for serial)
     rank::Int          # MPI rank (0 for serial)
@@ -152,12 +232,30 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     is_io_rank::Bool
     gather_for_io::Bool
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid) where T
+    # File splitting for large simulations
+    output_file_sequence::Int          # Current file sequence number (0, 1, 2, ...)
+    base_output_filename::String       # Base filename for automatic file splitting
+    auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
+    
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
-        # Detect parallel environment
-        comm, rank, nprocs, is_parallel = detect_parallel_environment()
+        # Use provided parallel config or detect environment
+        if parallel_config !== nothing && parallel_config.use_mpi
+            try
+                import MPI
+                comm = parallel_config.comm
+                rank = MPI.Comm_rank(comm)
+                nprocs = MPI.Comm_size(comm)
+                is_parallel = true
+            catch e
+                @warn "Failed to import MPI: $e"
+                comm, rank, nprocs, is_parallel = detect_parallel_environment()
+            end
+        else
+            comm, rank, nprocs, is_parallel = detect_parallel_environment()
+        end
         
         # Set up domain decomposition if parallel
         local_domain = is_parallel ? compute_local_domain(grid, rank, nprocs) : nothing
@@ -171,6 +269,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         v_field = zeros(T, grid.nx, grid.ny, grid.nz)
         w_field = zeros(T, grid.nx, grid.ny, grid.nz)
         
+        # Set up transform plans (using unified interface)
+        plans = plan_transforms!(grid, parallel_config)
+        
         # Set up halo exchange system for parallel runs
         halo_info = is_parallel ? setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T) : nothing
         
@@ -179,17 +280,18 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.Lz/grid.nz,
-            u_field, v_field, w_field,
+            u_field, v_field, w_field, plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
             halo_info,
-            0, zero(T), rank == 0, true
+            0, zero(T), rank == 0, true,
+            0, "", false  # output_file_sequence, base_output_filename, auto_file_splitting
         )
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid) where T = ParticleTracker{T}(config, grid)
+ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T)
@@ -388,13 +490,50 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
 end
 
 """
-    advect_particles!(tracker, state, grid, dt)
+    advect_particles!(tracker, state, grid, dt, current_time=nothing)
 
 Advect particles using unified serial/parallel interface.
+Respects the particle_advec_time setting - particles remain stationary until this time.
+
+Parameters:
+- tracker: ParticleTracker instance
+- state: Current fluid state
+- grid: Grid information  
+- dt: Time step
+- current_time: Current simulation time (if not provided, uses tracker's internal time)
 """
 function advect_particles!(tracker::ParticleTracker{T}, 
-                          state::State, grid::Grid, dt::T) where T
+                          state::State, grid::Grid, dt::T, current_time=nothing) where T
     
+    # Use simulation time if provided, otherwise use tracker's internal time
+    if current_time !== nothing
+        sim_time = T(current_time)
+        # Update tracker time to match simulation
+        tracker.particles.time = sim_time
+    else
+        sim_time = tracker.particles.time
+    end
+    
+    # Check if we should start advecting particles yet
+    advec_start_time = tracker.config.particle_advec_time
+    
+    if sim_time < advec_start_time
+        # Particles remain stationary - only update time
+        if current_time === nothing
+            tracker.particles.time += dt
+        else
+            tracker.particles.time = T(current_time) + dt
+        end
+        
+        # Still save state if needed (for tracking stationary phase)
+        if should_save_particles(tracker)
+            save_particle_state!(tracker)
+        end
+        
+        return tracker
+    end
+    
+    # Normal advection process starts here
     # Update velocity fields
     update_velocity_fields!(tracker, state, grid)
     
@@ -417,8 +556,12 @@ function advect_particles!(tracker::ParticleTracker{T},
     # Apply boundary conditions
     apply_boundary_conditions!(tracker)
     
-    # Update time
-    tracker.particles.time += dt
+    # Update time (use simulation time if provided)
+    if current_time !== nothing
+        tracker.particles.time = T(current_time) + dt
+    else
+        tracker.particles.time += dt
+    end
     
     # Save state if needed
     if should_save_particles(tracker)
@@ -431,14 +574,16 @@ end
 """
     update_velocity_fields!(tracker, state, grid)
 
-Update velocity fields from fluid state and exchange halos if parallel.
+Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
+Computes the complete velocity field needed for proper QG-YBJ particle advection.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T}, 
                                 state::State, grid::Grid) where T
-    # Compute velocities with chosen vertical velocity formulation
-    compute_velocities!(state, grid; 
-                       compute_w=true,
-                       use_ybj_w=tracker.config.use_ybj_w)
+    # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
+    compute_total_velocities!(state, grid; 
+                              plans=tracker.plans,
+                              compute_w=true,
+                              use_ybj_w=tracker.config.use_ybj_w)
     
     # Copy to tracker workspace
     tracker.u_field .= state.u
@@ -640,6 +785,19 @@ function interpolate_velocity_local(x::T, y::T, z::T,
 end
 
 # Integration methods
+
+"""
+    advect_euler!(tracker, dt)
+
+Advect particles using simple Euler integration method: x = x + dt*u
+
+This implements the basic Euler timestep:
+- x_new = x_old + dt * u
+- y_new = y_old + dt * v  
+- z_new = z_old + dt * w
+
+where (u,v,w) is the interpolated velocity at the current particle position.
+"""
 function advect_euler!(tracker::ParticleTracker{T}, dt::T) where T
     particles = tracker.particles
     
@@ -648,6 +806,7 @@ function advect_euler!(tracker::ParticleTracker{T}, dt::T) where T
         
         u, v, w = interpolate_velocity_at_position(x, y, z, tracker)
         
+        # Euler timestep: x = x + dt*u
         particles.x[i] = x + dt * u
         particles.y[i] = y + dt * v
         particles.z[i] = z + dt * w
@@ -901,14 +1060,33 @@ end
 
 """
 Save current particle state to trajectory history.
+
+If auto_split_files is enabled and max_save_points is reached, automatically
+creates a new file and resets the trajectory history to continue saving.
 """
 function save_particle_state!(tracker::ParticleTracker{T}) where T
     particles = tracker.particles
     
+    # Check if we've reached max_save_points
     if length(particles.time_history) >= tracker.config.max_save_points
-        return tracker
+        if tracker.config.auto_split_files && !isempty(tracker.base_output_filename)
+            # Save current trajectory segment to file
+            split_and_save_trajectory_segment!(tracker)
+            
+            # Reset trajectory history for next segment
+            empty!(particles.x_history)
+            empty!(particles.y_history) 
+            empty!(particles.z_history)
+            empty!(particles.time_history)
+            
+            tracker.output_file_sequence += 1
+        else
+            # Traditional behavior: stop saving when max reached
+            return tracker
+        end
     end
     
+    # Save current state to history
     push!(particles.x_history, copy(particles.x))
     push!(particles.y_history, copy(particles.y))
     push!(particles.z_history, copy(particles.z))
@@ -921,10 +1099,195 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
 end
 
 """
-Check if it's time to save particle state.
+    split_and_save_trajectory_segment!(tracker)
+
+Save current trajectory history to a sequentially numbered file and prepare for next segment.
+Used internally by save_particle_state! when auto_split_files is enabled.
+"""
+function split_and_save_trajectory_segment!(tracker::ParticleTracker{T}) where T
+    if isempty(tracker.particles.time_history)
+        return tracker
+    end
+    
+    # Create filename with sequence number
+    base_name = tracker.base_output_filename
+    if tracker.output_file_sequence == 0
+        filename = "$(base_name).nc"
+    else
+        filename = "$(base_name)_part$(tracker.output_file_sequence).nc"
+    end
+    
+    # Calculate time range for this segment
+    start_time = tracker.particles.time_history[1]
+    end_time = tracker.particles.time_history[end]
+    n_points = length(tracker.particles.time_history)
+    
+    println("Auto-splitting: Saving trajectory segment to $filename")
+    println("  Time range: $(round(start_time, digits=4)) - $(round(end_time, digits=4))")
+    println("  Points: $n_points / $(tracker.config.max_save_points) (max)")
+    
+    # Create metadata for this segment
+    metadata = Dict(
+        "segment_number" => tracker.output_file_sequence,
+        "start_time" => start_time,
+        "end_time" => end_time,
+        "points_in_segment" => n_points,
+        "max_points_per_file" => tracker.config.max_save_points,
+        "auto_split_enabled" => true
+    )
+    
+    # Save this segment using existing I/O function
+    try
+        # Import the I/O module function
+        write_particle_trajectories(filename, tracker; metadata=metadata)
+        println("  ✅ Successfully saved segment $(tracker.output_file_sequence)")
+    catch e
+        @warn "Failed to save trajectory segment: $e"
+    end
+    
+    return tracker
+end
+
+"""
+    should_save_particles(tracker)
+
+Check if it's time to save particle state based on save_interval.
+
+Particles are advected every simulation timestep (dt), but positions are only 
+saved to trajectory history at save_interval intervals. This provides:
+- Independent control of simulation accuracy (via dt) and output frequency (via save_interval)
+- Memory management for long simulations with many particles
+- Reduced I/O overhead while maintaining high simulation fidelity
+
+Returns true when: (current_time - last_save_time) >= save_interval
 """
 function should_save_particles(tracker::ParticleTracker{T}) where T
     return (tracker.particles.time - tracker.last_save_time) >= tracker.config.save_interval
+end
+
+"""
+    enable_auto_file_splitting!(tracker, base_filename; max_points_per_file=1000)
+
+Enable automatic file splitting for long particle trajectories.
+
+When enabled, the tracker will automatically create new files when max_save_points
+is reached, allowing unlimited trajectory length with manageable file sizes.
+
+Parameters:
+- tracker: ParticleTracker instance
+- base_filename: Base name for output files (without .nc extension)
+- max_points_per_file: Maximum trajectory points per file (default: 1000)
+
+Files created:
+- "base_filename.nc" (first segment)
+- "base_filename_part1.nc" (second segment)
+- "base_filename_part2.nc" (third segment), etc.
+
+Example:
+```julia
+tracker = ParticleTracker(config, grid, parallel_config)
+enable_auto_file_splitting!(tracker, "long_simulation", max_points_per_file=500)
+
+# Run long simulation - files will be created automatically
+for step in 1:10000
+    advect_particles!(tracker, state, grid, dt, current_time)
+end
+
+# Final segment saved with:
+finalize_trajectory_files!(tracker)
+```
+"""
+function enable_auto_file_splitting!(tracker::ParticleTracker, base_filename::String; 
+                                     max_points_per_file::Int=1000)
+    # Update tracker configuration
+    tracker.base_output_filename = base_filename
+    tracker.auto_file_splitting = true
+    tracker.output_file_sequence = 0
+    
+    # Update particle config for new max_save_points if provided
+    if max_points_per_file != tracker.config.max_save_points
+        # Create new config with updated max_save_points and auto_split_files
+        new_config = ParticleConfig(
+            tracker.config.x_min, tracker.config.x_max,
+            tracker.config.y_min, tracker.config.y_max,
+            tracker.config.z_min, tracker.config.z_max,
+            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
+            tracker.config.z_level,
+            
+            # Copy other settings
+            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
+            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
+            tracker.config.particle_advec_time,
+            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
+            tracker.config.integration_method, tracker.config.interpolation_method,
+            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
+            
+            # Updated I/O settings
+            tracker.config.save_interval,
+            max_points_per_file,      # New max_save_points
+            true                      # Enable auto_split_files
+        )
+        
+        tracker.config = new_config
+    else
+        # Just enable auto splitting with existing config
+        tracker.config = ParticleConfig(
+            tracker.config.x_min, tracker.config.x_max,
+            tracker.config.y_min, tracker.config.y_max,
+            tracker.config.z_min, tracker.config.z_max,
+            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
+            tracker.config.z_level,
+            
+            # Copy other settings
+            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
+            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
+            tracker.config.particle_advec_time,
+            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
+            tracker.config.integration_method, tracker.config.interpolation_method,
+            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
+            
+            # Updated I/O settings
+            tracker.config.save_interval,
+            tracker.config.max_save_points,
+            true                      # Enable auto_split_files
+        )
+    end
+    
+    println("✅ Auto file splitting enabled:")
+    println("  Base filename: $base_filename")
+    println("  Max points per file: $max_points_per_file")
+    println("  Files will be created: $(base_filename).nc, $(base_filename)_part1.nc, ...")
+    
+    return tracker
+end
+
+"""
+    finalize_trajectory_files!(tracker; final_metadata=Dict())
+
+Save final trajectory segment for auto-splitting trackers.
+
+Call this at the end of long simulations to ensure the final trajectory 
+segment is saved to file.
+"""
+function finalize_trajectory_files!(tracker::ParticleTracker; final_metadata::Dict=Dict())
+    if !tracker.config.auto_split_files || isempty(tracker.particles.time_history)
+        return tracker
+    end
+    
+    println("Finalizing trajectory files...")
+    
+    # Save final segment
+    split_and_save_trajectory_segment!(tracker)
+    
+    total_files = tracker.output_file_sequence + 1
+    total_points = tracker.save_counter
+    
+    println("✅ Trajectory finalization complete:")
+    println("  Total files created: $total_files")
+    println("  Total trajectory points: $total_points")
+    println("  Average points per file: $(round(total_points/total_files, digits=1))")
+    
+    return tracker
 end
 
 end # module UnifiedParticleAdvection

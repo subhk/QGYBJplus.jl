@@ -35,8 +35,6 @@ function test_ybj_vs_qg_vertical_velocity()
         domain, stratification, initial_conditions, output,
         total_time=0.1,
         dt=1e-3,
-        Ro=0.1,
-        Fr=0.1
     )
     
     # Set up simulation
@@ -107,15 +105,11 @@ function test_ybj_velocity_scaling()
     
     # Test with different Froude and Rossby numbers
     test_cases = [
-        (Ro=0.05, Fr=0.05, name="Small Ro/Fr"),
-        (Ro=0.1, Fr=0.1, name="Medium Ro/Fr"),
-        (Ro=0.2, Fr=0.2, name="Large Ro/Fr")
     ]
     
     results = []
     
     for (Ro, Fr, name) in test_cases
-        println("  Testing $name (Ro=$Ro, Fr=$Fr)...")
         
         domain = create_domain_config(nx=16, ny=16, nz=8)
         stratification = create_stratification_config(:constant_N)
@@ -126,7 +120,6 @@ function test_ybj_velocity_scaling()
         
         config = create_model_config(
             domain, stratification, initial_conditions, output,
-            total_time=0.1, dt=1e-3, Ro=Ro, Fr=Fr
         )
         
         sim = setup_simulation(config)
@@ -150,7 +143,6 @@ function test_ybj_velocity_scaling()
         println("    W RMS: $w_rms")
         println("    Expected scaling (Fr/Ro)²: $scaling_factor")
         
-        push!(results, (Ro=Ro, Fr=Fr, w_rms=w_rms, scaling=scaling_factor))
     end
     
     println("  Scaling analysis:")
@@ -179,7 +171,6 @@ function test_ybj_wave_dependence()
     
     config = create_model_config(
         domain, stratification, initial_conditions, output,
-        total_time=0.1, dt=1e-3, Ro=0.1, Fr=0.1
     )
     
     sim = setup_simulation(config)

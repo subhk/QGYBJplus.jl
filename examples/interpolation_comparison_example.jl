@@ -36,8 +36,6 @@ function interpolation_comparison_example()
         domain, stratification, initial_conditions, output,
         total_time=0.2,  # Short time for accuracy testing
         dt=1e-3,
-        Ro=0.1,
-        Fr=0.1
     )
     
     sim = setup_simulation(config)
@@ -69,7 +67,7 @@ function interpolation_comparison_example()
         )
         
         # Initialize tracker
-        tracker = ParticleTracker(particle_config, sim.grid)
+        tracker = ParticleTracker(particle_config, sim.grid, sim.parallel_config)
         initialize_particles!(tracker, particle_config)
         
         println("  Initialized $(tracker.particles.np) particles")
@@ -86,13 +84,15 @@ function interpolation_comparison_example()
         # Run a few timesteps to test accuracy
         nsteps = 100
         for step in 1:nsteps
+            current_time = step * sim.config.dt
+            
             if step == 1
                 first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
             else
                 leapfrog_step!(sim.state, sim.grid, sim.params, sim.plans)
             end
             
-            advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+            advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
         end
         
         elapsed_time = time() - start_time
@@ -259,14 +259,15 @@ function simple_interpolation_test()
             use_ybj_w=true
         )
         
-        tracker = ParticleTracker(particle_config, sim.grid)
+        tracker = ParticleTracker(particle_config, sim.grid, sim.parallel_config)
         initialize_particles!(tracker, particle_config)
         
         println("  Initial position: ($(tracker.particles.x[1]), $(tracker.particles.y[1]), $(tracker.particles.z[1]))")
         
         # Single timestep
+        current_time = sim.config.dt
         first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
         
         println("  Final position: ($(tracker.particles.x[1]), $(tracker.particles.y[1]), $(tracker.particles.z[1]))")
         println("  Final velocity: ($(tracker.particles.u[1]), $(tracker.particles.v[1]), $(tracker.particles.w[1]))")

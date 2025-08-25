@@ -42,8 +42,6 @@ function demonstrate_3d_distributions()
         domain, stratification, initial_conditions, output,
         total_time=0.5,
         dt=2e-3,
-        Ro=0.1,
-        Fr=0.1
     )
     
     sim = setup_simulation(config)
@@ -96,6 +94,7 @@ function test_uniform_3d_grid(sim)
         π/2, 3π/2,      # y-range: central region  
         π/6, 5π/6,      # z-range: mid-water column
         6, 6, 4,        # nx, ny, nz particles
+        particle_advec_time=0.0,  # Start immediately
         use_ybj_w=true,
         interpolation_method=TRICUBIC,
         integration_method=:rk4
@@ -106,7 +105,7 @@ function test_uniform_3d_grid(sim)
     println("  Grid dimensions: 6×6×4 = 144 particles")
     
     # Initialize tracker
-    tracker = ParticleTracker(config_3d, sim.grid)
+    tracker = ParticleTracker(config_3d, sim.grid, sim.parallel_config)
     initialize_particles!(tracker, config_3d)
     
     println("  Initialized $(tracker.particles.np) particles")
@@ -147,7 +146,7 @@ function test_layered_distribution(sim)
     println("  Z-levels: $z_levels")
     println("  Particles per level: 8×8 = 64")
     
-    tracker = ParticleTracker(config_3d, sim.grid)
+    tracker = ParticleTracker(config_3d, sim.grid, sim.parallel_config)
     initialize_particles!(tracker, config_3d)
     
     println("  Initialized $(tracker.particles.np) particles across $(length(z_levels)) layers")
@@ -184,7 +183,7 @@ function test_random_3d_distribution(sim)
     println("  Spatial region: [0,2π] × [0,2π] × [π/4,3π/4]")
     println("  Total particles: 200 (randomly placed)")
     
-    tracker = ParticleTracker(config_3d, sim.grid)
+    tracker = ParticleTracker(config_3d, sim.grid, sim.parallel_config)
     initialize_particles!(tracker, config_3d)
     
     println("  Initialized $(tracker.particles.np) particles")
@@ -244,7 +243,7 @@ function test_custom_distributions(sim)
     println("  Patterns: Vertical line + horizontal circle + spiral")
     println("  Total particles: $(length(custom_positions))")
     
-    tracker = ParticleTracker(config_3d, sim.grid)
+    tracker = ParticleTracker(config_3d, sim.grid, sim.parallel_config)
     initialize_particles!(tracker, config_3d)
     
     println("  Initialized $(tracker.particles.np) particles")
@@ -277,13 +276,15 @@ function run_short_simulation!(sim, tracker, output_name)
     # Run simulation
     nsteps = 50
     for step in 1:nsteps
+        current_time = step * sim.config.dt
+        
         if step == 1
             first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
         else
             leapfrog_step!(sim.state, sim.grid, sim.params, sim.plans)
         end
         
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
         
         if step % 10 == 0
             displacement = sqrt.(
@@ -343,7 +344,7 @@ function demonstrate_layered_vs_3d_comparison()
         nx_particles=6, ny_particles=6
     )
     
-    tracker_single = ParticleTracker(config_single, sim.grid)
+    tracker_single = ParticleTracker(config_single, sim.grid, sim.parallel_config)
     initialize_particles!(tracker_single, config_single)
     
     println("   Particles: $(tracker_single.particles.np)")
@@ -357,7 +358,7 @@ function demonstrate_layered_vs_3d_comparison()
         z_levels, 6, 6
     )
     
-    tracker_layered = ParticleTracker(config_layered, sim.grid)
+    tracker_layered = ParticleTracker(config_layered, sim.grid, sim.parallel_config)
     initialize_particles!(tracker_layered, config_layered)
     
     println("   Particles: $(tracker_layered.particles.np)")
@@ -370,16 +371,17 @@ function demonstrate_layered_vs_3d_comparison()
         6, 6, 3
     )
     
-    tracker_3d = ParticleTracker(config_3d, sim.grid)
+    tracker_3d = ParticleTracker(config_3d, sim.grid, sim.parallel_config)
     initialize_particles!(tracker_3d, config_3d)
     
     println("   Particles: $(tracker_3d.particles.np)")
     println("   Z-levels: 3 (uniform grid)")
     
     # Quick advection test
+    current_time = sim.config.dt
     for tracker in [tracker_single, tracker_layered, tracker_3d]
         first_projection_step!(sim.state, sim.grid, sim.params, sim.plans)
-        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt)
+        advect_particles!(tracker, sim.state, sim.grid, sim.config.dt, current_time)
     end
     
     println("\\n✅ Comparison completed - all patterns work correctly!")

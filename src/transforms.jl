@@ -19,11 +19,18 @@ Base.@kwdef mutable struct Plans
 end
 
 """
-    plan_transforms!(G)
+    plan_transforms!(G::Grid, parallel_config=nothing)
 
 Create forward/backward FFT plans appropriate to the environment.
+Unified interface for both serial and parallel execution.
 """
-function plan_transforms!(G::Grid)
+function plan_transforms!(G::Grid, parallel_config=nothing)
+    # If parallel_config is provided and MPI is active, use parallel planning
+    if parallel_config !== nothing && parallel_config.use_mpi && G.decomp !== nothing
+        return setup_parallel_transforms(G, parallel_config)
+    end
+    
+    # Try PencilFFTs for serial case if decomp exists
     try
         import PencilFFTs
         if G.decomp !== nothing
@@ -39,6 +46,42 @@ function plan_transforms!(G::Grid)
     catch err
         @info "PencilFFTs not available; using FFTW", err
     end
+    
+    # Fallback to FFTW
+    using FFTW
+    return Plans(backend=:fftw)
+end
+
+"""
+    setup_parallel_transforms(grid::Grid, pconfig)
+
+Set up FFT plans for parallel execution (called from unified interface).
+"""
+function setup_parallel_transforms(grid::Grid, pconfig)
+    if grid.decomp !== nothing
+        try
+            import PencilFFTs
+            
+            # Create plans for the pencil decomposition
+            # Transform in x and y dimensions (dims 1 and 2)
+            forward_plan = PencilFFTs.PencilFFTPlan(grid.decomp, Complex{Float64}; 
+                                                   transform=(PencilFFTs.Transforms.FFT(),
+                                                            PencilFFTs.Transforms.FFT()),
+                                                   transform_dims=(1, 2))
+            
+            backward_plan = PencilFFTs.PencilIFFTPlan(grid.decomp, Complex{Float64};
+                                                     transform=(PencilFFTs.Transforms.IFFT(),
+                                                              PencilFFTs.Transforms.IFFT()),
+                                                     transform_dims=(1, 2))
+            
+            return Plans(backend=:pencil, p_forward=forward_plan, p_backward=backward_plan)
+            
+        catch e
+            @warn "Failed to create PencilFFTs plans: $e"
+        end
+    end
+    
+    # Fallback to FFTW
     using FFTW
     return Plans(backend=:fftw)
 end
@@ -82,4 +125,4 @@ end
 
 end # module
 
-using .Transforms: Plans, plan_transforms!, fft_forward!, fft_backward!
+using .Transforms: Plans, plan_transforms!, setup_parallel_transforms, fft_forward!, fft_backward!

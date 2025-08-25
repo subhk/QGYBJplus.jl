@@ -108,13 +108,10 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         Ly = config.domain.Ly,
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
-        Ro = config.Ro,
-        Fr = config.Fr,
         f0 = config.f0,
         nu_h = config.nu_h,
         nu_v = config.nu_v,
         linear_vert_structure = 0,
-        Bu = (config.Fr^2) / (config.Ro^2),
         stratification = config.stratification.type,
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
         gamma = T(1e-3),  # Robert-Asselin filter
@@ -148,7 +145,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         grid = init_parallel_grid(params, parallel_config)
         state = init_parallel_state(grid, parallel_config)
         state_old = init_parallel_state(grid, parallel_config)
-        plans = setup_parallel_transforms(grid, parallel_config)
+        plans = plan_transforms!(grid, parallel_config)
     else
         grid = init_grid(params)
         state = init_state(grid)
@@ -193,11 +190,8 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         @info "Setting up output management"
     end
     
-    output_manager = if parallel_config.use_mpi
-        ParallelOutputManager(config.output, params, parallel_config)
-    else
-        OutputManager(config.output, params)
-    end
+    # Create unified output manager that handles both serial and parallel I/O
+    output_manager = OutputManager(config.output, params, parallel_config)
     
     # Initialize diagnostics
     diagnostics = Dict{String, Any}(
@@ -301,17 +295,12 @@ end
 Check if output is needed and write files.
 """
 function check_and_output!(sim::QGYBJSimulation)
-    # State output
+    # State output - unified interface handles both serial and parallel
     if should_output_psi(sim.output_manager, sim.current_time) || 
        should_output_waves(sim.output_manager, sim.current_time)
         
-        if sim.parallel_config.use_mpi
-            write_parallel_state_file(sim.output_manager.base_manager, sim.state, sim.grid, sim.plans,
-                                    sim.current_time, sim.parallel_config; params=sim.params)
-        else
-            write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
-                            sim.current_time; params=sim.params)
-        end
+        write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
+                        sim.current_time, sim.parallel_config; params=sim.params)
     end
 end
 
@@ -492,14 +481,12 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         Ly = config.domain.Ly,
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
-        Ro = config.Ro,
-        Fr = config.Fr,
         f0 = config.f0
     )
     
     grid = init_grid(params)
     state = init_state(params)
-    plans = plan_transforms!(grid, state)
+    plans = plan_transforms!(grid)
     
     return params, grid, state, plans
 end

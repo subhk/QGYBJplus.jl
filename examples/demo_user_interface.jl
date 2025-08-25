@@ -47,8 +47,6 @@ function demo_basic_simulation()
     # Create complete model configuration
     config = create_model_config(
         domain, stratification, initial_conditions, output,
-        Ro=0.1,                        # Rossby number
-        Fr=0.1,                        # Froude number
         f0=1.0,                        # Coriolis parameter
         dt=1e-3,                       # Time step
         total_time=5.0,                # Total simulation time
@@ -72,12 +70,12 @@ function demo_stratified_simulation()
     # Domain with higher vertical resolution for stratification
     domain = create_domain_config(nx=128, ny=128, nz=64, Lx=6π, Ly=6π, Lz=2π)
     
-    # Tropopause-like stratification
+    # Pycnocline-like stratification
     stratification = create_stratification_config(
         :tanh_profile,
-        N_trop=0.01,                   # Weak stratification below
-        N_strat=0.04,                  # Strong stratification above
-        z_trop=0.6,                    # Tropopause at 60% of domain height
+        N_upper=0.01,                   # Weak stratification in upper ocean
+        N_lower=0.04,                  # Strong stratification in deep ocean
+        z_pycno=0.6,                    # Pycnocline at 60% of domain depth
         width=0.05                     # Sharp transition
     )
     
@@ -101,8 +99,6 @@ function demo_stratified_simulation()
     
     config = create_model_config(
         domain, stratification, initial_conditions, output,
-        Ro=0.05,                       # Smaller Rossby number
-        Fr=0.2,                        # Larger Froude number
         dt=5e-4,                       # Smaller time step for stability
         total_time=10.0
     )
@@ -194,11 +190,10 @@ end
 function demo_parameter_sweep()
     println("\n=== Parameter Sweep Demo ===")
     
-    # Run simulations with different Rossby numbers
-    Ro_values = [0.05, 0.1, 0.2, 0.3]
+    # Run simulations with different time steps
+    dt_values = [5e-4, 1e-3, 2e-3]
     
-    for (i, Ro) in enumerate(Ro_values)
-        println("Running simulation $i/$(length(Ro_values)) with Ro=$Ro")
+    for (i, dt_val) in enumerate(dt_values)
         
         domain = create_domain_config(nx=32, ny=32, nz=16)  # Smaller for speed
         stratification = create_stratification_config(:constant_N, N0=1.0)
@@ -208,16 +203,14 @@ function demo_parameter_sweep()
             random_seed=1234  # Same initial conditions for comparison
         )
         output = create_output_config(
-            output_dir="./demo_sweep_Ro_$(Int(round(100*Ro)))",
+            output_dir="./demo_sweep_dt_$(Int(round(1e6*dt_val)))",
             psi_interval=1.0,
             wave_interval=1.0
         )
         
         config = create_model_config(
             domain, stratification, initial_conditions, output,
-            Ro=Ro,
-            Fr=0.1,
-            dt=1e-3,
+            dt=dt_val,
             total_time=3.0  # Shorter runs for parameter sweep
         )
         

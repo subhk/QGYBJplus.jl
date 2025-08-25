@@ -45,16 +45,19 @@ mutable struct OutputManager{T}
     save_vorticity::Bool
     save_diagnostics::Bool
     
+    # Parallel configuration (optional)
+    parallel_config
+    
     # Metadata
     run_info::Dict{String,Any}
 end
 
 """
-    OutputManager(config::OutputConfig, params::QGParams)
+    OutputManager(config::OutputConfig, params::QGParams, parallel_config=nothing)
 
-Create output manager from configuration.
+Create output manager from configuration with optional parallel support.
 """
-function OutputManager(config, params::QGParams{T}) where T
+function OutputManager(config, params::QGParams{T}, parallel_config=nothing) where T
     # Create output directory if it doesn't exist
     mkpath(config.output_dir)
     
@@ -68,8 +71,6 @@ function OutputManager(config, params::QGParams{T}) where T
         "Lx" => params.Lx,
         "Ly" => params.Ly,
         "dt" => params.dt,
-        "Ro" => params.Ro,
-        "Fr" => params.Fr,
         "f0" => params.f0
     )
     
@@ -87,6 +88,7 @@ function OutputManager(config, params::QGParams{T}) where T
         hasfield(typeof(config), :save_vertical_velocity) ? config.save_vertical_velocity : false,
         config.save_vorticity,
         config.save_diagnostics,
+        parallel_config,
         run_info
     )
 end
@@ -119,11 +121,31 @@ function should_output_diagnostics(manager::OutputManager, time::Real)
 end
 
 """
-    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing)
 
 Write complete state to NetCDF file with standardized naming.
+Unified interface for both serial and parallel I/O.
 """
-function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing)
+    # Use parallel_config from manager if not provided
+    if parallel_config === nothing
+        parallel_config = manager.parallel_config
+    end
+    
+    # Route to appropriate I/O method
+    if parallel_config !== nothing && parallel_config.use_mpi && G.decomp !== nothing
+        return write_parallel_state_file(manager, S, G, plans, time, parallel_config; params=params)
+    else
+        return write_serial_state_file(manager, S, G, plans, time; params=params)
+    end
+end
+
+"""
+    write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+
+Write state file in serial mode.
+"""
+function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
     # Generate filename
     filename = @sprintf(manager.state_file_pattern, manager.psi_counter)
     filepath = joinpath(manager.output_dir, filename)
@@ -235,8 +257,7 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
             ds.attrib["nx"] = params.nx
             ds.attrib["ny"] = params.ny
             ds.attrib["nz"] = params.nz
-            ds.attrib["Ro"] = params.Ro
-            ds.attrib["Fr"] = params.Fr
+            ds.attrib["f0"] = params.f0
             ds.attrib["dt"] = params.dt
         end
         
@@ -251,6 +272,170 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
     manager.last_psi_output = time
     
     return filepath
+end
+
+"""
+    write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config; params=nothing)
+
+Write state file using parallel NetCDF I/O.
+"""
+function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config; params=nothing)
+    # Generate filename
+    filename = @sprintf(manager.state_file_pattern, manager.psi_counter)
+    filepath = joinpath(manager.output_dir, filename)
+    
+    if parallel_config.use_mpi && G.decomp !== nothing
+        import MPI
+        import PencilArrays
+        rank = MPI.Comm_rank(parallel_config.comm)
+        
+        if parallel_config.parallel_io
+            # Use parallel NetCDF I/O
+            write_parallel_netcdf_file(filepath, S, G, plans, time, parallel_config; params=params)
+        else
+            # Gather to rank 0 and write
+            if rank == 0
+                gathered_state = gather_state_for_io(S, G, parallel_config)
+                write_gathered_state_file(filepath, gathered_state, G, plans, time; params=params)
+            end
+            MPI.Barrier(parallel_config.comm)
+        end
+    else
+        # Fallback to serial
+        return write_serial_state_file(manager, S, G, plans, time; params=params)
+    end
+    
+    manager.psi_counter += 1
+    manager.last_psi_output = time
+    
+    if parallel_config.use_mpi
+        rank = MPI.Comm_rank(parallel_config.comm)
+        if rank == 0
+            @info "Wrote parallel state file: $filename (t=$time)"
+        end
+    else
+        @info "Wrote state file: $filename (t=$time)"
+    end
+    
+    return filepath
+end
+
+"""
+    write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
+
+Write NetCDF file using parallel I/O.
+"""
+function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
+    import NCDatasets
+    import MPI
+    import PencilArrays
+    
+    # Convert spectral fields to real space (each process handles its portion)
+    psir = similar(S.psi, Float64)
+    fft_backward!(psir, S.psi, plans)
+    
+    BRr = similar(S.B, Float64)
+    BIr = similar(S.B, Float64)
+    fft_backward!(BRr, real.(S.B), plans)
+    fft_backward!(BIr, imag.(S.B), plans)
+    
+    norm_factor = G.nx * G.ny
+    
+    # Create parallel NetCDF file
+    NCDatasets.Dataset(filepath, "c"; mpi_comm=parallel_config.comm) do ds
+        # Define dimensions
+        ds.dim["x"] = G.nx
+        ds.dim["y"] = G.ny
+        ds.dim["z"] = G.nz
+        ds.dim["time"] = 1
+        
+        # Create coordinate variables
+        x_var = defVar(ds, "x", Float64, ("x",))
+        y_var = defVar(ds, "y", Float64, ("y",))
+        z_var = defVar(ds, "z", Float64, ("z",))
+        time_var = defVar(ds, "time", Float64, ("time",))
+        
+        # Set coordinate values (only on rank 0)
+        rank = MPI.Comm_rank(parallel_config.comm)
+        if rank == 0
+            dx = 2π / G.nx
+            dy = 2π / G.ny
+            dz = 2π / G.nz
+            
+            x_var[:] = collect(0:dx:(2π-dx))
+            y_var[:] = collect(0:dy:(2π-dy))
+            z_var[:] = collect(0:dz:(2π-dz))
+            time_var[1] = time
+        end
+        
+        # Create data variables
+        psi_var = defVar(ds, "psi", Float64, ("x", "y", "z"))
+        LAr_var = defVar(ds, "LAr", Float64, ("x", "y", "z"))
+        LAi_var = defVar(ds, "LAi", Float64, ("x", "y", "z"))
+        
+        # Write data (each process writes its portion)
+        local_ranges = PencilArrays.range_local(G.decomp)
+        
+        psi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(psir) / norm_factor
+        LAr_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BRr) / norm_factor
+        LAi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BIr) / norm_factor
+        
+        # Add attributes (only on rank 0)
+        if rank == 0
+            ds.attrib["title"] = "QG-YBJ Model State (Parallel)"
+            ds.attrib["created_at"] = string(Dates.now())
+            ds.attrib["model_time"] = time
+            ds.attrib["n_processes"] = MPI.Comm_size(parallel_config.comm)
+        end
+    end
+end
+
+"""
+    gather_state_for_io(S::State, G::Grid, parallel_config)
+
+Gather distributed state to rank 0.
+"""
+function gather_state_for_io(S::State, G::Grid, parallel_config)
+    if G.decomp === nothing
+        return S
+    end
+    
+    # This would gather all distributed arrays to rank 0
+    try
+        import PencilArrays
+        
+        gathered_psi = PencilArrays.gather(S.psi)
+        gathered_B = PencilArrays.gather(S.B)
+        
+        # Create new state with gathered arrays (only meaningful on rank 0)
+        return (psi=gathered_psi, B=gathered_B)
+        
+    catch e
+        @warn "Failed to gather state: $e"
+        return S
+    end
+end
+
+"""
+    write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time; params=nothing)
+
+Write gathered state from rank 0.
+"""
+function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time; params=nothing)
+    # Simple implementation - would need full state reconstruction
+    @warn "Gathered state writing not fully implemented - using simplified version"
+    
+    NCDatasets.Dataset(filepath, "c") do ds
+        ds.dim["x"] = G.nx
+        ds.dim["y"] = G.ny  
+        ds.dim["z"] = G.nz
+        ds.dim["time"] = 1
+        
+        # Minimal implementation
+        ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
+        ds.attrib["created_at"] = string(Dates.now())
+        ds.attrib["model_time"] = time
+    end
 end
 
 """

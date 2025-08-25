@@ -49,9 +49,9 @@ Base.@kwdef struct StratificationConfig{T}
     alpha_sg::T = -5.338431587899242
     
     # For tanh profile
-    N_trop::T = 0.01   # Tropospheric N
-    N_strat::T = 0.02  # Stratospheric N
-    z_trop::T = 0.5    # Tropopause height (fraction of domain)
+    N_upper::T = 0.01   # Upper ocean N
+    N_lower::T = 0.02  # Deep ocean N
+    z_pycno::T = 0.5    # Pycnocline depth (fraction of domain)
     width::T = 0.1     # Transition width
     
     # From file
@@ -119,8 +119,6 @@ Base.@kwdef struct ModelConfig{T}
     output::OutputConfig{T}
     
     # Physical parameters
-    Ro::T = 0.1        # Rossby number
-    Fr::T = 0.1        # Froude number
     f0::T = 1.0        # Coriolis parameter
     
     # Time stepping
@@ -183,9 +181,9 @@ strat = create_stratification_config(:constant_N, N0=2.0)
 # Skewed Gaussian (using default parameters from Fortran code)
 strat = create_stratification_config(:skewed_gaussian)
 
-# Tanh profile (tropopause-like)
+# Tanh profile (pycnocline-like)
 strat = create_stratification_config(:tanh_profile, 
-    N_trop=0.01, N_strat=0.025, z_trop=0.6, width=0.05)
+    N_upper=0.01, N_lower=0.025, z_pycno=0.6, width=0.05)
 
 # From NetCDF file
 strat = create_stratification_config(:from_file, filename="N2_profile.nc")
@@ -310,12 +308,8 @@ function validate_config(config::ModelConfig)
     end
     
     # Physical parameter validation
-    if config.Ro <= 0 || config.Fr <= 0
-        push!(errors, "Rossby and Froude numbers must be positive")
-    end
-    
-    if config.Ro > 1.0
-        push!(warnings, "Large Rossby number (Ro > 1) - geostrophic balance may break down")
+    if config.f0 <= 0
+        push!(errors, "Coriolis parameter f0 must be positive")
     end
     
     # File existence checks
@@ -383,7 +377,7 @@ function print_config_summary(config::ModelConfig)
     println()
     
     println("Parameters:")
-    println("  Ro = $(config.Ro), Fr = $(config.Fr)")
+    println("  f0 = $(config.f0)")
     println("  dt = $(config.dt), T_total = $(config.total_time)")
     println()
     

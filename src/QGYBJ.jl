@@ -14,9 +14,9 @@ end
 # Public API - Core functionality
 export QGParams, Grid, State,
        init_grid, init_state, init_pencil_decomposition!,
-       plan_transforms!, fft_forward!, fft_backward!,
+       plan_transforms!, setup_parallel_transforms, fft_forward!, fft_backward!,
        compute_wavenumbers!,
-       invert_q_to_psi!, compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!,
+       invert_q_to_psi!, compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!,
        default_params, setup_model,
        a_ell_ut, dealias_mask,
        invert_B_to_A!,
@@ -39,12 +39,12 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
        # Parallel interface
        ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
-       setup_parallel_transforms, ParallelOutputManager, write_parallel_state_file,
        # Unified particle advection system (handles both serial and parallel automatically)
        ParticleConfig, ParticleState, ParticleTracker, create_particle_config,
        initialize_particles!, advect_particles!, interpolate_velocity_at_position,
        write_particle_trajectories, read_particle_trajectories, write_particle_snapshot, 
-       create_particle_output_file,
+       create_particle_output_file, write_particle_trajectories_by_zlevel,
+       enable_auto_file_splitting!, finalize_trajectory_files!,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        # 3D particle distributions
