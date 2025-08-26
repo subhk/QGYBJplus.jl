@@ -6,7 +6,6 @@ initial conditions, stratification, and output configurations.
 """
 
 using ..QGYBJ: QGParams, Grid, State
-using NCDatasets
 
 """
     DomainConfig

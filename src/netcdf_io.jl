@@ -8,7 +8,18 @@ This module provides comprehensive NetCDF input/output capabilities including:
 - Flexible variable selection and metadata handling
 """
 
-using NCDatasets
+begin
+    # Optional dependency: NCDatasets
+    const HAS_NCDS = let ok = true
+        try
+            import NCDatasets
+        catch
+            ok = false
+            @info "NCDatasets not available; NetCDF I/O disabled."
+        end
+        ok
+    end
+end
 using Printf
 using Dates
 using ..QGYBJ: Grid, State, QGParams
@@ -127,6 +138,9 @@ Write complete state to NetCDF file with standardized naming.
 Unified interface for both serial and parallel I/O.
 """
 function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing)
+    if !HAS_NCDS
+        error("NCDatasets not available. Install NCDatasets.jl or skip NetCDF I/O.")
+    end
     # Use parallel_config from manager if not provided
     if parallel_config === nothing
         parallel_config = manager.parallel_config

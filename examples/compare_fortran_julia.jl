@@ -8,7 +8,8 @@ Usage (example):
       --nc fortran_output.nc \
       --psi_var psi \
       --B_real_var BR \
-      --B_imag_var BI
+      --B_imag_var BI \
+      [--A_real_var AR --A_imag_var AI]
 
 Notes:
 - Requires NCDatasets.jl in the environment.
@@ -25,11 +26,15 @@ function main()
     psi_var = "psi"
     B_real_var = "BR"
     B_imag_var = "BI"
+    A_real_var = nothing
+    A_imag_var = nothing
     for (i,arg) in enumerate(ARGS)
         if arg == "--nc"; ncfile = ARGS[i+1]; end
         if arg == "--psi_var"; psi_var = ARGS[i+1]; end
         if arg == "--B_real_var"; B_real_var = ARGS[i+1]; end
         if arg == "--B_imag_var"; B_imag_var = ARGS[i+1]; end
+        if arg == "--A_real_var"; A_real_var = ARGS[i+1]; end
+        if arg == "--A_imag_var"; A_imag_var = ARGS[i+1]; end
     end
     if ncfile === nothing
         println("Provide --nc <path> to a Fortran NetCDF output file.")
@@ -64,6 +69,8 @@ function main()
 
         BR = read3(B_real_var)
         BI = read3(B_imag_var)
+        AR = (A_real_var === nothing || !haskey(ds, A_real_var)) ? nothing : read3(A_real_var)
+        AI = (A_imag_var === nothing || !haskey(ds, A_imag_var)) ? nothing : read3(A_imag_var)
 
         nx, ny, nz = size(BR)
         @printf("Grid sizes: nx=%d ny=%d nz=%d\n", nx, ny, nz)
@@ -86,6 +93,16 @@ function main()
         EB, EA = wave_energy(S.B, S.A)
         @printf("Energy-like norms: EB=%.6e EA=%.6e\n", EB, EA)
 
+        # If Fortran A provided, compute error norms
+        if AR !== nothing && AI !== nothing
+            A_fortran = complex.(AR, AI)
+            @assert size(A_fortran) == size(S.A)
+            diff = S.A .- A_fortran
+            l2 = sqrt(sum(abs2, diff))
+            linf = maximum(abs, diff)
+            @printf("A error norms: L2=%.6e Linf=%.6e\n", l2, linf)
+        end
+
         # Optional: compute q^w for a consistency check
         L = dealias_mask(G)
         BRk = Complex.(real.(S.B))
@@ -101,4 +118,3 @@ function main()
 end
 
 abspath(PROGRAM_FILE) == @__FILE__ && main()
-

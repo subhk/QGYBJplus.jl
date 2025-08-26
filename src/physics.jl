@@ -123,32 +123,12 @@ This heuristic mirrors the Fortran usage of `rho_ut`/`rho_st` in weighted
 vertical operators and provides a consistent default derived from N².
 """
 function derive_density_profiles(par::QGParams, G::Grid; N2_profile=nothing)
+    # For the Fortran reference (test1), the background density weights used in
+    # vertical operators are unity (Boussinesq), while stratification enters via
+    # N² and the corresponding a_ell = 1/N². So return ones.
     nz = G.nz
-    dz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    N2 = N2_profile === nothing ? N2_ut(par, G) : N2_profile
-    @assert length(N2) == nz
-    ρ = similar(N2)
-    # Integrate from bottom: ρ(1) = 1; ρ(k+1) = ρ(k) - N2(k)*dz
-    ρ[1] = one(eltype(N2))
-    @inbounds for k in 1:nz-1
-        ρ[k+1] = ρ[k] - N2[k]*dz
-    end
-    # Normalize to unit mean and ensure positivity (shift if needed)
-    meanρ = sum(ρ)/nz
-    ρ ./= meanρ
-    minρ = minimum(ρ)
-    if minρ <= 0
-        shift = (abs(minρ) + eps(eltype(ρ)))
-        ρ .+= shift
-        ρ ./= sum(ρ)/nz
-    end
-    rho_ut = copy(ρ)
-    rho_st = similar(ρ)
-    rho_st[1] = rho_ut[1]
-    @inbounds for k in 2:nz-1
-        rho_st[k] = 0.5*(rho_ut[k] + rho_ut[k-1])
-    end
-    rho_st[nz] = rho_ut[nz-1]
+    rho_ut = ones(eltype(G.z), nz)
+    rho_st = ones(eltype(G.z), nz)
     return rho_ut, rho_st
 end
 

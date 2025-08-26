@@ -12,6 +12,14 @@ makedocs(
     format = Documenter.HTML(; prettyurls = get(ENV, "CI", "") == "true"),
     pages = [
         "Home" => "src/index.md",
+        "Getting Started" => "src/getting_started.md",
+        "Configuration" => "src/configuration.md",
+        "Stratification" => "src/stratification.md",
+        "Simulation" => "src/simulation.md",
+        "I/O" => "src/io.md",
+        "Parallel & Particles" => "src/parallel_particles.md",
+        "Diagnostics" => "src/diagnostics.md",
+        "API Reference" => "src/api.md",
     ],
 )
 
@@ -20,4 +28,3 @@ deploydocs(
     devbranch = "main",
     push_preview = true,
 )
-
