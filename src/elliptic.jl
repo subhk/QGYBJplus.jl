@@ -8,7 +8,7 @@ for each (kx,ky) independently.
 module Elliptic
 
 using ..QGYBJ: Grid, State
-using ..QGYBJ: a_ell_ut
+using ..QGYBJ: a_ell_ut, rho_ut, rho_st
 
 """
     invert_q_to_psi!(S, G; a)
@@ -21,7 +21,7 @@ discrete system with diagonals
   iz=n:   d = -(a[n-1] + kh2*dz^2),   dl = a[n-1]
 and RHS = dz^2 * q.
 """
-function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector)
+function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     @assert length(a) == nz
     ψ = S.psi
@@ -34,6 +34,10 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector)
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
 
+    # Density-like weights (unity if not provided)
+    r_ut = (par === nothing) ? ones(eltype(a), nz) : rho_ut(par, G)
+    r_st = (par === nothing) ? ones(eltype(a), nz) : rho_st(par, G)
+
     for j in 1:ny, i in 1:nx
         kh2 = G.kh2[i,j]
         if kh2 == 0
@@ -41,16 +45,16 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector)
             continue
         end
         fill!(dl, 0); fill!(d, 0); fill!(du, 0)
-        # Build tri-diagonal
-        d[1]  = -(a[1] + kh2*Δ2)
-        du[1] =  a[1]
+        # Build tri-diagonal (Fortran psi_solver structure, simplified b_ell=0)
+        d[1]  = -( (r_ut[1]*a[1]) / r_st[1] + kh2*Δ2 )
+        du[1] =   (r_ut[1]*a[1]) / r_st[1]
         @inbounds for k in 2:nz-1
-            dl[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + kh2*Δ2)
-            du[k] = a[k]
+            dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
+            d[k]  = -( ((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k]) + kh2*Δ2 )
+            du[k] = (r_ut[k]*a[k]) / r_st[k]
         end
-        dl[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + kh2*Δ2)
+        dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
+        d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + kh2*Δ2 )
 
         # RHS = Δ^2 * q
         rhs = similar(view(q, i, j, :), eltype(a))
@@ -91,6 +95,10 @@ function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector)
     du = zeros(eltype(a), nz)
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
+    # Density-like weights (unity in current nondimensionalization)
+    r_ut = rho_ut(par, G)
+    r_st = rho_st(par, G)
+
     for j in 1:ny, i in 1:nx
         kh2 = G.kh2[i,j]
         if kh2 == 0
@@ -99,16 +107,17 @@ function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector)
             continue
         end
         fill!(dl, 0); fill!(d, 0); fill!(du, 0)
-        d[1]  = -(a[1] + (kh2*Δ2)/4)
-        du[1] =  a[1]
+        # YBJ+ operator includes kh^2/4
+        d[1]  = -( (r_ut[1]*a[1]) / r_st[1] + (kh2*Δ2)/4 )
+        du[1] =   (r_ut[1]*a[1]) / r_st[1]
         @inbounds for k in 2:nz-1
-            dl[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + (kh2*Δ2)/4)
-            du[k] = a[k]
+            dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
+            d[k]  = -( ((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k]) + (kh2*Δ2)/4 )
+            du[k] = (r_ut[k]*a[k]) / r_st[k]
         end
-        dl[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + (kh2*Δ2)/4)
-        # RHS = Δ2 * B (Bu = 1.0)
+        dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
+        d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
+        # RHS = Δ2 * Bu * B (Bu = 1.0 in current normalization)
         rhs_r = similar(dl)
         rhs_i = similar(dl)
         @inbounds for k in 1:nz
