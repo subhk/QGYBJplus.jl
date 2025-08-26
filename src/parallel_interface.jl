@@ -35,33 +35,19 @@ Initialize MPI and return parallel configuration.
 """
 function setup_parallel_environment()
     config = ParallelConfig()
-    
-    try
-        import MPI
-        
-        # Check if MPI is already initialized
-        if !MPI.Initialized()
-            MPI.Init()
+    if @isdefined MPI
+        try
+            if !MPI.Initialized(); MPI.Init(); end
+            comm = MPI.COMM_WORLD
+            rank = MPI.Comm_rank(comm)
+            nprocs = MPI.Comm_size(comm)
+            if rank == 0; @info "MPI initialized with $nprocs processes"; end
+            config = ParallelConfig(use_mpi=true, comm=comm, n_processes=nprocs, parallel_io=true)
+        catch e
+            @info "MPI failed to initialize: $e"; config = ParallelConfig(use_mpi=false)
         end
-        
-        comm = MPI.COMM_WORLD
-        rank = MPI.Comm_rank(comm)
-        nprocs = MPI.Comm_size(comm)
-        
-        if rank == 0
-            @info "MPI initialized with $nprocs processes"
-        end
-        
-        config = ParallelConfig(
-            use_mpi=true,
-            comm=comm,
-            n_processes=nprocs,
-            parallel_io=true
-        )
-        
-    catch e
-        @info "MPI not available or failed to initialize: $e"
-        config = ParallelConfig(use_mpi=false)
+    else
+        @info "MPI not available; running in serial"; config = ParallelConfig(use_mpi=false)
     end
     
     return config
@@ -88,9 +74,8 @@ function init_parallel_grid(params::QGParams, pconfig::ParallelConfig)
     decomp = nothing
     kh2 = Array{T}(undef, nx, ny)
     
-    if pconfig.use_mpi
+    if pconfig.use_mpi && @isdefined PencilArrays
         try
-            import PencilArrays
             
             # Create pencil decomposition
             # For 3D (x,y,z) data, typically decompose in y and z dimensions
@@ -132,7 +117,6 @@ Initialize state with distributed arrays when using MPI.
 function init_parallel_state(grid::Grid, pconfig::ParallelConfig; T=Float64)
     if grid.decomp !== nothing
         # Use PencilArrays for distributed storage
-        import PencilArrays
         
         # Spectral fields (complex)
         q   = PencilArrays.allocate_array(grid.decomp, Complex{T}); fill!(q, 0)
@@ -174,8 +158,6 @@ function gather_array_for_io(arr, grid::Grid, pconfig::ParallelConfig)
     end
     
     try
-        import PencilArrays
-        import MPI
         
         # Gather to a global array on rank 0
         gathered = PencilArrays.gather(arr)
@@ -260,19 +242,12 @@ function parallel_initialize_fields!(state, grid, plans, config, pconfig)
     # For now, initialize on each process locally and ensure consistency
     
     if config.initial_conditions.psi_type == :random
-        # Each process needs the same random seed for consistency
-        using Random
-        Random.seed!(config.initial_conditions.random_seed)
-        
-        # Initialize only the local portion of the field
+        # Deterministic initialization across ranks
         init_parallel_random_psi!(state.psi, grid, config.initial_conditions.psi_amplitude, pconfig)
     end
     
     # Similar for wave fields
     if config.initial_conditions.wave_type == :random
-        using Random
-        Random.seed!(config.initial_conditions.random_seed + 1)  # Different seed
-        
         init_parallel_random_waves!(state.B, grid, config.initial_conditions.wave_amplitude, pconfig)
     end
 end
@@ -287,25 +262,16 @@ function init_parallel_random_psi!(psik, grid, amplitude, pconfig)
     # This is complex and requires careful handling of random number generation
     
     if grid.decomp === nothing
-        # Serial fallback
-        return init_random_psi!(psik, grid, amplitude)
+        for k in 1:grid.nz, j in 1:grid.ny, i in 1:grid.nx
+            φ = 2π * ((hash((i,j,k)) % 1_000_000) / 1_000_000)
+            psik[i,j,k] = amplitude * cis(φ)
+        end
+        return psik
     end
-    
-    # Parallel random initialization
-    # Each process initializes its local portion with deterministic randomness
-    import PencilArrays
-    import Random
-    
     local_ranges = PencilArrays.range_local(grid.decomp)
-    
-    # Generate deterministic random field based on global indices
     for k in local_ranges[3], j in local_ranges[2], i in local_ranges[1]
-        # Use global indices (i,j,k) to seed local random generation
-        local_seed = hash((i, j, k, config.initial_conditions.random_seed))
-        Random.seed!(local_seed)
-        
-        # Simple random initialization (this would be more sophisticated in practice)
-        psik[i, j, k] = amplitude * randn() * cis(2π * rand())
+        φ = 2π * ((hash((i,j,k)) % 1_000_000) / 1_000_000)
+        psik[i,j,k] = amplitude * cis(φ)
     end
 end
 
@@ -317,20 +283,16 @@ Initialize random wave field with parallel support.
 function init_parallel_random_waves!(Bk, grid, amplitude, pconfig)
     # Similar to psi initialization but for wave field
     if grid.decomp === nothing
-        return init_random_waves!(Bk, grid, amplitude)
+        for k in 1:grid.nz, j in 1:grid.ny, i in 1:grid.nx
+            φ = 2π * ((hash((i,j,k,:waves)) % 1_000_000) / 1_000_000)
+            Bk[i,j,k] = amplitude * cis(φ)
+        end
+        return Bk
     end
-    
-    import PencilArrays
-    import Random
-    
     local_ranges = PencilArrays.range_local(grid.decomp)
-    
     for k in local_ranges[3], j in local_ranges[2], i in local_ranges[1]
-        local_seed = hash((i, j, k, config.initial_conditions.random_seed, :waves))
-        Random.seed!(local_seed)
-        
-        # Random complex field
-        Bk[i, j, k] = amplitude * (randn() + im * randn()) * cis(2π * rand())
+        φ = 2π * ((hash((i,j,k,:waves)) % 1_000_000) / 1_000_000)
+        Bk[i,j,k] = amplitude * cis(φ)
     end
 end
 

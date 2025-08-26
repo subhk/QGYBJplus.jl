@@ -8,6 +8,9 @@ module ParticleIO
 
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
+const HAS_NCDS = Base.find_package("NCDatasets") !== nothing
+ensure_ncds_loaded() = (HAS_NCDS && !(@isdefined NCDatasets)) ? Base.require(:NCDatasets) : nothing
+
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file, 
        write_particle_trajectories_by_zlevel
@@ -23,7 +26,8 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
     
     # Check if NCDatasets is available
     try
-        import NCDatasets
+        HAS_NCDS || error("NCDatasets not available")
+        ensure_ncds_loaded()
         
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -97,7 +101,8 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
     particles = tracker.particles
     
     try
-        import NCDatasets
+        HAS_NCDS || error("NCDatasets not available")
+        ensure_ncds_loaded()
         
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -165,7 +170,8 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
     mode = append_mode ? "a" : "c"
     
     try
-        import NCDatasets
+        HAS_NCDS || error("NCDatasets not available")
+        ensure_ncds_loaded()
         
         NCDatasets.Dataset(filename, mode) do ds
             if !append_mode
@@ -233,7 +239,8 @@ function append_particle_data!(filename::String, tracker::ParticleTracker, time_
     particles = tracker.particles
     
     try
-        import NCDatasets
+        HAS_NCDS || error("NCDatasets not available")
+        ensure_ncds_loaded()
         
         NCDatasets.Dataset(filename, "a") do ds
             # Get current time dimension size

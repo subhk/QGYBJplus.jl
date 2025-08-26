@@ -8,18 +8,8 @@ This module provides comprehensive NetCDF input/output capabilities including:
 - Flexible variable selection and metadata handling
 """
 
-begin
-    # Optional dependency: NCDatasets
-    const HAS_NCDS = let ok = true
-        try
-            import NCDatasets
-        catch
-            ok = false
-            @info "NCDatasets not available; NetCDF I/O disabled."
-        end
-        ok
-    end
-end
+const HAS_NCDS = Base.find_package("NCDatasets") !== nothing
+ensure_ncds_loaded() = (HAS_NCDS && !(@isdefined NCDatasets)) ? Base.require(:NCDatasets) : nothing
 using Printf
 using Dates
 using ..QGYBJ: Grid, State, QGParams
@@ -141,6 +131,7 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
     if !HAS_NCDS
         error("NCDatasets not available. Install NCDatasets.jl or skip NetCDF I/O.")
     end
+    ensure_ncds_loaded()
     # Use parallel_config from manager if not provided
     if parallel_config === nothing
         parallel_config = manager.parallel_config
@@ -160,6 +151,7 @@ end
 Write state file in serial mode.
 """
 function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real; params=nothing)
+    ensure_ncds_loaded()
     # Generate filename
     filename = @sprintf(manager.state_file_pattern, manager.psi_counter)
     filepath = joinpath(manager.output_dir, filename)
@@ -299,8 +291,6 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
     filepath = joinpath(manager.output_dir, filename)
     
     if parallel_config.use_mpi && G.decomp !== nothing
-        import MPI
-        import PencilArrays
         rank = MPI.Comm_rank(parallel_config.comm)
         
         if parallel_config.parallel_io
@@ -340,9 +330,7 @@ end
 Write NetCDF file using parallel I/O.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
-    import NCDatasets
-    import MPI
-    import PencilArrays
+    ensure_ncds_loaded()
     
     # Convert spectral fields to real space (each process handles its portion)
     psir = similar(S.psi, Float64)
@@ -416,7 +404,6 @@ function gather_state_for_io(S::State, G::Grid, parallel_config)
     
     # This would gather all distributed arrays to rank 0
     try
-        import PencilArrays
         
         gathered_psi = PencilArrays.gather(S.psi)
         gathered_B = PencilArrays.gather(S.B)
@@ -436,6 +423,7 @@ end
 Write gathered state from rank 0.
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time; params=nothing)
+    ensure_ncds_loaded()
     # Simple implementation - would need full state reconstruction
     @warn "Gathered state writing not fully implemented - using simplified version"
     
@@ -458,6 +446,7 @@ end
 Write diagnostic quantities to NetCDF file.
 """
 function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time::Real)
+    ensure_ncds_loaded()
     filename = "diagnostics_$(lpad(manager.diagnostics_counter, 4, '0')).nc"
     filepath = joinpath(manager.output_dir, filename)
     
@@ -498,6 +487,7 @@ Read initial stream function from NetCDF file.
 """
 function read_initial_psi(filename::String, G::Grid, plans)
     @info "Reading initial psi from: $filename"
+    ensure_ncds_loaded()
     
     psir = zeros(Float64, G.nx, G.ny, G.nz)
     
@@ -535,6 +525,7 @@ Read initial wave field (L+A) from NetCDF file.
 """
 function read_initial_waves(filename::String, G::Grid, plans)
     @info "Reading initial wave field from: $filename"
+    ensure_ncds_loaded()
     
     BRr = zeros(Float64, G.nx, G.ny, G.nz)
     BIr = zeros(Float64, G.nx, G.ny, G.nz)
@@ -579,6 +570,7 @@ Read stratification profile (N²) from NetCDF file.
 """
 function read_stratification_profile(filename::String, nz::Int)
     @info "Reading stratification profile from: $filename"
+    ensure_ncds_loaded()
     
     N2_profile = zeros(Float64, nz)
     

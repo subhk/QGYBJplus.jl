@@ -242,17 +242,11 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         particles = ParticleState{T}(np)
         
         # Use provided parallel config or detect environment
-        if parallel_config !== nothing && parallel_config.use_mpi
-            try
-                import MPI
-                comm = parallel_config.comm
-                rank = MPI.Comm_rank(comm)
-                nprocs = MPI.Comm_size(comm)
-                is_parallel = true
-            catch e
-                @warn "Failed to import MPI: $e"
-                comm, rank, nprocs, is_parallel = detect_parallel_environment()
-            end
+        if parallel_config !== nothing && parallel_config.use_mpi && @isdefined MPI
+            comm = parallel_config.comm
+            rank = MPI.Comm_rank(comm)
+            nprocs = MPI.Comm_size(comm)
+            is_parallel = true
         else
             comm, rank, nprocs, is_parallel = detect_parallel_environment()
         end
@@ -318,16 +312,11 @@ function detect_parallel_environment()
     nprocs = 1
     is_parallel = false
     
-    try
-        import MPI
-        if MPI.Initialized()
+    if @isdefined MPI && MPI.Initialized()
             comm = MPI.COMM_WORLD
             rank = MPI.Comm_rank(comm)
             nprocs = MPI.Comm_size(comm)
             is_parallel = nprocs > 1
-        end
-    catch
-        # MPI not available or not initialized
     end
     
     return comm, rank, nprocs, is_parallel
@@ -894,8 +883,11 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         return tracker
     end
     
+    if !(@isdefined MPI)
+        @warn "MPI not available; cannot migrate particles"
+        return tracker
+    end
     try
-        import MPI
         
         particles = tracker.particles
         local_domain = tracker.local_domain
@@ -955,8 +947,11 @@ end
 Exchange particles between ranks using MPI.
 """
 function exchange_particles!(tracker::ParticleTracker{T}) where T
+    if !(@isdefined MPI)
+        @warn "MPI not available; cannot exchange particles"
+        return
+    end
     try
-        import MPI
         
         comm = tracker.comm
         nprocs = tracker.nprocs

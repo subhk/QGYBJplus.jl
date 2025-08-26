@@ -2,14 +2,9 @@ module QGYBJ
 
 using LinearAlgebra
 
-# External backends (declared here; the user should add them to the project)
-try
-    import MPI
-    using PencilArrays
-    using PencilFFTs
-catch
-    @info "MPI/PencilArrays/PencilFFTs not loaded yet. You can still use serial mode."
-end
+# External backends are optional. If you wish to use MPI/PencilArrays/PencilFFTs,
+# load them in your environment before using QGYBJ. Serial mode works by default.
+@info "MPI/PencilArrays/PencilFFTs not loaded yet. You can still use serial mode."
 
 # Public API - Core functionality
 export QGParams, Grid, State,
