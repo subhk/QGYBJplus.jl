@@ -30,6 +30,8 @@ Base.@kwdef struct QGParams{T}
     stratification::Symbol       # :constant_N or :skewed_gaussian
     # Wave/flow magnitude ratio squared (Uw/U)^2 for qw feedback
     W2F::T
+    # Burger number (non-dimensional), used in YBJ+ inversion scaling
+    Bu::T
     # Robert–Asselin filter parameter
     gamma::T
 
@@ -71,6 +73,7 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     T = Float64
     W2F = T( (2.5e-5/0.25)^2 )  # test1 default (Uw_scale/U_scale)^2
     gamma = T(1e-3)
+    Bu = T(1.0)
     # Map test1 hyperdiffusion defaults (coarse analogue)
     nuh1 = T(0.01)
     nuh2 = T(10.0)
@@ -88,7 +91,7 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     z0_sg = T(6.121537923499139)
     alpha_sg = T(-5.338431587899242)
     return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, f0, nu_h, nu_v,
-                         linear_vert_structure, stratification, W2F, gamma,
+                         linear_vert_structure, stratification, W2F, Bu, gamma,
                          nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
                          nuz, inviscid, linear, no_dispersion, passive_scalar,
                          ybj_plus, no_feedback, fixed_flow, no_wave_feedback,

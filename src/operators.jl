@@ -272,113 +272,21 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     
     dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
     
-    # Step 1: Recover A from B = L⁺A using YBJ+ elliptic solver
-    # This solves: a_ell(z) d²A/dz² + b_ell(z) dA/dz - kh²A/4 = B
-    # B is stored in S.B in spectral space
-    Bk = S.B
-    Ak = similar(Bk)  # True A will be computed here
-    
-    f2 = f^2
-    
-    # Solve for A from B using tridiagonal system (following A_solver_ybj_plus)
-    @inbounds for j in 1:ny, i in 1:nx
-        kh2 = G.kh2[i,j]
-        
-        # Check dealiasing mask if provided
-        if L !== nothing && size(L) == (nx, ny)
-            dealias = (L[i,j] == 1)
-        else
-            dealias = true  # No dealiasing mask provided
-        end
-        
-        if kh2 > 0 && dealias && nz > 2
-            # Set up tridiagonal system for A recovery
-            d = zeros(eltype(S.psi), nz)      # diagonal
-            dl = zeros(eltype(S.psi), nz-1)   # lower diagonal
-            du = zeros(eltype(S.psi), nz-1)   # upper diagonal
-            rhs = zeros(Complex{eltype(S.psi)}, nz)  # RHS vector
-            
-            # Fill tridiagonal system (YBJ+ version with kh²/4 factor)
-            for k in 1:nz
-                # Coefficient: a_ell_ut = 1.0/N² (normalized)
-                a_ell = 1.0 / N2_profile[k]
-                
-                if k == 1
-                    # Bottom boundary
-                    d[k] = -(a_ell + kh2 * dz^2 / 4.0)
-                    if nz > 1
-                        du[k] = a_ell
-                    end
-                elseif k == nz
-                    # Top boundary
-                    d[k] = -(a_ell + kh2 * dz^2 / 4.0)
-                    dl[k-1] = a_ell
-                else
-                    # Interior points
-                    a_ell_k = 1.0 / N2_profile[k]
-                    d[k] = -(a_ell_k + kh2 * dz^2 / 4.0)
-                    du[k] = a_ell_k
-                    dl[k-1] = a_ell_k
-                end
-                
-                # RHS = B (normalized by Bu, but Bu=1 in normalized system)
-                rhs[k] = dz^2 * Bk[i,j,k]  # Factor from Fortran: dz*dz*Bu*B
-            end
-            
-            # Solve tridiagonal system using LAPACK
-            # For complex RHS, solve real and imaginary parts separately
-            
-            # Prepare arrays for LAPACK gtsv! (modifies input arrays)
-            dl_work = copy(dl)
-            d_work = copy(d) 
-            du_work = copy(du)
-            
-            # Split complex RHS into real and imaginary parts
-            rhs_real = real.(rhs)
-            rhs_imag = imag.(rhs)
-            
-            # Solve real part
-            try
-                LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_real)
-                sol_real = rhs_real
-            catch e
-                @warn "LAPACK gtsv failed for YBJ A recovery (real): $e, using zeros"
-                sol_real = zeros(eltype(d), nz)
-            end
-            
-            # Reset arrays for imaginary part
-            dl_work = copy(dl)
-            d_work = copy(d)
-            du_work = copy(du)
-            
-            # Solve imaginary part
-            try
-                LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_imag)
-                sol_imag = rhs_imag
-            catch e
-                @warn "LAPACK gtsv failed for YBJ A recovery (imag): $e, using zeros"
-                sol_imag = zeros(eltype(d), nz)
-            end
-            
-            # Store recovered A
-            for k in 1:nz
-                Ak[i,j,k] = complex(sol_real[k], sol_imag[k])
-            end
-            
-        else
-            # Set to zero for kh²=0 modes or when dealiased
-            for k in 1:nz
-                Ak[i,j,k] = 0.0
-            end
+    # Step 1: Recover A from B = L⁺A using centralized YBJ+ inversion
+    # Build a = 1/N² if provided, otherwise use ones
+    a_vec = similar(G.z)
+    if N2_profile === nothing
+        fill!(a_vec, one(eltype(a_vec)))
+    else
+        @inbounds for k in eachindex(a_vec)
+            a_vec[k] = one(eltype(a_vec)) / N2_profile[k]
         end
     end
+    invert_B_to_A!(S, G, params, a_vec)
+    Ak = S.A
     
     # Step 2: Compute vertical derivative A_z using finite differences
-    Ask_z = similar(Ak, Complex{eltype(Ak)}, nx, ny, nz-1)
-    
-    @inbounds for k in 1:nz-1, j in 1:ny, i in 1:nx
-        Ask_z[i,j,k] = (Ak[i,j,k+1] - Ak[i,j,k]) / dz
-    end
+    Ask_z = S.C  # C was set to A_z by invert_B_to_A!
     
     # Step 3: Compute horizontal derivatives of A_z
     dAz_dx_k = similar(Ask_z)
