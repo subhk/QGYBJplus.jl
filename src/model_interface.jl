@@ -133,6 +133,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         sigma_sg = config.stratification.sigma_sg,
         z0_sg = config.stratification.z0_sg,
         alpha_sg = config.stratification.alpha_sg
+        # Optional vertical profiles not provided via config yet; leave as nothing
     )
     
     # Initialize grid and state with parallel support

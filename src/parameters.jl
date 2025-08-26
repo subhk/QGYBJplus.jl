@@ -59,6 +59,11 @@ Base.@kwdef struct QGParams{T}
     sigma_sg::T
     z0_sg::T
     alpha_sg::T
+
+    # Optional vertical profiles (override defaults if provided)
+    rho_ut_profile::Union{Nothing,Vector{T}} = nothing
+    rho_st_profile::Union{Nothing,Vector{T}} = nothing
+    b_ell_profile::Union{Nothing,Vector{T}} = nothing
 end
 
 """

@@ -37,7 +37,12 @@ operators. For now returns ones (normalized), serving as a placeholder to
 enable density-weighted tridiagonals that mirror the Fortran structure.
 """
 function rho_ut(par::QGParams, G::Grid)
-    nz = G.nz
+    # If provided by params, use it
+    if par.rho_ut_profile !== nothing
+        @assert length(par.rho_ut_profile) == G.nz
+        return copy(par.rho_ut_profile)
+    end
+    # Default: unity weights (normalized)
     w = similar(G.z)
     @inbounds fill!(w, 1.0)
     return w
@@ -51,10 +56,31 @@ ones (normalized). This matches the simplified nondimensionalization used in
 the Julia port and can be refined to mirror Fortran parameters.
 """
 function rho_st(par::QGParams, G::Grid)
-    nz = G.nz
+    # If provided by params, use it
+    if par.rho_st_profile !== nothing
+        @assert length(par.rho_st_profile) == G.nz
+        return copy(par.rho_st_profile)
+    end
+    # Default: unity weights (normalized)
     w = similar(G.z)
     @inbounds fill!(w, 1.0)
     return w
+end
+
+"""
+    b_ell_ut(par, G) -> Vector
+
+Vertical first-derivative coefficient b(z). Not used in the current ψ/A solvers
+but provided for completeness (e.g., alternative Helmholtz problems).
+Defaults to zeros unless supplied via `par.b_ell_profile`.
+"""
+function b_ell_ut(par::QGParams, G::Grid)
+    if par.b_ell_profile !== nothing
+        @assert length(par.b_ell_profile) == G.nz
+        return copy(par.b_ell_profile)
+    end
+    b = zeros(eltype(G.z), G.nz)
+    return b
 end
 
 """
