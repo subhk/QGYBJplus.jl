@@ -78,10 +78,10 @@ available. Safe to call even without MPI; leaves `G.decomp` as `nothing`.
 """
 function init_pencil_decomposition!(G::Grid)
     try
-        import MPI
-        import PencilArrays
-        comm = MPI.COMM_WORLD
-        G.decomp = PencilArrays.PencilDecomposition((G.nx, G.ny, G.nz), comm)
+        if @isdefined MPI && @isdefined PencilArrays
+            comm = MPI.COMM_WORLD
+            G.decomp = PencilArrays.PencilDecomposition((G.nx, G.ny, G.nz), comm)
+        end
     catch
         # stay in serial mode
     end
@@ -120,7 +120,6 @@ function allocate_field(::Type{T}, G::Grid; complex::Bool=false) where {T}
     if G.decomp === nothing
         return complex ? Array{Complex{T}}(undef, sz) : Array{T}(undef, sz)
     else
-        using PencilArrays
         if complex
             return PencilArrays.PencilArray{Complex{T}}(G.decomp, sz)
         else

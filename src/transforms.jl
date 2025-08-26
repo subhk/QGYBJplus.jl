@@ -7,6 +7,17 @@ module Transforms
 
 using ..QGYBJ: Grid
 using LinearAlgebra
+import FFTW
+
+const HAS_PENCILFFTS = let ok = true
+    try
+        @eval import PencilFFTs
+    catch
+        ok = false
+        @info "PencilFFTs not available; using FFTW"
+    end
+    ok
+end
 
 Base.@kwdef mutable struct Plans
     backend::Symbol                  # :pencil or :fftw
@@ -31,24 +42,16 @@ function plan_transforms!(G::Grid, parallel_config=nothing)
     end
     
     # Try PencilFFTs for serial case if decomp exists
-    try
-        import PencilFFTs
-        if G.decomp !== nothing
-            # Plan along (x,y). Different PencilFFTs versions may vary; try common API.
-            try
-                p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
-                ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
-                return Plans(backend=:pencil, p_forward=p, p_backward=ip)
-            catch err
-                @info "PencilFFTs planning fallback", err
-            end
+    if HAS_PENCILFFTS && G.decomp !== nothing
+        try
+            p = PencilFFTs.plan_fft((G.nx, G.ny); dims=(1,2))
+            ip = PencilFFTs.plan_ifft((G.nx, G.ny); dims=(1,2))
+            return Plans(backend=:pencil, p_forward=p, p_backward=ip)
+        catch err
+            @info "PencilFFTs planning fallback", err
         end
-    catch err
-        @info "PencilFFTs not available; using FFTW", err
     end
-    
     # Fallback to FFTW
-    using FFTW
     return Plans(backend=:fftw)
 end
 
@@ -60,8 +63,6 @@ Set up FFT plans for parallel execution (called from unified interface).
 function setup_parallel_transforms(grid::Grid, pconfig)
     if grid.decomp !== nothing
         try
-            import PencilFFTs
-            
             # Create plans for the pencil decomposition
             # Transform in x and y dimensions (dims 1 and 2)
             forward_plan = PencilFFTs.PencilFFTPlan(grid.decomp, Complex{Float64}; 
@@ -82,7 +83,6 @@ function setup_parallel_transforms(grid::Grid, pconfig)
     end
     
     # Fallback to FFTW
-    using FFTW
     return Plans(backend=:fftw)
 end
 
@@ -93,13 +93,11 @@ Compute horizontal forward FFT (complex-to-complex) for each z-plane.
 """
 function fft_forward!(dst, src, P::Plans)
     if P.backend === :pencil
-        import PencilFFTs
         PencilFFTs.fft!(dst, src; plan=P.p_forward)
     else
-        using FFTW
         # src, dst: Array{Complex,3}; transform x,y per z index
         @inbounds for k in axes(src,3)
-            dst[:,:,k] .= fft(src[:,:,k])
+            dst[:,:,k] .= FFTW.fft(src[:,:,k])
         end
     end
     return dst
@@ -112,12 +110,10 @@ Compute horizontal inverse FFT (complex-to-complex) for each z-plane.
 """
 function fft_backward!(dst, src, P::Plans)
     if P.backend === :pencil
-        import PencilFFTs
         PencilFFTs.ifft!(dst, src; plan=P.p_backward)
     else
-        using FFTW
         @inbounds for k in axes(src,3)
-            dst[:,:,k] .= ifft(src[:,:,k])
+            dst[:,:,k] .= FFTW.ifft(src[:,:,k])
         end
     end
     return dst
