@@ -30,6 +30,34 @@ function a_ell_ut(par::QGParams, G::Grid)
 end
 
 """
+    rho_ut(par, G) -> Vector
+
+Unstaggered-to-staggered density-like weight used in the Fortran vertical
+operators. For now returns ones (normalized), serving as a placeholder to
+enable density-weighted tridiagonals that mirror the Fortran structure.
+"""
+function rho_ut(par::QGParams, G::Grid)
+    nz = G.nz
+    w = similar(G.z)
+    @inbounds fill!(w, 1.0)
+    return w
+end
+
+"""
+    rho_st(par, G) -> Vector
+
+Staggered-grid density-like weight for vertical operators. Currently returns
+ones (normalized). This matches the simplified nondimensionalization used in
+the Julia port and can be refined to mirror Fortran parameters.
+"""
+function rho_st(par::QGParams, G::Grid)
+    nz = G.nz
+    w = similar(G.z)
+    @inbounds fill!(w, 1.0)
+    return w
+end
+
+"""
     N2_ut(par, G) -> Vector
 
 Unstaggered Brunt–Väisälä frequency squared N^2(z) matching the chosen
@@ -55,22 +83,20 @@ end
 """
     dealias_mask(G) -> Matrix{Bool}
 
-2/3-rule horizontal dealiasing mask `L(i,j)` modeled after Fortran `init_arrays`.
-True indicates mode is kept; false indicates it is truncated.
+2/3-rule horizontal dealiasing mask `L(i,j)` with radial cutoff, modeled after
+the Fortran practice. True indicates mode is kept; false indicates it is
+truncated.
 """
 function dealias_mask(G::Grid)
     nx, ny = G.nx, G.ny
-    keep = trues(nx, ny)
-    # Following idea: keep modes with sqrt(kx^2 + ky^2) <= floor(n/3)
-    kmaxx = nx ÷ 3
-    kmaxy = ny ÷ 3
-    # Compare in index space via integer bands around zero frequency
+    keep = falses(nx, ny)
+    # Radial 2/3 cutoff in index space
+    kmax = floor(Int, min(nx, ny) / 3)
     for j in 1:ny, i in 1:nx
-        # map frequency index to centered integer index
         ix = i-1; ix = ix <= nx÷2 ? ix : ix - nx
         jy = j-1; jy = jy <= ny÷2 ? jy : jy - ny
-        keep[i,j] = (abs(ix) <= kmaxx) && (abs(jy) <= kmaxy)
+        r = sqrt(ix^2 + jy^2)
+        keep[i,j] = (r <= kmax)
     end
-    # Remove the special ky = -N/2 duplicate if even: handled by FFT indexing; keep as is
     return keep
 end
