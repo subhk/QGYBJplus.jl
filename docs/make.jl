@@ -19,12 +19,14 @@ makedocs(
         "I/O" => "src/io.md",
         "Parallel & Particles" => "src/parallel_particles.md",
         "Diagnostics" => "src/diagnostics.md",
+        "Worked Example" => "src/worked_example.md",
+        "Troubleshooting" => "src/troubleshooting.md",
         "API Reference" => "src/api.md",
     ],
 )
 
 deploydocs(
-    repo = "github.com/subhk/QGYBJ.jl",
+    repo = "github.com/subhk/QGYBJ.jl.git",
     devbranch = "main",
     push_preview = true,
 )
