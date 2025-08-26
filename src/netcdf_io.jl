@@ -9,7 +9,15 @@ This module provides comprehensive NetCDF input/output capabilities including:
 """
 
 const HAS_NCDS = Base.find_package("NCDatasets") !== nothing
-ensure_ncds_loaded() = (HAS_NCDS ? Base.require(:NCDatasets) : nothing)
+function ensure_ncds_loaded()
+    if HAS_NCDS
+        try
+            @eval import NCDatasets
+        catch
+            # ignore, caller will error if missing
+        end
+    end
+end
 using Printf
 using Dates
 using ..QGYBJ: Grid, State, QGParams

@@ -32,7 +32,13 @@ Time synchronization:
 
 module UnifiedParticleAdvection
 
-using ..QGYBJ: Grid, State, compute_total_velocities!, ParallelConfig, plan_transforms!
+# Bind names from parent module (QGYBJ) without using/import
+const _PARENT = Base.parentmodule(@__MODULE__)
+const Grid = _PARENT.Grid
+const State = _PARENT.State
+const plan_transforms! = _PARENT.plan_transforms!
+const compute_total_velocities! = _PARENT.compute_total_velocities!
+const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!, 

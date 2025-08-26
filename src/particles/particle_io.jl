@@ -9,7 +9,14 @@ module ParticleIO
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
 const HAS_NCDS = Base.find_package("NCDatasets") !== nothing
-ensure_ncds_loaded() = (HAS_NCDS ? Base.require(:NCDatasets) : nothing)
+function ensure_ncds_loaded()
+    if HAS_NCDS
+        try
+            @eval import NCDatasets
+        catch
+        end
+    end
+end
 
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file, 

@@ -23,6 +23,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     rBRk = similar(S.B)
     rBIk = similar(S.B)
     dqk  = similar(S.B)
+    # Build BRk/BIk from current S.B (real/imag split as complex scalars)
+    BRk = similar(S.B); BIk = similar(S.B)
+    @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
+        BRk[i,j,k] = Complex(real(S.B[i,j,k]), 0)
+        BIk[i,j,k] = Complex(imag(S.B[i,j,k]), 0)
+    end
 
     # Compute diagnostics first
     invert_q_to_psi!(S, G; a, par=par)

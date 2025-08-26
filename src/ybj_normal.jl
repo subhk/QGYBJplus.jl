@@ -14,7 +14,7 @@ using ..QGYBJ: N2_ut
 Subtract vertical mean of B at each horizontal wavenumber for kh>0 and
 kept by dealias mask L.
 """
-function sumB!(B::AbstractArray{Complex,3}, G::Grid; Lmask=nothing)
+function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     ave = zeros(ComplexF64, nx, ny)
@@ -69,9 +69,9 @@ Normal YBJ recovery of A from B by vertical integration with r_2ut = N^2(z),
 then enforcing vertical-mean constraint via sigma. Also computes C=A_z, with
 Neumann C(top)=0.
 """
-function compute_A!(A::AbstractArray{Complex,3}, C::AbstractArray{Complex,3},
-                    BRk::AbstractArray{Complex,3}, BIk::AbstractArray{Complex,3},
-                    sigma::AbstractArray{Complex,2}, par::QGParams, G::Grid; Lmask=nothing)
+function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
+                    BRk::AbstractArray{<:Complex,3}, BIk::AbstractArray{<:Complex,3},
+                    sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     N2 = N2_ut(par, G)
@@ -115,4 +115,3 @@ end
 end # module
 
 using .YBJNormal: sumB!, compute_sigma, compute_A!
-

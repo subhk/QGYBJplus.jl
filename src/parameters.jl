@@ -4,7 +4,7 @@
 Container for physical and numerical parameters of the QG–YBJ model.
 This is a simplified starting point; extend as needed while porting.
 """
-Base.@kwdef struct QGParams{T}
+Base.@kwdef mutable struct QGParams{T}
     # Domain sizes
     nx::Int
     ny::Int

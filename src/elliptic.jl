@@ -8,6 +8,7 @@ for each (kx,ky) independently.
 module Elliptic
 
 using ..QGYBJ: Grid, State
+const PARENT = Base.parentmodule(@__MODULE__)
 
 """
     invert_q_to_psi!(S, G; a)
@@ -34,8 +35,16 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
     Δ2 = Δ^2
 
     # Density-like weights (unity if not provided or functions unavailable)
-    r_ut = (par === nothing) ? ones(eltype(a), nz) : (isdefined(QGYBJ, :rho_ut) ? QGYBJ.rho_ut(par, G) : ones(eltype(a), nz))
-    r_st = (par === nothing) ? ones(eltype(a), nz) : (isdefined(QGYBJ, :rho_st) ? QGYBJ.rho_st(par, G) : ones(eltype(a), nz))
+    r_ut = if par === nothing
+        ones(eltype(a), nz)
+    else
+        isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
+    end
+    r_st = if par === nothing
+        ones(eltype(a), nz)
+    else
+        isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
+    end
 
     for j in 1:ny, i in 1:nx
         kh2 = G.kh2[i,j]
@@ -178,8 +187,8 @@ function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector)
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
     # Density-like weights (unity in current nondimensionalization if functions unavailable)
-    r_ut = isdefined(QGYBJ, :rho_ut) ? QGYBJ.rho_ut(par, G) : ones(eltype(a), nz)
-    r_st = isdefined(QGYBJ, :rho_st) ? QGYBJ.rho_st(par, G) : ones(eltype(a), nz)
+    r_ut = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
+    r_st = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
 
     for j in 1:ny, i in 1:nx
         kh2 = G.kh2[i,j]
@@ -250,4 +259,4 @@ end
 
 end # module
 
-using .Elliptic: invert_q_to_psi!, invert_helmholtz!
+using .Elliptic: invert_q_to_psi!, invert_helmholtz!, invert_B_to_A!

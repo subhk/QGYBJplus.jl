@@ -9,6 +9,7 @@ module Operators
 using LinearAlgebra
 using ..QGYBJ: Grid, State
 using ..QGYBJ: fft_forward!, fft_backward!, plan_transforms!, compute_wavenumbers!
+const PARENT = Base.parentmodule(@__MODULE__)
 
 """
     compute_velocities!(S, G)
@@ -89,7 +90,7 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
     
     # Get RHS of omega equation
     rhsk = similar(S.psi)
-    ..Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans)
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans)
     
     # Get stratification parameters
     if params !== nothing && hasfield(typeof(params), :f0)
@@ -128,11 +129,11 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
             n_interior = nz - 2  # Interior points
             
             if n_interior > 0
-                # Tridiagonal matrix coefficients
-                d = zeros(eltype(S.psi), n_interior)      # diagonal
-                dl = zeros(eltype(S.psi), n_interior-1)   # lower diagonal  
-                du = zeros(eltype(S.psi), n_interior-1)   # upper diagonal
-                rhs = zeros(Complex{eltype(S.psi)}, n_interior)  # RHS vector
+                # Tridiagonal matrix coefficients (real-valued)
+                d = zeros(Float64, n_interior)      # diagonal
+                dl = zeros(Float64, n_interior-1)   # lower diagonal  
+                du = zeros(Float64, n_interior-1)   # upper diagonal
+                rhs = zeros(eltype(S.psi), n_interior)  # RHS vector (complex eltype already)
                 
                 # Fill tridiagonal system based on Fortran implementation
                 for iz in 1:n_interior
@@ -171,12 +172,12 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
                 rhs_imag = imag.(rhs)
                 
                 # Solve real part: A * x_real = rhs_real
+                sol_real = zeros(Float64, n_interior)
                 try
                     LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_real)
-                    sol_real = rhs_real  # gtsv! overwrites RHS with solution
+                    sol_real .= rhs_real  # gtsv! overwrites RHS with solution
                 catch e
                     @warn "LAPACK gtsv failed for real part: $e, using zeros"
-                    sol_real = zeros(eltype(d), n_interior)
                 end
                 
                 # Reset arrays for imaginary part (gtsv! modifies them)
@@ -185,16 +186,20 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile
                 du_work = copy(du)
                 
                 # Solve imaginary part: A * x_imag = rhs_imag  
+                # Reset arrays for imaginary part (gtsv! modifies them)
+                dl_work = copy(dl)
+                d_work = copy(d)
+                du_work = copy(du)
+                sol_imag = zeros(Float64, n_interior)
                 try
                     LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_imag)
-                    sol_imag = rhs_imag  # gtsv! overwrites RHS with solution
+                    sol_imag .= rhs_imag  # gtsv! overwrites RHS with solution
                 catch e
                     @warn "LAPACK gtsv failed for imaginary part: $e, using zeros"
-                    sol_imag = zeros(eltype(d), n_interior)
                 end
                 
                 # Combine real and imaginary solutions
-                solution = complex.(sol_real, sol_imag)
+                solution = sol_real .+ im .* sol_imag
                 
                 # Store solution in wk (interior points)
                 for iz in 1:n_interior

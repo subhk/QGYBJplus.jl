@@ -72,6 +72,7 @@ function init_parallel_grid(params::QGParams, pconfig::ParallelConfig)
     
     if pconfig.use_mpi
         try
+            @eval import PencilArrays
             
             # Create pencil decomposition
             # For 3D (x,y,z) data, typically decompose in y and z dimensions
@@ -113,7 +114,7 @@ Initialize state with distributed arrays when using MPI.
 function init_parallel_state(grid::Grid, pconfig::ParallelConfig; T=Float64)
     if grid.decomp !== nothing
         # Use PencilArrays for distributed storage
-        
+        @eval import PencilArrays
         # Spectral fields (complex)
         q   = PencilArrays.allocate_array(grid.decomp, Complex{T}); fill!(q, 0)
         psi = PencilArrays.allocate_array(grid.decomp, Complex{T}); fill!(psi, 0)
