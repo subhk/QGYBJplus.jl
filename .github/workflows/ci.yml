@@ -35,5 +35,19 @@ jobs:
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
       - name: Run tests
-        run: julia --project=. -e 'using Pkg; Pkg.test()'
+        run: julia --project=. -e 'using Pkg; Pkg.test(coverage=true)'
 
+      - name: Generate coverage (LCOV)
+        run: |
+          julia --project=. -e '
+            using Pkg; Pkg.add("Coverage");
+            using Coverage;
+            LCOV.writefile("lcov.info", process_folder())
+          '
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: lcov.info
+          flags: unittests
+          fail_ci_if_error: false
