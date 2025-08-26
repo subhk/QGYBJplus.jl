@@ -67,6 +67,28 @@ Base.@kwdef struct QGParams{T}
 end
 
 """
+    with_density_profiles(par; rho_ut, rho_st, b_ell=nothing)
+
+Return a new `QGParams` with provided vertical profiles populated into the
+optional fields `rho_ut_profile`, `rho_st_profile`, and `b_ell_profile`.
+"""
+function with_density_profiles(par::QGParams{T};
+                               rho_ut::AbstractVector{T},
+                               rho_st::AbstractVector{T},
+                               b_ell::Union{Nothing,AbstractVector{T}}=nothing) where T
+    @assert length(rho_ut) == par.nz
+    @assert length(rho_st) == par.nz
+    bprof = b_ell
+    # rebuild parameter struct with all existing fields + new profiles
+    return QGParams{T}(;
+        (name => getfield(par, name) for name in fieldnames(typeof(par)) if !(name in (:rho_ut_profile, :rho_st_profile, :b_ell_profile)))...,
+        rho_ut_profile = collect(rho_ut),
+        rho_st_profile = collect(rho_st),
+        b_ell_profile = bprof === nothing ? nothing : collect(bprof),
+    )
+end
+
+"""
     default_params(; kwargs...)
 
 Construct a reasonable default parameter set for experimentation.

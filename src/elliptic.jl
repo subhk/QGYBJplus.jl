@@ -79,6 +79,89 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
 end
 
 """
+    invert_helmholtz!(dstk, rhs, G, par; a, b=zeros, scale_kh2=1.0, bot_bc=nothing, top_bc=nothing)
+
+General vertical Helmholtz inversion per (kx,ky):
+    (a d²/dz² + b d/dz - scale_kh2*kh²) φ = rhs
+with density-like weights via `rho_ut`, `rho_st`, and optional boundary
+corrections resembling Fortran's helmholtzdouble. `bot_bc`/`top_bc` can be
+Arrays of size (nx,ny) with complex values to inject boundary fluxes.
+"""
+function invert_helmholtz!(dstk, rhs, G::Grid, par;
+                           a::AbstractVector,
+                           b::AbstractVector=zeros(eltype(a), length(a)),
+                           scale_kh2::Real=1.0,
+                           bot_bc=nothing,
+                           top_bc=nothing)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    @assert size(dstk) == (nx, ny, nz)
+    @assert size(rhs)  == (nx, ny, nz)
+    @assert length(a) == nz
+    @assert length(b) == nz
+
+    Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    Δ2 = Δ^2
+
+    # Density-like weights
+    r_ut = rho_ut(par, G)
+    r_st = rho_st(par, G)
+
+    dl = zeros(eltype(a), nz)
+    d  = zeros(eltype(a), nz)
+    du = zeros(eltype(a), nz)
+
+    for j in 1:ny, i in 1:nx
+        kh2 = G.kh2[i,j]
+
+        # Build tridiagonals with b-terms (Neumann-like)
+        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
+        # bottom level (k=1)
+        α1 = r_ut[1]/r_st[1]
+        d[1]  = -( α1*a[1] + 0.5*α1*b[1]*Δ + scale_kh2*kh2*Δ2 )
+        du[1] =   α1*a[1] + 0.5*α1*b[1]*Δ
+        # interior
+        @inbounds for k in 2:nz-1
+            αk   = r_ut[k]/r_st[k]
+            αkm1 = r_ut[k-1]/r_st[k]
+            dl[k] = αkm1*a[k-1] - 0.5*αkm1*b[k-1]*Δ
+            d[k]  = -( 2*αk*a[k] + scale_kh2*kh2*Δ2 )
+            du[k] =  αk*a[k] + 0.5*αk*b[k]*Δ
+        end
+        # top level (k=nz)
+        αn = r_ut[nz-1]/r_st[nz]
+        dl[nz] = αn*a[nz-1] - 0.5*αn*b[nz-1]*Δ
+        d[nz]  = -( αn*a[nz-1] - 0.5*αn*b[nz-1]*Δ + scale_kh2*kh2*Δ2 )
+
+        # Prepare RHS (copy since we overwrite)
+        rhsR = similar(view(rhs, i, j, :), eltype(a))
+        rhsI = similar(rhsR)
+        @inbounds for k in 1:nz
+            rhsR[k] = Δ2 * real(rhs[i,j,k])
+            rhsI[k] = Δ2 * imag(rhs[i,j,k])
+        end
+        # Boundary flux adjustments if provided
+        if bot_bc !== nothing
+            rhsR[1] += (α1*(a[1] - 0.5*b[1]*Δ)) * Δ * real(bot_bc[i,j])
+            rhsI[1] += (α1*(a[1] - 0.5*b[1]*Δ)) * Δ * imag(bot_bc[i,j])
+        end
+        if top_bc !== nothing
+            rhsR[nz] -= (αn*(a[nz-1] + 0.5*b[nz-1]*Δ)) * Δ * real(top_bc[i,j])
+            rhsI[nz] -= (αn*(a[nz-1] + 0.5*b[nz-1]*Δ)) * Δ * imag(top_bc[i,j])
+        end
+
+        # Solve real and imaginary parts
+        solR = copy(rhsR)
+        solI = copy(rhsI)
+        thomas_solve!(solR, dl, d, du, rhsR)
+        thomas_solve!(solI, dl, d, du, rhsI)
+        @inbounds for k in 1:nz
+            dstk[i,j,k] = solR[k] + im*solI[k]
+        end
+    end
+    return dstk
+end
+
+"""
     invert_B_to_A!(S, G, par, a)
 
 YBJ+ inversion: for each (kx,ky), solve along z the system for A with
@@ -168,4 +251,4 @@ end
 
 end # module
 
-using .Elliptic: invert_q_to_psi!
+using .Elliptic: invert_q_to_psi!, invert_helmholtz!
