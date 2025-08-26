@@ -292,7 +292,7 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     dAz_dx_k = similar(Ask_z)
     dAz_dy_k = similar(Ask_z)
     
-    @inbounds for k in 1:size(Ask_z,3), j in 1:ny, i in 1:nx
+    @inbounds for k in 1:(nz-1), j in 1:ny, i in 1:nx
         ikx = im * G.kx[i]
         iky = im * G.ky[j]
         dAz_dx_k[i,j,k] = ikx * Ask_z[i,j,k]
@@ -305,19 +305,17 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     wk_ybj = similar(S.psi)
     fill!(wk_ybj, 0.0)
     
-    @inbounds for k in 1:size(Ask_z,3), j in 1:ny, i in 1:nx
+    @inbounds for k in 1:(nz-1), j in 1:ny, i in 1:nx
         k_out = k + 1  # Shift to match output grid (intermediate to full levels)
-        if k_out <= nz
-            # Get N² at this level
-            N2_level = N2_profile[k_out]
-            
-            # YBJ formula: w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-            ybj_factor = -(f^2) / N2_level
-            complex_term = dAz_dx_k[i,j,k] - im * dAz_dy_k[i,j,k]
-            
-            # Apply the + c.c. operation to get real result
-            wk_ybj[i,j,k_out] = ybj_factor * (complex_term + conj(complex_term))
-        end
+        # Get N² at this level
+        N2_level = N2_profile[k_out]
+        
+        # YBJ formula: w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
+        ybj_factor = -(f^2) / N2_level
+        complex_term = dAz_dx_k[i,j,k] - im * dAz_dy_k[i,j,k]
+        
+        # Apply the + c.c. operation to get real result
+        wk_ybj[i,j,k_out] = ybj_factor * (complex_term + conj(complex_term))
     end
     
     # Apply boundary conditions: w = 0 at top and bottom
