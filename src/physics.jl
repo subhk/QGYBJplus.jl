@@ -107,6 +107,52 @@ function N2_ut(par::QGParams, G::Grid)
 end
 
 """
+    derive_density_profiles(par, G; N2_profile=nothing) -> (rho_ut, rho_st)
+
+Derive density-like vertical profiles from stratification:
+- Start with N²(z) (uses `N2_ut(par,G)` if not provided).
+- Integrate a simple Boussinesq relation dρ/dz = -N² (nondimensional g=ρ₀=1)
+  to obtain a monotonically varying background density ρ(z). Then normalize
+  ρ to unit mean and ensure positivity.
+- Construct `rho_ut[k] = ρ(z_k)` on unstaggered levels.
+- Construct staggered `rho_st` as vertical averages between adjacent levels
+  with boundary handling: `rho_st[1]=rho_ut[1]`, `rho_st[nz]=rho_ut[nz-1]`, and
+  `rho_st[k]=0.5(rho_ut[k]+rho_ut[k-1])` for interior 2..nz-1.
+
+This heuristic mirrors the Fortran usage of `rho_ut`/`rho_st` in weighted
+vertical operators and provides a consistent default derived from N².
+"""
+function derive_density_profiles(par::QGParams, G::Grid; N2_profile=nothing)
+    nz = G.nz
+    dz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    N2 = N2_profile === nothing ? N2_ut(par, G) : N2_profile
+    @assert length(N2) == nz
+    ρ = similar(N2)
+    # Integrate from bottom: ρ(1) = 1; ρ(k+1) = ρ(k) - N2(k)*dz
+    ρ[1] = one(eltype(N2))
+    @inbounds for k in 1:nz-1
+        ρ[k+1] = ρ[k] - N2[k]*dz
+    end
+    # Normalize to unit mean and ensure positivity (shift if needed)
+    meanρ = sum(ρ)/nz
+    ρ ./= meanρ
+    minρ = minimum(ρ)
+    if minρ <= 0
+        shift = (abs(minρ) + eps(eltype(ρ)))
+        ρ .+= shift
+        ρ ./= sum(ρ)/nz
+    end
+    rho_ut = copy(ρ)
+    rho_st = similar(ρ)
+    rho_st[1] = rho_ut[1]
+    @inbounds for k in 2:nz-1
+        rho_st[k] = 0.5*(rho_ut[k] + rho_ut[k-1])
+    end
+    rho_st[nz] = rho_ut[nz-1]
+    return rho_ut, rho_st
+end
+
+"""
     dealias_mask(G) -> Matrix{Bool}
 
 2/3-rule horizontal dealiasing mask `L(i,j)` with radial cutoff, modeled after
