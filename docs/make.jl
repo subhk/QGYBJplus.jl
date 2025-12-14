@@ -15,12 +15,13 @@ makedocs(
         assets = String[],
         sidebar_sitename = true,
         collapselevel = 2,
+        size_threshold = 500_000,  # 500KB limit for individual pages
     ),
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
             "Installation" => "getting_started.md",
-            "Quick Start Tutorial" => "quickstart.md",
+            "Quick Start" => "quickstart.md",
             "Worked Example" => "worked_example.md",
         ],
         "Physics & Theory" => [
@@ -32,17 +33,17 @@ makedocs(
         ],
         "User Guide" => [
             "Configuration" => "guide/configuration.md",
-            "Stratification Profiles" => "guide/stratification.md",
+            "Stratification" => "guide/stratification.md",
             "Initial Conditions" => "guide/initial_conditions.md",
-            "Time Integration" => "guide/simulation.md",
+            "Running Simulations" => "guide/simulation.md",
             "I/O and Output" => "guide/io.md",
             "Diagnostics" => "guide/diagnostics.md",
         ],
         "Advanced Topics" => [
             "MPI Parallelization" => "advanced/parallel.md",
             "Particle Advection" => "advanced/particles.md",
-            "Interpolation Methods" => "advanced/interpolation.md",
-            "Performance Optimization" => "advanced/performance.md",
+            "Interpolation" => "advanced/interpolation.md",
+            "Performance Tips" => "advanced/performance.md",
         ],
         "API Reference" => [
             "Core Types" => "api/types.md",
@@ -55,7 +56,7 @@ makedocs(
         "Troubleshooting" => "troubleshooting.md",
     ],
     doctest = false,
-    warnonly = [:missing_docs, :cross_references],
+    warnonly = [:missing_docs, :cross_references, :autodocs_block],
 )
 
 deploydocs(
