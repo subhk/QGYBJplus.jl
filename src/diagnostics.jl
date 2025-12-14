@@ -1,6 +1,53 @@
-"""
-Diagnostics: omega_eqn_rhs! and simple wave energy measures.
-"""
+#=
+================================================================================
+                    diagnostics.jl - Energy and Field Diagnostics
+================================================================================
+
+This file provides diagnostic routines for analyzing QG-YBJ+ simulations,
+including energy computations, the omega equation RHS, and field slicing.
+
+ENERGY DIAGNOSTICS:
+-------------------
+Energy is a key diagnostic for verifying model behavior:
+
+1. FLOW KINETIC ENERGY:
+   KE = (1/2) ∫∫∫ (u² + v²) dx dy dz
+
+   In QG, KE is related to enstrophy and streamfunction.
+   Conservation/decay of KE indicates model stability.
+
+2. WAVE ENERGY:
+   WE_B = (1/2) ∫∫∫ |B|² dx dy dz   (envelope-based)
+   WE_A = (1/2) ∫∫∫ |A|² dx dy dz   (amplitude-based)
+
+   Wave energy transfer between scales indicates cascade direction.
+   Energy exchange with mean flow shows wave-mean interaction.
+
+OMEGA EQUATION RHS:
+-------------------
+The omega equation RHS drives ageostrophic vertical motion:
+
+    ∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+
+The RHS 2J(ψ_z, ∇²ψ) represents:
+- Jacobian of vertical shear (thermal wind) and vorticity
+- Physically: differential advection creating divergence
+- Strong near fronts and eddy boundaries
+
+FIELD SLICING:
+--------------
+Utility functions for extracting 2D slices from 3D spectral fields:
+- slice_horizontal: x-y plane at fixed z (good for surface fields)
+- slice_vertical_xz: x-z plane at fixed y (good for vertical structure)
+
+FORTRAN CORRESPONDENCE:
+-----------------------
+- omega_eqn_rhs! → omega_eqn_rhs in diagnostics.f90
+- wave_energy → energy diagnostics in diagnostics.f90
+- flow_kinetic_energy → ke_flow in diagnostics.f90
+
+================================================================================
+=#
 
 module Diagnostics
 
