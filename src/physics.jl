@@ -271,23 +271,83 @@ function b_ell_ut(par::QGParams, G::Grid)
     return b
 end
 
+#=
+================================================================================
+                        STRATIFICATION PROFILE (N²)
+================================================================================
+The Brunt-Väisälä frequency squared N²(z) is the fundamental physical
+quantity characterizing ocean stratification.
+================================================================================
+=#
+
 """
     N2_ut(par, G) -> Vector
 
-Unstaggered Brunt–Väisälä frequency squared N^2(z) matching the chosen
-stratification (used by the normal YBJ integration method).
+Compute the Brunt-Väisälä frequency squared N²(z) on unstaggered vertical levels.
+
+# Physical Meaning
+N² (buoyancy frequency squared) measures the strength of density stratification:
+
+    N² = -(g/ρ₀) ∂ρ/∂z
+
+where ρ is the background density profile. N² controls:
+- Vertical wave propagation speed: c_g ∝ N
+- Internal wave frequency range: f < ω < N
+- Stretching in QG dynamics: f²/N² term
+- YBJ+ wave dispersion relation
+
+# Typical Ocean Values
+- Surface mixed layer: N² ≈ 0 (well-mixed)
+- Pycnocline (100-500m): N² ≈ 10⁻⁴ s⁻² (strong stratification)
+- Deep ocean: N² ≈ 10⁻⁶ s⁻² (weak stratification)
+
+# Stratification Profiles
+1. `:constant_N`: N² = 1 everywhere (nondimensional)
+   - Simplest case, constant vertical wave speed
+
+2. `:skewed_gaussian`: Realistic ocean profile
+   - N²(z) = N₁² exp(-(z-z₀)²/σ²)[1 + erf(α(z-z₀)/σ√2)] + N₀²
+   - Enhanced stratification at pycnocline depth z₀
+   - Asymmetry parameter α creates realistic upper-ocean structure
+
+# Arguments
+- `par::QGParams`: Stratification type and coefficients
+- `G::Grid`: Grid with vertical levels
+
+# Returns
+Vector of length nz with N²(z_k) values.
+
+# Example
+```julia
+N2 = N2_ut(par, G)
+# For plotting: plot(G.z, N2) shows pycnocline structure
+```
+
+# Fortran Correspondence
+Matches `n2(k)` computed in `init_base_state` (init.f90).
 """
 function N2_ut(par::QGParams, G::Grid)
     nz = G.nz
     N2 = similar(G.z)
+
     if par.stratification === :constant_N
+        #= Uniform stratification: N² = 1 (nondimensional)
+        Corresponds to constant vertical group velocity for internal waves =#
         @inbounds fill!(N2, 1.0)
+
     elseif par.stratification === :skewed_gaussian
+        #= Skewed Gaussian profile for realistic pycnocline:
+        - N₀² provides background deep-ocean stratification
+        - N₁² is the pycnocline enhancement
+        - z₀ is the pycnocline center depth
+        - σ is the pycnocline width
+        - α controls asymmetry (positive = sharper above z₀) =#
         N02 = par.N02_sg; N12 = par.N12_sg; σ = par.sigma_sg; z0 = par.z0_sg; α = par.alpha_sg
         @inbounds for k in 1:nz
             z = G.z[k]
             N2[k] = N12*exp(-((z - z0)^2)/(σ^2))*(1 + erf(α*(z - z0)/(σ*sqrt(2.0)))) + N02
         end
+
     else
         error("Unsupported stratification: $(par.stratification)")
     end
