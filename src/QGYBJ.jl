@@ -154,8 +154,12 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        create_stratification_profile, compute_stratification_profile,
        # Legacy I/O compatibility functions (now implemented in netcdf_io.jl)
        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
-       # Parallel interface
+       # Parallel interface (legacy - prefer MPI extension)
        ParallelConfig, setup_parallel_environment, init_parallel_grid, init_parallel_state,
+       # MPI extension interface (available when MPI/PencilArrays/PencilFFTs are loaded)
+       setup_mpi_environment, init_mpi_grid, init_mpi_state, plan_mpi_transforms,
+       gather_to_root, scatter_from_root, mpi_barrier, mpi_reduce_sum, local_indices,
+       write_mpi_field, init_mpi_random_field!,
        # Unified particle advection system (handles both serial and parallel automatically)
        ParticleConfig, ParticleState, ParticleTracker, create_particle_config,
        initialize_particles!, advect_particles!, interpolate_velocity_at_position,
@@ -215,5 +219,79 @@ include("netcdf_io.jl")        # NetCDF I/O with legacy compatibility
 # Particle advection system (for Lagrangian tracking)
 include("particles/unified_particle_advection.jl")  # Particle tracking core
 include("particles/particle_io.jl")                  # Particle trajectory I/O
+
+#=
+================================================================================
+                    MPI EXTENSION FUNCTION STUBS
+================================================================================
+These functions are implemented in ext/QGYBJMPIExt.jl when MPI, PencilArrays,
+and PencilFFTs are loaded. They throw informative errors if called without
+the required packages.
+================================================================================
+=#
+
+const MPI_ERROR_MSG = """
+MPI parallel functionality requires MPI.jl, PencilArrays.jl, and PencilFFTs.jl.
+Install and load these packages first:
+
+    using Pkg
+    Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
+
+    using MPI
+    using PencilArrays
+    using PencilFFTs
+    using QGYBJ
+
+    MPI.Init()
+    mpi_config = QGYBJ.setup_mpi_environment()
+"""
+
+function setup_mpi_environment(; kwargs...)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_grid(params, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_state(grid, mpi_config; kwargs...)
+    error(MPI_ERROR_MSG)
+end
+
+function plan_mpi_transforms(grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function gather_to_root(arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function scatter_from_root(arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function mpi_barrier(mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function mpi_reduce_sum(val, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function local_indices(grid)
+    # This one can work in serial mode - return full range
+    if grid.decomp === nothing
+        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function write_mpi_field(filename, varname, arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_random_field!(arr, grid, amplitude, seed_offset=0)
+    error(MPI_ERROR_MSG)
+end
 
 end # module
