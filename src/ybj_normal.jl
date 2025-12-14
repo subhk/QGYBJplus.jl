@@ -71,7 +71,7 @@ For normal YBJ, we need to remove the vertical mean of B before integration.
 =#
 
 """
-    sumB!(B, G; Lmask)
+    sumB!(B, G; Lmask=nothing, workspace=nothing)
 
 Remove the vertical mean from the wave envelope B at each horizontal wavenumber.
 
@@ -94,6 +94,7 @@ For wavenumbers outside the mask or kh² = 0, set B = 0.
 - `B::Array{Complex,3}`: Wave envelope (modified in-place)
 - `G::Grid`: Grid structure with wavenumbers
 - `Lmask`: Optional dealiasing mask (default: all modes kept)
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Modified B array with zero vertical mean at each (kₓ, kᵧ).
@@ -101,26 +102,85 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 # Fortran Correspondence
 Matches `sumB` in derivatives.f90.
 """
-function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    ave = zeros(ComplexF64, nx, ny)
-    @inbounds for j in 1:ny, i in 1:nx
-        if L[i,j] && G.kh2[i,j] > 0
-            s = 0.0 + 0.0im
-            for k in 1:nz
-                s += B[i,j,k]
-            end
-            aveij = s / nz
-            ave[i,j] = aveij
-            for k in 1:nz
-                B[i,j,k] -= aveij
-            end
-        else
-            for k in 1:nz; B[i,j,k] = 0; end
-        end
+function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
+    # Check if we need 2D decomposition with transposes
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
+
+    if need_transpose
+        _sumB_2d!(B, G, Lmask, workspace)
+    else
+        _sumB_direct!(B, G, Lmask)
     end
     return B
+end
+
+# Direct computation when z is fully local
+function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+
+    B_arr = parent(B)
+    nx_local, ny_local, nz_local = size(B_arr)
+
+    @assert nz_local == nz "Vertical dimension must be fully local"
+
+    @inbounds for j in 1:ny_local, i in 1:nx_local
+        i_global = local_to_global(i, 1, G)
+        j_global = local_to_global(j, 2, G)
+
+        if L[i_global, j_global] && G.kh2[i_global, j_global] > 0
+            s = 0.0 + 0.0im
+            for k in 1:nz
+                s += B_arr[i,j,k]
+            end
+            aveij = s / nz
+            for k in 1:nz
+                B_arr[i,j,k] -= aveij
+            end
+        else
+            for k in 1:nz
+                B_arr[i,j,k] = 0
+            end
+        end
+    end
+end
+
+# 2D decomposition version with transposes
+function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+
+    # Transpose to z-pencil for vertical operations
+    B_z = workspace !== nothing && hasfield(typeof(workspace), :B_z) ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
+    transpose_to_z_pencil!(B_z, B, G)
+
+    B_z_arr = parent(B_z)
+    nx_local_z, ny_local_z, nz_local = size(B_z_arr)
+
+    @assert nz_local == nz "After transpose, z must be fully local"
+
+    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
+        i_global = local_to_global_z(i, 1, G)
+        j_global = local_to_global_z(j, 2, G)
+
+        if L[i_global, j_global] && G.kh2[i_global, j_global] > 0
+            s = 0.0 + 0.0im
+            for k in 1:nz
+                s += B_z_arr[i,j,k]
+            end
+            aveij = s / nz
+            for k in 1:nz
+                B_z_arr[i,j,k] -= aveij
+            end
+        else
+            for k in 1:nz
+                B_z_arr[i,j,k] = 0
+            end
+        end
+    end
+
+    # Transpose back to xy-pencil
+    transpose_to_xy_pencil!(B, B_z, G)
 end
 
 #=
@@ -132,7 +192,7 @@ Sigma is the solvability condition for the vertical integration.
 =#
 
 """
-    compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask) -> sigma
+    compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing) -> sigma
 
 Compute the sigma constraint for normal YBJ A recovery.
 
@@ -159,26 +219,101 @@ where:
 - `nBRk, nBIk`: Real/imaginary parts of advection forcing
 - `rBRk, rBIk`: Real/imaginary parts of refraction forcing
 - `Lmask`: Optional dealiasing mask
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
-2D complex array sigma(nx, ny) with the constraint values.
+2D complex array sigma(nx_local, ny_local) with the constraint values.
 
 # Fortran Correspondence
 Matches `compute_sigma` in derivatives.f90.
+
+# Note
+In MPI mode with 2D decomposition, this requires z to be fully local.
+Transpose operations are handled internally if needed.
 """
 function compute_sigma(par::QGParams, G::Grid,
-                       nBRk, nBIk, rBRk, rBIk; Lmask=nothing)
+                       nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing)
+    # Check if we need 2D decomposition with transposes
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
+
+    if need_transpose
+        return _compute_sigma_2d(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace)
+    else
+        return _compute_sigma_direct(par, G, nBRk, nBIk, rBRk, rBIk, Lmask)
+    end
+end
+
+# Direct computation when z is fully local
+function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    sigma = zeros(ComplexF64, nx, ny)
-    @inbounds for j in 1:ny, i in 1:nx
-        kh2 = G.kh2[i,j]
-        if L[i,j] && kh2 > 0
+
+    nBRk_arr = parent(nBRk)
+    nx_local, ny_local, nz_local = size(nBRk_arr)
+
+    @assert nz_local == nz "Vertical dimension must be fully local"
+
+    sigma = zeros(ComplexF64, nx_local, ny_local)
+
+    nBIk_arr = parent(nBIk)
+    rBRk_arr = parent(rBRk)
+    rBIk_arr = parent(rBIk)
+
+    @inbounds for j in 1:ny_local, i in 1:nx_local
+        i_global = local_to_global(i, 1, G)
+        j_global = local_to_global(j, 2, G)
+        kh2 = G.kh2[i_global, j_global]
+
+        if L[i_global, j_global] && kh2 > 0
             s = 0.0 + 0.0im
             for k in 1:nz
-                s += ( rBRk[i,j,k] + 2*nBIk[i,j,k] + im*( rBIk[i,j,k] - 2*nBRk[i,j,k] ) )/kh2
+                s += ( rBRk_arr[i,j,k] + 2*nBIk_arr[i,j,k] + im*( rBIk_arr[i,j,k] - 2*nBRk_arr[i,j,k] ) )/kh2
             end
-            sigma[i,j] = s  # Normalized (Bu*Ro = 1.0)
+            sigma[i,j] = s
+        else
+            sigma[i,j] = 0
+        end
+    end
+    return sigma
+end
+
+# 2D decomposition version with transposes
+function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, workspace)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+
+    # Transpose to z-pencil for vertical summation
+    nBRk_z = allocate_z_pencil(G, ComplexF64)
+    nBIk_z = allocate_z_pencil(G, ComplexF64)
+    rBRk_z = allocate_z_pencil(G, ComplexF64)
+    rBIk_z = allocate_z_pencil(G, ComplexF64)
+
+    transpose_to_z_pencil!(nBRk_z, nBRk, G)
+    transpose_to_z_pencil!(nBIk_z, nBIk, G)
+    transpose_to_z_pencil!(rBRk_z, rBRk, G)
+    transpose_to_z_pencil!(rBIk_z, rBIk, G)
+
+    nBRk_z_arr = parent(nBRk_z)
+    nBIk_z_arr = parent(nBIk_z)
+    rBRk_z_arr = parent(rBRk_z)
+    rBIk_z_arr = parent(rBIk_z)
+
+    nx_local_z, ny_local_z, nz_local = size(nBRk_z_arr)
+    @assert nz_local == nz "After transpose, z must be fully local"
+
+    sigma = zeros(ComplexF64, nx_local_z, ny_local_z)
+
+    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
+        i_global = local_to_global_z(i, 1, G)
+        j_global = local_to_global_z(j, 2, G)
+        kh2 = G.kh2[i_global, j_global]
+
+        if L[i_global, j_global] && kh2 > 0
+            s = 0.0 + 0.0im
+            for k in 1:nz
+                s += ( rBRk_z_arr[i,j,k] + 2*nBIk_z_arr[i,j,k] + im*( rBIk_z_arr[i,j,k] - 2*nBRk_z_arr[i,j,k] ) )/kh2
+            end
+            sigma[i,j] = s
         else
             sigma[i,j] = 0
         end
