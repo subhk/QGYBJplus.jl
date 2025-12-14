@@ -531,9 +531,15 @@ include("ybj_normal.jl")    # sumB!, compute_sigma, compute_A! for normal YBJ
 # Diagnostics
 include("diagnostics.jl")   # Energy diagnostics, omega equation RHS
 
-# High-level user interface
-include("model_interface.jl")  # QGYBJSimulation, run_simulation!, etc.
-include("netcdf_io.jl")        # NetCDF I/O with legacy compatibility
+# Configuration and I/O (must be included before model_interface.jl)
+include("config.jl")            # Configuration types (DomainConfig, etc.)
+include("netcdf_io.jl")         # NetCDF I/O with legacy compatibility
+include("initialization.jl")    # Field initialization helpers
+include("stratification.jl")    # Stratification profiles
+include("parallel_interface.jl") # Parallel configuration types
+
+# High-level user interface (depends on the above)
+include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.
 
 # Particle advection system (for Lagrangian tracking)
 include("particles/unified_particle_advection.jl")  # Particle tracking core

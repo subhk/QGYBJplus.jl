@@ -11,12 +11,8 @@ using ..QGYBJ: plan_transforms!, init_grid, init_state
 using ..QGYBJ: first_projection_step!, leapfrog_step!
 using ..QGYBJ: invert_q_to_psi!, compute_velocities!
 
-# Import our new modules
-include("config.jl")
-include("netcdf_io.jl")
-include("initialization.jl")
-include("stratification.jl")
-include("parallel_interface.jl")
+# Note: config.jl, netcdf_io.jl, initialization.jl, stratification.jl, parallel_interface.jl
+# are included in QGYBJ.jl before this file to avoid duplicate includes
 
 """
     QGYBJSimulation{T}
