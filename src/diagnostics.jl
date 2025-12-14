@@ -480,7 +480,7 @@ Extract a vertical (x-z) slice from a spectral 3D field at fixed y.
 
 # Description
 Transforms a spectral field to physical space and extracts the x-z
-slice at y-index j.
+slice at LOCAL y-index j.
 
 # Use Cases
 - Vertical wave structure visualization
@@ -491,20 +491,32 @@ slice at y-index j.
 - `field::Array{Complex,3}`: Spectral field (nx, ny, nz)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
-- `j::Int`: Y-index for slice (1 ≤ j ≤ ny)
+- `j::Int`: LOCAL Y-index for slice (1 ≤ j ≤ ny_local)
 
 # Returns
-2D real array (nx, nz) with values at y = G.y[j] (if y were defined).
+2D real array (nx_local, nz_local) with values at local y[j].
+
+# Note
+In MPI mode with 2D decomposition, j is a LOCAL index.
+For full domain slices, gather data to root first.
 """
 function slice_vertical_xz(field, G::Grid, plans; j::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
-    @assert 1 <= j <= ny
+
+    # Get local dimensions
+    field_arr = parent(field)
+    nx_local, ny_local, nz_local = size(field_arr)
+
+    @assert 1 <= j <= ny_local "j=$j must be within local range 1:$ny_local"
+
     Xr = similar(field)
     fft_backward!(Xr, field, plans)
+    Xr_arr = parent(Xr)
+
     norm = nx*ny
-    sl = Array{Float64}(undef, nx, nz)
-    @inbounds for k in 1:nz, i in 1:nx
-        sl[i,k] = real(Xr[i,j,k]) / norm
+    sl = Array{Float64}(undef, nx_local, nz_local)
+    @inbounds for k in 1:nz_local, i in 1:nx_local
+        sl[i,k] = real(Xr_arr[i,j,k]) / norm
     end
     return sl
 end
@@ -538,12 +550,16 @@ Two measures of wave energy in the model:
 Tuple (E_B, E_A) of domain-summed squared magnitudes.
 
 # Note
-These are domain SUMS, not means. For energy density, divide by grid volume.
+- These are domain SUMS, not means. For energy density, divide by grid volume.
+- In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
 """
 function wave_energy(B, A)
+    # Works with any array (regular or PencilArray)
+    B_arr = parent(B)
+    A_arr = parent(A)
     EB = 0.0; EA = 0.0
-    @inbounds for x in B; EB += abs2(x); end
-    @inbounds for x in A; EA += abs2(x); end
+    @inbounds for x in B_arr; EB += abs2(x); end
+    @inbounds for x in A_arr; EA += abs2(x); end
     return EB, EA
 end
 
