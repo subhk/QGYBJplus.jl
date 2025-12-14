@@ -341,8 +341,9 @@ compute_wavenumbers!
 
 ```@docs
 init_state
-allocate_field
 ```
+
+Field allocation is handled internally by `init_state`. For manual array creation, use standard Julia array allocation or `allocate_xy_pencil`/`allocate_z_pencil` for parallel mode.
 
 ### Index Mapping Functions
 
