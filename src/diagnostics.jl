@@ -53,6 +53,9 @@ module Diagnostics
 
 using ..QGYBJ: Grid
 using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
+using ..QGYBJ: local_to_global, get_local_dims
+using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
+using ..QGYBJ: local_to_global_z, allocate_z_pencil
 
 #=
 ================================================================================
