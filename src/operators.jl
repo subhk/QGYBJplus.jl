@@ -83,7 +83,7 @@ FORTRAN CORRESPONDENCE:
 module Operators
 
 using LinearAlgebra
-using ..QGYBJ: Grid, State
+using ..QGYBJ: Grid, State, local_to_global, get_local_dims
 using ..QGYBJ: fft_forward!, fft_backward!, plan_transforms!, compute_wavenumbers!
 const PARENT = Base.parentmodule(@__MODULE__)
 
