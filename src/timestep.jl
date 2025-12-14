@@ -79,7 +79,7 @@ After this step:
 =#
 
 """
-    first_projection_step!(S, G, par, plans; a, dealias_mask=nothing)
+    first_projection_step!(S, G, par, plans; a, dealias_mask=nothing, workspace=nothing)
 
 Forward Euler initialization step for the leapfrog time stepper.
 
@@ -125,6 +125,7 @@ step, providing the needed second time level.
 - `plans`: FFT plans
 - `a`: Elliptic coefficient array a_ell(z) = Bu/N²
 - `dealias_mask`: Optional 2/3 dealiasing mask (nx × ny)
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Modified state S at time n+1.
@@ -142,7 +143,7 @@ L = dealias_mask(params, grid)
 first_projection_step!(state, grid, params, plans; a=a, dealias_mask=L)
 ```
 """
-function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, dealias_mask=nothing)
+function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     q_arr = parent(S.q)
     B_arr = parent(S.B)
@@ -153,8 +154,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     nx_local, ny_local, nz_local = size(q_arr)
     nz = G.nz
 
-    # Verify z is fully local (required for vertical operations)
-    @assert nz_local == nz "Vertical dimension must be fully local for time stepping"
+    # Note: For 2D decomposition, nz_local may be < nz (z distributed in xy-pencil)
+    # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
+    # handle transposes internally
 
     # Dealias mask - use global indices for lookup
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
@@ -178,7 +180,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     end
 
     #= Step 1: Compute diagnostic fields ψ and velocities =#
-    invert_q_to_psi!(S, G; a, par=par)           # q → ψ
+    invert_q_to_psi!(S, G; a, par=par, workspace=workspace)           # q → ψ
     compute_velocities!(S, G; plans, params=par) # ψ → u, v
 
     #= Step 2: Compute nonlinear tendencies =#
@@ -189,8 +191,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     # Wave refraction: B × ζ where ζ = ∇²ψ
     refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
 
-    # Vertical diffusion: νz ∂²q/∂z²
-    dissipation_q_nv!(dqk, S.q, par, G)
+    # Vertical diffusion: νz ∂²q/∂z² (handles 2D decomposition transposes internally)
+    dissipation_q_nv!(dqk, S.q, par, G; workspace=workspace)
 
     #= Step 3: Apply physics switches =#
 
@@ -311,13 +313,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
     # Invert q → ψ (only if mean flow evolves)
     if !par.fixed_flow
-        invert_q_to_psi!(S, G; a, par=par)
+        invert_q_to_psi!(S, G; a, par=par, workspace=workspace)
     end
 
     # Recover A from B
     if par.ybj_plus
-        # YBJ+: Solve elliptic problem B → A, C
-        invert_B_to_A!(S, G, par, a)
+        # YBJ+: Solve elliptic problem B → A, C (handles 2D decomposition internally)
+        invert_B_to_A!(S, G, par, a; workspace=workspace)
     else
         # Normal YBJ: Different procedure
         BRk2 = similar(S.B); BIk2 = similar(S.B)
@@ -356,7 +358,7 @@ This ensures exact treatment of the linear diffusion terms.
 =#
 
 """
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a, dealias_mask=nothing)
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a, dealias_mask=nothing, workspace=nothing)
 
 Advance the solution by one leapfrog time step with Robert-Asselin filtering.
 
@@ -401,6 +403,7 @@ q*^(n+1) = q^(n+1) - qʷ^(n+1)
 - `plans`: FFT plans
 - `a`: Elliptic coefficient array
 - `dealias_mask`: Optional dealiasing mask
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Modified Snp1 with solution at time n+1.
@@ -433,7 +436,7 @@ end
 ```
 """
 function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
-                        G::Grid, par::QGParams, plans; a, dealias_mask=nothing)
+                        G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     qn_arr = parent(Sn.q)
     Bn_arr = parent(Sn.B)
@@ -446,8 +449,9 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     nx_local, ny_local, nz_local = size(qn_arr)
     nz = G.nz
 
-    # Verify z is fully local (required for vertical operations)
-    @assert nz_local == nz "Vertical dimension must be fully local for time stepping"
+    # Note: For 2D decomposition, nz_local may be < nz (z distributed in xy-pencil)
+    # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
+    # handle transposes internally
 
     # Dealias mask - use global indices for lookup
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
