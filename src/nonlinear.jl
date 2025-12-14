@@ -56,6 +56,8 @@ module Nonlinear
 
 using ..QGYBJ: Grid, local_to_global, get_local_dims
 using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
+using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
+using ..QGYBJ: local_to_global_z, allocate_z_pencil
 
 #=
 ================================================================================
@@ -625,7 +627,25 @@ so the operation is the same for each (kx, ky) mode.
 # Fortran Correspondence
 This matches `dissipation_q_nv` in derivatives.f90.
 """
-function dissipation_q_nv!(dqk, qok, par, G::Grid)
+function dissipation_q_nv!(dqk, qok, par, G::Grid; workspace=nothing)
+    nz = G.nz
+
+    # Check if we need 2D decomposition transpose
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
+
+    if need_transpose
+        _dissipation_q_nv_2d!(dqk, qok, par, G, workspace)
+    else
+        _dissipation_q_nv_direct!(dqk, qok, par, G)
+    end
+
+    return dqk
+end
+
+"""
+Direct vertical diffusion for serial or 1D decomposition (z fully local).
+"""
+function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     nz = G.nz
 
     # Get underlying arrays
@@ -643,7 +663,6 @@ function dissipation_q_nv!(dqk, qok, par, G::Grid)
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
             # Bottom boundary: Neumann (q_z = 0)
-            # One-sided: D = νz(q[2] - q[1])/dz²
             dqk_arr[i_local, j_local, k] = par.nuz * ( qok_arr[i_local, j_local, k+1] - qok_arr[i_local, j_local, k] ) * invdz2
         elseif k == nz
             # Top boundary: Neumann (q_z = 0)
@@ -653,8 +672,44 @@ function dissipation_q_nv!(dqk, qok, par, G::Grid)
             dqk_arr[i_local, j_local, k] = par.nuz * ( qok_arr[i_local, j_local, k+1] - 2qok_arr[i_local, j_local, k] + qok_arr[i_local, j_local, k-1] ) * invdz2
         end
     end
+end
 
-    return dqk
+"""
+2D decomposition vertical diffusion with transposes.
+"""
+function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
+    nz = G.nz
+
+    # Allocate z-pencil workspace
+    qok_z = workspace !== nothing ? workspace.q_z : allocate_z_pencil(G, ComplexF64)
+    dqk_z = workspace !== nothing ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
+
+    # Transpose input to z-pencil
+    transpose_to_z_pencil!(qok_z, qok, G)
+
+    # Get underlying arrays in z-pencil format
+    qok_z_arr = parent(qok_z)
+    dqk_z_arr = parent(dqk_z)
+    nx_local, ny_local, nz_local = size(qok_z_arr)
+
+    @assert nz_local == nz "After transpose, z must be fully local"
+
+    # Vertical grid spacing
+    dz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    invdz2 = 1/(dz*dz)
+
+    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
+        if k == 1
+            dqk_z_arr[i_local, j_local, k] = par.nuz * ( qok_z_arr[i_local, j_local, k+1] - qok_z_arr[i_local, j_local, k] ) * invdz2
+        elseif k == nz
+            dqk_z_arr[i_local, j_local, k] = par.nuz * ( qok_z_arr[i_local, j_local, k-1] - qok_z_arr[i_local, j_local, k] ) * invdz2
+        else
+            dqk_z_arr[i_local, j_local, k] = par.nuz * ( qok_z_arr[i_local, j_local, k+1] - 2qok_z_arr[i_local, j_local, k] + qok_z_arr[i_local, j_local, k-1] ) * invdz2
+        end
+    end
+
+    # Transpose output back to xy-pencil
+    transpose_to_xy_pencil!(dqk, dqk_z, G)
 end
 
 #=
