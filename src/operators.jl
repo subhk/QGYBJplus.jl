@@ -592,17 +592,50 @@ function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=noth
     return S
 end
 
+#=
+================================================================================
+                    WAVE-INDUCED STOKES DRIFT
+================================================================================
+Near-inertial waves induce a Lagrangian drift in the direction of wave
+propagation. This is the Stokes drift correction.
+================================================================================
+=#
+
 """
     compute_wave_velocities!(S, G; plans=nothing, params=nothing)
 
-Compute wave-induced horizontal velocities and add them to the existing QG velocities.
-Based on the YBJ formulation for wave-mean flow interaction.
+Compute wave-induced Stokes drift velocities and add to existing QG velocities.
 
-Wave velocities from Stokes drift and wave corrections:
-u_wave = Real[(∂A*/∂x)A + A*(∂A/∂x)]
-v_wave = Real[(∂A*/∂y)A + A*(∂A/∂y)]
+# Physical Background
+Near-inertial waves induce a net Lagrangian drift (Stokes drift) due to the
+correlation between wave orbital velocity and wave-induced displacement.
+For wave amplitude A:
 
-where A is the wave envelope amplitude.
+```
+u_wave = Re[(∂A*/∂x)A + A*(∂A/∂x)] = 2 Re[A* ∂A/∂x]
+v_wave = Re[(∂A*/∂y)A + A*(∂A/∂y)] = 2 Re[A* ∂A/∂y]
+```
+
+# Physical Interpretation
+- The Stokes drift is proportional to the gradient of |A|²
+- Particles drift from regions of low to high wave amplitude
+- Important for Lagrangian dispersion in NIW-active regions
+
+# Algorithm
+1. Compute horizontal gradients: ∂A/∂x, ∂A/∂y in spectral space
+2. Compute wave velocity: u_wave = 2 Re[A* ∂A/∂x]
+3. Transform to physical space
+4. Add to existing u, v fields (in-place modification)
+
+# Arguments
+- `S::State`: State with A (input) and u, v modified (output)
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `params`: Model parameters
+
+# Note
+This function modifies u, v in-place by adding wave contributions.
+Call after compute_velocities! to get total velocity.
 """
 function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
