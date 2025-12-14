@@ -1,0 +1,208 @@
+# [YBJ+ Wave Model](@id ybj-plus)
+
+```@meta
+CurrentModule = QGYBJ
+```
+
+This page describes the Young-Ben Jelloul Plus (YBJ+) formulation for near-inertial wave evolution.
+
+## Near-Inertial Waves
+
+### Physical Background
+
+Near-inertial waves (NIWs) are internal gravity waves with frequencies close to the local Coriolis frequency ``f``. They are:
+
+- **Wind-generated**: Strong winds (storms, tropical cyclones) inject NIW energy
+- **Ubiquitous**: Found throughout the world's oceans
+- **Important for mixing**: NIWs break and drive turbulent mixing
+
+### Wave Amplitude Representation
+
+The NIW velocity field is written as:
+
+```math
+\mathbf{u}_{wave} = \text{Re}\left[ A(x,y,z,t) \, e^{-if_0 t} \, \hat{\mathbf{z}} \times \nabla_h \right] + \text{c.c.}
+```
+
+where ``A`` is the **slowly-varying complex wave amplitude**.
+
+## The YBJ+ Equation
+
+### Evolution Equation
+
+The wave envelope ``B = L^+ A`` evolves according to:
+
+```math
+\frac{\partial B}{\partial t} + J(\psi, B) + B\frac{\partial\zeta}{\partial t} = -i\frac{N^2}{2f_0}\nabla_h^2 A + \mathcal{D}_B
+```
+
+where:
+- ``B = L^+ A``: Evolved wave envelope
+- ``\zeta = \nabla^2\psi``: Relative vorticity
+- ``J(\psi, B)``: Advection by geostrophic flow
+- ``B \partial\zeta/\partial t``: Refraction term
+- ``-i(N^2/2f_0)\nabla_h^2 A``: Dispersion
+
+### Physical Terms
+
+| Term | Physics | Effect |
+|:-----|:--------|:-------|
+| ``J(\psi, B)`` | Advection | Waves carried by eddies |
+| ``B\partial_t\zeta`` | Refraction | Focusing in anticyclones |
+| ``\nabla_h^2 A`` | Dispersion | Horizontal spreading |
+| ``\mathcal{D}_B`` | Dissipation | Energy loss |
+
+## The L⁺ Operator
+
+### Definition
+
+The YBJ+ operator relates ``B`` and ``A``:
+
+```math
+B = L^+ A = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A
+```
+
+### Inversion: B → A
+
+To recover ``A`` from ``B``, we solve:
+
+```math
+\frac{\partial}{\partial z}\left(a(z)\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = B
+```
+
+where ``a(z) = f_0^2/N^2(z)``.
+
+### Tridiagonal System
+
+In discretized form for each ``(k_x, k_y)``:
+
+```math
+a_k A_{k-1} + b_k A_k + c_k A_{k+1} = B_k
+```
+
+with:
+- ``a_k = a(z_{k-1/2})/\Delta z^2``
+- ``c_k = a(z_{k+1/2})/\Delta z^2``
+- ``b_k = -(a_k + c_k) - k_h^2/4``
+
+### Boundary Conditions
+
+- **Neumann**: ``\frac{\partial A}{\partial z} = 0`` at ``z = 0, H``
+
+## Wave Refraction
+
+### Mechanism
+
+Anticyclones (negative vorticity) **trap** waves:
+- Effective frequency: ``f_{eff} = f_0 + \zeta/2``
+- In anticyclones: ``\zeta < 0 \Rightarrow f_{eff} < f_0``
+- Waves propagate toward regions of lower effective frequency
+
+### Mathematical Form
+
+The refraction term:
+
+```math
+B\frac{\partial\zeta}{\partial t} = B \cdot \frac{\partial(\nabla^2\psi)}{\partial t}
+```
+
+This couples wave evolution to vorticity changes.
+
+### Code Implementation
+
+```julia
+# Compute refraction term
+refraction_waqg!(rBk, state.B, state.psi, state_old.psi, grid, params, plans, dt, Lmask)
+```
+
+## YBJ vs YBJ+
+
+### Original YBJ (1997)
+
+```math
+B = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right)
+```
+
+- Simpler relation between B and A
+- Recovery via vertical integration
+
+### YBJ+ (Asselin & Young 2019)
+
+```math
+B = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A
+```
+
+- Includes horizontal wavenumber dependence
+- More accurate for high ``k_h`` modes
+- Requires elliptic inversion (not just integration)
+
+### When to Use Which
+
+| Scenario | Recommendation |
+|:---------|:---------------|
+| Low-resolution | Normal YBJ is adequate |
+| High-resolution | YBJ+ more accurate |
+| Large-scale waves | Either works |
+| Small-scale waves | YBJ+ essential |
+
+Control in code:
+```julia
+params = QGParams(; ybj_plus=true)  # Use YBJ+ (default)
+params = QGParams(; ybj_plus=false) # Use normal YBJ
+```
+
+## Dispersion Relation
+
+### In the YBJ+ Framework
+
+The dispersion relation for NIWs:
+
+```math
+\omega = f_0 + \frac{N^2 k_h^2}{2f_0 m^2}
+```
+
+where ``m`` is the vertical wavenumber.
+
+### Physical Implications
+
+- Frequency slightly above ``f_0``
+- Higher ``k_h`` → faster frequency
+- Lower ``m`` (longer vertical scale) → faster frequency
+
+## Wave Energy
+
+### Definition
+
+```math
+E_{wave} = \frac{1}{2}\int |A|^2 \, dV
+```
+
+### Computation
+
+```julia
+E_B, E_A = wave_energy(state.B, state.A)
+```
+
+!!! note
+    ``E_B \neq E_A`` in general because the L⁺ operator is not unitary.
+
+## Implementation Details
+
+### Key Functions
+
+```@docs
+invert_B_to_A!
+refraction_waqg!
+convol_waqg!
+```
+
+### Code Locations
+
+- `elliptic.jl`: B → A inversion (`invert_B_to_A!`)
+- `nonlinear.jl`: Refraction (`refraction_waqg!`), Advection (`convol_waqg!`)
+- `ybj_normal.jl`: Normal YBJ (non-plus) operators
+
+## References
+
+- Young, W. R., & Ben Jelloul, M. (1997). Propagation of near-inertial oscillations through a geostrophic flow. *J. Mar. Res.*, 55, 735-766.
+- Asselin, O., & Young, W. R. (2019). Penetration of wind-generated near-inertial waves into a turbulent ocean. *J. Phys. Oceanogr.*, 49, 1699-1717.
