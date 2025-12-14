@@ -216,11 +216,11 @@ end
 Compute horizontal inverse FFT (complex-to-complex) for each z-plane.
 
 # Note
-FFTW inverse FFT is UNNORMALIZED. The caller must divide by (nx * ny)
-to get correctly scaled physical-space values.
+FFTW.ifft is NORMALIZED (divides by N automatically).
+This is consistent with PencilFFTs ldiv! which also normalizes.
 
 # Arguments
-- `dst`: Destination array (physical space, unnormalized)
+- `dst`: Destination array (physical space, normalized)
 - `src`: Source array (spectral space)
 - `P::Plans`: FFT plans
 
@@ -233,6 +233,7 @@ function fft_backward!(dst, src, P::Plans)
         mul!(dst, P.p_backward, src)
     else
         # Serial FFTW path: transform each z-slice independently
+        # FFTW.ifft is normalized (divides by nx*ny)
         @inbounds for k in axes(src, 3)
             dst[:,:,k] .= FFTW.ifft(src[:,:,k])
         end

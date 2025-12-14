@@ -296,23 +296,28 @@ function QGYBJ.plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
 
     pencil = decomp.pencil
 
-    # Create transform for horizontal dimensions only (1 and 2)
-    # The vertical dimension (3) remains in physical space
-    # Use PencilFFTs.Transforms submodule for transform types
-    transform = PencilFFTs.Transforms.FFT()
+    # Create transforms for each dimension:
+    # - Dimensions 1 and 2 (x and y): FFT
+    # - Dimension 3 (z): NoTransform (stays in physical space)
+    # According to PencilFFTs API, pass a tuple of transforms for each dimension
+    transform = (
+        PencilFFTs.Transforms.FFT(),      # x dimension
+        PencilFFTs.Transforms.FFT(),      # y dimension
+        PencilFFTs.Transforms.NoTransform()  # z dimension (no transform)
+    )
 
-    # Create the plan - transform dims 1 and 2 (x and y)
-    plan = PencilFFTs.PencilFFTPlan(pencil, transform, (1, 2))
+    # Create the PencilFFT plan
+    plan = PencilFFTPlan(pencil, transform)
 
     # Get input and output pencil configurations
-    input_pencil = PencilFFTs.first_pencil(plan)
-    output_pencil = PencilFFTs.last_pencil(plan)
+    input_pencil = first_pencil(plan)
+    output_pencil = last_pencil(plan)
 
     # Allocate work arrays for transforms
     work_in = PencilArray{Complex{Float64}}(undef, input_pencil)
     work_out = PencilArray{Complex{Float64}}(undef, output_pencil)
 
-    # Create inverse plan
+    # Create inverse plan using inv()
     inv_plan = inv(plan)
 
     return MPIPlans(
@@ -342,10 +347,14 @@ end
 Perform inverse FFT using PencilFFTs.
 
 Transforms dimensions 1 and 2 (horizontal) of the input array.
-Note: PencilFFTs inverse is NOT normalized - caller must divide by nx*ny.
+
+Note: Uses ldiv! which provides NORMALIZED inverse transform (consistent with FFTW.ifft).
+This differs from mul!(dst, inv(plan), src) which would be unnormalized.
 """
 function QGYBJ.fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    mul!(dst, plans.backward, src)
+    # Use ldiv! for normalized inverse transform
+    # This is equivalent to: dst = plans.forward \ src
+    ldiv!(dst, plans.forward, src)
     return dst
 end
 
