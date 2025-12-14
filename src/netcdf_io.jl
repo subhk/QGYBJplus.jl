@@ -339,94 +339,176 @@ end
 """
     write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
 
-Write NetCDF file using parallel I/O.
+Write NetCDF file using parallel I/O with 2D decomposition support.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
     ensure_ncds_loaded()
-    
+
+    # Import MPI if available
+    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+
+    rank = MPI.Comm_rank(parallel_config.comm)
+    nprocs = MPI.Comm_size(parallel_config.comm)
+
     # Convert spectral fields to real space (each process handles its portion)
-    psir = similar(S.psi, Float64)
-    fft_backward!(psir, S.psi, plans)
-    
-    BRr = similar(S.B, Float64)
-    BIr = similar(S.B, Float64)
-    fft_backward!(BRr, real.(S.B), plans)
-    fft_backward!(BIr, imag.(S.B), plans)
-    
+    psir = similar(parent(S.psi), Float64)
+    psi_parent = parent(S.psi)
+    fft_backward!(psir, psi_parent, plans)
+
+    BRr = similar(parent(S.B), Float64)
+    BIr = similar(parent(S.B), Float64)
+    B_parent = parent(S.B)
+    fft_backward!(BRr, real.(B_parent), plans)
+    fft_backward!(BIr, imag.(B_parent), plans)
+
     norm_factor = G.nx * G.ny
-    
-    # Create parallel NetCDF file
-    NCDatasets.Dataset(filepath, "c"; mpi_comm=parallel_config.comm) do ds
-        # Define dimensions
-        ds.dim["x"] = G.nx
-        ds.dim["y"] = G.ny
-        ds.dim["z"] = G.nz
-        ds.dim["time"] = 1
-        
-        # Create coordinate variables
-        x_var = defVar(ds, "x", Float64, ("x",))
-        y_var = defVar(ds, "y", Float64, ("y",))
-        z_var = defVar(ds, "z", Float64, ("z",))
-        time_var = defVar(ds, "time", Float64, ("time",))
-        
-        # Set coordinate values (only on rank 0)
-        rank = MPI.Comm_rank(parallel_config.comm)
+
+    # Get local ranges from decomposition
+    if G.decomp !== nothing && hasfield(typeof(G.decomp), :local_range_xy)
+        local_range = G.decomp.local_range_xy
+    else
+        # Fallback for 1D or serial
+        local_range = (1:G.nx, 1:G.ny, 1:G.nz)
+    end
+
+    # Try parallel NetCDF if available
+    try
+        NCDatasets.Dataset(filepath, "c"; comm=parallel_config.comm) do ds
+            # Define dimensions
+            ds.dim["x"] = G.nx
+            ds.dim["y"] = G.ny
+            ds.dim["z"] = G.nz
+            ds.dim["time"] = 1
+
+            # Create coordinate variables
+            x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+            y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+            z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+            time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
+
+            # Set coordinate values (only on rank 0)
+            if rank == 0
+                dx = 2π / G.nx
+                dy = 2π / G.ny
+                dz = 2π / G.nz
+
+                x_var[:] = collect(0:dx:(2π-dx))
+                y_var[:] = collect(0:dy:(2π-dy))
+                z_var[:] = collect(0:dz:(2π-dz))
+                time_var[1] = time
+            end
+
+            # Create data variables
+            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+
+            # Write data (each process writes its portion)
+            psi_var[local_range[1], local_range[2], local_range[3]] = real.(psir) / norm_factor
+            LAr_var[local_range[1], local_range[2], local_range[3]] = real.(BRr) / norm_factor
+            LAi_var[local_range[1], local_range[2], local_range[3]] = real.(BIr) / norm_factor
+
+            # Add attributes (only on rank 0)
+            if rank == 0
+                ds.attrib["title"] = "QG-YBJ Model State (Parallel)"
+                ds.attrib["created_at"] = string(Dates.now())
+                ds.attrib["model_time"] = time
+                ds.attrib["n_processes"] = nprocs
+            end
+        end
+    catch e
+        # Fallback to gather-and-write if parallel NetCDF fails
         if rank == 0
+            @warn "Parallel NetCDF failed ($e), falling back to gather-and-write"
+        end
+        _write_gathered_netcdf(filepath, S, G, plans, time, parallel_config, params)
+    end
+end
+
+"""
+    _write_gathered_netcdf(filepath, S, G, plans, time, parallel_config, params)
+
+Fallback: gather distributed arrays to rank 0 and write serially.
+"""
+function _write_gathered_netcdf(filepath, S::State, G::Grid, plans, time, parallel_config, params)
+    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+
+    rank = MPI.Comm_rank(parallel_config.comm)
+
+    # Gather fields to rank 0 using QGYBJ's gather function
+    gathered_psi = QGYBJ.gather_to_root(S.psi, G, parallel_config)
+    gathered_B = QGYBJ.gather_to_root(S.B, G, parallel_config)
+
+    # Only rank 0 writes
+    if rank == 0 && gathered_psi !== nothing
+        ensure_ncds_loaded()
+
+        # Convert to real space
+        temp_plans = plan_transforms!(G)
+        psir = zeros(Float64, G.nx, G.ny, G.nz)
+        BRr = zeros(Float64, G.nx, G.ny, G.nz)
+        BIr = zeros(Float64, G.nx, G.ny, G.nz)
+
+        fft_backward!(psir, gathered_psi, temp_plans)
+        fft_backward!(BRr, real.(gathered_B), temp_plans)
+        fft_backward!(BIr, imag.(gathered_B), temp_plans)
+
+        norm_factor = G.nx * G.ny
+
+        NCDatasets.Dataset(filepath, "c") do ds
+            ds.dim["x"] = G.nx
+            ds.dim["y"] = G.ny
+            ds.dim["z"] = G.nz
+            ds.dim["time"] = 1
+
+            x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+            y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+            z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+            time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
+
             dx = 2π / G.nx
             dy = 2π / G.ny
             dz = 2π / G.nz
-            
+
             x_var[:] = collect(0:dx:(2π-dx))
             y_var[:] = collect(0:dy:(2π-dy))
             z_var[:] = collect(0:dz:(2π-dz))
             time_var[1] = time
-        end
-        
-        # Create data variables
-        psi_var = defVar(ds, "psi", Float64, ("x", "y", "z"))
-        LAr_var = defVar(ds, "LAr", Float64, ("x", "y", "z"))
-        LAi_var = defVar(ds, "LAi", Float64, ("x", "y", "z"))
-        
-        # Write data (each process writes its portion)
-        local_ranges = PencilArrays.range_local(G.decomp)
-        
-        psi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(psir) / norm_factor
-        LAr_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BRr) / norm_factor
-        LAi_var[local_ranges[1], local_ranges[2], local_ranges[3]] = real.(BIr) / norm_factor
-        
-        # Add attributes (only on rank 0)
-        if rank == 0
-            ds.attrib["title"] = "QG-YBJ Model State (Parallel)"
+
+            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+
+            psi_var[:,:,:] = real.(psir) / norm_factor
+            LAr_var[:,:,:] = real.(BRr) / norm_factor
+            LAi_var[:,:,:] = real.(BIr) / norm_factor
+
+            ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
             ds.attrib["created_at"] = string(Dates.now())
             ds.attrib["model_time"] = time
-            ds.attrib["n_processes"] = MPI.Comm_size(parallel_config.comm)
         end
     end
+
+    MPI.Barrier(parallel_config.comm)
 end
 
 """
     gather_state_for_io(S::State, G::Grid, parallel_config)
 
-Gather distributed state to rank 0.
+Gather distributed state to rank 0 for I/O.
+Uses QGYBJ.gather_to_root which handles 2D decomposition properly.
 """
 function gather_state_for_io(S::State, G::Grid, parallel_config)
     if G.decomp === nothing
         return S
     end
-    
-    # This would gather all distributed arrays to rank 0
-    try
-        
-        gathered_psi = PencilArrays.gather(S.psi)
-        gathered_B = PencilArrays.gather(S.B)
-        
-        # Create new state with gathered arrays (only meaningful on rank 0)
-        return (psi=gathered_psi, B=gathered_B)
-        
-    catch e
-        @warn "Failed to gather state: $e"
-        return S
-    end
+
+    # Use QGYBJ's gather function which handles 2D decomposition
+    gathered_psi = QGYBJ.gather_to_root(S.psi, G, parallel_config)
+    gathered_B = QGYBJ.gather_to_root(S.B, G, parallel_config)
+
+    # Create tuple with gathered arrays (only meaningful on rank 0)
+    return (psi=gathered_psi, B=gathered_B)
 end
 
 """
@@ -493,28 +575,50 @@ function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time:
 end
 
 """
-    read_initial_psi(filename::String, G::Grid, plans)
+    read_initial_psi(filename::String, G::Grid, plans; parallel_config=nothing)
 
 Read initial stream function from NetCDF file.
+Supports both serial and parallel (2D decomposition) modes.
+
+In parallel mode:
+- Rank 0 reads the full array
+- Data is scattered to all processes
 """
-function read_initial_psi(filename::String, G::Grid, plans)
-    @info "Reading initial psi from: $filename"
+function read_initial_psi(filename::String, G::Grid, plans; parallel_config=nothing)
     ensure_ncds_loaded()
-    
+
+    # Determine if running in parallel
+    is_parallel = parallel_config !== nothing && G.decomp !== nothing
+
+    if is_parallel
+        return _read_initial_psi_parallel(filename, G, plans, parallel_config)
+    else
+        return _read_initial_psi_serial(filename, G, plans)
+    end
+end
+
+"""
+    _read_initial_psi_serial(filename, G, plans)
+
+Serial implementation of psi reading.
+"""
+function _read_initial_psi_serial(filename::String, G::Grid, plans)
+    @info "Reading initial psi from: $filename (serial)"
+
     psir = zeros(Float64, G.nx, G.ny, G.nz)
-    
+
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
             nx_file = ds.dim["x"]
             ny_file = ds.dim["y"]
             nz_file = ds.dim["z"]
-            
+
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
             end
         end
-        
+
         # Read psi variable
         if haskey(ds, "psi")
             psir[:,:,:] = ds["psi"][:,:,:]
@@ -522,38 +626,85 @@ function read_initial_psi(filename::String, G::Grid, plans)
             error("Variable 'psi' not found in $filename")
         end
     end
-    
+
     # Convert to spectral space
     psik = similar(psir, Complex{Float64})
     fft_forward!(psik, psir, plans)
-    
+
     return psik
 end
 
 """
-    read_initial_waves(filename::String, G::Grid, plans)
+    _read_initial_psi_parallel(filename, G, plans, parallel_config)
+
+Parallel implementation: rank 0 reads, then scatters to all processes.
+"""
+function _read_initial_psi_parallel(filename::String, G::Grid, plans, parallel_config)
+    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+
+    rank = MPI.Comm_rank(parallel_config.comm)
+
+    # Only rank 0 reads
+    psik_global = nothing
+    if rank == 0
+        @info "Reading initial psi from: $filename (parallel, rank 0)"
+        psik_global = _read_initial_psi_serial(filename, G, plans)
+    end
+
+    MPI.Barrier(parallel_config.comm)
+
+    # Scatter from rank 0 to all processes
+    psik_local = QGYBJ.scatter_from_root(psik_global, G, parallel_config)
+
+    return psik_local
+end
+
+"""
+    read_initial_waves(filename::String, G::Grid, plans; parallel_config=nothing)
 
 Read initial wave field (L+A) from NetCDF file.
+Supports both serial and parallel (2D decomposition) modes.
+
+In parallel mode:
+- Rank 0 reads the full array
+- Data is scattered to all processes
 """
-function read_initial_waves(filename::String, G::Grid, plans)
-    @info "Reading initial wave field from: $filename"
+function read_initial_waves(filename::String, G::Grid, plans; parallel_config=nothing)
     ensure_ncds_loaded()
-    
+
+    # Determine if running in parallel
+    is_parallel = parallel_config !== nothing && G.decomp !== nothing
+
+    if is_parallel
+        return _read_initial_waves_parallel(filename, G, plans, parallel_config)
+    else
+        return _read_initial_waves_serial(filename, G, plans)
+    end
+end
+
+"""
+    _read_initial_waves_serial(filename, G, plans)
+
+Serial implementation of wave field reading.
+"""
+function _read_initial_waves_serial(filename::String, G::Grid, plans)
+    @info "Reading initial wave field from: $filename (serial)"
+
     BRr = zeros(Float64, G.nx, G.ny, G.nz)
     BIr = zeros(Float64, G.nx, G.ny, G.nz)
-    
+
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
             nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"] 
+            ny_file = ds.dim["y"]
             nz_file = ds.dim["z"]
-            
+
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
             end
         end
-        
+
         # Read L+A real and imaginary parts
         if haskey(ds, "LAr") && haskey(ds, "LAi")
             BRr[:,:,:] = ds["LAr"][:,:,:]
@@ -562,17 +713,42 @@ function read_initial_waves(filename::String, G::Grid, plans)
             error("Variables 'LAr' and 'LAi' not found in $filename")
         end
     end
-    
+
     # Convert to spectral space
     BRk = similar(BRr, Complex{Float64})
     BIk = similar(BIr, Complex{Float64})
     fft_forward!(BRk, BRr, plans)
     fft_forward!(BIk, BIr, plans)
-    
+
     # Combine into complex field B = BR + i*BI
     Bk = BRk + im * BIk
-    
+
     return Bk
+end
+
+"""
+    _read_initial_waves_parallel(filename, G, plans, parallel_config)
+
+Parallel implementation: rank 0 reads, then scatters to all processes.
+"""
+function _read_initial_waves_parallel(filename::String, G::Grid, plans, parallel_config)
+    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+
+    rank = MPI.Comm_rank(parallel_config.comm)
+
+    # Only rank 0 reads
+    Bk_global = nothing
+    if rank == 0
+        @info "Reading initial waves from: $filename (parallel, rank 0)"
+        Bk_global = _read_initial_waves_serial(filename, G, plans)
+    end
+
+    MPI.Barrier(parallel_config.comm)
+
+    # Scatter from rank 0 to all processes
+    Bk_local = QGYBJ.scatter_from_root(Bk_global, G, parallel_config)
+
+    return Bk_local
 end
 
 """
@@ -753,31 +929,39 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
 end
 
 """
-    ncread_psi!(S, G, plans; path="psi000.in.nc")
+    ncread_psi!(S, G, plans; path="psi000.in.nc", parallel_config=nothing)
 
 Legacy compatibility wrapper for reading stream function from NetCDF.
 Uses the enhanced I/O system internally.
+Supports both serial and parallel (2D decomposition) modes.
 """
-function ncread_psi!(S::State, G::Grid, plans; path="psi000.in.nc")
+function ncread_psi!(S::State, G::Grid, plans; path="psi000.in.nc", parallel_config=nothing)
     @info "Using legacy ncread_psi! (compatibility mode)"
-    
-    # Use the enhanced read function
-    S.psi .= read_initial_psi(path, G, plans)
-    
+
+    # Use the enhanced read function with parallel support
+    psi_data = read_initial_psi(path, G, plans; parallel_config=parallel_config)
+
+    # Copy to state (handles both Array and PencilArray)
+    parent(S.psi) .= parent(psi_data)
+
     return S
 end
 
 """
-    ncread_la!(S, G, plans; path="la000.in.nc")
+    ncread_la!(S, G, plans; path="la000.in.nc", parallel_config=nothing)
 
 Legacy compatibility wrapper for reading L+A wave field from NetCDF.
 Uses the enhanced I/O system internally.
+Supports both serial and parallel (2D decomposition) modes.
 """
-function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc")
+function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc", parallel_config=nothing)
     @info "Using legacy ncread_la! (compatibility mode)"
-    
-    # Use the enhanced read function
-    S.B .= read_initial_waves(path, G, plans)
-    
+
+    # Use the enhanced read function with parallel support
+    B_data = read_initial_waves(path, G, plans; parallel_config=parallel_config)
+
+    # Copy to state (handles both Array and PencilArray)
+    parent(S.B) .= parent(B_data)
+
     return S
 end
