@@ -33,14 +33,6 @@ init_random_psi!(S, G, par, plans; a=a)
 first_projection_step!(S, G, par, plans; a=a, dealias_mask=dealias_mask(par, G))
 ```
 
-## Features
-
-- Two-way wave-mean flow interaction (YBJ+ equation + QG dynamics)
-- Pseudo-spectral numerics with 2/3 dealiasing
-- MPI parallelization with 2D pencil decomposition (PencilArrays/PencilFFTs)
-- Lagrangian particle tracking
-- NetCDF I/O for state files and diagnostics
-
 ## References
 
 - Asselin, O., & Young, W. R. (2019). Penetration of wind-generated near-inertial waves into a turbulent ocean. *J. Phys. Oceanogr.*, 49, 1699-1717.
