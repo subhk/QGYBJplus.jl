@@ -270,11 +270,14 @@ we need to map local indices to global indices for wavenumber lookups.
 """
     get_local_range(G::Grid) -> NTuple{3, UnitRange{Int}}
 
-Get the local index range for the current process.
+Get the local index range for the current process (xy-pencil configuration).
+
+For 2D decomposition, this returns the xy-pencil ranges where x is local
+and y,z are distributed. Use `get_local_range_z` for z-pencil configuration.
 
 # Returns
 - Serial mode: `(1:nx, 1:ny, 1:nz)`
-- Parallel mode: The local range from the decomposition
+- Parallel mode: The local range from the xy-pencil decomposition
 
 # Example
 ```julia
@@ -288,14 +291,18 @@ function get_local_range(G::Grid)
     if G.decomp === nothing
         return (1:G.nx, 1:G.ny, 1:G.nz)
     else
-        return G.decomp.local_range
+        # For 2D decomposition, use xy-pencil ranges (default)
+        return G.decomp.local_range_xy
     end
 end
 
 """
     local_to_global(local_idx::Int, dim::Int, G::Grid) -> Int
 
-Convert a local array index to a global index.
+Convert a local array index to a global index (xy-pencil configuration).
+
+For 2D decomposition, this uses xy-pencil ranges. Use `local_to_global_z`
+for operations on z-pencil arrays.
 
 # Arguments
 - `local_idx`: Local index in the array
@@ -319,7 +326,8 @@ function local_to_global(local_idx::Int, dim::Int, G::Grid)
     if G.decomp === nothing
         return local_idx
     else
-        return G.decomp.local_range[dim][local_idx]
+        # For 2D decomposition, use xy-pencil ranges (default)
+        return G.decomp.local_range_xy[dim][local_idx]
     end
 end
 
