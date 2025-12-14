@@ -54,12 +54,69 @@ module Diagnostics
 using ..QGYBJ: Grid
 using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
 
+#=
+================================================================================
+                    OMEGA EQUATION RHS COMPUTATION
+================================================================================
+The RHS of the omega equation drives the ageostrophic vertical velocity.
+================================================================================
+=#
+
 """
     omega_eqn_rhs!(rhs, psi, G, plans; Lmask)
 
-Compute RHS of omega equation: 2 J(psi_z, ∇² psi) in spectral space.
-Approximates stag/unstag averaging from Fortran by using centered psi_z and
-averaged psi across adjacent levels.
+Compute the RHS forcing for the QG omega equation.
+
+# Physical Background
+The QG omega equation relates vertical velocity w to the horizontal flow:
+
+    ∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+
+This function computes the RHS: 2 J(ψ_z, ∇²ψ), which represents the forcing
+for ageostrophic vertical motion.
+
+# Physical Interpretation
+The Jacobian J(ψ_z, ∇²ψ) represents:
+- ψ_z: Vertical shear of streamfunction (related to thermal wind/buoyancy)
+- ∇²ψ: Relative vorticity ζ
+- J: Cross-gradient interaction
+
+Strong RHS forcing occurs where:
+- Fronts (large ψ_z) interact with vorticity gradients
+- Eddies tilt isopycnals through differential advection
+
+# Numerical Method
+1. **Vertical derivative**: ψ_z via forward finite difference
+   ```
+   ψ_z[k] = (ψ[k+1] - ψ[k]) / dz,  ψ_z[nz] = 0 (Neumann)
+   ```
+
+2. **Spectral derivatives**:
+   - ∂ψ_z/∂x = i kₓ ψ_z
+   - ∂ψ_z/∂y = i kᵧ ψ_z
+   - ∂(∇²ψ)/∂x = -i kₓ kh² ψ_avg
+   - ∂(∇²ψ)/∂y = -i kᵧ kh² ψ_avg
+   where ψ_avg = (ψ[k+1] + ψ[k])/2 for staggered-grid consistency
+
+3. **Jacobian in physical space**:
+   ```
+   J(ψ_z, ∇²ψ) = (∂ψ_z/∂x)(∂∇²ψ/∂y) - (∂ψ_z/∂y)(∂∇²ψ/∂x)
+   ```
+
+4. **Transform back**: FFT to get spectral RHS
+
+# Arguments
+- `rhs::Array{Complex,3}`: Output RHS array (modified in-place)
+- `psi::Array{Complex,3}`: Spectral streamfunction
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `Lmask`: Optional dealiasing mask
+
+# Returns
+Modified rhs array with the omega equation forcing.
+
+# Fortran Correspondence
+Matches `omega_eqn_rhs` computation in the Fortran implementation.
 """
 function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -112,10 +169,34 @@ function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing)
     return rhs
 end
 
+#=
+================================================================================
+                    ENERGY DIAGNOSTICS
+================================================================================
+Energy measures for monitoring simulation health and physics.
+================================================================================
+=#
+
 """
     flow_kinetic_energy(u, v) -> KE
 
-Domain-sum kinetic energy 0.5(u^2+v^2) in nondimensional units.
+Compute domain-integrated kinetic energy of the geostrophic flow.
+
+# Physical Background
+The kinetic energy of the balanced flow:
+
+    KE = (1/2) ∫∫∫ (u² + v²) dx dy dz
+
+This is a key diagnostic for:
+- Model stability (unbounded growth indicates numerical issues)
+- Energy conservation/dissipation rate
+- Turbulent cascade analysis
+
+# Returns
+Total kinetic energy (domain sum, not mean) in nondimensional units.
+
+# Note
+This is NOT normalized by volume. For energy density, divide by nx×ny×nz.
 """
 function flow_kinetic_energy(u, v)
     KE = 0.0
@@ -128,8 +209,30 @@ end
 """
     wave_energy_vavg(B, G, plans) -> WE_ave::Array{Float64,2}
 
-Vertically averaged wave energy density 0.5|B|^2 in real space.
-Returns an (nx,ny) array normalized by nz (matches we_vave).
+Compute vertically-averaged wave energy density in physical space.
+
+# Physical Background
+The wave energy density based on envelope B:
+
+    WE(x,y,z) = (1/2) |B|²
+
+This function returns the vertical average:
+
+    WE_avg(x,y) = (1/nz) Σₖ WE(x,y,k)
+
+# Use Cases
+- Visualize horizontal wave energy distribution
+- Track wave energy concentration in eddies
+- Monitor wave-mean flow interaction regions
+
+# Algorithm
+1. Separate B into real/imaginary parts
+2. Transform each to physical space
+3. Compute 0.5(BR² + BI²) at each point
+4. Average over vertical levels
+
+# Returns
+2D array (nx, ny) of vertically-averaged wave energy density.
 """
 function wave_energy_vavg(B, G::Grid, plans)
     nx, ny, nz = G.nx, G.ny, G.nz
