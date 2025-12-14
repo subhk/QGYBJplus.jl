@@ -331,7 +331,7 @@ integration (as opposed to YBJ+ which uses tridiagonal inversion).
 =#
 
 """
-    compute_A!(A, C, BRk, BIk, sigma, par, G; Lmask)
+    compute_A!(A, C, BRk, BIk, sigma, par, G; Lmask=nothing, workspace=nothing)
 
 Recover wave amplitude A from envelope B using normal YBJ vertical integration.
 
@@ -378,6 +378,7 @@ C[nz] = 0                      # Neumann BC at top
 - `par::QGParams`: Model parameters
 - `G::Grid`: Grid structure
 - `Lmask`: Optional dealiasing mask
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Tuple (A, C) with recovered amplitude and its vertical derivative.
@@ -391,45 +392,134 @@ which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 """
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
                     BRk::AbstractArray{<:Complex,3}, BIk::AbstractArray{<:Complex,3},
-                    sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid; Lmask=nothing)
+                    sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid;
+                    Lmask=nothing, workspace=nothing)
+    # Check if we need 2D decomposition with transposes
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
+
+    if need_transpose
+        _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace)
+    else
+        _compute_A_direct!(A, C, BRk, BIk, sigma, par, G, Lmask)
+    end
+    return A, C
+end
+
+# Direct computation when z is fully local
+function _compute_A_direct!(A, C, BRk, BIk, sigma, par, G, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     N2 = N2_ut(par, G)
     dz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    # Temporary arrays per (i,j): AR(z), AI(z)
-    @inbounds for j in 1:ny, i in 1:nx
-        if L[i,j] && G.kh2[i,j] > 0
+
+    A_arr = parent(A)
+    C_arr = parent(C)
+    BRk_arr = parent(BRk)
+    BIk_arr = parent(BIk)
+    nx_local, ny_local, nz_local = size(A_arr)
+
+    @assert nz_local == nz "Vertical dimension must be fully local"
+
+    @inbounds for j in 1:ny_local, i in 1:nx_local
+        i_global = local_to_global(i, 1, G)
+        j_global = local_to_global(j, 2, G)
+
+        if L[i_global, j_global] && G.kh2[i_global, j_global] > 0
             # Stage 1: build \tilde{A} by cumulative vertical integration
             sBR = 0.0 + 0.0im
             sBI = 0.0 + 0.0im
-            A[i,j,1] = 0
+            A_arr[i,j,1] = 0
             for k in 2:nz
-                sBR += BRk[i,j,k-1]
-                sBI += BIk[i,j,k-1]
-                A[i,j,k] = A[i,j,k-1] + ( sBR + im*sBI ) * N2[k-1]*dz*dz
+                sBR += BRk_arr[i,j,k-1]
+                sBI += BIk_arr[i,j,k-1]
+                A_arr[i,j,k] = A_arr[i,j,k-1] + ( sBR + im*sBI ) * N2[k-1]*dz*dz
             end
-            # Stage 2: compute vertical sums sumAR/sumAI
+            # Stage 2: compute vertical sum
             sumA = 0.0 + 0.0im
             for k in 1:nz
-                sumA += A[i,j,k]
+                sumA += A_arr[i,j,k]
             end
-            # Adjust to enforce mean(A) = sigma(i,j)/n3
+            # Adjust to enforce mean(A) = sigma(i,j)/nz
             adj = (sigma[i,j] - sumA)/nz
             for k in 1:nz
-                A[i,j,k] += adj
+                A_arr[i,j,k] += adj
             end
             # C = A_z, forward diff; top C=0
             for k in 1:nz-1
-                C[i,j,k] = (A[i,j,k+1] - A[i,j,k])/dz
+                C_arr[i,j,k] = (A_arr[i,j,k+1] - A_arr[i,j,k])/dz
             end
-            C[i,j,nz] = 0
+            C_arr[i,j,nz] = 0
         else
             for k in 1:nz
-                A[i,j,k] = 0; C[i,j,k] = 0
+                A_arr[i,j,k] = 0; C_arr[i,j,k] = 0
             end
         end
     end
-    return A, C
+end
+
+# 2D decomposition version with transposes
+function _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+    N2 = N2_ut(par, G)
+    dz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+
+    # Transpose inputs to z-pencil
+    BRk_z = allocate_z_pencil(G, ComplexF64)
+    BIk_z = allocate_z_pencil(G, ComplexF64)
+    A_z = allocate_z_pencil(G, ComplexF64)
+    C_z = allocate_z_pencil(G, ComplexF64)
+
+    transpose_to_z_pencil!(BRk_z, BRk, G)
+    transpose_to_z_pencil!(BIk_z, BIk, G)
+
+    BRk_z_arr = parent(BRk_z)
+    BIk_z_arr = parent(BIk_z)
+    A_z_arr = parent(A_z)
+    C_z_arr = parent(C_z)
+
+    nx_local_z, ny_local_z, nz_local = size(BRk_z_arr)
+    @assert nz_local == nz "After transpose, z must be fully local"
+
+    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
+        i_global = local_to_global_z(i, 1, G)
+        j_global = local_to_global_z(j, 2, G)
+
+        if L[i_global, j_global] && G.kh2[i_global, j_global] > 0
+            # Stage 1: cumulative vertical integration
+            sBR = 0.0 + 0.0im
+            sBI = 0.0 + 0.0im
+            A_z_arr[i,j,1] = 0
+            for k in 2:nz
+                sBR += BRk_z_arr[i,j,k-1]
+                sBI += BIk_z_arr[i,j,k-1]
+                A_z_arr[i,j,k] = A_z_arr[i,j,k-1] + ( sBR + im*sBI ) * N2[k-1]*dz*dz
+            end
+            # Stage 2: apply sigma constraint
+            # Note: sigma is computed in z-pencil configuration, so indexing matches
+            sumA = 0.0 + 0.0im
+            for k in 1:nz
+                sumA += A_z_arr[i,j,k]
+            end
+            adj = (sigma[i,j] - sumA)/nz
+            for k in 1:nz
+                A_z_arr[i,j,k] += adj
+            end
+            # Stage 3: vertical derivative
+            for k in 1:nz-1
+                C_z_arr[i,j,k] = (A_z_arr[i,j,k+1] - A_z_arr[i,j,k])/dz
+            end
+            C_z_arr[i,j,nz] = 0
+        else
+            for k in 1:nz
+                A_z_arr[i,j,k] = 0; C_z_arr[i,j,k] = 0
+            end
+        end
+    end
+
+    # Transpose results back to xy-pencil
+    transpose_to_xy_pencil!(A, A_z, G)
+    transpose_to_xy_pencil!(C, C_z, G)
 end
 
 end # module
