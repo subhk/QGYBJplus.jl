@@ -503,23 +503,32 @@ end
 
 ## API Reference
 
-```@docs
-setup_mpi_environment
-init_mpi_grid
-init_mpi_state
-init_mpi_workspace
-plan_mpi_transforms
-gather_to_root
-scatter_from_root
-mpi_barrier
-mpi_reduce_sum
-transpose_to_z_pencil!
-transpose_to_xy_pencil!
-local_to_global_xy
-local_to_global_z
-get_local_range_xy
-get_local_range_z
-allocate_xy_pencil
-allocate_z_pencil
-local_indices
-```
+The following MPI functions are provided:
+
+### Setup Functions
+- `setup_mpi_environment` - Initialize MPI environment and configuration
+- `init_mpi_grid` - Create grid with 2D pencil decomposition
+- `init_mpi_state` - Create distributed state arrays
+- `init_mpi_workspace` - Allocate workspace for z-pencil operations
+- `plan_mpi_transforms` - Create PencilFFT plans
+
+### Communication Functions
+- `gather_to_root` - Collect distributed array to rank 0
+- `scatter_from_root` - Distribute array from rank 0
+- `mpi_barrier` - Synchronize all processes
+- `mpi_reduce_sum` - Sum values across all processes
+
+### Transpose Functions
+- `transpose_to_z_pencil!` - Transpose from xy-pencil to z-pencil
+- `transpose_to_xy_pencil!` - Transpose from z-pencil to xy-pencil
+
+### Index Mapping Functions
+- `local_to_global_xy` - Map local index to global (xy-pencil)
+- `local_to_global_z` - Map local index to global (z-pencil)
+- `get_local_range_xy` - Get local index range in xy-pencil
+- `get_local_range_z` - Get local index range in z-pencil
+- `local_indices` - Get local index ranges for a PencilArray
+
+### Array Allocation
+- `allocate_xy_pencil` - Allocate array in xy-pencil layout
+- `allocate_z_pencil` - Allocate array in z-pencil layout
