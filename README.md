@@ -7,15 +7,6 @@ QG-YBJ+ Model
 
 This is a numerical model for the two-way interaction of near-inertial waves with (Lagrangian-mean) balanced eddies. Wave evolution is governed by the YBJ+ equation (Asselin & Young 2019). The traditional quasigeostrophic equation dictates the evolution of potential vorticity, which includes the wave feedback term of Xie & Vanneste (2015). The model is pseudo-spectral in the horizontal and uses second-order finite differences to evaluate vertical and time derivatives.
 
-## Documentation
-
-Full documentation is available at: **https://subhk.github.io/QGYBJ.jl/**
-
-- [Getting Started](https://subhk.github.io/QGYBJ.jl/stable/getting_started/) - Installation and quick start guide
-- [Physics & Theory](https://subhk.github.io/QGYBJ.jl/stable/physics/overview/) - Model equations and numerical methods
-- [User Guide](https://subhk.github.io/QGYBJ.jl/stable/guide/configuration/) - Configuration, running simulations, and I/O
-- [API Reference](https://subhk.github.io/QGYBJ.jl/stable/api/types/) - Complete function documentation
-
 ## Quick Start
 
 ```julia
