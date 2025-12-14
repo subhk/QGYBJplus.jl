@@ -193,9 +193,6 @@ function QGYBJ.init_mpi_grid(params::QGParams, mpi_config::MPIConfig)
     local_range = decomp.local_range
     parent_arr = parent(kh2_pencil)
 
-    # Get the permutation to map global to local indices
-    perm = permutation(decomp.pencil)
-
     for k_local in axes(parent_arr, 3)
         for j_local in axes(parent_arr, 2)
             for i_local in axes(parent_arr, 1)
