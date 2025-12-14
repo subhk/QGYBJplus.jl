@@ -255,11 +255,36 @@ function wave_energy_vavg(B, G::Grid, plans)
     return WE
 end
 
+#=
+================================================================================
+                    FIELD SLICING UTILITIES
+================================================================================
+Extract 2D slices from 3D spectral fields for visualization.
+================================================================================
+=#
+
 """
     slice_horizontal(field, G, plans; k::Int) -> Array{Float64,2}
 
-Return a horizontal x–y slice at vertical index k from a complex spectral field
-by inverse FFT to real space.
+Extract a horizontal (x-y) slice from a spectral 3D field.
+
+# Description
+Transforms a spectral field to physical space and extracts the horizontal
+slice at vertical index k.
+
+# Use Cases
+- Surface vorticity plots (k=nz for surface)
+- Deep field structure (k=1 for bottom)
+- Vertical structure analysis at specific depths
+
+# Arguments
+- `field::Array{Complex,3}`: Spectral field (nx, ny, nz)
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `k::Int`: Vertical index for slice (1 ≤ k ≤ nz)
+
+# Returns
+2D real array (nx, ny) with values at z = G.z[k].
 """
 function slice_horizontal(field, G::Grid, plans; k::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -278,8 +303,25 @@ end
 """
     slice_vertical_xz(field, G, plans; j::Int) -> Array{Float64,2}
 
-Return an x–z slice at fixed y-index j from a complex spectral field by inverse
-FFT to real space.
+Extract a vertical (x-z) slice from a spectral 3D field at fixed y.
+
+# Description
+Transforms a spectral field to physical space and extracts the x-z
+slice at y-index j.
+
+# Use Cases
+- Vertical wave structure visualization
+- Eddy vertical extent analysis
+- Thermocline/pycnocline interaction studies
+
+# Arguments
+- `field::Array{Complex,3}`: Spectral field (nx, ny, nz)
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `j::Int`: Y-index for slice (1 ≤ j ≤ ny)
+
+# Returns
+2D real array (nx, nz) with values at y = G.y[j] (if y were defined).
 """
 function slice_vertical_xz(field, G::Grid, plans; j::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -297,7 +339,33 @@ end
 """
     wave_energy(B, A) -> (E_B, E_A)
 
-Simple domain-sum energy-like diagnostics for |B|^2 and |A|^2.
+Compute domain-integrated wave energy from both B and A fields.
+
+# Physical Background
+Two measures of wave energy in the model:
+
+1. **Envelope energy** E_B = Σ |B|²
+   - Based on the evolved wave envelope
+   - Directly available from prognostic variable
+
+2. **Amplitude energy** E_A = Σ |A|²
+   - Based on the recovered wave amplitude
+   - More physically meaningful for wave energy flux
+
+# Use Cases
+- Monitor total wave energy conservation/dissipation
+- Compare E_B and E_A to verify B→A recovery
+- Track energy exchange with mean flow
+
+# Arguments
+- `B::Array{Complex,3}`: Wave envelope (spectral or physical)
+- `A::Array{Complex,3}`: Wave amplitude (spectral or physical)
+
+# Returns
+Tuple (E_B, E_A) of domain-summed squared magnitudes.
+
+# Note
+These are domain SUMS, not means. For energy density, divide by grid volume.
 """
 function wave_energy(B, A)
     EB = 0.0; EA = 0.0
