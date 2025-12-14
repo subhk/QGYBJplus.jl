@@ -126,7 +126,11 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
     q_arr = parent(S.q)     # Input: QGPV
 
     # Get local dimensions
+    # With 1D decomposition in y: x and z are fully local, y is distributed
     nx_local, ny_local, nz_local = size(ψ_arr)
+
+    # Verify z is fully local (required for vertical tridiagonal solve)
+    @assert nz_local == nz "Vertical dimension must be fully local (nz_local=$nz_local, nz=$nz)"
 
     # Tridiagonal matrix diagonals (reused for each wavenumber)
     dl = zeros(eltype(a), nz)   # Lower diagonal
@@ -164,7 +168,7 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
         # Special case: kh² = 0 (horizontal mean mode)
         # The equation becomes singular; set ψ = 0 (arbitrary constant)
         if kh2 == 0
-            @inbounds for k in 1:nz_local
+            @inbounds for k in 1:nz
                 ψ_arr[i_local, j_local, k] = 0
             end
             continue
@@ -194,28 +198,25 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
         #= Solve for real and imaginary parts separately
         (LAPACK's tridiagonal solver works on real arrays) =#
 
-        # Real part
+        # Real part - z is fully local
         rhs = zeros(eltype(a), nz)
-        @inbounds for k in 1:nz_local
-            k_global = local_to_global(k, 3, G)
-            rhs[k_global] = Δ2 * real(q_arr[i_local, j_local, k])
+        @inbounds for k in 1:nz
+            rhs[k] = Δ2 * real(q_arr[i_local, j_local, k])
         end
         solr = copy(rhs)
         thomas_solve!(solr, dl, d, du, rhs)
 
         # Imaginary part
         rhs_i = zeros(eltype(a), nz)
-        @inbounds for k in 1:nz_local
-            k_global = local_to_global(k, 3, G)
-            rhs_i[k_global] = Δ2 * imag(q_arr[i_local, j_local, k])
+        @inbounds for k in 1:nz
+            rhs_i[k] = Δ2 * imag(q_arr[i_local, j_local, k])
         end
         soli = copy(rhs_i)
         thomas_solve!(soli, dl, d, du, rhs_i)
 
         # Combine into complex solution
-        @inbounds for k in 1:nz_local
-            k_global = local_to_global(k, 3, G)
-            ψ_arr[i_local, j_local, k] = solr[k_global] + im*soli[k_global]
+        @inbounds for k in 1:nz
+            ψ_arr[i_local, j_local, k] = solr[k] + im*soli[k]
         end
     end
 
