@@ -60,7 +60,7 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJ: Grid, State
+using ..QGYBJ: Grid, State, get_kx, get_ky, get_local_dims, local_to_global
 const PARENT = Base.parentmodule(@__MODULE__)
 
 #=
@@ -118,11 +118,15 @@ invert_q_to_psi!(state, grid; a=a_vec)
 ```
 """
 function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
 
-    ψ = S.psi   # Output: streamfunction
-    q = S.q     # Input: QGPV
+    # Get underlying arrays (works for both Array and PencilArray)
+    ψ_arr = parent(S.psi)   # Output: streamfunction
+    q_arr = parent(S.q)     # Input: QGPV
+
+    # Get local dimensions
+    nx_local, ny_local, nz_local = size(ψ_arr)
 
     # Tridiagonal matrix diagonals (reused for each wavenumber)
     dl = zeros(eltype(a), nz)   # Lower diagonal
@@ -147,14 +151,22 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
         isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
     end
 
-    # Loop over all horizontal wavenumbers (kx, ky)
-    for j in 1:ny, i in 1:nx
-        kh2 = G.kh2[i,j]   # Horizontal wavenumber squared: kx² + ky²
+    # Loop over all LOCAL horizontal wavenumbers (using local indices)
+    for j_local in 1:ny_local, i_local in 1:nx_local
+        # Get global indices for wavenumber lookup
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+
+        kx_val = G.kx[i_global]
+        ky_val = G.ky[j_global]
+        kh2 = kx_val^2 + ky_val^2   # Horizontal wavenumber squared: kx² + ky²
 
         # Special case: kh² = 0 (horizontal mean mode)
         # The equation becomes singular; set ψ = 0 (arbitrary constant)
         if kh2 == 0
-            @inbounds ψ[i,j,:] .= 0
+            @inbounds for k in 1:nz_local
+                ψ_arr[i_local, j_local, k] = 0
+            end
             continue
         end
 
@@ -183,24 +195,27 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing)
         (LAPACK's tridiagonal solver works on real arrays) =#
 
         # Real part
-        rhs = similar(view(q, i, j, :), eltype(a))
-        @inbounds for k in 1:nz
-            rhs[k] = Δ2 * real(q[i,j,k])
+        rhs = zeros(eltype(a), nz)
+        @inbounds for k in 1:nz_local
+            k_global = local_to_global(k, 3, G)
+            rhs[k_global] = Δ2 * real(q_arr[i_local, j_local, k])
         end
         solr = copy(rhs)
         thomas_solve!(solr, dl, d, du, rhs)
 
         # Imaginary part
-        rhs_i = similar(solr)
-        @inbounds for k in 1:nz
-            rhs_i[k] = Δ2 * imag(q[i,j,k])
+        rhs_i = zeros(eltype(a), nz)
+        @inbounds for k in 1:nz_local
+            k_global = local_to_global(k, 3, G)
+            rhs_i[k_global] = Δ2 * imag(q_arr[i_local, j_local, k])
         end
         soli = copy(rhs_i)
         thomas_solve!(soli, dl, d, du, rhs_i)
 
         # Combine into complex solution
-        @inbounds for k in 1:nz
-            ψ[i,j,k] = solr[k] + im*soli[k]
+        @inbounds for k in 1:nz_local
+            k_global = local_to_global(k, 3, G)
+            ψ_arr[i_local, j_local, k] = solr[k_global] + im*soli[k_global]
         end
     end
 

@@ -133,6 +133,8 @@ export QGParams, Grid, State,
        init_grid, init_state, init_pencil_decomposition!,
        plan_transforms!, setup_parallel_transforms, fft_forward!, fft_backward!,
        compute_wavenumbers!,
+       # Local-to-global index mapping for PencilArrays compatibility
+       get_local_range, local_to_global, get_kx, get_ky, get_kh2, get_local_dims, is_parallel_array,
        invert_q_to_psi!, compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!,
        default_params, setup_model,
        a_ell_ut, dealias_mask,
