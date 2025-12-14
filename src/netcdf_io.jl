@@ -339,41 +339,44 @@ end
 """
     write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
 
-Write NetCDF file using parallel I/O with 2D decomposition support.
+Write NetCDF file with 2D decomposition support.
+Uses gather-to-root approach: all data is gathered to rank 0, which writes the file.
+This is simpler and more reliable than parallel NetCDF.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config; params=nothing)
     ensure_ncds_loaded()
 
-    # Import MPI if available
+    # Import MPI
     MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
 
     rank = MPI.Comm_rank(parallel_config.comm)
     nprocs = MPI.Comm_size(parallel_config.comm)
 
-    # Convert spectral fields to real space (each process handles its portion)
-    psir = similar(parent(S.psi), Float64)
-    psi_parent = parent(S.psi)
-    fft_backward!(psir, psi_parent, plans)
+    # Gather fields to rank 0 using QGYBJ's gather function
+    gathered_psi = QGYBJ.gather_to_root(S.psi, G, parallel_config)
+    gathered_B = QGYBJ.gather_to_root(S.B, G, parallel_config)
 
-    BRr = similar(parent(S.B), Float64)
-    BIr = similar(parent(S.B), Float64)
-    B_parent = parent(S.B)
-    fft_backward!(BRr, real.(B_parent), plans)
-    fft_backward!(BIr, imag.(B_parent), plans)
+    # Only rank 0 writes
+    if rank == 0
+        if gathered_psi === nothing || gathered_B === nothing
+            error("Failed to gather fields to rank 0")
+        end
 
-    norm_factor = G.nx * G.ny
+        # Create serial FFT plans for the full domain
+        temp_plans = plan_transforms!(G)
 
-    # Get local ranges from decomposition
-    if G.decomp !== nothing && hasfield(typeof(G.decomp), :local_range_xy)
-        local_range = G.decomp.local_range_xy
-    else
-        # Fallback for 1D or serial
-        local_range = (1:G.nx, 1:G.ny, 1:G.nz)
-    end
+        # Convert to real space
+        psir = zeros(Float64, G.nx, G.ny, G.nz)
+        BRr = zeros(Float64, G.nx, G.ny, G.nz)
+        BIr = zeros(Float64, G.nx, G.ny, G.nz)
 
-    # Try parallel NetCDF if available
-    try
-        NCDatasets.Dataset(filepath, "c"; comm=parallel_config.comm) do ds
+        fft_backward!(psir, gathered_psi, temp_plans)
+        fft_backward!(BRr, real.(gathered_B), temp_plans)
+        fft_backward!(BIr, imag.(gathered_B), temp_plans)
+
+        norm_factor = G.nx * G.ny
+
+        NCDatasets.Dataset(filepath, "c") do ds
             # Define dimensions
             ds.dim["x"] = G.nx
             ds.dim["y"] = G.ny
@@ -386,86 +389,7 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
             z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
             time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
 
-            # Set coordinate values (only on rank 0)
-            if rank == 0
-                dx = 2π / G.nx
-                dy = 2π / G.ny
-                dz = 2π / G.nz
-
-                x_var[:] = collect(0:dx:(2π-dx))
-                y_var[:] = collect(0:dy:(2π-dy))
-                z_var[:] = collect(0:dz:(2π-dz))
-                time_var[1] = time
-            end
-
-            # Create data variables
-            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
-            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
-
-            # Write data (each process writes its portion)
-            psi_var[local_range[1], local_range[2], local_range[3]] = real.(psir) / norm_factor
-            LAr_var[local_range[1], local_range[2], local_range[3]] = real.(BRr) / norm_factor
-            LAi_var[local_range[1], local_range[2], local_range[3]] = real.(BIr) / norm_factor
-
-            # Add attributes (only on rank 0)
-            if rank == 0
-                ds.attrib["title"] = "QG-YBJ Model State (Parallel)"
-                ds.attrib["created_at"] = string(Dates.now())
-                ds.attrib["model_time"] = time
-                ds.attrib["n_processes"] = nprocs
-            end
-        end
-    catch e
-        # Fallback to gather-and-write if parallel NetCDF fails
-        if rank == 0
-            @warn "Parallel NetCDF failed ($e), falling back to gather-and-write"
-        end
-        _write_gathered_netcdf(filepath, S, G, plans, time, parallel_config, params)
-    end
-end
-
-"""
-    _write_gathered_netcdf(filepath, S, G, plans, time, parallel_config, params)
-
-Fallback: gather distributed arrays to rank 0 and write serially.
-"""
-function _write_gathered_netcdf(filepath, S::State, G::Grid, plans, time, parallel_config, params)
-    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-
-    rank = MPI.Comm_rank(parallel_config.comm)
-
-    # Gather fields to rank 0 using QGYBJ's gather function
-    gathered_psi = QGYBJ.gather_to_root(S.psi, G, parallel_config)
-    gathered_B = QGYBJ.gather_to_root(S.B, G, parallel_config)
-
-    # Only rank 0 writes
-    if rank == 0 && gathered_psi !== nothing
-        ensure_ncds_loaded()
-
-        # Convert to real space
-        temp_plans = plan_transforms!(G)
-        psir = zeros(Float64, G.nx, G.ny, G.nz)
-        BRr = zeros(Float64, G.nx, G.ny, G.nz)
-        BIr = zeros(Float64, G.nx, G.ny, G.nz)
-
-        fft_backward!(psir, gathered_psi, temp_plans)
-        fft_backward!(BRr, real.(gathered_B), temp_plans)
-        fft_backward!(BIr, imag.(gathered_B), temp_plans)
-
-        norm_factor = G.nx * G.ny
-
-        NCDatasets.Dataset(filepath, "c") do ds
-            ds.dim["x"] = G.nx
-            ds.dim["y"] = G.ny
-            ds.dim["z"] = G.nz
-            ds.dim["time"] = 1
-
-            x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
-            y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
-            z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
-            time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
-
+            # Set coordinate values
             dx = 2π / G.nx
             dy = 2π / G.ny
             dz = 2π / G.nz
@@ -475,6 +399,7 @@ function _write_gathered_netcdf(filepath, S::State, G::Grid, plans, time, parall
             z_var[:] = collect(0:dz:(2π-dz))
             time_var[1] = time
 
+            # Create and write data variables
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
@@ -483,12 +408,26 @@ function _write_gathered_netcdf(filepath, S::State, G::Grid, plans, time, parall
             LAr_var[:,:,:] = real.(BRr) / norm_factor
             LAi_var[:,:,:] = real.(BIr) / norm_factor
 
-            ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
+            # Add attributes
+            ds.attrib["title"] = "QG-YBJ Model State"
             ds.attrib["created_at"] = string(Dates.now())
             ds.attrib["model_time"] = time
+            ds.attrib["n_processes"] = nprocs
+
+            # Add parameter info if provided
+            if params !== nothing
+                ds.attrib["nx"] = params.nx
+                ds.attrib["ny"] = params.ny
+                ds.attrib["nz"] = params.nz
+                ds.attrib["f0"] = params.f0
+                ds.attrib["dt"] = params.dt
+            end
         end
+
+        @info "Rank 0 wrote state file: $filepath (t=$time)"
     end
 
+    # Synchronize all processes
     MPI.Barrier(parallel_config.comm)
 end
 

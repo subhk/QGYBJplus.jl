@@ -288,23 +288,35 @@ ncread_la!(state, grid, plans; path="la.nc", parallel_config=mpi_config)
 
 ### I/O Strategy for 2D Decomposition
 
-QGYBJ.jl uses two strategies for parallel I/O:
+QGYBJ.jl uses a **gather-to-root** strategy for parallel I/O:
 
-| Strategy | Method | Best For |
-|:---------|:-------|:---------|
-| **Parallel NetCDF** | Each rank writes its portion | Large files, fast I/O |
-| **Gather-and-Write** | Gather to rank 0, write serially | Compatibility, smaller files |
-
-```julia
-# The write functions automatically try parallel NetCDF first,
-# falling back to gather-and-write if needed
-
-write_state_file(manager, state, grid, plans, time, mpi_config)
-# Internally:
-# 1. Try parallel NetCDF with mpi_comm
-# 2. If fails, gather arrays to rank 0 using QGYBJ.gather_to_root()
-# 3. Rank 0 writes the full file
 ```
+┌─────────────────────────────────────────────────────────────┐
+│                    Parallel I/O Strategy                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  WRITING:                                                   │
+│  ┌─────────┐   gather_to_root   ┌─────────┐   write   ┌───┐│
+│  │ Rank 0  │ ←───────────────── │ Rank 0  │ ────────→ │.nc││
+│  │ Rank 1  │                    │ (full   │           └───┘│
+│  │ Rank 2  │                    │  array) │                │
+│  │   ...   │                    └─────────┘                │
+│  └─────────┘                                               │
+│                                                             │
+│  READING:                                                   │
+│  ┌───┐   read    ┌─────────┐  scatter_from_root  ┌────────┐│
+│  │.nc│ ────────→ │ Rank 0  │ ──────────────────→ │ Rank 0 ││
+│  └───┘           │ (full   │                     │ Rank 1 ││
+│                  │  array) │                     │ Rank 2 ││
+│                  └─────────┘                     │   ...  ││
+│                                                  └────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+This approach is:
+- **Simple**: No parallel NetCDF library required
+- **Reliable**: Standard serial NetCDF always works
+- **Portable**: Works on any system
 
 ### Local Index Ranges for Manual I/O
 
