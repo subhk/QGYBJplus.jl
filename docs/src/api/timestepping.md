@@ -246,50 +246,47 @@ function adaptive_dt(state, grid; cfl_target=0.5, dt_max=0.01)
 end
 ```
 
-## Sub-stepping
+## Robert-Asselin Filter Parameter
 
-For very stiff problems:
+The filter coefficient γ (`gamma` in `QGParams`) controls damping of the computational mode:
 
-```@docs
-substep!
-```
-
-```julia
-# Take N substeps within one outer step
-n_sub = 4
-dt_sub = dt / n_sub
-
-for _ in 1:n_sub
-    substep!(state, grid, params, work, plans, a_ell, dt_sub)
-end
-```
-
-## State History
-
-### Managing History Arrays
-
-The state contains history for AB3:
+- **Too large** (γ > 0.01): Excessive damping, accuracy loss
+- **Too small** (γ < 0.0001): Computational mode growth
+- **Recommended**: γ ≈ 0.001 (default)
 
 ```julia
-# Current tendency
-state.rq_new
-
-# Previous tendencies
-state.rq_old   # n-1
-state.rq_old2  # n-2
+params = default_params(nx=64, ny=64, nz=32; gamma=0.001)
 ```
 
-### Rotating History
+## Time Level Management
 
-```@docs
-rotate_history!
-```
+The leapfrog scheme requires three time levels:
 
-Called automatically at end of timestep:
+| Variable | Description | Usage |
+|:---------|:------------|:------|
+| `Snm1` | State at n-1 | Input, receives filtered n values |
+| `Sn` | State at n | Input (unchanged) |
+| `Snp1` | State at n+1 | Output |
+
+After each step, rotate the pointers:
 ```julia
-state.rq_old2 .= state.rq_old
-state.rq_old .= state.rq_new
+Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 ```
+
+This avoids data copying by just swapping references.
+
+## Physics Switches
+
+The time stepping respects these `QGParams` switches:
+
+| Switch | Effect |
+|:-------|:-------|
+| `linear` | Zero nonlinear advection J(ψ, q), J(ψ, B) |
+| `inviscid` | Zero vertical diffusion νz ∂²q/∂z² |
+| `passive_scalar` | Waves as passive tracers (no dispersion/refraction) |
+| `no_dispersion` | Zero wave dispersion (A = 0) |
+| `fixed_flow` | Mean flow doesn't evolve (q unchanged) |
+| `no_wave_feedback` | No qʷ feedback term |
 
 ## Performance
 
@@ -301,30 +298,35 @@ Typical distribution:
 | FFTs | 40-50% |
 | Elliptic solves | 20-30% |
 | Array operations | 15-25% |
-| History management | 5% |
+| Transpose operations (2D) | 5-10% |
 
-### Optimization
+### 2D Decomposition Notes
+
+When using 2D decomposition:
+- Pass `workspace` argument to avoid repeated allocation
+- Vertical operations (inversions, diffusion) use automatic transposes
+- The workspace contains pre-allocated z-pencil arrays
 
 ```julia
-# Pre-compute integrating factors
-IF_q, IF_B = compute_integrating_factors(grid, params, dt)
+# Pre-allocate workspace (once)
+workspace = QGYBJ.init_mpi_workspace(grid, mpi_config)
 
-# Reuse for all steps (if dt is constant)
-for step = 1:nsteps
-    timestep_with_IF!(state, ..., IF_q, IF_B)
+# Reuse for all steps
+for step in 1:nsteps
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
+                   a=a, dealias_mask=L, workspace=workspace)
+    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 end
 ```
 
 ## API Reference
 
 ```@docs
-timestep!
-ab3_step!
-ab2_step!
-euler_step!
-compute_rhs_qg!
-compute_rhs_wave!
-compute_integrating_factors
-apply_integrating_factor!
-startup_ab3!
+first_projection_step!
+leapfrog_step!
+convol_waqg!
+refraction_waqg!
+dissipation_q_nv!
+int_factor
+compute_qw!
 ```

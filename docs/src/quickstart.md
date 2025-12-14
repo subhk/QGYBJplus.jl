@@ -185,3 +185,33 @@ config = create_simple_config(
 !!! tip "Memory Consideration"
     A 256×256×128 complex array uses about 1 GB of memory. For larger domains,
     consider using [MPI parallelization](@ref parallel).
+
+## Parallel Mode (MPI)
+
+For large-scale simulations, use MPI with 2D pencil decomposition:
+
+```julia
+# run_parallel.jl
+using MPI, PencilArrays, PencilFFTs, QGYBJ
+
+MPI.Init()
+mpi_config = QGYBJ.setup_mpi_environment()
+
+# Setup distributed simulation
+params = default_params(nx=256, ny=256, nz=128)
+grid = QGYBJ.init_mpi_grid(params, mpi_config)
+state = QGYBJ.init_mpi_state(grid, mpi_config)
+workspace = QGYBJ.init_mpi_workspace(grid, mpi_config)
+plans = QGYBJ.plan_mpi_transforms(grid, mpi_config)
+
+# ... run simulation ...
+
+MPI.Finalize()
+```
+
+Run with:
+```bash
+mpiexec -n 16 julia --project run_parallel.jl
+```
+
+See [MPI Parallelization](@ref parallel) for details on 2D pencil decomposition.
