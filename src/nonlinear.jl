@@ -224,6 +224,11 @@ The velocities u, v should be precomputed and passed in real space.
 function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
+    # Get underlying arrays (works for both Array and PencilArray)
+    u_arr = parent(u); v_arr = parent(v)
+    nqk_arr = parent(nqk); nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
+    nx_local, ny_local, nz_local = size(u_arr)
+
     # Dealiasing mask (L = 1 inside 2/3 circle, 0 outside)
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -235,64 +240,82 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     fft_backward!(BRr, BRk, plans)
     fft_backward!(BIr, BIk, plans)
 
+    qr_arr = parent(qr); BRr_arr = parent(BRr); BIr_arr = parent(BIr)
+
     #= ---- J(ψ, q): Advection of QGPV ---- =#
     # Compute products u*q and v*q in real space
     uterm = similar(qk); vterm = similar(qk)
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        uterm[i,j,k] = u[i,j,k]*real(qr[i,j,k])
-        vterm[i,j,k] = v[i,j,k]*real(qr[i,j,k])
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(qr_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(qr_arr[i_local, j_local, k])
     end
 
     # Transform to spectral and compute divergence
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        if L[i,j]
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kx_val = G.kx[i_global]
+        ky_val = G.ky[j_global]
+        if L[i_global, j_global]
             # J(ψ,q) = ∂(uq)/∂x + ∂(vq)/∂y = ikₓ(ûq) + ikᵧ(v̂q)
-            nqk[i,j,k] = im*G.kx[i]*uterm[i,j,k] + im*G.ky[j]*vterm[i,j,k]
+            nqk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
-            nqk[i,j,k] = 0  # Dealiased
+            nqk_arr[i_local, j_local, k] = 0  # Dealiased
         end
     end
 
     #= ---- J(ψ, BR): Advection of wave real part ---- =#
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        uterm[i,j,k] = u[i,j,k]*real(BRr[i,j,k])
-        vterm[i,j,k] = v[i,j,k]*real(BRr[i,j,k])
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BRr_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BRr_arr[i_local, j_local, k])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        if L[i,j]
-            nBRk[i,j,k] = im*G.kx[i]*uterm[i,j,k] + im*G.ky[j]*vterm[i,j,k]
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kx_val = G.kx[i_global]
+        ky_val = G.ky[j_global]
+        if L[i_global, j_global]
+            nBRk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
-            nBRk[i,j,k] = 0
+            nBRk_arr[i_local, j_local, k] = 0
         end
     end
 
     #= ---- J(ψ, BI): Advection of wave imaginary part ---- =#
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        uterm[i,j,k] = u[i,j,k]*real(BIr[i,j,k])
-        vterm[i,j,k] = v[i,j,k]*real(BIr[i,j,k])
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BIr_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BIr_arr[i_local, j_local, k])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        if L[i,j]
-            nBIk[i,j,k] = im*G.kx[i]*uterm[i,j,k] + im*G.ky[j]*vterm[i,j,k]
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kx_val = G.kx[i_global]
+        ky_val = G.ky[j_global]
+        if L[i_global, j_global]
+            nBIk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
-            nBIk[i,j,k] = 0
+            nBIk_arr[i_local, j_local, k] = 0
         end
     end
 
     #= Normalize for unnormalized inverse FFT =#
     norm = nx*ny
-    nqk  ./= norm
-    nBRk ./= norm
-    nBIk ./= norm
+    nqk_arr  ./= norm
+    nBRk_arr ./= norm
+    nBIk_arr ./= norm
 
     return nqk, nBRk, nBIk
 end
@@ -352,12 +375,24 @@ refraction_waqg!(rBR, rBI, BR, BI, psi, grid, plans; Lmask=L)
 """
 function refraction_waqg!(rBRk, rBIk, BRk, BIk, psik, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
+
+    # Get underlying arrays
+    psi_arr = parent(psik)
+    rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
+    nx_local, ny_local, nz_local = size(psi_arr)
+
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
     zetak = similar(psik)
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        zetak[i,j,k] = -G.kh2[i,j]*psik[i,j,k]
+    zetak_arr = parent(zetak)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kx_val = G.kx[i_global]
+        ky_val = G.ky[j_global]
+        kh2 = kx_val^2 + ky_val^2
+        zetak_arr[i_local, j_local, k] = -kh2*psi_arr[i_local, j_local, k]
     end
 
     #= Transform to real space =#
@@ -367,25 +402,32 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, psik, G::Grid, plans; Lmask=noth
     fft_backward!(BRr, BRk, plans)
     fft_backward!(BIr, BIk, plans)
 
+    zetar_arr = parent(zetar)
+    BRr_arr = parent(BRr); BIr_arr = parent(BIr)
+
     #= Compute products in real space: rB = ζ × B =#
     rBRr = similar(BRr); rBIr = similar(BIr)
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        rBRr[i,j,k] = real(zetar[i,j,k])*real(BRr[i,j,k])
-        rBIr[i,j,k] = real(zetar[i,j,k])*real(BIr[i,j,k])
+    rBRr_arr = parent(rBRr); rBIr_arr = parent(rBIr)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        rBRr_arr[i_local, j_local, k] = real(zetar_arr[i_local, j_local, k])*real(BRr_arr[i_local, j_local, k])
+        rBIr_arr[i_local, j_local, k] = real(zetar_arr[i_local, j_local, k])*real(BIr_arr[i_local, j_local, k])
     end
 
     #= Transform back to spectral and apply dealiasing =#
     fft_forward!(rBRk, rBRr, plans)
     fft_forward!(rBIk, rBIr, plans)
+    rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
 
     norm = nx*ny
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        if L[i,j]
-            rBRk[i,j,k] /= norm
-            rBIk[i,j,k] /= norm
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        if L[i_global, j_global]
+            rBRk_arr[i_local, j_local, k] /= norm
+            rBIk_arr[i_local, j_local, k] /= norm
         else
-            rBRk[i,j,k] = 0  # Dealiased
-            rBIk[i,j,k] = 0
+            rBRk_arr[i_local, j_local, k] = 0  # Dealiased
+            rBIk_arr[i_local, j_local, k] = 0
         end
     end
 
