@@ -100,6 +100,154 @@ using LinearAlgebra
 
 #=
 ================================================================================
+                    MPI EXTENSION FUNCTION STUBS
+================================================================================
+These functions are implemented in ext/QGYBJMPIExt.jl when MPI, PencilArrays,
+and PencilFFTs are loaded. They throw informative errors if called without
+the required packages.
+
+IMPORTANT: These stubs MUST be defined BEFORE the include statements below,
+because the submodules use `using ..QGYBJ: transpose_to_z_pencil!, ...` to
+import these functions during their compilation.
+================================================================================
+=#
+
+const MPI_ERROR_MSG = """
+MPI parallel functionality requires MPI.jl, PencilArrays.jl, and PencilFFTs.jl.
+Install and load these packages first:
+
+    using Pkg
+    Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
+
+    using MPI
+    using PencilArrays
+    using PencilFFTs
+    using QGYBJ
+
+    MPI.Init()
+    mpi_config = QGYBJ.setup_mpi_environment()
+"""
+
+function setup_mpi_environment(; kwargs...)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_grid(params, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_state(grid, mpi_config; kwargs...)
+    error(MPI_ERROR_MSG)
+end
+
+function plan_mpi_transforms(grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function gather_to_root(arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function scatter_from_root(arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function mpi_barrier(mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function mpi_reduce_sum(val, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function local_indices(grid)
+    # This one can work in serial mode - return full range
+    if hasproperty(grid, :decomp) && grid.decomp === nothing
+        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
+    elseif !hasproperty(grid, :decomp)
+        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function write_mpi_field(filename, varname, arr, grid, mpi_config)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_random_field!(arr, grid, amplitude, seed_offset=0)
+    error(MPI_ERROR_MSG)
+end
+
+function init_mpi_workspace(grid, mpi_config; kwargs...)
+    error(MPI_ERROR_MSG)
+end
+
+# 2D decomposition functions - transpose operations
+# These stubs support serial mode (when grid.decomp is nothing or doesn't exist)
+function transpose_to_z_pencil!(dst, src, grid)
+    # Serial mode - just copy
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        dst .= src
+        return dst
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function transpose_to_xy_pencil!(dst, src, grid)
+    # Serial mode - just copy
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        dst .= src
+        return dst
+    end
+    error(MPI_ERROR_MSG)
+end
+
+# 2D decomposition functions - local range accessors
+function get_local_range_xy(grid)
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function get_local_range_z(grid)
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function local_to_global_xy(local_idx::Int, dim::Int, grid)
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return local_idx
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function local_to_global_z(local_idx::Int, dim::Int, grid)
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return local_idx
+    end
+    error(MPI_ERROR_MSG)
+end
+
+# 2D decomposition functions - pencil allocation
+function allocate_z_pencil(grid, ::Type{T}=ComplexF64) where T
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return zeros(T, grid.nx, grid.ny, grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+function allocate_xy_pencil(grid, ::Type{T}=ComplexF64) where T
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return zeros(T, grid.nx, grid.ny, grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
+#=
+================================================================================
                               PUBLIC API EXPORTS
 ================================================================================
 The exports are organized by functionality:
@@ -225,146 +373,5 @@ include("netcdf_io.jl")        # NetCDF I/O with legacy compatibility
 # Particle advection system (for Lagrangian tracking)
 include("particles/unified_particle_advection.jl")  # Particle tracking core
 include("particles/particle_io.jl")                  # Particle trajectory I/O
-
-#=
-================================================================================
-                    MPI EXTENSION FUNCTION STUBS
-================================================================================
-These functions are implemented in ext/QGYBJMPIExt.jl when MPI, PencilArrays,
-and PencilFFTs are loaded. They throw informative errors if called without
-the required packages.
-================================================================================
-=#
-
-const MPI_ERROR_MSG = """
-MPI parallel functionality requires MPI.jl, PencilArrays.jl, and PencilFFTs.jl.
-Install and load these packages first:
-
-    using Pkg
-    Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
-
-    using MPI
-    using PencilArrays
-    using PencilFFTs
-    using QGYBJ
-
-    MPI.Init()
-    mpi_config = QGYBJ.setup_mpi_environment()
-"""
-
-function setup_mpi_environment(; kwargs...)
-    error(MPI_ERROR_MSG)
-end
-
-function init_mpi_grid(params, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function init_mpi_state(grid, mpi_config; kwargs...)
-    error(MPI_ERROR_MSG)
-end
-
-function plan_mpi_transforms(grid, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function gather_to_root(arr, grid, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function scatter_from_root(arr, grid, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function mpi_barrier(mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function mpi_reduce_sum(val, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function local_indices(grid)
-    # This one can work in serial mode - return full range
-    if grid.decomp === nothing
-        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function write_mpi_field(filename, varname, arr, grid, mpi_config)
-    error(MPI_ERROR_MSG)
-end
-
-function init_mpi_random_field!(arr, grid, amplitude, seed_offset=0)
-    error(MPI_ERROR_MSG)
-end
-
-function init_mpi_workspace(grid, mpi_config; kwargs...)
-    error(MPI_ERROR_MSG)
-end
-
-# 2D decomposition functions - transpose operations
-function transpose_to_z_pencil!(dst, src, grid)
-    # Serial mode - just copy
-    if grid.decomp === nothing
-        dst .= src
-        return dst
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function transpose_to_xy_pencil!(dst, src, grid)
-    # Serial mode - just copy
-    if grid.decomp === nothing
-        dst .= src
-        return dst
-    end
-    error(MPI_ERROR_MSG)
-end
-
-# 2D decomposition functions - local range accessors
-function get_local_range_xy(grid)
-    if grid.decomp === nothing
-        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function get_local_range_z(grid)
-    if grid.decomp === nothing
-        return (1:grid.nx, 1:grid.ny, 1:grid.nz)
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function local_to_global_xy(local_idx::Int, dim::Int, grid)
-    if grid.decomp === nothing
-        return local_idx
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function local_to_global_z(local_idx::Int, dim::Int, grid)
-    if grid.decomp === nothing
-        return local_idx
-    end
-    error(MPI_ERROR_MSG)
-end
-
-# 2D decomposition functions - pencil allocation
-function allocate_z_pencil(grid, ::Type{T}=ComplexF64) where T
-    if grid.decomp === nothing
-        return zeros(T, grid.nx, grid.ny, grid.nz)
-    end
-    error(MPI_ERROR_MSG)
-end
-
-function allocate_xy_pencil(grid, ::Type{T}=ComplexF64) where T
-    if grid.decomp === nothing
-        return zeros(T, grid.nx, grid.ny, grid.nz)
-    end
-    error(MPI_ERROR_MSG)
-end
 
 end # module
