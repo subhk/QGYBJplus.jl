@@ -260,9 +260,9 @@ end
 """
     default_params(; kwargs...) -> QGParams
 
-Construct a default parameter set using dimensional parameters f0 and N2.
+Construct a default parameter set using dimensional parameters f₀ and N².
 
-With f0=1, N2=1 (constant_N stratification):
+With f₀=1, N²=1 (constant_N stratification):
 - Dispersion coefficient = N²/(2f) = 0.5
 - Inertial period = 2π/f = 2π
 
@@ -275,16 +275,16 @@ With f0=1, N2=1 (constant_N stratification):
 - `nt`: Number of steps (default: 10000)
 
 **Physical Parameters:**
-- `f0`: Coriolis parameter f (default: 1.0)
-- `N2`: Buoyancy frequency squared N² (default: 1.0)
+- `f₀`: Coriolis parameter f (default: 1.0)
+- `N²`: Buoyancy frequency squared (default: 1.0)
 - `W2F`: Wave-to-flow velocity ratio squared (default: 0.01)
 - `stratification`: :constant_N or :skewed_gaussian (default: :constant_N)
 
 **Hyperdiffusion:**
-- `nuh1, nuh2`: Flow hyperviscosity coefficients (default: 0.01, 10.0)
+- `νₕ₁, νₕ₂`: Flow hyperviscosity coefficients (default: 0.01, 10.0)
 - `ilap1, ilap2`: Laplacian powers (default: 2, 6)
-- `nuh1w, nuh2w`: Wave hyperviscosity coefficients (default: 0.0, 10.0)
-- `gamma`: Robert-Asselin filter (default: 1e-3)
+- `νₕ₁ʷ, νₕ₂ʷ`: Wave hyperviscosity coefficients (default: 0.0, 10.0)
+- `γ`: Robert-Asselin filter (default: 1e-3)
 
 **Physics Switches:**
 - `ybj_plus`: Use YBJ+ formulation (default: true)
@@ -297,7 +297,7 @@ With f0=1, N2=1 (constant_N stratification):
 
 # Example
 ```julia
-# Basic usage - f0=1, N2=1 by default
+# Basic usage - f₀=1, N²=1 by default
 par = default_params()
 
 # Custom resolution with steady flow
@@ -307,18 +307,18 @@ par = default_params(nx=128, ny=128, nz=64, fixed_flow=true)
 par = default_params(W2F=0.09)  # W2F = (0.3)² = 0.09
 
 # Custom stratification (stronger N²)
-par = default_params(N2=4.0)  # Dispersion = 4/(2×1) = 2.0
+par = default_params(N²=4.0)  # Dispersion = 4/(2×1) = 2.0
 ```
 
 See also: [`QGParams`](@ref)
 """
 function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
-                           dt=1e-3, nt=10_000, f0=1.0, N2=1.0,
-                           W2F=0.01, gamma=1e-3,
-                           nu_h=0.0, nu_v=0.0,
-                           nuh1=0.01, nuh2=10.0, ilap1=2, ilap2=6,
-                           nuh1w=0.0, nuh2w=10.0, ilap1w=2, ilap2w=6,
-                           nuz=0.0,
+                           dt=1e-3, nt=10_000, f₀=1.0, N²=1.0,
+                           W2F=0.01, γ=1e-3,
+                           νₕ=0.0, νᵥ=0.0,
+                           νₕ₁=0.01, νₕ₂=10.0, ilap1=2, ilap2=6,
+                           νₕ₁ʷ=0.0, νₕ₂ʷ=10.0, ilap1w=2, ilap2w=6,
+                           νz=0.0,
                            linear_vert_structure=0,
                            stratification::Symbol=:constant_N,
                            inviscid=false, linear=false,
@@ -327,7 +327,7 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                            fixed_flow=false, no_wave_feedback=true)
     T = Float64
 
-    #= Dimensional parameters f0 and N2:
+    #= Dimensional parameters f₀ and N²:
     - Dispersion coefficient = N²/(2f)
     - Elliptic coefficient a = f²/N² = 1/N² when f=1
     - Inertial period T = 2π/f
@@ -335,19 +335,19 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
 
     #= Skewed Gaussian stratification parameters (Fortran test1 values)
     These are nondimensionalized for L3 = 2π domain =#
-    N02_sg = T(0.537713935783168)     # Background N²
-    N12_sg = T(2.684198470106461)     # Peak N² amplitude
-    sigma_sg = T(0.648457170048730)   # Pycnocline width
-    z0_sg = T(6.121537923499139)      # Pycnocline depth
-    alpha_sg = T(-5.338431587899242)  # Skewness
+    N₀²_sg = T(0.537713935783168)     # Background N²
+    N₁²_sg = T(2.684198470106461)     # Peak N² amplitude
+    σ_sg = T(0.648457170048730)       # Pycnocline width
+    z₀_sg = T(6.121537923499139)      # Pycnocline depth
+    α_sg = T(-5.338431587899242)      # Skewness
 
     return QGParams{T}(; nx, ny, nz, Lx=T(Lx), Ly=T(Ly), dt=T(dt), nt,
-                         f0=T(f0), nu_h=T(nu_h), nu_v=T(nu_v),
+                         f₀=T(f₀), νₕ=T(νₕ), νᵥ=T(νᵥ),
                          linear_vert_structure, stratification,
-                         N2=T(N2), W2F=T(W2F), gamma=T(gamma),
-                         nuh1=T(nuh1), nuh2=T(nuh2), ilap1, ilap2,
-                         nuh1w=T(nuh1w), nuh2w=T(nuh2w), ilap1w, ilap2w,
-                         nuz=T(nuz), inviscid, linear, no_dispersion, passive_scalar,
+                         N²=T(N²), W2F=T(W2F), γ=T(γ),
+                         νₕ₁=T(νₕ₁), νₕ₂=T(νₕ₂), ilap1, ilap2,
+                         νₕ₁ʷ=T(νₕ₁ʷ), νₕ₂ʷ=T(νₕ₂ʷ), ilap1w, ilap2w,
+                         νz=T(νz), inviscid, linear, no_dispersion, passive_scalar,
                          ybj_plus, no_feedback, fixed_flow, no_wave_feedback,
-                         N02_sg, N12_sg, sigma_sg, z0_sg, alpha_sg)
+                         N₀²_sg, N₁²_sg, σ_sg, z₀_sg, α_sg)
 end
