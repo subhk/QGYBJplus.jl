@@ -271,34 +271,47 @@ With Ro=Bu=1, f0=1, N²=1 (constant_N stratification):
 - Users only need to specify relative amplitudes, not dimensional scales
 
 # Keyword Arguments
+
+**Domain and Time:**
 - `nx, ny, nz`: Grid resolution (default: 64)
 - `Lx, Ly`: Domain size (default: 2π)
 - `dt`: Time step (default: 0.001)
 - `nt`: Number of steps (default: 10000)
+
+**Physical Parameters:**
 - `f0`: Coriolis parameter (default: 1.0)
 - `Ro`: Rossby number (default: 1.0)
 - `Bu`: Burger number (default: 1.0)
 - `W2F`: Wave-to-flow velocity ratio squared (default: 0.01)
 - `stratification`: :constant_N or :skewed_gaussian (default: :constant_N)
 
-# Default Physics Configuration
-- YBJ+ formulation enabled (`ybj_plus=true`)
-- Wave feedback disabled (`no_wave_feedback=true`)
-- Hyperdiffusion with biharmonic + hyper-6 operators
+**Hyperdiffusion:**
+- `nuh1, nuh2`: Flow hyperviscosity coefficients (default: 0.01, 10.0)
+- `ilap1, ilap2`: Laplacian powers (default: 2, 6)
+- `nuh1w, nuh2w`: Wave hyperviscosity coefficients (default: 0.0, 10.0)
+- `gamma`: Robert-Asselin filter (default: 1e-3)
+
+**Physics Switches:**
+- `ybj_plus`: Use YBJ+ formulation (default: true)
+- `fixed_flow`: Keep mean flow constant (default: false)
+- `no_wave_feedback`: Disable wave feedback on flow (default: true)
+- `inviscid`: Disable dissipation (default: false)
+- `linear`: Disable nonlinear advection (default: false)
+- `no_dispersion`: Disable wave dispersion (default: false)
+- `passive_scalar`: Waves as passive tracers (default: false)
 
 # Example
 ```julia
 # Basic usage - Ro=Bu=1 by default
 par = default_params()
 
-# Custom resolution
-par = default_params(nx=128, ny=128, nz=64)
+# Custom resolution with steady flow
+par = default_params(nx=128, ny=128, nz=64, fixed_flow=true)
 
-# Custom wave amplitude (10% of flow)
-par = default_params(W2F=0.01)  # W2F = (u_wave/U_flow)²
+# Custom wave amplitude (30% of flow velocity)
+par = default_params(W2F=0.09)  # W2F = (0.3)² = 0.09
 
 # For advanced users: specify Ro, Bu from dimensional scales
-# Ro = U/(f·L), Bu = (N·H/(f·L))²
 par = default_params(Ro=0.05, Bu=0.1)
 ```
 
@@ -307,8 +320,17 @@ See also: [`QGParams`](@ref)
 function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                            dt=1e-3, nt=10_000, f0=1.0,
                            Ro=1.0, Bu=1.0, W2F=0.01,
-                           nu_h=0.0, nu_v=0.0, linear_vert_structure=0,
-                           stratification::Symbol=:constant_N)
+                           gamma=1e-3,
+                           nu_h=0.0, nu_v=0.0,
+                           nuh1=0.01, nuh2=10.0, ilap1=2, ilap2=6,
+                           nuh1w=0.0, nuh2w=10.0, ilap1w=2, ilap2w=6,
+                           nuz=0.0,
+                           linear_vert_structure=0,
+                           stratification::Symbol=:constant_N,
+                           inviscid=false, linear=false,
+                           no_dispersion=false, passive_scalar=false,
+                           ybj_plus=true, no_feedback=true,
+                           fixed_flow=false, no_wave_feedback=true)
     T = Float64
 
     #= Default: Ro=Bu=1 for simplicity
@@ -323,37 +345,6 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     - Bu = (N·H/(f·L))² where N=stratification, H=depth scale
     =#
 
-    # Robert-Asselin filter parameter (small value for stability)
-    gamma = T(1e-3)
-
-    #= Hyperdiffusion parameters
-    Two operators: -ν₁∇^(2*ilap1) - ν₂∇^(2*ilap2)
-
-    For 256³ resolution (scale as needed):
-    - First operator: biharmonic (ilap=2) for large-scale damping
-    - Second operator: hyper-6 (ilap=6) for small-scale numerical stability =#
-    nuh1 = T(0.01)             # Biharmonic coefficient
-    nuh2 = T(10.0)             # Hyper-6 coefficient
-    ilap1 = 2; ilap2 = 6       # Laplacian powers
-
-    # Wave hyperdiffusion (typically less than mean flow)
-    nuh1w = T(0.0)             # Wave biharmonic (often zero)
-    nuh2w = T(10.0)            # Wave hyper-6
-    ilap1w = 2; ilap2w = 6
-
-    # Vertical diffusion (usually small or zero)
-    nuz = T(0.0)
-
-    # Default physics switches
-    inviscid=false             # Include dissipation
-    linear=false               # Include nonlinear terms
-    no_dispersion=false        # Include wave dispersion
-    passive_scalar=false       # Waves are dynamically active
-    ybj_plus=true              # Use YBJ+ formulation
-    no_feedback=true           # Disable direct feedback
-    fixed_flow=false           # Mean flow evolves
-    no_wave_feedback=true      # Waves don't affect mean flow (for testing)
-
     #= Skewed Gaussian stratification parameters (Fortran test1 values)
     These are nondimensionalized for L3 = 2π domain =#
     N02_sg = T(0.537713935783168)     # Background N²
@@ -362,11 +353,13 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     z0_sg = T(6.121537923499139)      # Pycnocline depth
     alpha_sg = T(-5.338431587899242)  # Skewness
 
-    return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, f0=T(f0), nu_h, nu_v,
+    return QGParams{T}(; nx, ny, nz, Lx=T(Lx), Ly=T(Ly), dt=T(dt), nt,
+                         f0=T(f0), nu_h=T(nu_h), nu_v=T(nu_v),
                          linear_vert_structure, stratification,
-                         Ro=T(Ro), W2F=T(W2F), Bu=T(Bu), gamma,
-                         nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
-                         nuz, inviscid, linear, no_dispersion, passive_scalar,
+                         Ro=T(Ro), W2F=T(W2F), Bu=T(Bu), gamma=T(gamma),
+                         nuh1=T(nuh1), nuh2=T(nuh2), ilap1, ilap2,
+                         nuh1w=T(nuh1w), nuh2w=T(nuh2w), ilap1w, ilap2w,
+                         nuz=T(nuz), inviscid, linear, no_dispersion, passive_scalar,
                          ybj_plus, no_feedback, fixed_flow, no_wave_feedback,
                          N02_sg, N12_sg, sigma_sg, z0_sg, alpha_sg)
 end
