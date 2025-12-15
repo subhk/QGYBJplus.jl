@@ -290,44 +290,92 @@ end
 ================================================================================
                         TRANSPOSE OPERATIONS
 ================================================================================
+Two-step transpose is required because PencilArrays only allows transposition
+between pencil configurations that differ by at most one decomposed dimension.
+
+xy-pencil (2,3) and z-pencil (1,2) differ in BOTH dimensions, so we must use
+an intermediate xz-pencil (1,3):
+
+    xy-pencil (2,3) ↔ xz-pencil (1,3) ↔ z-pencil (1,2)
+
+Each step only changes one decomposed dimension, satisfying PencilArrays' constraint.
+================================================================================
 =#
+
+# Thread-local buffer cache for intermediate transpose arrays
+# This avoids repeated allocations during time-stepping
+const _transpose_buffer_cache = Dict{UInt, Any}()
+
+"""
+    _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
+
+Get or create a cached buffer for the intermediate xz-pencil transpose.
+Thread-safe using object id as key.
+"""
+function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
+    key = objectid(decomp)
+    if !haskey(_transpose_buffer_cache, key)
+        _transpose_buffer_cache[key] = PencilArray{T}(undef, decomp.pencil_xz)
+    end
+    return _transpose_buffer_cache[key]::PencilArray{T}
+end
 
 """
     transpose_to_z_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from xy-pencil to z-pencil configuration.
+Transpose data from xy-pencil to z-pencil configuration using two-step transpose.
 After this operation, z is fully local on each process.
 Use this before vertical operations (tridiagonal solves, vertical derivatives).
 
-# Note
-PencilArrays' `transpose!(dst, src)` automatically infers the transposition
-from the pencil configurations of the source and destination arrays.
+# Two-Step Transpose Path
+    xy-pencil (2,3) → xz-pencil (1,3) → z-pencil (1,2)
+
+This is required because PencilArrays only allows transposition between
+pencil configurations that differ by at most one decomposed dimension.
 """
 function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    # dst should be in z-pencil config, src in xy-pencil config
-    # transpose! infers the operation from the array pencil configurations
-    transpose!(dst, src)
+    # Get intermediate buffer in xz-pencil configuration
+    T = eltype(src)
+    buffer_xz = _get_transpose_buffer(decomp, T)
+
+    # Two-step transpose:
+    # Step 1: xy-pencil (2,3) → xz-pencil (1,3) [changes first decomp dim: 2→1]
+    transpose!(buffer_xz, src)
+
+    # Step 2: xz-pencil (1,3) → z-pencil (1,2) [changes second decomp dim: 3→2]
+    transpose!(dst, buffer_xz)
+
     return dst
 end
 
 """
     transpose_to_xy_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from z-pencil to xy-pencil configuration.
+Transpose data from z-pencil to xy-pencil configuration using two-step transpose.
 Use this after vertical operations to return to the FFT-ready layout.
 
-# Note
-PencilArrays' `transpose!(dst, src)` automatically infers the transposition
-from the pencil configurations of the source and destination arrays.
+# Two-Step Transpose Path
+    z-pencil (1,2) → xz-pencil (1,3) → xy-pencil (2,3)
+
+This is required because PencilArrays only allows transposition between
+pencil configurations that differ by at most one decomposed dimension.
 """
 function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    # dst should be in xy-pencil config, src in z-pencil config
-    # transpose! infers the operation from the array pencil configurations
-    transpose!(dst, src)
+    # Get intermediate buffer in xz-pencil configuration
+    T = eltype(src)
+    buffer_xz = _get_transpose_buffer(decomp, T)
+
+    # Two-step transpose:
+    # Step 1: z-pencil (1,2) → xz-pencil (1,3) [changes second decomp dim: 2→3]
+    transpose!(buffer_xz, src)
+
+    # Step 2: xz-pencil (1,3) → xy-pencil (2,3) [changes first decomp dim: 1→2]
+    transpose!(dst, buffer_xz)
+
     return dst
 end
 
-# Export transpose functions
+# Export transpose functions to QGYBJ module
 function QGYBJ.transpose_to_z_pencil!(dst, src, grid::Grid)
     decomp = grid.decomp
     if decomp === nothing
