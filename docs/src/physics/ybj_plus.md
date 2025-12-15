@@ -112,19 +112,23 @@ Anticyclones (negative vorticity) **trap** waves:
 
 ### Mathematical Form
 
-The refraction term:
+The refraction term in the YBJ+ model:
 
 ```math
-B\frac{\partial\zeta}{\partial t} = B \cdot \frac{\partial(\nabla^2\psi)}{\partial t}
+\text{Refraction} = \frac{1}{2} B \times \zeta = \frac{1}{2} B \times \nabla^2\psi
 ```
 
-This couples wave evolution to vorticity changes.
+In terms of real/imaginary parts:
+- ``r_{BR} = \frac{1}{2} B_I \times \zeta`` contributes to ``\partial B_R/\partial t``
+- ``r_{BI} = -\frac{1}{2} B_R \times \zeta`` contributes to ``\partial B_I/\partial t``
+
+This term represents focusing of wave energy by the background vorticity field.
 
 ### Code Implementation
 
 ```julia
-# Compute refraction term
-refraction_waqg!(rBk, state.B, state.psi, state_old.psi, grid, params, plans, dt, Lmask)
+# Compute refraction term: (1/2) * B × ζ where ζ = -kh²ψ
+refraction_waqg!(rBRk, rBIk, BRk, BIk, psik, grid, plans; Lmask=L)
 ```
 
 ## YBJ vs YBJ+
