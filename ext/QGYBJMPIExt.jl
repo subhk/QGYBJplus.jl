@@ -158,26 +158,36 @@ Wrapper for PencilArrays decomposition supporting 2D decomposition with
 multiple pencil configurations for different operations.
 
 # Fields
-- `pencil_xy`: Pencil configuration for horizontal operations (x,y local or partially local)
-- `pencil_z`: Pencil configuration for vertical operations (z fully local)
+- `pencil_xy`: Pencil configuration for horizontal operations (decomp_dims=(2,3), x local)
+- `pencil_xz`: Intermediate pencil for two-step transpose (decomp_dims=(1,3), y local)
+- `pencil_z`: Pencil configuration for vertical operations (decomp_dims=(1,2), z local)
 - `local_range_xy`: Local index ranges in xy-pencil configuration
+- `local_range_xz`: Local index ranges in xz-pencil configuration (intermediate)
 - `local_range_z`: Local index ranges in z-pencil configuration
 - `global_dims`: Global array dimensions (nx, ny, nz)
 - `topology`: 2D process topology (px, py)
 
 # Transpose Operations
-Transpositions between pencil configurations are performed using PencilArrays'
-`transpose!(dst, src)` function, which automatically infers the transposition
-from the pencil configurations of the source and destination arrays.
+PencilArrays requires that pencil decompositions differ by at most one dimension
+for transpose operations. Since xy-pencil (2,3) and z-pencil (1,2) differ in both
+dimensions, we use a two-step transpose through an intermediate xz-pencil (1,3):
+
+    xy-pencil (2,3) ↔ xz-pencil (1,3) ↔ z-pencil (1,2)
+
+This satisfies the PencilArrays constraint:
+- (2,3) → (1,3): differs in first dim only ✓
+- (1,3) → (1,2): differs in second dim only ✓
 
 # Type Parameters
-Using `Any` for pencil types to ensure compatibility across PencilArrays versions.
+Using parametric types for pencils to ensure compatibility across PencilArrays versions.
 The actual types are Pencil{3,2,...} for 3D data with 2D decomposition.
 """
-struct PencilDecomp{P1, P2}
-    pencil_xy::P1                         # 3D data, 2D decomposition for FFTs
-    pencil_z::P2                          # 3D data, 2D decomposition with z local
+struct PencilDecomp{P1, P2, P3}
+    pencil_xy::P1                         # decomp_dims=(2,3): y,z distributed; x local
+    pencil_xz::P2                         # decomp_dims=(1,3): x,z distributed; y local (intermediate)
+    pencil_z::P3                          # decomp_dims=(1,2): x,y distributed; z local
     local_range_xy::NTuple{3, UnitRange{Int}}
+    local_range_xz::NTuple{3, UnitRange{Int}}
     local_range_z::NTuple{3, UnitRange{Int}}
     global_dims::NTuple{3, Int}
     topology::Tuple{Int,Int}
@@ -190,13 +200,20 @@ Create a 2D pencil decomposition for 3D data with support for both
 horizontal (FFT) and vertical (tridiagonal solve) operations.
 
 # Decomposition Strategy
-- `pencil_xy`: Decomposes in dimensions (2, 3) - y and z distributed, x local
-  This is the "x-pencil" configuration, good for FFTs starting in x.
-- `pencil_z`: Decomposes in dimensions (1, 2) - x and y distributed, z local
-  This is the "z-pencil" configuration, needed for vertical operations.
+Three pencil configurations are created for different operations:
 
-PencilFFTs handles the intermediate transposes for FFTs automatically.
-For vertical operations, we explicitly transpose between xy and z pencils.
+- `pencil_xy`: decomp_dims=(2,3) - y,z distributed, x local
+  Used for FFTs and horizontal operations.
+
+- `pencil_xz`: decomp_dims=(1,3) - x,z distributed, y local (INTERMEDIATE)
+  Required for two-step transpose between xy and z pencils.
+  PencilArrays requires decomp_dims to differ by at most 1 for transpose.
+
+- `pencil_z`: decomp_dims=(1,2) - x,y distributed, z local
+  Used for vertical operations (tridiagonal solves).
+
+# Transpose Path
+    xy-pencil (2,3) ↔ xz-pencil (1,3) ↔ z-pencil (1,2)
 
 # Topology Validation
 The function validates that the grid dimensions are compatible with the
@@ -207,7 +224,8 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     px, py = topo
 
     # Validate topology against grid dimensions
-    # For xy-pencil (decompose y, z): need ny >= py and nz >= px (approximately)
+    # For xy-pencil (decompose y, z): need ny >= py and nz >= px
+    # For xz-pencil (decompose x, z): need nx >= px and nz >= py
     # For z-pencil (decompose x, y): need nx >= px and ny >= py
     if ny < py
         error("Grid dimension ny=$ny is smaller than process topology py=$py. " *
@@ -224,6 +242,11 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
               "Each process must have at least one grid point in x for z-pencil. " *
               "Reduce the number of processes or increase nx.")
     end
+    if nz < py
+        error("Grid dimension nz=$nz is smaller than process topology py=$py. " *
+              "Each process must have at least one grid point in z for xz-pencil. " *
+              "Reduce the number of processes or increase nz.")
+    end
 
     if mpi_config.is_root
         @info "Topology validation passed" nx ny nz topology=topo
@@ -232,25 +255,31 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     # Create 2D MPI topology
     mpi_topo = MPITopology(mpi_config.comm, topo)
 
-    # Create x-pencil (for starting FFTs): decompose in dims 2 and 3 (y, z)
-    # x remains fully local on each process
+    # Create xy-pencil (for FFTs): decompose in dims (2, 3) - y,z distributed, x local
     pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (2, 3))
 
-    # Create z-pencil (for vertical operations): decompose in dims 1 and 2 (x, y)
-    # z remains fully local on each process
+    # Create xz-pencil (INTERMEDIATE): decompose in dims (1, 3) - x,z distributed, y local
+    # This bridges xy-pencil and z-pencil since they differ by 2 dimensions
+    pencil_xz = Pencil(mpi_topo, (nx, ny, nz), (1, 3))
+
+    # Create z-pencil (for vertical ops): decompose in dims (1, 2) - x,y distributed, z local
     pencil_z = Pencil(mpi_topo, (nx, ny, nz), (1, 2))
 
     # Get local index ranges for each configuration
     local_range_xy = range_local(pencil_xy)
+    local_range_xz = range_local(pencil_xz)
     local_range_z = range_local(pencil_z)
 
-    # Note: Transpose operations are performed using transpose!(dst, src) directly
-    # on PencilArrays, which infers the transposition from the array pencil configs
+    if mpi_config.is_root
+        @info "Pencil decompositions created" xy_decomp=(2,3) xz_decomp=(1,3) z_decomp=(1,2)
+    end
 
     return PencilDecomp(
         pencil_xy,
+        pencil_xz,
         pencil_z,
         local_range_xy,
+        local_range_xz,
         local_range_z,
         (nx, ny, nz),
         topo
