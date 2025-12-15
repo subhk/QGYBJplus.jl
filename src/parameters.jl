@@ -46,26 +46,26 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 - `Lx, Ly`: Horizontal domain size (typically 2π for nondimensional)
 
 # Time Stepping
-- `dt`: Time step size (nondimensional)
+- `dt`: Time step size
 - `nt`: Total number of time steps
 
 # Physical Parameters
-- `f0`: Coriolis parameter (typically 1.0 for nondimensional)
+- `f₀`: Coriolis parameter (typically 1.0 for nondimensional)
 
 # Viscosity/Hyperviscosity
 The model uses two hyperdiffusion operators for stability:
-- `nuh1, ilap1`: First hyperviscosity coefficient and Laplacian power for mean flow
-- `nuh2, ilap2`: Second hyperviscosity coefficient and Laplacian power for mean flow
-- `nuh1w, ilap1w`: First hyperviscosity for waves
-- `nuh2w, ilap2w`: Second hyperviscosity for waves
-- `nuz`: Vertical diffusion coefficient
+- `νₕ₁, ilap1`: First hyperviscosity coefficient and Laplacian power for mean flow
+- `νₕ₂, ilap2`: Second hyperviscosity coefficient and Laplacian power for mean flow
+- `νₕ₁ʷ, ilap1w`: First hyperviscosity for waves
+- `νₕ₂ʷ, ilap2w`: Second hyperviscosity for waves
+- `νz`: Vertical diffusion coefficient
 
 The hyperdiffusion term is: ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2
 
 # Physical Parameters
-- `N2`: Buoyancy frequency squared N² (default 1.0)
+- `N²`: Buoyancy frequency squared (default 1.0)
 - `W2F`: (Uw/U)² - ratio of wave to flow velocity squared
-- `gamma`: Robert-Asselin filter coefficient (typically 10⁻³)
+- `γ`: Robert-Asselin filter coefficient (typically 10⁻³)
 
 # Physics Switches
 These boolean flags control different physics modes:
@@ -82,11 +82,11 @@ These boolean flags control different physics modes:
 For the skewed Gaussian N²(z) profile:
     N²(z) = N₁² exp(-(z-z₀)²/σ²) [1 + erf(α(z-z₀)/(σ√2))] + N₀²
 
-- `N02_sg`: Background N² (N₀²)
-- `N12_sg`: Peak N² amplitude (N₁²)
-- `sigma_sg`: Width parameter (σ)
-- `z0_sg`: Center depth (z₀)
-- `alpha_sg`: Skewness parameter (α)
+- `N₀²_sg`: Background N² (N₀²)
+- `N₁²_sg`: Peak N² amplitude (N₁²)
+- `σ_sg`: Width parameter (σ)
+- `z₀_sg`: Center depth (z₀)
+- `α_sg`: Skewness parameter (α)
 
 # Example
 ```julia
