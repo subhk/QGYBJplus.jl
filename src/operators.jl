@@ -179,13 +179,13 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     tmpu_arr = parent(tmpu)
     tmpv_arr = parent(tmpv)
 
-    # Note: FFTW.ifft and PencilFFTs ldiv! are both normalized (divide by N internally).
-    # However, our spectral storage convention uses N * true_coefficients (unnormalized FFT output).
-    # To maintain consistency with convolution normalization in nonlinear.jl, we extract real parts directly.
-    # The spectral values are already properly scaled from the forward FFT.
+    # Normalization: Both FFTW.ifft and PencilFFTs ldiv! are normalized transforms.
+    # The division by (nx*ny) here maintains consistency with the pseudo-spectral
+    # convention used throughout this codebase (see nonlinear.jl convolutions).
+    norm = nx * ny
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] = real(tmpu_arr[i_local, j_local, k])
-        v_arr[i_local, j_local, k] = real(tmpv_arr[i_local, j_local, k])
+        u_arr[i_local, j_local, k] = real(tmpu_arr[i_local, j_local, k]) / norm
+        v_arr[i_local, j_local, k] = real(tmpv_arr[i_local, j_local, k]) / norm
     end
 
     # Compute vertical velocity if requested
@@ -394,9 +394,10 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     fft_backward!(tmpw, wk, plans)
     tmpw_arr = parent(tmpw)
 
-    # IFFT is normalized - extract real parts directly
+    # Normalization for consistency with pseudo-spectral convention
+    norm = nx * ny
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
     end
 end
 
@@ -515,9 +516,10 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     w_arr = parent(S.w)
     nx_local, ny_local, _ = size(tmpw_arr)
 
-    # IFFT is normalized - extract real parts directly
+    # Normalization for consistency with pseudo-spectral convention
+    norm = nx * ny
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
     end
 end
 

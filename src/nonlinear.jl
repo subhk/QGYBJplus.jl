@@ -161,8 +161,15 @@ function jacobian_spectral!(dstk, phik, chik, G::Grid, plans)
     #= Step 4: Transform back to spectral space =#
     fft_forward!(dstk, J, plans)
 
-    #= Normalize for unnormalized inverse FFT
-    FFTW's ifft returns unnormalized result; divide by (nx × ny) =#
+    #= Normalization note:
+    The pseudo-spectral convolution involves:
+    - 4 normalized IFFTs (each divides by N internally)
+    - Pointwise product in physical space
+    - 1 unnormalized FFT (gives N × amplitude)
+
+    For the correct spectral convolution amplitude, we divide by N once.
+    This accounts for the FFT's unnormalized output and yields proper scaling
+    for the tendency terms used in time-stepping. =#
     norm = nx*ny
     @inbounds dst_arr .= dst_arr ./ norm
 
