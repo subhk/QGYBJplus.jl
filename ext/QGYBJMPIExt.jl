@@ -602,8 +602,9 @@ Perform forward 2D horizontal FFT using PencilFFTs.
 Transforms dimensions 1 and 2 (x and y) of the input array.
 
 # Pencil Configuration Handling
-- If pencils match: Performs direct `mul!(dst, plan, src)`
-- If pencils differ: Uses work arrays to ensure correct data layout
+For complex-to-complex FFTs with NoTransform on z, input and output pencils
+should have matching decompositions. If they differ, an error is raised since
+the data cannot be correctly transferred between incompatible pencil layouts.
 
 # Arguments
 - `dst`: Destination array for spectral data
@@ -615,13 +616,13 @@ function QGYBJ.fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         # Direct transform when pencil configurations match
         mul!(dst, plans.forward, src)
     else
-        # Use work arrays when pencil configurations differ
-        # Copy src to work_in (in input_pencil config)
-        parent(plans.work_arrays.input) .= parent(src)
-        # Transform to work_out (in output_pencil config)
-        mul!(plans.work_arrays.output, plans.forward, plans.work_arrays.input)
-        # Copy result to dst
-        parent(dst) .= parent(plans.work_arrays.output)
+        # Pencil configurations don't match - this is a critical error
+        # For C2C transforms, this should not happen. If it does, the data
+        # layout would be corrupted by copying between incompatible pencils.
+        error("PencilFFTs input/output pencil configurations do not match. " *
+              "This is unexpected for C2C transforms with NoTransform on z. " *
+              "Cannot safely perform FFT operations with mismatched pencils. " *
+              "Please check PencilFFTs version compatibility or grid setup.")
     end
     return dst
 end
@@ -633,8 +634,8 @@ Perform inverse 2D horizontal FFT using PencilFFTs.
 Uses ldiv! for normalized inverse transform (consistent with FFTW.ifft).
 
 # Pencil Configuration Handling
-- If pencils match: Performs direct `ldiv!(dst, plan, src)`
-- If pencils differ: Uses work arrays to ensure correct data layout
+For complex-to-complex FFTs with NoTransform on z, input and output pencils
+should have matching decompositions. If they differ, an error is raised.
 
 # Arguments
 - `dst`: Destination array for physical space data (normalized)
@@ -646,13 +647,11 @@ function QGYBJ.fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans
         # Direct transform when pencil configurations match
         ldiv!(dst, plans.forward, src)
     else
-        # Use work arrays when pencil configurations differ
-        # Copy src to work_out (in output_pencil config, expected by ldiv!)
-        parent(plans.work_arrays.output) .= parent(src)
-        # Inverse transform to work_in (in input_pencil config)
-        ldiv!(plans.work_arrays.input, plans.forward, plans.work_arrays.output)
-        # Copy result to dst
-        parent(dst) .= parent(plans.work_arrays.input)
+        # Pencil configurations don't match - this is a critical error
+        error("PencilFFTs input/output pencil configurations do not match. " *
+              "This is unexpected for C2C transforms with NoTransform on z. " *
+              "Cannot safely perform FFT operations with mismatched pencils. " *
+              "Please check PencilFFTs version compatibility or grid setup.")
     end
     return dst
 end
