@@ -145,33 +145,58 @@ Waves are funneled into anticyclones, enhancing deep mixing.
 ### Computing Wave Feedback
 
 ```julia
-# In nonlinear.jl
-function wavefb!(rqk, A, grid, params, plans)
-    # Compute |A|²
-    compute_wave_intensity!(A2, A, plans)
+# In nonlinear.jl: compute_qw!
+function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
+    # 1. Compute derivatives of BR and BI
+    # BRx = ∂BR/∂x, BRy = ∂BR/∂y, etc.
+    BRxk = im * kx .* BRk
+    BRyk = im * ky .* BRk
+    BIxk = im * kx .* BIk
+    BIyk = im * ky .* BIk
 
-    # Compute ∇²|A|² (horizontal Laplacian)
-    horizontal_laplacian!(lap_A2, A2, grid)
+    # 2. Transform to real space
+    # ...
 
-    # Compute ∂²|A|²/∂z² (vertical second derivative)
-    vertical_second_deriv!(d2z_A2, A2, grid)
+    # 3. Compute Jacobian term: BRy*BIx - BRx*BIy
+    qwr = BRyr .* BIxr - BRxr .* BIyr
 
-    # Wave-induced PV: qw = 0.5*(∇²|A|² - ∂²|A|²/∂z²)
-    @. qw = 0.5 * (lap_A2 - d2z_A2)
+    # 4. Compute |B|² = BR² + BI²
+    mag2 = BRr.^2 + BIr.^2
 
-    # Add J(ψ, qw) to tendency
-    jacobian_spectral!(rqk, psi, qw, ...)
+    # 5. Assemble in spectral space
+    # qw = J_term - (1/4)*kh²*|B|²  (note: -∇² → +kh² in spectral)
+    qwk = (fft(qwr) - 0.25 * kh2 .* fft(mag2)) / norm
+
+    # 6. Scale by Ro * W2F
+    qwk .*= (par.Ro * par.W2F)
 end
+```
+
+### Usage in Time Stepping
+
+The wave feedback enters via q* = q - qw:
+
+```julia
+# After computing q at new time step
+if wave_feedback_enabled
+    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+    q_arr .-= qwk_arr  # q* = q - qw
+end
+
+# Then invert q* to get ψ
+invert_q_to_psi!(state, grid; a=a_vec)
 ```
 
 ### Enabling/Disabling
 
 ```julia
 # With wave feedback (default)
-params = QGParams(; no_feedback=false)
+params = QGParams(; no_feedback=false, no_wave_feedback=false)
 
 # Without wave feedback
 params = QGParams(; no_feedback=true)
+# or
+params = QGParams(; no_wave_feedback=true)
 ```
 
 Disabling is useful for:
