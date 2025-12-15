@@ -14,14 +14,21 @@ parameters for the QG-YBJ+ model. Parameters are organized into categories:
 6. PHYSICS SWITCHES: Control different physics modes
 7. STRATIFICATION PROFILES: Parameters for N²(z) profiles
 
-NONDIMENSIONALIZATION:
----------------------
-The model uses the following nondimensionalization (matching Fortran):
-- Length scale: L = L₁ = L₂ = L₃ = 2π (domain size)
-- Velocity scale: U = typical eddy velocity
-- Time scale: T = L/U
-- Rossby number: Ro = U/(fL)
-- Burger number: Bu = (NH/fL)² where H is vertical scale, N is stratification
+DEFAULT PARAMETERS (Ro=Bu=1):
+-----------------------------
+By default, the model uses Ro=1, Bu=1, f0=1, N²=1 which gives:
+- Dispersion coefficient: 1/(2·Bu·Ro) = 0.5 = N²/(2f)
+- Inertial period: T = 2π/f = 2π
+- The equations are effectively "dimensional" with f=N=1 as reference values
+
+This simplifies usage: users only need to specify relative amplitudes
+(flow velocity, wave amplitude, surface layer depth) rather than computing
+nondimensional numbers from physical scales.
+
+For advanced users who want to match specific dimensional setups, Ro and Bu
+can be computed from physical parameters as:
+- Ro = U/(f·L)  where U=velocity scale, f=Coriolis, L=length scale
+- Bu = (N·H/(f·L))² where N=stratification, H=depth scale
 
 FORTRAN CORRESPONDENCE:
 ----------------------
@@ -256,10 +263,12 @@ end
 """
     default_params(; kwargs...) -> QGParams
 
-Construct a reasonable default parameter set for experimentation.
+Construct a default parameter set with Ro=Bu=1 for simple usage.
 
-The default values are based on Fortran test1 parameters, which represent
-a typical mid-latitude ocean simulation setup.
+With Ro=Bu=1, f0=1, N²=1 (constant_N stratification):
+- Dispersion coefficient = 1/(2·Bu·Ro) = 0.5 = N²/(2f)
+- Inertial period = 2π/f = 2π
+- Users only need to specify relative amplitudes, not dimensional scales
 
 # Keyword Arguments
 - `nx, ny, nz`: Grid resolution (default: 64)
@@ -267,6 +276,9 @@ a typical mid-latitude ocean simulation setup.
 - `dt`: Time step (default: 0.001)
 - `nt`: Number of steps (default: 10000)
 - `f0`: Coriolis parameter (default: 1.0)
+- `Ro`: Rossby number (default: 1.0)
+- `Bu`: Burger number (default: 1.0)
+- `W2F`: Wave-to-flow velocity ratio squared (default: 0.01)
 - `stratification`: :constant_N or :skewed_gaussian (default: :constant_N)
 
 # Default Physics Configuration
@@ -276,53 +288,40 @@ a typical mid-latitude ocean simulation setup.
 
 # Example
 ```julia
-# Basic usage
+# Basic usage - Ro=Bu=1 by default
 par = default_params()
 
 # Custom resolution
-par = default_params(nx=128, ny=128, nz=128)
+par = default_params(nx=128, ny=128, nz=64)
 
-# With skewed Gaussian stratification
-par = default_params(stratification=:skewed_gaussian)
+# Custom wave amplitude (10% of flow)
+par = default_params(W2F=0.01)  # W2F = (u_wave/U_flow)²
+
+# For advanced users: specify Ro, Bu from dimensional scales
+# Ro = U/(f·L), Bu = (N·H/(f·L))²
+par = default_params(Ro=0.05, Bu=0.1)
 ```
 
 See also: [`QGParams`](@ref)
 """
 function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                            dt=1e-3, nt=10_000, f0=1.0,
+                           Ro=1.0, Bu=1.0, W2F=0.01,
                            nu_h=0.0, nu_v=0.0, linear_vert_structure=0,
                            stratification::Symbol=:constant_N)
     T = Float64
 
-    #= Nondimensional numbers from Fortran test1:
-    Scaling parameters from parameters_test1.f90:
-      - L_scale = dom_x/L1 = 5e4 m (horizontal scale)
-      - H_scale = dom_z/L3 = 4e3/(2π) m (vertical scale)
-      - U_scale = 0.25 m/s (flow velocity)
-      - Uw_scale = 2.5e-5 m/s (wave velocity)
-      - cor = 1e-4 s⁻¹ (Coriolis)
-      - N0 = (25/8)*2π*cor (characteristic stratification)
+    #= Default: Ro=Bu=1 for simplicity
 
-    Nondimensional numbers:
-      - Ro = U_scale/(cor*L_scale) ≈ 0.05
-      - Fr = U_scale/(N0*H_scale)
-      - Bu = Fr²/Ro²
-      - W2F = (Uw_scale/U_scale)²
+    With Ro=Bu=1 and constant_N (N²=1):
+    - Dispersion coefficient = 1/(2·Bu·Ro) = 0.5 = N²/(2f)
+    - Inertial period T = 2π/f = 2π (when f0=1)
+    - The model behaves like dimensional equations with f=N=1
+
+    Users can override Ro, Bu for specific dimensional setups:
+    - Ro = U/(f·L) where U=velocity, f=Coriolis, L=length scale
+    - Bu = (N·H/(f·L))² where N=stratification, H=depth scale
     =#
-
-    # Physical scales (matching Fortran test1)
-    L_scale = T(5e4)           # Horizontal scale in m
-    H_scale = T(4e3/(2π))      # Vertical scale in m (dom_z/L3)
-    U_scale = T(0.25)          # Flow velocity scale in m/s
-    Uw_scale = T(2.5e-5)       # Wave velocity scale in m/s
-    cor = T(1e-4)              # Coriolis parameter in s⁻¹
-    N0 = T((25/8)*2π*cor)      # Characteristic stratification in s⁻¹
-
-    # Nondimensional numbers
-    Ro = T(U_scale / (cor * L_scale))           # Rossby number
-    Fr = T(U_scale / (N0 * H_scale))            # Froude number
-    Bu = T(Fr^2 / Ro^2)                         # Burger number
-    W2F = T((Uw_scale / U_scale)^2)             # Wave-to-flow velocity ratio squared
 
     # Robert-Asselin filter parameter (small value for stability)
     gamma = T(1e-3)
@@ -363,8 +362,9 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     z0_sg = T(6.121537923499139)      # Pycnocline depth
     alpha_sg = T(-5.338431587899242)  # Skewness
 
-    return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, f0, nu_h, nu_v,
-                         linear_vert_structure, stratification, Ro, W2F, Bu, gamma,
+    return QGParams{T}(; nx, ny, nz, Lx, Ly, dt, nt, f0=T(f0), nu_h, nu_v,
+                         linear_vert_structure, stratification,
+                         Ro=T(Ro), W2F=T(W2F), Bu=T(Bu), gamma,
                          nuh1, nuh2, ilap1, ilap2, nuh1w, nuh2w, ilap1w, ilap2w,
                          nuz, inviscid, linear, no_dispersion, passive_scalar,
                          ybj_plus, no_feedback, fixed_flow, no_wave_feedback,
