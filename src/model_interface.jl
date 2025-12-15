@@ -358,7 +358,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
 end
 
 """
-    compute_kinetic_energy(state::State, grid::Grid, plans; Bu::Real=1.0, Ar2::Real=1.0)
+    compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
 
 Compute domain-integrated kinetic energy following the Fortran diag_zentrum routine.
 
@@ -371,13 +371,12 @@ with proper dealiasing correction (subtract 0.5 × value at kx=ky=0).
 - `state::State`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
-- `Bu::Real`: Burger number (default 1.0)
 - `Ar2::Real`: Aspect ratio squared (default 1.0)
 
 # Returns
 Domain-integrated kinetic energy (scalar).
 """
-function compute_kinetic_energy(state::State, grid::Grid, plans; Bu::Real=1.0, Ar2::Real=1.0)
+function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
     T = eltype(real(state.psi[1]))
     nz = grid.nz
     nx = grid.nx
@@ -431,26 +430,26 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Bu::Real=1.0, A
 end
 
 """
-    compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector; Bu::Real=1.0)
+    compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector; a_ell::Real=1.0)
 
 Compute domain-integrated potential energy following the Fortran diag_zentrum routine.
 
 The potential energy is computed from buoyancy as:
-    PE = (1/2) ∑_{kx,ky,z} |b|² × (Bu × r_1/r_2)
+    PE = (1/2) ∑_{kx,ky,z} |b|² × (a_ell × r_1/r_2)
 
-where b = ∂ψ/∂z / r_1 (thermal wind balance).
+where b = ∂ψ/∂z / r_1 (thermal wind balance) and a_ell = f²/N².
 
 # Arguments
 - `state::State`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure
 - `plans`: FFT plans
 - `N2_profile::Vector`: Buoyancy frequency squared N²(z)
-- `Bu::Real`: Burger number (default 1.0)
+- `a_ell::Real`: Elliptic coefficient f²/N² (default 1.0)
 
 # Returns
 Domain-integrated potential energy (scalar).
 """
-function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; Bu::Real=T(1.0)) where T
+function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0)) where T
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
@@ -468,7 +467,7 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
         # r_1 = 1.0 (Boussinesq), r_2 = N²
         r_1 = T(1.0)
         r_2 = N2_profile[min(k, length(N2_profile))]
-        coeff = Bu * r_1 / max(r_2, eps(T))
+        coeff = a_ell * r_1 / max(r_2, eps(T))
 
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Compute buoyancy b = ∂ψ/∂z / r_1 using finite differences
