@@ -619,25 +619,26 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     nx_local, ny_local, nz_local = size(A_arr)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
-    dl = zeros(eltype(a), nz)
+    dₗ = zeros(eltype(a), nz)
     d  = zeros(eltype(a), nz)
-    du = zeros(eltype(a), nz)
+    dᵤ = zeros(eltype(a), nz)
 
-    Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δ2 = Δ^2
+    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    Δz² = Δz^2
+    Bu = par.Bu
 
-    r_ut = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
-    r_st = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
+    ρᵤₜ = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
+    ρₛₜ = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
 
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
-        kh2 = kx_val^2 + ky_val^2
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
 
-        if kh2 == 0
+        if kₕ² == 0
             @inbounds for k in 1:nz
                 A_arr[i_local, j_local, k] = 0
                 C_arr[i_local, j_local, k] = 0
@@ -645,38 +646,38 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
             continue
         end
 
-        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
+        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        d[1]  = -( (r_ut[1]*a[1]) / r_st[1] + (kh2*Δ2)/4 )
-        du[1] =   (r_ut[1]*a[1]) / r_st[1]
+        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + (kₕ²*Δz²)/4 )
+        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
 
         @inbounds for k in 2:nz-1
-            dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
-            d[k]  = -( ((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k]) + (kh2*Δ2)/4 )
-            du[k] = (r_ut[k]*a[k]) / r_st[k]
+            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + (kₕ²*Δz²)/4 )
+            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
         end
 
-        dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
-        d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
+        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + (kₕ²*Δz²)/4 )
 
-        rhs_r = zeros(eltype(a), nz)
-        rhs_i = zeros(eltype(a), nz)
+        rhsᵣ = zeros(eltype(a), nz)
+        rhsᵢ = zeros(eltype(a), nz)
         @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * par.Bu * real(B_arr[i_local, j_local, k])
-            rhs_i[k] = Δ2 * par.Bu * imag(B_arr[i_local, j_local, k])
+            rhsᵣ[k] = Δz² * Bu * real(B_arr[i_local, j_local, k])
+            rhsᵢ[k] = Δz² * Bu * imag(B_arr[i_local, j_local, k])
         end
 
-        solr = copy(rhs_r)
-        soli = copy(rhs_i)
-        thomas_solve!(solr, dl, d, du, rhs_r)
-        thomas_solve!(soli, dl, d, du, rhs_i)
+        solᵣ = copy(rhsᵣ)
+        solᵢ = copy(rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            A_arr[i_local, j_local, k] = solr[k] + im*soli[k]
+            A_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
         end
 
         @inbounds for k in 1:nz-1
-            C_arr[i_local, j_local, k] = (A_arr[i_local, j_local, k+1] - A_arr[i_local, j_local, k])/Δ
+            C_arr[i_local, j_local, k] = (A_arr[i_local, j_local, k+1] - A_arr[i_local, j_local, k])/Δz
         end
         C_arr[i_local, j_local, nz] = 0
     end
@@ -801,21 +802,21 @@ In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 # Complexity
 O(n) operations (vs O(n³) for general LU decomposition)
 """
-function thomas_solve!(x, dl, d, du, b)
+function thomas_solve!(x, dₗ, d, dᵤ, b)
     n = length(d)
 
     # Make working copies
-    c = copy(du)
-    bb = copy(d)
+    c = copy(dᵤ)
+    d̃ = copy(d)
     x .= b
 
     # Forward sweep
-    c[1] /= bb[1]
-    x[1] /= bb[1]
+    c[1] /= d̃[1]
+    x[1] /= d̃[1]
     @inbounds for i in 2:n
-        denom = bb[i] - dl[i]*c[i-1]
+        denom = d̃[i] - dₗ[i]*c[i-1]
         c[i] /= denom
-        x[i] = (x[i] - dl[i]*x[i-1]) / denom
+        x[i] = (x[i] - dₗ[i]*x[i-1]) / denom
     end
 
     # Back substitution
