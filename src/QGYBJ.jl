@@ -411,6 +411,24 @@ function allocate_xy_pencil(grid, ::Type{T}=ComplexF64) where T
     error(MPI_ERROR_MSG)
 end
 
+"""
+    allocate_xz_pencil(grid, T=ComplexF64)
+
+Allocate an array in xz-pencil (intermediate) configuration.
+
+This is the intermediate pencil used for two-step transpose between
+xy-pencil and z-pencil configurations. In xz-pencil:
+- decomp_dims = (1, 3): x and z are distributed, y is local
+
+In serial mode, returns a standard 3D array.
+"""
+function allocate_xz_pencil(grid, ::Type{T}=ComplexF64) where T
+    if !hasproperty(grid, :decomp) || grid.decomp === nothing
+        return zeros(T, grid.nx, grid.ny, grid.nz)
+    end
+    error(MPI_ERROR_MSG)
+end
+
 #=
 ================================================================================
                               PUBLIC API EXPORTS
