@@ -108,7 +108,7 @@ Base.@kwdef mutable struct QGParams{T}
     #= ====================================================================
                             TIME STEPPING
     ==================================================================== =#
-    dt::T                      # Time step (nondimensional: dt = Ro/20 typical)
+    dt::T                      # Time step
     nt::Int                    # Total number of time steps
 
     #= ====================================================================
