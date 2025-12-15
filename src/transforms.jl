@@ -187,11 +187,7 @@ end
 Compute horizontal forward FFT (complex-to-complex) for each z-plane.
 
 # Algorithm
-For serial FFTW backend:
-- Loops over z-slices and applies 2D FFT to each (x,y) plane
-
-For parallel PencilFFTs backend:
-- Uses mul!(dst, plan, src) for distributed transform
+Serial FFTW backend: Loops over z-slices and applies 2D FFT to each (x,y) plane.
 
 # Arguments
 - `dst`: Destination array (spectral space)
@@ -202,18 +198,14 @@ For parallel PencilFFTs backend:
 Modified dst array.
 
 # Note
-For parallel execution with PencilArrays, use the extension's `fft_forward!`
-which is automatically dispatched for PencilArray types.
+For parallel execution with PencilArrays, the extension module (QGYBJMPIExt)
+provides a separate `fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)`
+method that handles distributed transforms automatically.
 """
 function fft_forward!(dst, src, P::Plans)
-    if P.backend === :pencil && P.p_forward !== nothing
-        # PencilFFTs path (should be overridden by extension for PencilArrays)
-        mul!(dst, P.p_forward, src)
-    else
-        # Serial FFTW path: transform each z-slice independently
-        @inbounds for k in axes(src, 3)
-            dst[:,:,k] .= FFTW.fft(src[:,:,k])
-        end
+    # Serial FFTW path: transform each z-slice independently
+    @inbounds for k in axes(src, 3)
+        dst[:,:,k] .= FFTW.fft(src[:,:,k])
     end
     return dst
 end
@@ -223,9 +215,9 @@ end
 
 Compute horizontal inverse FFT (complex-to-complex) for each z-plane.
 
-# Note
+# Algorithm
+Serial FFTW backend: Loops over z-slices and applies 2D inverse FFT to each (x,y) plane.
 FFTW.ifft is NORMALIZED (divides by N automatically).
-This is consistent with PencilFFTs ldiv! which also normalizes.
 
 # Arguments
 - `dst`: Destination array (physical space, normalized)
@@ -234,17 +226,17 @@ This is consistent with PencilFFTs ldiv! which also normalizes.
 
 # Returns
 Modified dst array.
+
+# Note
+For parallel execution with PencilArrays, the extension module (QGYBJMPIExt)
+provides a separate `fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)`
+method that uses `ldiv!` for normalized inverse transforms.
 """
 function fft_backward!(dst, src, P::Plans)
-    if P.backend === :pencil && P.p_backward !== nothing
-        # PencilFFTs path (should be overridden by extension for PencilArrays)
-        mul!(dst, P.p_backward, src)
-    else
-        # Serial FFTW path: transform each z-slice independently
-        # FFTW.ifft is normalized (divides by nx*ny)
-        @inbounds for k in axes(src, 3)
-            dst[:,:,k] .= FFTW.ifft(src[:,:,k])
-        end
+    # Serial FFTW path: transform each z-slice independently
+    # FFTW.ifft is normalized (divides by nx*ny)
+    @inbounds for k in axes(src, 3)
+        dst[:,:,k] .= FFTW.ifft(src[:,:,k])
     end
     return dst
 end
