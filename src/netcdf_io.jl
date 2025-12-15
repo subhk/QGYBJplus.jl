@@ -694,39 +694,97 @@ end
     read_stratification_profile(filename::String, nz::Int)
 
 Read stratification profile (N²) from NetCDF file.
+Performs linear interpolation if the file's vertical resolution differs from the model.
 """
 function read_stratification_profile(filename::String, nz::Int)
     @info "Reading stratification profile from: $filename"
     ensure_ncds_loaded()
-    
+
     N2_profile = zeros(Float64, nz)
-    
+
     NCDatasets.Dataset(filename, "r") do ds
+        nz_file = 0
+        z_file = nothing
+
         if haskey(ds.dim, "z")
             nz_file = ds.dim["z"]
-            if nz_file != nz
-                @warn "Stratification profile length mismatch: file ($nz_file) vs model ($nz). Interpolating..."
-                # TODO: Add interpolation logic
+            # Try to read z coordinates from file
+            if haskey(ds, "z")
+                z_file = Array(ds["z"][:])
             end
         end
-        
+
         # Look for common variable names
         var_names = ["N2", "N_squared", "buoyancy_frequency_squared", "brunt_vaisala_frequency_squared"]
-        var_found = false
-        
+        N2_file = nothing
+
         for name in var_names
             if haskey(ds, name)
-                N2_profile[:] = ds[name][1:min(nz, length(ds[name]))]
-                var_found = true
+                N2_file = Array(ds[name][:])
                 break
             end
         end
-        
-        if !var_found
+
+        if N2_file === nothing
             error("No recognized stratification variable found in $filename. Expected one of: $var_names")
         end
+
+        if nz_file == nz
+            # Direct copy - dimensions match
+            N2_profile[:] = N2_file[1:nz]
+        else
+            # Interpolation required
+            @warn "Stratification profile length mismatch: file ($nz_file) vs model ($nz). Interpolating..."
+
+            # Create normalized coordinates for interpolation
+            if z_file !== nothing
+                # Use actual z coordinates from file
+                z_src = z_file
+            else
+                # Assume uniform grid from 0 to 1 (normalized)
+                z_src = collect(range(0.0, 1.0, length=nz_file))
+            end
+
+            # Target z coordinates (uniform grid, normalized to same range as source)
+            z_min = minimum(z_src)
+            z_max = maximum(z_src)
+            z_target = collect(range(z_min, z_max, length=nz))
+
+            # Linear interpolation
+            for i in 1:nz
+                z_t = z_target[i]
+
+                # Find bracketing indices in source grid
+                j_low = 1
+                for j in 1:nz_file-1
+                    if z_src[j] <= z_t && z_t <= z_src[j+1]
+                        j_low = j
+                        break
+                    elseif z_t < z_src[1]
+                        j_low = 1
+                        break
+                    elseif z_t > z_src[end]
+                        j_low = nz_file - 1
+                        break
+                    end
+                end
+                j_high = min(j_low + 1, nz_file)
+
+                # Linear interpolation weight
+                if j_low == j_high || z_src[j_high] == z_src[j_low]
+                    weight = 0.0
+                else
+                    weight = (z_t - z_src[j_low]) / (z_src[j_high] - z_src[j_low])
+                    weight = clamp(weight, 0.0, 1.0)  # Handle extrapolation at boundaries
+                end
+
+                N2_profile[i] = (1.0 - weight) * N2_file[j_low] + weight * N2_file[j_high]
+            end
+
+            @info "Interpolated N² profile from $nz_file to $nz vertical levels"
+        end
     end
-    
+
     return N2_profile
 end
 
