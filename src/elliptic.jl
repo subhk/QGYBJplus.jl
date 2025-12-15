@@ -355,19 +355,35 @@ Solve the ODE:
 
     a(z) ∂²φ/∂z² + b(z) ∂φ/∂z - scale_kh2 × kₕ² φ = rhs
 
+with Neumann boundary conditions (∂φ/∂z specified at boundaries).
+
+# Discretization (matches Fortran helmholtzdouble)
+Uses a centered stencil where same a[k], b[k] apply to all diagonals at point k:
+
+- Bottom (k=1):  d = -a[1] - 0.5b[1]Δz - αkₕ²Δz², du = a[1] + 0.5b[1]Δz
+- Interior:      d = -2a[k] - αkₕ²Δz², du = a[k] + 0.5b[k]Δz, dl = a[k] - 0.5b[k]Δz
+- Top (k=nz):    d = -a[nz] + 0.5b[nz]Δz - αkₕ²Δz², dl = a[nz] - 0.5b[nz]Δz
+
+Boundary flux terms are added to RHS:
+- Bottom: rhs[1] += (a[1] - 0.5b[1]Δz) × Δz × bot_bc
+- Top:    rhs[nz] -= (a[nz] + 0.5b[nz]Δz) × Δz × top_bc
+
 # Arguments
 - `dstk`: Output array (nx, ny, nz) for solution φ
 - `rhs`: Right-hand side array (nx, ny, nz)
 - `G::Grid`: Grid struct
-- `par`: QGParams for density profiles
-- `a::AbstractVector`: Second derivative coefficient (length nz)
-- `b::AbstractVector`: First derivative coefficient (length nz), default zeros
-- `scale_kh2::Real`: Multiplier for kₕ² term (default 1.0)
-- `bot_bc`, `top_bc`: Optional boundary flux arrays (nx, ny)
+- `par`: QGParams (currently unused, kept for API consistency)
+- `a::AbstractVector`: Second derivative coefficient a(z), length nz
+- `b::AbstractVector`: First derivative coefficient b(z), length nz (default zeros)
+- `scale_kh2::Real`: Multiplier α for kₕ² term (default 1.0)
+- `bot_bc`, `top_bc`: Optional boundary flux arrays (nx, ny) for non-zero Neumann BCs
 - `workspace`: Optional z-pencil workspace for 2D decomposition
 
 # Fortran Correspondence
-This matches `helmholtzdouble` in elliptic.f90.
+This matches `helmholtzdouble` in elliptic.f90 exactly.
+
+# Note
+For 2D decomposition, boundary conditions are not yet supported and will trigger a warning.
 """
 function invert_helmholtz!(dstk, rhs, G::Grid, par;
                            a::AbstractVector,
@@ -490,9 +506,23 @@ end
 
 """
 2D decomposition Helmholtz solve with transposes.
+
+Matches Fortran `helmholtzdouble` discretization exactly:
+- Uses centered stencil with same a[k], b[k] for all diagonals at point k
+- No density weighting (coefficients used directly)
+- Interior: d[k] = -2a[k] - kh²Δz²
+
+Note: Boundary conditions (bot_bc, top_bc) are not currently supported in
+the 2D decomposition version. They would require transposing the BC arrays
+to z-pencil format as well.
 """
 function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc, top_bc, workspace)
     nz = G.nz
+
+    # Warn if boundary conditions are provided but not supported
+    if bot_bc !== nothing || top_bc !== nothing
+        @warn "Boundary conditions not yet supported in 2D decomposition Helmholtz solve" maxlog=1
+    end
 
     # Use z-pencil workspace arrays to avoid repeated allocations
     # work_z is used for input (rhs), psi_z is used for output (dst)
@@ -508,57 +538,64 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     nx_local, ny_local, nz_local = size(rhs_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
-    Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δ2 = Δ^2
+    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    Δz² = Δz^2
 
-    r_ut = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
-    r_st = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
-
-    dl = zeros(eltype(a), nz)
+    dₗ = zeros(eltype(a), nz)
     d  = zeros(eltype(a), nz)
-    du = zeros(eltype(a), nz)
+    dᵤ = zeros(eltype(a), nz)
 
-    # Note: boundary conditions would also need transpose - simplified here
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 1, G)
         j_global = local_to_global_z(j_local, 2, G)
 
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
-        kh2 = kx_val^2 + ky_val^2
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
 
-        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
+        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        α1 = r_ut[1]/r_st[1]
-        d[1]  = -( α1*a[1] + 0.5*α1*b[1]*Δ + scale_kh2*kh2*Δ2 )
-        du[1] =   α1*a[1] + 0.5*α1*b[1]*Δ
+        #= Build tridiagonal matrix matching Fortran helmholtzdouble exactly
+           Key: uses same a[k], b[k] for all diagonals at each point k =#
 
+        # Bottom boundary (k=1): Neumann condition
+        # Fortran: d(1) = -a_helm(1) - 0.5*b_helm(1)*dz - kh2*dz*dz
+        #          du(1) = a_helm(1) + 0.5*b_helm(1)*dz
+        d[1]  = -a[1] - 0.5*b[1]*Δz - scale_kh2*kₕ²*Δz²
+        dᵤ[1] =  a[1] + 0.5*b[1]*Δz
+
+        # Interior points (k = 2, ..., nz-1)
+        # Fortran: d(iz) = -2*a_helm(iz) - kh2*dz*dz
+        #          du(iz) = a_helm(iz) + 0.5*b_helm(iz)*dz
+        #          dl(iz-1) = a_helm(iz) - 0.5*b_helm(iz)*dz
         @inbounds for k in 2:nz-1
-            αk   = r_ut[k]/r_st[k]
-            αkm1 = r_ut[k-1]/r_st[k]
-            dl[k] = αkm1*a[k-1] - 0.5*αkm1*b[k-1]*Δ
-            d[k]  = -( 2*αk*a[k] + scale_kh2*kh2*Δ2 )
-            du[k] =  αk*a[k] + 0.5*αk*b[k]*Δ
+            dₗ[k] = a[k] - 0.5*b[k]*Δz
+            d[k]  = -2*a[k] - scale_kh2*kₕ²*Δz²
+            dᵤ[k] =  a[k] + 0.5*b[k]*Δz
         end
 
-        αn = r_ut[nz-1]/r_st[nz]
-        dl[nz] = αn*a[nz-1] - 0.5*αn*b[nz-1]*Δ
-        d[nz]  = -( αn*a[nz-1] - 0.5*αn*b[nz-1]*Δ + scale_kh2*kh2*Δ2 )
+        # Top boundary (k=nz): Neumann condition
+        # Fortran: d(n3) = -a_helm(n3) + 0.5*b_helm(n3)*dz - kh2*dz*dz
+        #          dl(n3-1) = a_helm(n3) - 0.5*b_helm(n3)*dz
+        dₗ[nz] = a[nz] - 0.5*b[nz]*Δz
+        d[nz]  = -a[nz] + 0.5*b[nz]*Δz - scale_kh2*kₕ²*Δz²
 
-        rhsR = zeros(eltype(a), nz)
-        rhsI = zeros(eltype(a), nz)
+        # Build RHS
+        rhsᵣ = zeros(eltype(a), nz)
+        rhsᵢ = zeros(eltype(a), nz)
         @inbounds for k in 1:nz
-            rhsR[k] = Δ2 * real(rhs_z_arr[i_local, j_local, k])
-            rhsI[k] = Δ2 * imag(rhs_z_arr[i_local, j_local, k])
+            rhsᵣ[k] = Δz² * real(rhs_z_arr[i_local, j_local, k])
+            rhsᵢ[k] = Δz² * imag(rhs_z_arr[i_local, j_local, k])
         end
 
-        solR = copy(rhsR)
-        solI = copy(rhsI)
-        thomas_solve!(solR, dl, d, du, rhsR)
-        thomas_solve!(solI, dl, d, du, rhsI)
+        # Solve tridiagonal systems for real and imaginary parts
+        solᵣ = copy(rhsᵣ)
+        solᵢ = copy(rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            dst_z_arr[i_local, j_local, k] = solR[k] + im*solI[k]
+            dst_z_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
         end
     end
 
