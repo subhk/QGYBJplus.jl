@@ -588,7 +588,7 @@ function compute_qw!(qwk, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         kx_val = G.kx[i_global]
         ky_val = G.ky[j_global]
         kh2 = kx_val^2 + ky_val^2
-        if L[i_global, j_global]
+        if should_keep(i_global, j_global)
             qwk_arr[i_local, j_local, k] = (qwk_arr[i_local, j_local, k] - 0.25*kh2*tempk_arr[i_local, j_local, k]) / norm
         else
             qwk_arr[i_local, j_local, k] = 0
