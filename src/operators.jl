@@ -485,7 +485,9 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
                 try
                     LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_real)
                     sol_real .= rhs_real
-                catch; end
+                catch e
+                    @warn "LAPACK gtsv failed for real part in 2D vertical velocity: $e" maxlog=1
+                end
 
                 dl_work = copy(dl)
                 d_work = copy(d)
@@ -494,7 +496,9 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
                 try
                     LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_imag)
                     sol_imag .= rhs_imag
-                catch; end
+                catch e
+                    @warn "LAPACK gtsv failed for imag part in 2D vertical velocity: $e" maxlog=1
+                end
 
                 solution = sol_real .+ im .* sol_imag
                 for iz in 1:n_interior
