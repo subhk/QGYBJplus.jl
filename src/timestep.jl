@@ -244,13 +244,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         j_global = local_to_global(j, 2, G)
 
         if L[i_global, j_global]
-            kx = G.kx[i_global]; ky = G.ky[j_global]
-            # Compute kh2 from global kx, ky arrays (works in both serial and parallel)
-            kh2 = kx^2 + ky^2
+            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
+            # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
+            kₕ² = kₓ^2 + kᵧ^2
 
             # Integrating factors for hyperdiffusion
-            If = int_factor(kx, ky, par; waves=false)   # For mean flow
-            Ifw = int_factor(kx, ky, par; waves=true)   # For waves
+            λₑ = int_factor(kₓ, kᵧ, par; waves=false)   # For mean flow
+            λʷ = int_factor(kₓ, kᵧ, par; waves=true)    # For waves
 
             #= Update q (QGPV) =#
             if par.fixed_flow
@@ -258,7 +258,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 q_arr[i,j,k] = qok_arr[i,j,k]
             else
                 # q^(n+1) = [q^n - dt×J(ψ,q) + dt×diffusion] × exp(-λ×dt)
-                q_arr[i,j,k] = ( qok_arr[i,j,k] - par.dt*nqk_arr[i,j,k] + par.dt*dqk_arr[i,j,k] ) * exp(-If)
+                q_arr[i,j,k] = ( qok_arr[i,j,k] - par.dt*nqk_arr[i,j,k] + par.dt*dqk_arr[i,j,k] ) * exp(-λₑ)
             end
 
             #= Update B (wave envelope)
@@ -270,13 +270,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             In terms of real/imaginary parts:
                 ∂BR/∂t = -J(ψ,BR) - (kₕ²/(2BuRo))AI + (1/2)BI×ζ
                 ∂BI/∂t = -J(ψ,BI) + (kₕ²/(2BuRo))AR - (1/2)BR×ζ =#
-            disp_coef = 0.5 / (par.Bu * par.Ro)  # Dispersion coefficient
+            αdisp = 0.5 / (par.Bu * par.Ro)  # Dispersion coefficient
             BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
-                      - par.dt*disp_coef*kh2*Complex(imag(A_arr[i,j,k]),0)
-                      + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-Ifw)
+                      - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
+                      + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
             BInew = ( BIok_arr[i,j,k] - par.dt*nBIk_arr[i,j,k]
-                      + par.dt*disp_coef*kh2*Complex(real(A_arr[i,j,k]),0)
-                      - par.dt*0.5*rBRk_arr[i,j,k] ) * exp(-Ifw)
+                      + par.dt*αdisp*kₕ²*Complex(real(A_arr[i,j,k]),0)
+                      - par.dt*0.5*rBRk_arr[i,j,k] ) * exp(-λʷ)
 
             # Recombine into complex B
             B_arr[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
