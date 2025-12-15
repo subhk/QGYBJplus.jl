@@ -600,9 +600,29 @@ end
 
 Perform forward 2D horizontal FFT using PencilFFTs.
 Transforms dimensions 1 and 2 (x and y) of the input array.
+
+# Pencil Configuration Handling
+- If pencils match: Performs direct `mul!(dst, plan, src)`
+- If pencils differ: Uses work arrays to ensure correct data layout
+
+# Arguments
+- `dst`: Destination array for spectral data
+- `src`: Source array in physical space
+- `plans`: FFT plans from `plan_mpi_transforms`
 """
 function QGYBJ.fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    mul!(dst, plans.forward, src)
+    if plans.pencils_match
+        # Direct transform when pencil configurations match
+        mul!(dst, plans.forward, src)
+    else
+        # Use work arrays when pencil configurations differ
+        # Copy src to work_in (in input_pencil config)
+        parent(plans.work_arrays.input) .= parent(src)
+        # Transform to work_out (in output_pencil config)
+        mul!(plans.work_arrays.output, plans.forward, plans.work_arrays.input)
+        # Copy result to dst
+        parent(dst) .= parent(plans.work_arrays.output)
+    end
     return dst
 end
 
@@ -611,9 +631,29 @@ end
 
 Perform inverse 2D horizontal FFT using PencilFFTs.
 Uses ldiv! for normalized inverse transform (consistent with FFTW.ifft).
+
+# Pencil Configuration Handling
+- If pencils match: Performs direct `ldiv!(dst, plan, src)`
+- If pencils differ: Uses work arrays to ensure correct data layout
+
+# Arguments
+- `dst`: Destination array for physical space data (normalized)
+- `src`: Source array in spectral space
+- `plans`: FFT plans from `plan_mpi_transforms`
 """
 function QGYBJ.fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    ldiv!(dst, plans.forward, src)
+    if plans.pencils_match
+        # Direct transform when pencil configurations match
+        ldiv!(dst, plans.forward, src)
+    else
+        # Use work arrays when pencil configurations differ
+        # Copy src to work_out (in output_pencil config, expected by ldiv!)
+        parent(plans.work_arrays.output) .= parent(src)
+        # Inverse transform to work_in (in input_pencil config)
+        ldiv!(plans.work_arrays.input, plans.forward, plans.work_arrays.output)
+        # Copy result to dst
+        parent(dst) .= parent(plans.work_arrays.input)
+    end
     return dst
 end
 
