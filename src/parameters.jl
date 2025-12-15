@@ -260,12 +260,11 @@ end
 """
     default_params(; kwargs...) -> QGParams
 
-Construct a default parameter set with Ro=Bu=1 for simple usage.
+Construct a default parameter set using dimensional parameters f0 and N2.
 
-With Ro=Bu=1, f0=1, N²=1 (constant_N stratification):
-- Dispersion coefficient = 1/(2·Bu·Ro) = 0.5 = N²/(2f)
+With f0=1, N2=1 (constant_N stratification):
+- Dispersion coefficient = N²/(2f) = 0.5
 - Inertial period = 2π/f = 2π
-- Users only need to specify relative amplitudes, not dimensional scales
 
 # Keyword Arguments
 
@@ -276,9 +275,8 @@ With Ro=Bu=1, f0=1, N²=1 (constant_N stratification):
 - `nt`: Number of steps (default: 10000)
 
 **Physical Parameters:**
-- `f0`: Coriolis parameter (default: 1.0)
-- `Ro`: Rossby number (default: 1.0)
-- `Bu`: Burger number (default: 1.0)
+- `f0`: Coriolis parameter f (default: 1.0)
+- `N2`: Buoyancy frequency squared N² (default: 1.0)
 - `W2F`: Wave-to-flow velocity ratio squared (default: 0.01)
 - `stratification`: :constant_N or :skewed_gaussian (default: :constant_N)
 
@@ -299,7 +297,7 @@ With Ro=Bu=1, f0=1, N²=1 (constant_N stratification):
 
 # Example
 ```julia
-# Basic usage - Ro=Bu=1 by default
+# Basic usage - f0=1, N2=1 by default
 par = default_params()
 
 # Custom resolution with steady flow
@@ -308,16 +306,15 @@ par = default_params(nx=128, ny=128, nz=64, fixed_flow=true)
 # Custom wave amplitude (30% of flow velocity)
 par = default_params(W2F=0.09)  # W2F = (0.3)² = 0.09
 
-# For advanced users: specify Ro, Bu from dimensional scales
-par = default_params(Ro=0.05, Bu=0.1)
+# Custom stratification (stronger N²)
+par = default_params(N2=4.0)  # Dispersion = 4/(2×1) = 2.0
 ```
 
 See also: [`QGParams`](@ref)
 """
 function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
-                           dt=1e-3, nt=10_000, f0=1.0,
-                           Ro=1.0, Bu=1.0, W2F=0.01,
-                           gamma=1e-3,
+                           dt=1e-3, nt=10_000, f0=1.0, N2=1.0,
+                           W2F=0.01, gamma=1e-3,
                            nu_h=0.0, nu_v=0.0,
                            nuh1=0.01, nuh2=10.0, ilap1=2, ilap2=6,
                            nuh1w=0.0, nuh2w=10.0, ilap1w=2, ilap2w=6,
@@ -330,16 +327,10 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
                            fixed_flow=false, no_wave_feedback=true)
     T = Float64
 
-    #= Default: Ro=Bu=1 for simplicity
-
-    With Ro=Bu=1 and constant_N (N²=1):
-    - Dispersion coefficient = 1/(2·Bu·Ro) = 0.5 = N²/(2f)
-    - Inertial period T = 2π/f = 2π (when f0=1)
-    - The model behaves like dimensional equations with f=N=1
-
-    Users can override Ro, Bu for specific dimensional setups:
-    - Ro = U/(f·L) where U=velocity, f=Coriolis, L=length scale
-    - Bu = (N·H/(f·L))² where N=stratification, H=depth scale
+    #= Dimensional parameters f0 and N2:
+    - Dispersion coefficient = N²/(2f)
+    - Elliptic coefficient a = f²/N² = 1/N² when f=1
+    - Inertial period T = 2π/f
     =#
 
     #= Skewed Gaussian stratification parameters (Fortran test1 values)
@@ -353,7 +344,7 @@ function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π,
     return QGParams{T}(; nx, ny, nz, Lx=T(Lx), Ly=T(Ly), dt=T(dt), nt,
                          f0=T(f0), nu_h=T(nu_h), nu_v=T(nu_v),
                          linear_vert_structure, stratification,
-                         Ro=T(Ro), W2F=T(W2F), Bu=T(Bu), gamma=T(gamma),
+                         N2=T(N2), W2F=T(W2F), gamma=T(gamma),
                          nuh1=T(nuh1), nuh2=T(nuh2), ilap1, ilap2,
                          nuh1w=T(nuh1w), nuh2w=T(nuh2w), ilap1w, ilap2w,
                          nuz=T(nuz), inviscid, linear, no_dispersion, passive_scalar,
