@@ -685,9 +685,10 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     fft_backward!(tmpw, wk_ybj, plans)
     tmpw_arr = parent(tmpw)
 
-    # IFFT is normalized - extract real parts directly
+    # Normalization for consistency with pseudo-spectral convention
+    norm = nx * ny
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
     end
 end
 
@@ -791,9 +792,10 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     tmpw_arr = parent(tmpw)
     w_arr = parent(S.w)
 
-    # IFFT is normalized - extract real parts directly
+    # Normalization for consistency with pseudo-spectral convention
+    norm = nx * ny
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
     end
 end
 
