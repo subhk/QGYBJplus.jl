@@ -14,7 +14,7 @@ PHYSICAL SETUP:
 ---------------
 - Steady barotropic vortex dipole
 - Surface-confined near-inertial waves (k=0 initially)
-- Uniform stratification N² = 1 (with constant_N)
+- Uniform stratification N² = 1, f = 1
 
 KEY PHYSICS:
 ------------
@@ -39,7 +39,7 @@ const nz = 64
 
 # Simulation duration
 const n_inertial_periods = 15
-const T_inertial = 2π  # Inertial period when f=1 (default)
+const T_inertial = 2π  # Inertial period = 2π/f = 2π when f=1
 const dt = 0.001
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
@@ -56,7 +56,7 @@ println("="^70)
 @printf("Duration: %.1f inertial periods (%d steps)\n", n_inertial_periods, nt)
 @printf("Wave amplitude: %.2f (relative to flow)\n", u0_wave)
 
-# Create parameters using default_params() - Ro=Bu=1 by default
+# Create parameters - f0=1, N2=1 by default
 par = QGYBJ.default_params(
     nx = nx, ny = ny, nz = nz,
     dt = dt, nt = nt,
