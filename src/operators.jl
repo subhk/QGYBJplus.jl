@@ -298,8 +298,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     rhsk_arr = parent(rhsk)
 
     # Get stratification parameters
-    if params !== nothing && hasfield(typeof(params), :f0)
-        f = params.f0
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
     else
         f = 1.0  # Default
     end
@@ -411,8 +411,8 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get stratification parameters
-    if params !== nothing && hasfield(typeof(params), :f0)
-        f = params.f0
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
     else
         f = 1.0
     end
@@ -613,8 +613,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
 
     # Get parameters - need f and N² profile
-    if params !== nothing && hasfield(typeof(params), :f0)
-        f = params.f0
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
     else
         f = 1.0  # Default
     end
@@ -706,8 +706,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get parameters
-    if params !== nothing && hasfield(typeof(params), :f0)
-        f = params.f0
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
     else
         f = 1.0
     end

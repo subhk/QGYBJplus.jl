@@ -679,7 +679,7 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
-    a_ell_coeff = par.f0^2 / par.N2  # f²/N²
+    a_ell_coeff = par.f₀^2 / par.N²  # f²/N²
 
     ρᵤₜ = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
     ρₛₜ = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
@@ -800,7 +800,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
 
         rhs_r = zeros(eltype(a), nz)
         rhs_i = zeros(eltype(a), nz)
-        a_coeff = par.f0^2 / par.N2  # f²/N²
+        a_coeff = par.f₀^2 / par.N²  # f²/N²
         @inbounds for k in 1:nz
             rhs_r[k] = Δ2 * a_coeff * real(B_z_arr[i_local, j_local, k])
             rhs_i[k] = Δ2 * a_coeff * imag(B_z_arr[i_local, j_local, k])

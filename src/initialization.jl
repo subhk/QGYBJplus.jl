@@ -413,13 +413,13 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
     dz2 = dz^2
 
     # Get elliptic coefficient a_ell = f²/N²
-    # For constant N², a_ell = f0²/N2
-    # For variable N², a_ell[k] = f0²/N²[k]
-    f0_sq = params.f0^2
+    # For constant N², a_ell = f₀²/N²
+    # For variable N², a_ell[k] = f₀²/N²[k]
+    f₀_sq = params.f₀^2
     if N2_profile === nothing || isempty(N2_profile)
-        # Constant stratification N² = params.N2
-        a_ell = fill(Float64(f0_sq / params.N2), nz)
-        @info "Using constant stratification (N² = $(params.N2))"
+        # Constant stratification N² = params.N²
+        a_ell = fill(Float64(f₀_sq / params.N²), nz)
+        @info "Using constant stratification (N² = $(params.N²))"
     else
         # Variable stratification from profile
         if length(N2_profile) != nz
@@ -434,9 +434,9 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
                 w = pos - k_low
                 N2_interp[k] = (1 - w) * N2_profile[k_low] + w * N2_profile[k_high]
             end
-            a_ell = [f0_sq / max(N2_interp[k], eps(Float64)) for k in 1:nz]
+            a_ell = [f₀_sq / max(N2_interp[k], eps(Float64)) for k in 1:nz]
         else
-            a_ell = [f0_sq / max(N2_profile[k], eps(Float64)) for k in 1:nz]
+            a_ell = [f₀_sq / max(N2_profile[k], eps(Float64)) for k in 1:nz]
         end
         @info "Using variable stratification from N² profile"
     end

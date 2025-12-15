@@ -80,7 +80,7 @@ function OutputManager(config, params::QGParams{T}, parallel_config=nothing) whe
         "Lx" => params.Lx,
         "Ly" => params.Ly,
         "dt" => params.dt,
-        "f0" => params.f0
+        "f0" => params.f₀
     )
     
     return OutputManager{T}(
@@ -274,7 +274,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             ds.attrib["nx"] = params.nx
             ds.attrib["ny"] = params.ny
             ds.attrib["nz"] = params.nz
-            ds.attrib["f0"] = params.f0
+            ds.attrib["f0"] = params.f₀
             ds.attrib["dt"] = params.dt
         end
         
@@ -426,7 +426,7 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
                 ds.attrib["nx"] = params.nx
                 ds.attrib["ny"] = params.ny
                 ds.attrib["nz"] = params.nz
-                ds.attrib["f0"] = params.f0
+                ds.attrib["f0"] = params.f₀
                 ds.attrib["dt"] = params.dt
             end
         end
@@ -556,7 +556,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             ds.attrib["nx"] = params.nx
             ds.attrib["ny"] = params.ny
             ds.attrib["nz"] = params.nz
-            ds.attrib["f0"] = params.f0
+            ds.attrib["f0"] = params.f₀
             ds.attrib["dt"] = params.dt
         end
     end
