@@ -33,7 +33,7 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
                 kz = 1.0
                 ψᵣ[i,j,k] += amp * cos(ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + kz*z + phase)
             else
-                kz = kₕ  # Normalized (Bu = 1.0)
+                kz = kₕ  # Normalized (f = N = 1)
                 ψᵣ[i,j,k] += amp * cos(ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + kz*z + phase)
             end
         end

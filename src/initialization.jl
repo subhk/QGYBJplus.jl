@@ -391,7 +391,7 @@ Based on init_psi_generic and init_q from the Fortran implementation.
 # Arguments
 - `S::State`: Model state with streamfunction psi
 - `G::Grid`: Grid structure
-- `params::QGParams`: Model parameters (includes Bu)
+- `params::QGParams`: Model parameters (includes f0, N2)
 - `plans`: FFT plans
 - `N2_profile::Vector`: Optional N²(z) profile. If not provided, uses constant N²=1.
 

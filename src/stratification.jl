@@ -273,14 +273,14 @@ function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_
     r_1_u = ones(T, nz)         # r₁ = 1.0 (Boussinesq)
     r_2_u = zeros(T, nz)        # r₂ = N² at unstaggered points
     r_3_u = zeros(T, nz)        # r₃ = 0.0 (not used in standard QG)
-    a_ell_u = zeros(T, nz)      # a_ell = Bu/N² at unstaggered points
+    a_ell_u = zeros(T, nz)      # a_ell = f²/N² at unstaggered points
     rho_u = ones(T, nz)         # ρ = 1.0 (Boussinesq)
 
     # Staggered (at cell faces)
     r_1_s = ones(T, nz)         # r₁ = 1.0 at staggered points
     r_2_s = zeros(T, nz)        # r₂ = N² at staggered points
     r_3_s = zeros(T, nz)        # r₃ = 0.0 at staggered points
-    a_ell_s = zeros(T, nz)      # a_ell = Bu/N² at staggered points
+    a_ell_s = zeros(T, nz)      # a_ell = f²/N² at staggered points
     rho_s = ones(T, nz)         # ρ = 1.0 at staggered points
 
     # Compute coefficients at each vertical level
@@ -288,7 +288,7 @@ function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_
         # Unstaggered values (cell centers)
         N2_u = N2_profile[k]
         r_2_u[k] = N2_u
-        a_ell_u[k] = Bu / max(N2_u, eps(T))  # Avoid division by zero
+        a_ell_u[k] = f0_sq / max(N2_u, eps(T))  # Avoid division by zero
 
         # Staggered values (cell faces at z + dz/2)
         # Interpolate N² to staggered grid
@@ -298,7 +298,7 @@ function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_
             N2_s = N2_profile[k]  # At top boundary, use cell center value
         end
         r_2_s[k] = N2_s
-        a_ell_s[k] = Bu / max(N2_s, eps(T))
+        a_ell_s[k] = f0_sq / max(N2_s, eps(T))
     end
 
     return (

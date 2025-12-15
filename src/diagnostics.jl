@@ -458,14 +458,16 @@ Compute potential energy in spectral space with dealiasing and density weighting
 # Physical Background
 The potential energy from buoyancy variance:
 
-    PE(z) = Σₖ L(kₓ,kᵧ) × (Bu × ρ₁/ρ₂) × |bₖ|² - 0.5 × correction
+    PE(z) = Σₖ L(kₓ,kᵧ) × (a_ell × ρ₁/ρ₂) × |bₖ|² - 0.5 × correction
+
+where a_ell = f²/N² is the elliptic coefficient.
 
 For QG: b = ψ_z, so PE represents available potential energy from isopycnal tilting.
 
 # Arguments
 - `bk`: Spectral buoyancy field (complex)
 - `G::Grid`: Grid structure
-- `par`: QGParams (for Bu and density profiles)
+- `par`: QGParams (for f0, N2 and density profiles)
 - `Lmask`: Optional dealiasing mask
 
 # Returns
