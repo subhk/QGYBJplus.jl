@@ -238,8 +238,11 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     nqk_arr = parent(nqk); nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
     nx_local, ny_local, nz_local = size(u_arr)
 
-    # Dealiasing mask (L = 1 inside 2/3 circle, 0 outside)
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+    # Dealiasing: use inline check for efficiency when Lmask not provided
+    # This avoids allocating a full (nx, ny) mask on each process
+    use_inline_dealias = isnothing(Lmask)
+    # Helper function: check if mode should be kept
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Transform input fields to real space =#
     qr  = similar(qk)
