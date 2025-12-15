@@ -248,22 +248,22 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Transform input fields to real space =#
-    qr  = similar(qk)
-    BRr = similar(BRk)
-    BIr = similar(BIk)
-    fft_backward!(qr,  qk,  plans)
-    fft_backward!(BRr, BRk, plans)
-    fft_backward!(BIr, BIk, plans)
+    qᵣ  = similar(qk)
+    BRᵣ = similar(BRk)
+    BIᵣ = similar(BIk)
+    fft_backward!(qᵣ,  qk,  plans)
+    fft_backward!(BRᵣ, BRk, plans)
+    fft_backward!(BIᵣ, BIk, plans)
 
-    qr_arr = parent(qr); BRr_arr = parent(BRr); BIr_arr = parent(BIr)
+    qᵣ_arr = parent(qᵣ); BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
 
     #= ---- J(ψ, q): Advection of QGPV ---- =#
     # Compute products u*q and v*q in real space
     uterm = similar(qk); vterm = similar(qk)
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(qr_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(qr_arr[i_local, j_local, k])
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
     end
 
     # Transform to spectral and compute divergence
@@ -274,11 +274,11 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
             # J(ψ,q) = ∂(uq)/∂x + ∂(vq)/∂y = ikₓ(ûq) + ikᵧ(v̂q)
-            nqk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
+            nqk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
         else
             nqk_arr[i_local, j_local, k] = 0  # Dealiased
         end
@@ -286,8 +286,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
 
     #= ---- J(ψ, BR): Advection of wave real part ---- =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BRr_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BRr_arr[i_local, j_local, k])
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BRᵣ_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BRᵣ_arr[i_local, j_local, k])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
@@ -296,10 +296,10 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
-            nBRk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
+            nBRk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
         else
             nBRk_arr[i_local, j_local, k] = 0
         end
@@ -307,8 +307,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
 
     #= ---- J(ψ, BI): Advection of wave imaginary part ---- =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BIr_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BIr_arr[i_local, j_local, k])
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BIᵣ_arr[i_local, j_local, k])
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BIᵣ_arr[i_local, j_local, k])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
@@ -317,10 +317,10 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
-            nBIk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
+            nBIk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
         else
             nBIk_arr[i_local, j_local, k] = 0
         end
