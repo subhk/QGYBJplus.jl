@@ -408,11 +408,12 @@ function wave_energy_vavg(B, G::Grid, plans)
 
     BRr_arr = parent(BRr); BIr_arr = parent(BIr)
 
-    # Accumulate 0.5|B|^2 and normalize by nx*ny (IFFT unnormalized) and nz
+    # Accumulate 0.5|B|^2 and average over nz
+    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
+    # so no additional normalization is needed
     WE = zeros(Float64, nx_local, ny_local)
-    norm = nx*ny
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        WE[i,j] += 0.5*((real(BRr_arr[i,j,k])/norm)^2 + (real(BIr_arr[i,j,k])/norm)^2)
+        WE[i,j] += 0.5*(real(BRr_arr[i,j,k])^2 + real(BIr_arr[i,j,k])^2)
     end
     WE ./= nz
     return WE
@@ -467,10 +468,11 @@ function slice_horizontal(field, G::Grid, plans; k::Int)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 
-    norm = nx*ny
+    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
+    # so no additional normalization is needed
     sl = Array{Float64}(undef, nx_local, ny_local)
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        sl[i,j] = real(Xr_arr[i,j,k]) / norm
+        sl[i,j] = real(Xr_arr[i,j,k])
     end
     return sl
 end
@@ -515,10 +517,11 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 
-    norm = nx*ny
+    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
+    # so no additional normalization is needed
     sl = Array{Float64}(undef, nx_local, nz_local)
     @inbounds for k in 1:nz_local, i in 1:nx_local
-        sl[i,k] = real(Xr_arr[i,j,k]) / norm
+        sl[i,k] = real(Xr_arr[i,j,k])
     end
     return sl
 end
@@ -565,6 +568,89 @@ function wave_energy(B, A)
     return EB, EA
 end
 
+#=
+================================================================================
+                    GLOBAL ENERGY DIAGNOSTICS (MPI-AWARE)
+================================================================================
+These functions compute global energy by reducing across all MPI processes.
+In serial mode, they return the same result as the local versions.
+================================================================================
+=#
+
+"""
+    flow_kinetic_energy_global(u, v, mpi_config=nothing) -> KE
+
+Compute GLOBAL domain-integrated kinetic energy across all MPI processes.
+
+# Arguments
+- `u, v`: Velocity arrays (local portion in MPI mode)
+- `mpi_config`: MPI configuration (nothing for serial mode)
+
+# Returns
+Global kinetic energy (sum across all processes).
+
+# Example
+```julia
+# Serial mode
+KE = flow_kinetic_energy_global(state.u, state.v)
+
+# MPI mode
+KE = flow_kinetic_energy_global(state.u, state.v, mpi_config)
+```
+"""
+function flow_kinetic_energy_global(u, v, mpi_config=nothing)
+    # Compute local energy
+    KE_local = flow_kinetic_energy(u, v)
+
+    # Reduce across processes if MPI is active
+    if mpi_config === nothing
+        return KE_local
+    else
+        # Use the MPI reduce function from the main module
+        return PARENT.mpi_reduce_sum(KE_local, mpi_config)
+    end
+end
+
+"""
+    wave_energy_global(B, A, mpi_config=nothing) -> (E_B, E_A)
+
+Compute GLOBAL wave energy across all MPI processes.
+
+# Arguments
+- `B, A`: Wave envelope and amplitude arrays (local portion in MPI mode)
+- `mpi_config`: MPI configuration (nothing for serial mode)
+
+# Returns
+Tuple (E_B, E_A) of global summed squared magnitudes.
+
+# Example
+```julia
+# Serial mode
+EB, EA = wave_energy_global(state.B, state.A)
+
+# MPI mode
+EB, EA = wave_energy_global(state.B, state.A, mpi_config)
+```
+"""
+function wave_energy_global(B, A, mpi_config=nothing)
+    # Compute local energy
+    EB_local, EA_local = wave_energy(B, A)
+
+    # Reduce across processes if MPI is active
+    if mpi_config === nothing
+        return EB_local, EA_local
+    else
+        # Use the MPI reduce function from the main module
+        EB_global = PARENT.mpi_reduce_sum(EB_local, mpi_config)
+        EA_global = PARENT.mpi_reduce_sum(EA_local, mpi_config)
+        return EB_global, EA_global
+    end
+end
+
+# Reference to parent module for MPI functions
+const PARENT = Base.parentmodule(@__MODULE__)
+
 end # module
 
-using .Diagnostics: omega_eqn_rhs!, wave_energy
+using .Diagnostics: omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz
+using .Diagnostics: flow_kinetic_energy_global, wave_energy_global
