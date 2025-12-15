@@ -523,11 +523,14 @@ The following MPI functions are provided:
 - `transpose_to_xy_pencil!` - Transpose from z-pencil to xy-pencil
 
 ### Index Mapping Functions
-- `local_to_global_xy` - Map local index to global (xy-pencil)
+- `local_to_global` - Map local index to global (xy-pencil), with dimension argument
 - `local_to_global_z` - Map local index to global (z-pencil)
-- `get_local_range_xy` - Get local index range in xy-pencil
-- `get_local_range_z` - Get local index range in z-pencil
-- `local_indices` - Get local index ranges for a PencilArray
+- `range_local` - Get local index range (from PencilArrays)
+- `range_remote` - Get remote (global) index range (from PencilArrays)
+
+### Helper Functions
+- `get_kh2` - Get horizontal wavenumber squared array
+- `is_dealiased` - Check if a mode is within dealiasing radius
 
 ### Array Allocation
 - `allocate_xy_pencil` - Allocate array in xy-pencil layout
