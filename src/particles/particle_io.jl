@@ -6,6 +6,7 @@ Handles NetCDF output of particle trajectories with proper metadata.
 
 module ParticleIO
 
+using Dates
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
 const HAS_NCDS = Base.find_package("NCDatasets") !== nothing
@@ -66,13 +67,13 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
             time_var.attrib["units"] = "model time units"
             time_var.attrib["long_name"] = "time"
             
-            x_var.attrib["units"] = "m"
-            x_var.attrib["long_name"] = "x position"
-            y_var.attrib["units"] = "m"
-            y_var.attrib["long_name"] = "y position"
-            z_var.attrib["units"] = "m"
-            z_var.attrib["long_name"] = "z position"
-            
+            x_var.attrib["units"] = "nondimensional"
+            x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+            y_var.attrib["units"] = "nondimensional"
+            y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+            z_var.attrib["units"] = "nondimensional"
+            z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+
             # Global attributes
             ds.attrib["title"] = "QG-YBJ Particle Trajectories"
             ds.attrib["created_at"] = string(now())
@@ -97,6 +98,105 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
     end
     
     return filename
+end
+
+"""
+    read_particle_trajectories(filename) -> NamedTuple
+
+Read particle trajectory history from NetCDF file.
+
+Returns a NamedTuple with fields:
+- `x`: Matrix of x positions (np × ntime)
+- `y`: Matrix of y positions (np × ntime)
+- `z`: Matrix of z positions (np × ntime)
+- `time`: Vector of time values (ntime)
+- `particle_ids`: Vector of particle identifiers (np)
+- `attributes`: Dict of global attributes from the file
+
+This is the inverse of `write_particle_trajectories`.
+
+# Example
+```julia
+# Write trajectories
+write_particle_trajectories("particles.nc", tracker)
+
+# Read them back
+traj = read_particle_trajectories("particles.nc")
+println("Number of particles: ", size(traj.x, 1))
+println("Number of time steps: ", length(traj.time))
+println("Initial x positions: ", traj.x[:, 1])
+```
+"""
+function read_particle_trajectories(filename::String)
+    try
+        HAS_NCDS || error("NCDatasets not available")
+        ensure_ncds_loaded()
+
+        x = nothing
+        y = nothing
+        z = nothing
+        time = nothing
+        particle_ids = nothing
+        attributes = Dict{String,Any}()
+
+        NCDatasets.Dataset(filename, "r") do ds
+            # Read dimensions
+            np = ds.dim["particle"]
+            ntime = ds.dim["time"]
+
+            # Read coordinate variables
+            if haskey(ds, "particle")
+                particle_ids = Array(ds["particle"][:])
+            else
+                particle_ids = collect(1:np)
+            end
+
+            if haskey(ds, "time")
+                time = Array(ds["time"][:])
+            else
+                time = collect(1:ntime)
+            end
+
+            # Read trajectory variables
+            if haskey(ds, "x")
+                x = Array(ds["x"][:, :])
+            else
+                error("Variable 'x' not found in $filename")
+            end
+
+            if haskey(ds, "y")
+                y = Array(ds["y"][:, :])
+            else
+                error("Variable 'y' not found in $filename")
+            end
+
+            if haskey(ds, "z")
+                z = Array(ds["z"][:, :])
+            else
+                error("Variable 'z' not found in $filename")
+            end
+
+            # Read global attributes
+            for (name, value) in ds.attrib
+                attributes[name] = value
+            end
+        end
+
+        @info "Read particle trajectories from: $filename ($(size(x, 1)) particles, $(length(time)) time steps)"
+
+        return (
+            x = x,
+            y = y,
+            z = z,
+            time = time,
+            particle_ids = particle_ids,
+            attributes = attributes
+        )
+
+    catch e
+        @warn "Cannot read particle trajectories: $e"
+        rethrow(e)
+    end
 end
 
 """
@@ -136,20 +236,20 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             # Set attributes
             particle_var.attrib["long_name"] = "particle identifier"
             
-            x_var.attrib["units"] = "m"
-            x_var.attrib["long_name"] = "x position"
-            y_var.attrib["units"] = "m" 
-            y_var.attrib["long_name"] = "y position"
-            z_var.attrib["units"] = "m"
-            z_var.attrib["long_name"] = "z position"
-            
-            u_var.attrib["units"] = "m/s"
+            x_var.attrib["units"] = "nondimensional"
+            x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+            y_var.attrib["units"] = "nondimensional"
+            y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+            z_var.attrib["units"] = "nondimensional"
+            z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+
+            u_var.attrib["units"] = "nondimensional/time"
             u_var.attrib["long_name"] = "x velocity"
-            v_var.attrib["units"] = "m/s"
-            v_var.attrib["long_name"] = "y velocity"  
-            w_var.attrib["units"] = "m/s"
+            v_var.attrib["units"] = "nondimensional/time"
+            v_var.attrib["long_name"] = "y velocity"
+            w_var.attrib["units"] = "nondimensional/time"
             w_var.attrib["long_name"] = "z velocity"
-            
+
             # Global attributes
             ds.attrib["title"] = "QG-YBJ Particle Snapshot"
             ds.attrib["created_at"] = string(now())
@@ -206,20 +306,20 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 time_var.attrib["units"] = "model time units"
                 time_var.attrib["long_name"] = "time"
                 
-                x_var.attrib["units"] = "m"
-                x_var.attrib["long_name"] = "x position"
-                y_var.attrib["units"] = "m"
-                y_var.attrib["long_name"] = "y position"
-                z_var.attrib["units"] = "m"
-                z_var.attrib["long_name"] = "z position"
-                
-                u_var.attrib["units"] = "m/s"
+                x_var.attrib["units"] = "nondimensional"
+                x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+                y_var.attrib["units"] = "nondimensional"
+                y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+                z_var.attrib["units"] = "nondimensional"
+                z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+
+                u_var.attrib["units"] = "nondimensional/time"
                 u_var.attrib["long_name"] = "x velocity"
-                v_var.attrib["units"] = "m/s"
+                v_var.attrib["units"] = "nondimensional/time"
                 v_var.attrib["long_name"] = "y velocity"
-                w_var.attrib["units"] = "m/s"
+                w_var.attrib["units"] = "nondimensional/time"
                 w_var.attrib["long_name"] = "z velocity"
-                
+
                 # Global attributes
                 ds.attrib["title"] = "QG-YBJ Particle Trajectories (Time Series)"
                 ds.attrib["created_at"] = string(now())

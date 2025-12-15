@@ -193,23 +193,22 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Set coordinate values
         dx = 2π / G.nx  # Assuming domain [0, 2π]
         dy = 2π / G.ny
-        dz = 2π / G.nz
-        
+
         x_var[:] = collect(0:dx:(2π-dx))
         y_var[:] = collect(0:dy:(2π-dy))
-        z_var[:] = collect(0:dz:(2π-dz))
+        z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
         
         # Add coordinate attributes
         x_var.attrib["units"] = "radians"
         x_var.attrib["long_name"] = "x coordinate"
-        y_var.attrib["units"] = "radians" 
+        y_var.attrib["units"] = "radians"
         y_var.attrib["long_name"] = "y coordinate"
-        z_var.attrib["units"] = "radians"
-        z_var.attrib["long_name"] = "z coordinate"
+        z_var.attrib["units"] = "nondimensional"
+        z_var.attrib["long_name"] = "z coordinate (vertical, nondimensional [0, 2π])"
         time_var.attrib["units"] = "model time units"
         time_var.attrib["long_name"] = "time"
-        
+
         # Stream function
         # Note: psir is already normalized by fft_backward!, no additional division needed
         if manager.save_psi
@@ -240,16 +239,17 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             vr = similar(S.v)
             fft_backward!(ur, S.u, plans)
             fft_backward!(vr, S.v, plans)
-            
+
             u_var = defVar(ds, "u", Float64, ("x", "y", "z"))
             v_var = defVar(ds, "v", Float64, ("x", "y", "z"))
-            
-            u_var[:,:,:] = real.(ur) / norm_factor
-            v_var[:,:,:] = real.(vr) / norm_factor
-            
+
+            # Already normalized by fft_backward!
+            u_var[:,:,:] = real.(ur)
+            v_var[:,:,:] = real.(vr)
+
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
-            v_var.attrib["units"] = "m/s" 
+            v_var.attrib["units"] = "m/s"
             v_var.attrib["long_name"] = "meridional velocity"
         end
         
@@ -367,15 +367,12 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
         temp_plans = plan_transforms!(G)
 
         # Convert to real space
-        psir = zeros(Float64, G.nx, G.ny, G.nz)
-        BRr = zeros(Float64, G.nx, G.ny, G.nz)
-        BIr = zeros(Float64, G.nx, G.ny, G.nz)
+        # Note: fft_backward! uses FFTW.ifft which is already normalized
+        psir = zeros(ComplexF64, G.nx, G.ny, G.nz)
+        Br = zeros(ComplexF64, G.nx, G.ny, G.nz)
 
         fft_backward!(psir, gathered_psi, temp_plans)
-        fft_backward!(BRr, real.(gathered_B), temp_plans)
-        fft_backward!(BIr, imag.(gathered_B), temp_plans)
-
-        norm_factor = G.nx * G.ny
+        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT
 
         NCDatasets.Dataset(filepath, "c") do ds
             # Define dimensions
@@ -393,21 +390,20 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
             # Set coordinate values
             dx = 2π / G.nx
             dy = 2π / G.ny
-            dz = 2π / G.nz
 
             x_var[:] = collect(0:dx:(2π-dx))
             y_var[:] = collect(0:dy:(2π-dy))
-            z_var[:] = collect(0:dz:(2π-dz))
+            z_var[:] = G.z  # Use actual grid z-values
             time_var[1] = time
 
-            # Create and write data variables
+            # Create and write data variables (already normalized by fft_backward!)
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            psi_var[:,:,:] = real.(psir) / norm_factor
-            LAr_var[:,:,:] = real.(BRr) / norm_factor
-            LAi_var[:,:,:] = real.(BIr) / norm_factor
+            psi_var[:,:,:] = real.(psir)
+            LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
+            LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
 
             # Add attributes
             ds.attrib["title"] = "QG-YBJ Model State"
@@ -471,20 +467,18 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     temp_plans = plan_transforms!(G)
 
     # Convert spectral fields to real space
-    norm_factor = G.nx * G.ny
+    # Note: fft_backward! uses FFTW.ifft which is already normalized
 
-    # Allocate real-space arrays
-    psir = zeros(Float64, G.nx, G.ny, G.nz)
-    BRr = zeros(Float64, G.nx, G.ny, G.nz)
-    BIr = zeros(Float64, G.nx, G.ny, G.nz)
+    # Allocate arrays (complex for FFT output)
+    psir = zeros(ComplexF64, G.nx, G.ny, G.nz)
+    Br = zeros(ComplexF64, G.nx, G.ny, G.nz)
 
     # Transform to real space
     if gathered_psi !== nothing
         fft_backward!(psir, gathered_psi, temp_plans)
     end
     if gathered_B !== nothing
-        fft_backward!(BRr, real.(gathered_B), temp_plans)
-        fft_backward!(BIr, imag.(gathered_B), temp_plans)
+        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT
     end
 
     NCDatasets.Dataset(filepath, "c") do ds
@@ -503,11 +497,10 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         # Set coordinate values
         dx = 2π / G.nx
         dy = 2π / G.ny
-        dz = 2π / G.nz
 
         x_var[:] = collect(0:dx:(2π-dx))
         y_var[:] = collect(0:dy:(2π-dy))
-        z_var[:] = collect(0:dz:(2π-dz))
+        z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
         # Add coordinate attributes
@@ -515,26 +508,27 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         x_var.attrib["long_name"] = "x coordinate"
         y_var.attrib["units"] = "radians"
         y_var.attrib["long_name"] = "y coordinate"
-        z_var.attrib["units"] = "radians"
-        z_var.attrib["long_name"] = "z coordinate"
+        z_var.attrib["units"] = "nondimensional"
+        z_var.attrib["long_name"] = "z coordinate (vertical, nondimensional [0, 2π])"
         time_var.attrib["units"] = "model time units"
         time_var.attrib["long_name"] = "time"
 
-        # Write streamfunction
+        # Write streamfunction (already normalized by fft_backward!)
         if gathered_psi !== nothing
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            psi_var[:,:,:] = real.(psir) / norm_factor
+            psi_var[:,:,:] = real.(psir)
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "stream function"
         end
 
         # Write wave fields (L+A real and imaginary parts)
+        # Extract real and imag parts of the PHYSICAL field (already normalized)
         if gathered_B !== nothing
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = real.(BRr) / norm_factor
-            LAi_var[:,:,:] = real.(BIr) / norm_factor
+            LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
+            LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
 
             LAr_var.attrib["units"] = "wave amplitude"
             LAr_var.attrib["long_name"] = "L+A real part"
@@ -712,12 +706,21 @@ end
     _read_initial_waves_serial(filename, G, plans)
 
 Serial implementation of wave field reading.
+
+The wave field B is complex in physical space: B(x,y,z) = BR(x,y,z) + i*BI(x,y,z)
+where BR and BI are real fields stored as LAr and LAi in the file.
+
+To reconstruct the spectral field:
+1. Read LAr and LAi as real fields
+2. Form complex physical field: Br = LAr + i*LAi
+3. FFT to spectral space: Bk = FFT(Br)
 """
 function _read_initial_waves_serial(filename::String, G::Grid, plans)
     @info "Reading initial wave field from: $filename (serial)"
 
-    BRr = zeros(Float64, G.nx, G.ny, G.nz)
-    BIr = zeros(Float64, G.nx, G.ny, G.nz)
+    # Read real and imaginary parts of the physical wave field
+    LAr = zeros(Float64, G.nx, G.ny, G.nz)
+    LAi = zeros(Float64, G.nx, G.ny, G.nz)
 
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
@@ -731,23 +734,21 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
             end
         end
 
-        # Read L+A real and imaginary parts
+        # Read L+A real and imaginary parts (real fields in physical space)
         if haskey(ds, "LAr") && haskey(ds, "LAi")
-            BRr[:,:,:] = ds["LAr"][:,:,:]
-            BIr[:,:,:] = ds["LAi"][:,:,:]
+            LAr[:,:,:] = ds["LAr"][:,:,:]
+            LAi[:,:,:] = ds["LAi"][:,:,:]
         else
             error("Variables 'LAr' and 'LAi' not found in $filename")
         end
     end
 
-    # Convert to spectral space
-    BRk = similar(BRr, Complex{Float64})
-    BIk = similar(BIr, Complex{Float64})
-    fft_forward!(BRk, BRr, plans)
-    fft_forward!(BIk, BIr, plans)
+    # Form complex physical field: B(x,y,z) = BR + i*BI
+    Br = LAr .+ im .* LAi
 
-    # Combine into complex field B = BR + i*BI
-    Bk = BRk + im * BIk
+    # Convert to spectral space with single FFT
+    Bk = similar(Br, Complex{Float64})
+    fft_forward!(Bk, Br, plans)
 
     return Bk
 end
@@ -929,9 +930,9 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
         # Set attributes
         x_var.attrib["units"] = "radians"
         y_var.attrib["units"] = "radians"
-        z_var.attrib["units"] = "radians"
+        z_var.attrib["units"] = "nondimensional"
         time_var.attrib["units"] = "model time units"
-        
+
         psi_var.attrib["units"] = "m²/s"
         psi_var.attrib["long_name"] = "stream function"
         LAr_var.attrib["units"] = "wave amplitude"
@@ -958,28 +959,45 @@ end
     ncdump_psi(S, G, plans; path="psi.out.nc")
 
 Legacy compatibility wrapper for writing stream function to NetCDF.
-Uses the enhanced I/O system internally.
+Directly writes psi field without using OutputManager.
 """
 function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
-    @info "Using legacy ncdump_psi (compatibility mode)"
-    
-    # Create a temporary output manager for this operation
-    output_dir = dirname(path)
-    filename = basename(path)
-    
-    manager = OutputManager(
-        output_dir=output_dir,
-        state_file_pattern=filename,
-        save_psi=true,
-        save_waves=false,
-        save_velocities=false,
-        save_vertical_velocity=false,
-        save_vorticity=false
-    )
-    
-    # Write the state file
-    write_state_file(manager, S, G, plans, 0.0)
-    
+    ensure_ncds_loaded()
+    @info "Writing psi to: $path"
+
+    # Convert spectral psi to real space
+    psir = similar(S.psi)
+    fft_backward!(psir, S.psi, plans)
+
+    NCDatasets.Dataset(path, "c") do ds
+        # Define dimensions
+        ds.dim["x"] = G.nx
+        ds.dim["y"] = G.ny
+        ds.dim["z"] = G.nz
+
+        # Create coordinate variables
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+
+        # Set coordinate values
+        dx = 2π / G.nx
+        dy = 2π / G.ny
+        dz = G.nz > 1 ? (G.z[end] - G.z[1]) / (G.nz - 1) : 2π / G.nz
+        x_var[:] = collect(0:dx:(2π-dx))
+        y_var[:] = collect(0:dy:(2π-dy))
+        z_var[:] = G.z
+
+        # Write psi (already normalized by fft_backward!)
+        psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+        psi_var[:,:,:] = real.(psir)
+        psi_var.attrib["units"] = "m²/s"
+        psi_var.attrib["long_name"] = "stream function"
+
+        ds.attrib["title"] = "QG-YBJ Stream Function"
+        ds.attrib["created_at"] = string(now())
+    end
+
     return path
 end
 
@@ -987,28 +1005,51 @@ end
     ncdump_la(S, G, plans; path="la.out.nc")
 
 Legacy compatibility wrapper for writing L+A wave field to NetCDF.
-Uses the enhanced I/O system internally.
+Directly writes wave field without using OutputManager.
 """
 function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
-    @info "Using legacy ncdump_la (compatibility mode)"
-    
-    # Create a temporary output manager for this operation
-    output_dir = dirname(path)
-    filename = basename(path)
-    
-    manager = OutputManager(
-        output_dir=output_dir,
-        state_file_pattern=filename,
-        save_psi=false,
-        save_waves=true,
-        save_velocities=false,
-        save_vertical_velocity=false,
-        save_vorticity=false
-    )
-    
-    # Write the state file
-    write_state_file(manager, S, G, plans, 0.0)
-    
+    ensure_ncds_loaded()
+    @info "Writing L+A to: $path"
+
+    # Convert spectral B to real space (full complex IFFT)
+    Br = similar(S.B)
+    fft_backward!(Br, S.B, plans)
+
+    NCDatasets.Dataset(path, "c") do ds
+        # Define dimensions
+        ds.dim["x"] = G.nx
+        ds.dim["y"] = G.ny
+        ds.dim["z"] = G.nz
+
+        # Create coordinate variables
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+
+        # Set coordinate values
+        dx = 2π / G.nx
+        dy = 2π / G.ny
+        dz = G.nz > 1 ? (G.z[end] - G.z[1]) / (G.nz - 1) : 2π / G.nz
+        x_var[:] = collect(0:dx:(2π-dx))
+        y_var[:] = collect(0:dy:(2π-dy))
+        z_var[:] = G.z
+
+        # Write wave field real and imaginary parts (already normalized)
+        LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+        LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+
+        LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
+        LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
+
+        LAr_var.attrib["units"] = "wave amplitude"
+        LAr_var.attrib["long_name"] = "L+A real part"
+        LAi_var.attrib["units"] = "wave amplitude"
+        LAi_var.attrib["long_name"] = "L+A imaginary part"
+
+        ds.attrib["title"] = "QG-YBJ Wave Field (L+A)"
+        ds.attrib["created_at"] = string(now())
+    end
+
     return path
 end
 
