@@ -15,10 +15,19 @@ DECOMPOSITION STRATEGY:
 -----------------------
 Uses 2D pencil decomposition for optimal parallel scalability:
 - Data is distributed across a 2D process grid (px × py)
-- Different pencil configurations for different operations:
-  * xy-pencils: For horizontal operations (FFTs in x and y)
-  * z-pencils: For vertical operations (tridiagonal solves)
-- Transpose operations move data between pencil configurations
+- THREE pencil configurations for different operations:
+  * xy-pencil (2,3): y,z distributed, x local - for horizontal FFTs
+  * xz-pencil (1,3): x,z distributed, y local - INTERMEDIATE for transposes
+  * z-pencil (1,2):  x,y distributed, z local - for vertical operations
+
+TWO-STEP TRANSPOSE:
+-------------------
+PencilArrays requires that pencil decompositions differ by at most ONE
+dimension for transpose operations. Since xy-pencil and z-pencil differ
+in BOTH decomposed dimensions, we use a two-step transpose through the
+intermediate xz-pencil:
+
+    xy-pencil (2,3) ↔ xz-pencil (1,3) ↔ z-pencil (1,2)
 
 This approach allows scaling to O(N²) processes for an N³ grid.
 

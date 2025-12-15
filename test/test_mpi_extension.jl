@@ -225,6 +225,63 @@ function run_mpi_tests()
                 end
             end
 
+            @testset "Transpose Operations (Two-Step)" begin
+                mpi_config = QGYBJ.setup_mpi_environment()
+                params = QGYBJ.default_params(nx=64, ny=64, nz=32)
+                grid = QGYBJ.init_mpi_grid(params, mpi_config)
+                state = QGYBJ.init_mpi_state(grid, mpi_config)
+
+                # Initialize with deterministic data for roundtrip test
+                QGYBJ.init_mpi_random_field!(state.psi, grid, 1.0, 123)
+
+                # Allocate z-pencil array
+                psi_z = QGYBJ.allocate_z_pencil(grid, ComplexF64)
+
+                # Test transpose to z-pencil (xy→z)
+                # This uses the two-step transpose: xy(2,3) → xz(1,3) → z(1,2)
+                QGYBJ.transpose_to_z_pencil!(psi_z, state.psi, grid)
+
+                # Verify z is fully local after transpose
+                psi_z_arr = parent(psi_z)
+                @test size(psi_z_arr, 3) == grid.nz  # z should be fully local
+
+                # Test roundtrip: transpose back to xy-pencil (z→xy)
+                # This uses the two-step transpose: z(1,2) → xz(1,3) → xy(2,3)
+                psi_roundtrip = similar(state.psi)
+                QGYBJ.transpose_to_xy_pencil!(psi_roundtrip, psi_z, grid)
+
+                # Check roundtrip accuracy
+                parent_psi = parent(state.psi)
+                parent_roundtrip = parent(psi_roundtrip)
+                local_error = maximum(abs.(parent_psi .- parent_roundtrip))
+
+                # Reduce max error across all ranks
+                global_error = MPI.Allreduce(local_error, MPI.MAX, comm)
+
+                @test global_error < 1e-12
+
+                if rank == 0
+                    println("  ✓ Two-step transpose roundtrip successful (error: $global_error)")
+                end
+
+                # Test that z-pencil has correct decomposition properties
+                # After transpose to z-pencil, we should be able to do vertical operations
+                # because z is fully local
+                nz = grid.nz
+                for j in 1:size(psi_z_arr, 2), i in 1:size(psi_z_arr, 1)
+                    # Verify we can access all z levels (this would fail if z wasn't local)
+                    for k in 1:nz
+                        _ = psi_z_arr[i, j, k]
+                    end
+                end
+
+                if rank == 0
+                    println("  ✓ Z-pencil has z fully local (required for vertical ops)")
+                end
+
+                QGYBJ.mpi_barrier(mpi_config)
+            end
+
             @testset "Gather/Scatter" begin
                 mpi_config = QGYBJ.setup_mpi_environment()
                 params = QGYBJ.default_params(nx=64, ny=64, nz=32)
