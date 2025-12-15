@@ -444,72 +444,72 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     nx_local_z, ny_local_z, nz_local = size(rhsk_z_arr)
     @assert nz_local == nz "Z must be fully local in z-pencil"
 
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    f2 = f^2
+    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
+    f² = f^2
 
     @inbounds for j_local in 1:ny_local_z, i_local in 1:nx_local_z
         i_global = local_to_global_z(i_local, 1, G)
         j_global = local_to_global_z(j_local, 2, G)
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
-        kh2 = kx_val^2 + ky_val^2
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
 
-        if kh2 > 0 && nz > 2
+        if kₕ² > 0 && nz > 2
             n_interior = nz - 2
 
             if n_interior > 0
                 d = zeros(Float64, n_interior)
-                dl = zeros(Float64, n_interior-1)
-                du = zeros(Float64, n_interior-1)
+                dₗ = zeros(Float64, n_interior-1)
+                dᵤ = zeros(Float64, n_interior-1)
                 rhs = zeros(ComplexF64, n_interior)
 
                 for iz in 1:n_interior
                     k = iz + 1
-                    d[iz] = -(N2_profile[k]/f2)/(dz*dz) - kh2
+                    d[iz] = -(N2_profile[k]/f²)/(Δz*Δz) - kₕ²
                     if iz > 1
-                        dl[iz-1] = (N2_profile[k]/f2)/(dz*dz)
+                        dₗ[iz-1] = (N2_profile[k]/f²)/(Δz*Δz)
                     end
                     if iz < n_interior
-                        du[iz] = (N2_profile[k]/f2)/(dz*dz)
+                        dᵤ[iz] = (N2_profile[k]/f²)/(Δz*Δz)
                     end
                     rhs[iz] = rhsk_z_arr[i_local, j_local, k]
                 end
 
-                dl_work = copy(dl)
+                dₗ_work = copy(dₗ)
                 d_work = copy(d)
-                du_work = copy(du)
-                rhs_real = real.(rhs)
-                rhs_imag = imag.(rhs)
+                dᵤ_work = copy(dᵤ)
+                rhsᵣ = real.(rhs)
+                rhsᵢ = imag.(rhs)
 
-                sol_real = zeros(Float64, n_interior)
+                solᵣ = zeros(Float64, n_interior)
                 try
-                    LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_real)
-                    sol_real .= rhs_real
+                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵣ)
+                    solᵣ .= rhsᵣ
                 catch e
                     @warn "LAPACK gtsv failed for real part in 2D vertical velocity: $e" maxlog=1
                 end
 
-                dl_work = copy(dl)
+                dₗ_work = copy(dₗ)
                 d_work = copy(d)
-                du_work = copy(du)
-                sol_imag = zeros(Float64, n_interior)
+                dᵤ_work = copy(dᵤ)
+                solᵢ = zeros(Float64, n_interior)
                 try
-                    LinearAlgebra.LAPACK.gtsv!(dl_work, d_work, du_work, rhs_imag)
-                    sol_imag .= rhs_imag
+                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵢ)
+                    solᵢ .= rhsᵢ
                 catch e
                     @warn "LAPACK gtsv failed for imag part in 2D vertical velocity: $e" maxlog=1
                 end
 
-                solution = sol_real .+ im .* sol_imag
+                solution = solᵣ .+ im .* solᵢ
                 for iz in 1:n_interior
                     k = iz + 1
                     wk_z_arr[i_local, j_local, k] = solution[iz]
                 end
             end
 
-        elseif kh2 > 0 && nz <= 2
+        elseif kₕ² > 0 && nz <= 2
             for k in 1:nz
-                wk_z_arr[i_local, j_local, k] = -rhsk_z_arr[i_local, j_local, k] / kh2
+                wk_z_arr[i_local, j_local, k] = -rhsk_z_arr[i_local, j_local, k] / kₕ²
             end
         end
     end
@@ -629,7 +629,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         end
     end
 
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
+    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
     # Step 1: Recover A from B = L⁺A using centralized YBJ+ inversion
     a_vec = similar(G.z)
@@ -641,57 +641,57 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         end
     end
     invert_B_to_A!(S, G, params, a_vec)
-    Ak = S.A
-    Ak_arr = parent(Ak)
+    Aₖ = S.A
+    Aₖ_arr = parent(Aₖ)
 
     # Step 2: Compute vertical derivative A_z using finite differences
-    Ask_z = S.C  # C was set to A_z by invert_B_to_A!
-    Ask_z_arr = parent(Ask_z)
+    Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
+    Aₖ_z_arr = parent(Aₖ_z)
 
     # Step 3: Compute horizontal derivatives of A_z
-    dAz_dx_k = similar(Ask_z)
-    dAz_dy_k = similar(Ask_z)
-    dAz_dx_k_arr = parent(dAz_dx_k)
-    dAz_dy_k_arr = parent(dAz_dy_k)
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ_arr = parent(dAz_dxₖ)
+    dAz_dyₖ_arr = parent(dAz_dyₖ)
 
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
-        ikx = im * G.kx[i_global]
-        iky = im * G.ky[j_global]
-        dAz_dx_k_arr[i_local, j_local, k] = ikx * Ask_z_arr[i_local, j_local, k]
-        dAz_dy_k_arr[i_local, j_local, k] = iky * Ask_z_arr[i_local, j_local, k]
+        ikₓ = im * G.kx[i_global]
+        ikᵧ = im * G.ky[j_global]
+        dAz_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_z_arr[i_local, j_local, k]
+        dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
     end
 
     # Step 4: Compute YBJ vertical velocity
     # w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-    wk_ybj = similar(S.psi)
-    wk_ybj_arr = parent(wk_ybj)
-    fill!(wk_ybj_arr, 0.0)
+    wₖ_ybj = similar(S.psi)
+    wₖ_ybj_arr = parent(wₖ_ybj)
+    fill!(wₖ_ybj_arr, 0.0)
 
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         k_out = k + 1  # Shift to match output grid
-        N2_level = N2_profile[k_out]
+        N²ₗ = N2_profile[k_out]
 
         # YBJ formula
-        ybj_factor = -(f^2) / N2_level
-        complex_term = dAz_dx_k_arr[i_local, j_local, k] - im * dAz_dy_k_arr[i_local, j_local, k]
+        ybj_factor = -(f^2) / N²ₗ
+        complex_term = dAz_dxₖ_arr[i_local, j_local, k] - im * dAz_dyₖ_arr[i_local, j_local, k]
 
         # Apply the + c.c. operation to get real result
-        wk_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
+        wₖ_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
     end
 
     # Apply boundary conditions: w = 0 at top and bottom
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        wk_ybj_arr[i_local, j_local, 1] = 0.0
+        wₖ_ybj_arr[i_local, j_local, 1] = 0.0
         if nz > 1
-            wk_ybj_arr[i_local, j_local, nz] = 0.0
+            wₖ_ybj_arr[i_local, j_local, nz] = 0.0
         end
     end
 
     # Transform to real space
-    tmpw = similar(wk_ybj)
-    fft_backward!(tmpw, wk_ybj, plans)
+    tmpw = similar(wₖ_ybj)
+    fft_backward!(tmpw, wₖ_ybj, plans)
     tmpw_arr = parent(tmpw)
 
     # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
@@ -720,7 +720,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
         N2_profile = ones(Float64, nz)
     end
 
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
+    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
     # Step 1: Recover A from B = L⁺A (invert_B_to_A! handles 2D decomposition internally)
     a_vec = similar(G.z)
@@ -750,54 +750,54 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     nx_local_z, ny_local_z, _ = size(A_z_arr)
 
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local_z, i_local in 1:nx_local_z
-        Az_z_arr[i_local, j_local, k] = (A_z_arr[i_local, j_local, k+1] - A_z_arr[i_local, j_local, k]) / dz
+        Az_z_arr[i_local, j_local, k] = (A_z_arr[i_local, j_local, k+1] - A_z_arr[i_local, j_local, k]) / Δz
     end
 
     # Transpose A_z back to xy-pencil for horizontal derivatives
-    Ask_z = similar(S.A)
-    transpose_to_xy_pencil!(Ask_z, Az_z_pencil, G)
-    Ask_z_arr = parent(Ask_z)
+    Aₖ_z = similar(S.A)
+    transpose_to_xy_pencil!(Aₖ_z, Az_z_pencil, G)
+    Aₖ_z_arr = parent(Aₖ_z)
 
     # Compute horizontal derivatives of A_z in xy-pencil
-    nx_local, ny_local, _ = size(Ask_z_arr)
-    dAz_dx_k = similar(Ask_z)
-    dAz_dy_k = similar(Ask_z)
-    dAz_dx_k_arr = parent(dAz_dx_k)
-    dAz_dy_k_arr = parent(dAz_dy_k)
+    nx_local, ny_local, _ = size(Aₖ_z_arr)
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ_arr = parent(dAz_dxₖ)
+    dAz_dyₖ_arr = parent(dAz_dyₖ)
 
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
-        ikx = im * G.kx[i_global]
-        iky = im * G.ky[j_global]
-        dAz_dx_k_arr[i_local, j_local, k] = ikx * Ask_z_arr[i_local, j_local, k]
-        dAz_dy_k_arr[i_local, j_local, k] = iky * Ask_z_arr[i_local, j_local, k]
+        ikₓ = im * G.kx[i_global]
+        ikᵧ = im * G.ky[j_global]
+        dAz_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_z_arr[i_local, j_local, k]
+        dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
     end
 
     # Compute YBJ vertical velocity
-    wk_ybj = similar(S.psi)
-    wk_ybj_arr = parent(wk_ybj)
-    fill!(wk_ybj_arr, 0.0)
+    wₖ_ybj = similar(S.psi)
+    wₖ_ybj_arr = parent(wₖ_ybj)
+    fill!(wₖ_ybj_arr, 0.0)
 
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         k_out = k + 1
-        N2_level = N2_profile[k_out]
-        ybj_factor = -(f^2) / N2_level
-        complex_term = dAz_dx_k_arr[i_local, j_local, k] - im * dAz_dy_k_arr[i_local, j_local, k]
-        wk_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
+        N²ₗ = N2_profile[k_out]
+        ybj_factor = -(f^2) / N²ₗ
+        complex_term = dAz_dxₖ_arr[i_local, j_local, k] - im * dAz_dyₖ_arr[i_local, j_local, k]
+        wₖ_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
     end
 
     # Apply boundary conditions
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        wk_ybj_arr[i_local, j_local, 1] = 0.0
+        wₖ_ybj_arr[i_local, j_local, 1] = 0.0
         if nz > 1
-            wk_ybj_arr[i_local, j_local, nz] = 0.0
+            wₖ_ybj_arr[i_local, j_local, nz] = 0.0
         end
     end
 
     # Transform to real space
-    tmpw = similar(wk_ybj)
-    fft_backward!(tmpw, wk_ybj, plans)
+    tmpw = similar(wₖ_ybj)
+    fft_backward!(tmpw, wₖ_ybj, plans)
     tmpw_arr = parent(tmpw)
     w_arr = parent(S.w)
 
