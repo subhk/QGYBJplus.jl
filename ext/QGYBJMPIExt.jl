@@ -191,9 +191,37 @@ horizontal (FFT) and vertical (tridiagonal solve) operations.
 
 PencilFFTs handles the intermediate transposes for FFTs automatically.
 For vertical operations, we explicitly transpose between xy and z pencils.
+
+# Topology Validation
+The function validates that the grid dimensions are compatible with the
+process topology to ensure each process has at least one grid point.
 """
 function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIConfig)
     topo = mpi_config.topology
+    px, py = topo
+
+    # Validate topology against grid dimensions
+    # For xy-pencil (decompose y, z): need ny >= py and nz >= px (approximately)
+    # For z-pencil (decompose x, y): need nx >= px and ny >= py
+    if ny < py
+        error("Grid dimension ny=$ny is smaller than process topology py=$py. " *
+              "Each process must have at least one grid point in y. " *
+              "Reduce the number of processes or increase ny.")
+    end
+    if nz < px
+        error("Grid dimension nz=$nz is smaller than process topology px=$px. " *
+              "Each process must have at least one grid point in z for xy-pencil. " *
+              "Reduce the number of processes or increase nz.")
+    end
+    if nx < px
+        error("Grid dimension nx=$nx is smaller than process topology px=$px. " *
+              "Each process must have at least one grid point in x for z-pencil. " *
+              "Reduce the number of processes or increase nx.")
+    end
+
+    if mpi_config.is_root
+        @info "Topology validation passed" nx ny nz topology=topo
+    end
 
     # Create 2D MPI topology
     mpi_topo = MPITopology(mpi_config.comm, topo)
@@ -613,34 +641,50 @@ end
     scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
 
 Scatter an array from root to all processes as PencilArrays.
+
+This function efficiently distributes data from root to all processes,
+only requiring the full array to exist on the root process.
 """
 function QGYBJ.scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     decomp = grid.decomp
     pencil_xy = decomp.pencil_xy
     local_range = decomp.local_range_xy
 
-    # Allocate distributed array
-    distributed = PencilArray{eltype(arr)}(undef, pencil_xy)
+    # Allocate distributed array (only local portion on each rank)
+    T = mpi_config.is_root ? eltype(arr) : ComplexF64
+    # Broadcast element type from root
+    T = MPI.bcast(T, 0, mpi_config.comm)
+
+    distributed = PencilArray{T}(undef, pencil_xy)
     parent_arr = parent(distributed)
 
-    # Broadcast full array from root to all processes
-    if mpi_config.is_root
-        global_arr = arr
-    else
-        global_arr = similar(arr)
-    end
-    MPI.Bcast!(global_arr, 0, mpi_config.comm)
+    # Get local dimensions
+    local_size = size(parent_arr)
 
-    # Each process extracts its local portion
-    for k_local in axes(parent_arr, 3)
-        k_global = local_range[3][k_local]
-        for j_local in axes(parent_arr, 2)
-            j_global = local_range[2][j_local]
-            for i_local in axes(parent_arr, 1)
-                i_global = local_range[1][i_local]
-                parent_arr[i_local, j_local, k_local] = global_arr[i_global, j_global, k_global]
+    # Extract and send local portions from root to each process
+    # Using point-to-point communication to avoid full array allocation on all ranks
+    if mpi_config.is_root
+        # Root extracts and sends each process's portion
+        for rank in 0:(mpi_config.nprocs - 1)
+            # Get the range for this rank
+            rank_range = PencilArrays.range_local(pencil_xy, rank + 1)  # 1-indexed
+
+            # Extract the portion for this rank
+            portion = arr[rank_range[1], rank_range[2], rank_range[3]]
+
+            if rank == 0
+                # Root keeps its own portion
+                parent_arr .= portion
+            else
+                # Send to other ranks
+                MPI.Send(Array(portion), rank, 0, mpi_config.comm)
             end
         end
+    else
+        # Non-root processes receive their portion
+        recv_buf = similar(parent_arr)
+        MPI.Recv!(recv_buf, 0, 0, mpi_config.comm)
+        parent_arr .= recv_buf
     end
 
     return distributed
