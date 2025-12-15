@@ -59,58 +59,81 @@ For variable coefficients (stratification):
 
 ## Time Integration
 
-### Leapfrog with Robert-Asselin Filter
+### Leapfrog with Robert-Asselin Filter and Integrating Factors
 
-The primary time stepping scheme is **leapfrog** with Robert-Asselin filtering:
+The primary time stepping scheme is **leapfrog** with Robert-Asselin filtering and **integrating factors** for hyperdiffusion.
 
-```math
-q^{n+1} = q^{n-1} + 2\Delta t \cdot F^n
-```
+#### Forward Euler (First Step)
 
-The Robert-Asselin filter damps the computational mode:
+The first step uses forward Euler to bootstrap the leapfrog scheme:
 
 ```math
-\bar{q}^n = q^n + \gamma(q^{n-1} - 2q^n + q^{n+1})
+q^{n+1} = \left[ q^n - \Delta t \cdot J(\psi, q)^n + \Delta t \cdot D_q^n \right] \cdot e^{-\lambda \Delta t}
 ```
 
-where `gamma` is typically 0.01-0.1.
+For the wave envelope (in real/imaginary form):
 
-#### Startup Procedure
-- Step 1: Forward Euler (first projection step)
-- Step 2+: Full Leapfrog
+```math
+B_R^{n+1} = \left[ B_R^n - \Delta t \cdot J(\psi, B_R) - \Delta t \cdot \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I + \Delta t \cdot \frac{1}{2} r_{BI} \right] \cdot e^{-\lambda_w \Delta t}
+```
+
+```math
+B_I^{n+1} = \left[ B_I^n - \Delta t \cdot J(\psi, B_I) + \Delta t \cdot \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R - \Delta t \cdot \frac{1}{2} r_{BR} \right] \cdot e^{-\lambda_w \Delta t}
+```
+
+#### Leapfrog (Subsequent Steps)
+
+Subsequent steps use centered leapfrog with integrating factors:
+
+```math
+q^{n+1} = q^{n-1} \cdot e^{-2\lambda \Delta t} - 2\Delta t \cdot J(\psi, q)^n \cdot e^{-\lambda \Delta t} + 2\Delta t \cdot D_q^n \cdot e^{-2\lambda \Delta t}
+```
+
+```math
+B_R^{n+1} = B_R^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_R) + \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I - \frac{1}{2} r_{BI} \right]^n \cdot e^{-\lambda_w \Delta t}
+```
+
+```math
+B_I^{n+1} = B_I^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_I) - \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R + \frac{1}{2} r_{BR} \right]^n \cdot e^{-\lambda_w \Delta t}
+```
+
+#### Robert-Asselin Filter
+
+The Robert-Asselin filter damps the computational mode that can grow with leapfrog:
+
+```math
+\tilde{q}^n = q^n + \gamma \left( q^{n-1} - 2q^n + q^{n+1} \right)
+```
+
+where ``\gamma \approx 0.001`` (typically very small to minimize physical mode damping).
 
 ```julia
 # First step: Forward Euler
 first_projection_step!(state, grid, params, plans; a=a_vec, dealias_mask=mask)
 
-# Subsequent steps: Leapfrog
+# Subsequent steps: Leapfrog with Robert-Asselin
 leapfrog_step!(state_np1, state_n, state_nm1, grid, params, plans;
                a=a_vec, dealias_mask=mask)
 ```
 
 ### Integrating Factor Method
 
-For linear (diffusive) terms, we use **integrating factors** to avoid stiffness:
+The integrating factor ``\lambda`` handles hyperdiffusion exactly:
 
 ```math
-\tilde{q} = q \cdot e^{\nu k^{2p} t}
+\lambda = \nu_{h1} \left( |k_x|^{2p_1} + |k_y|^{2p_1} \right) + \nu_{h2} \left( |k_x|^{2p_2} + |k_y|^{2p_2} \right)
 ```
 
-The transformed equation has no linear term:
+where:
+- ``\nu_{h1}, p_1``: First hyperdiffusion operator (often for large-scale drag)
+- ``\nu_{h2}, p_2``: Second hyperdiffusion operator (often ``p_2 = 4`` for small-scale dissipation)
 
-```math
-\frac{\partial \tilde{q}}{\partial t} = e^{\nu k^{2p} t} \cdot N(q)
-```
+The wave field has its own integrating factor ``\lambda_w`` with potentially different coefficients.
 
-This allows much larger time steps than explicit treatment of diffusion.
-
-```julia
-# Pre-compute integrating factors
-IF = int_factor(params, grid, dt)
-
-# Apply in time stepping
-q_new = IF .* q_old + dt * tendency
-```
+**Advantages of integrating factors:**
+- Hyperdiffusion is treated **exactly** (no stability restriction)
+- Allows much larger time steps than explicit diffusion treatment
+- Second-order accuracy preserved for advective terms
 
 ## Elliptic Inversions
 
