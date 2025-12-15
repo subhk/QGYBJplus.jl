@@ -454,23 +454,109 @@ end
     write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time; params=nothing)
 
 Write gathered state from rank 0.
+
+The gathered_state should be a named tuple with fields:
+- `psi`: Gathered streamfunction array (spectral, nx×ny×nz)
+- `B`: Gathered wave envelope array (spectral, nx×ny×nz)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time; params=nothing)
     ensure_ncds_loaded()
-    # Simple implementation - would need full state reconstruction
-    @warn "Gathered state writing not fully implemented - using simplified version"
-    
+
+    # Extract gathered fields
+    gathered_psi = gathered_state.psi
+    gathered_B = gathered_state.B
+
+    # Create serial FFT plans for the full domain if needed
+    temp_plans = plan_transforms!(G)
+
+    # Convert spectral fields to real space
+    norm_factor = G.nx * G.ny
+
+    # Allocate real-space arrays
+    psir = zeros(Float64, G.nx, G.ny, G.nz)
+    BRr = zeros(Float64, G.nx, G.ny, G.nz)
+    BIr = zeros(Float64, G.nx, G.ny, G.nz)
+
+    # Transform to real space
+    if gathered_psi !== nothing
+        fft_backward!(psir, gathered_psi, temp_plans)
+    end
+    if gathered_B !== nothing
+        fft_backward!(BRr, real.(gathered_B), temp_plans)
+        fft_backward!(BIr, imag.(gathered_B), temp_plans)
+    end
+
     NCDatasets.Dataset(filepath, "c") do ds
+        # Define dimensions
         ds.dim["x"] = G.nx
-        ds.dim["y"] = G.ny  
+        ds.dim["y"] = G.ny
         ds.dim["z"] = G.nz
         ds.dim["time"] = 1
-        
-        # Minimal implementation
+
+        # Create coordinate variables
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+        time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
+
+        # Set coordinate values
+        dx = 2π / G.nx
+        dy = 2π / G.ny
+        dz = 2π / G.nz
+
+        x_var[:] = collect(0:dx:(2π-dx))
+        y_var[:] = collect(0:dy:(2π-dy))
+        z_var[:] = collect(0:dz:(2π-dz))
+        time_var[1] = time
+
+        # Add coordinate attributes
+        x_var.attrib["units"] = "radians"
+        x_var.attrib["long_name"] = "x coordinate"
+        y_var.attrib["units"] = "radians"
+        y_var.attrib["long_name"] = "y coordinate"
+        z_var.attrib["units"] = "radians"
+        z_var.attrib["long_name"] = "z coordinate"
+        time_var.attrib["units"] = "model time units"
+        time_var.attrib["long_name"] = "time"
+
+        # Write streamfunction
+        if gathered_psi !== nothing
+            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+            psi_var[:,:,:] = real.(psir) / norm_factor
+            psi_var.attrib["units"] = "m²/s"
+            psi_var.attrib["long_name"] = "stream function"
+        end
+
+        # Write wave fields (L+A real and imaginary parts)
+        if gathered_B !== nothing
+            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+
+            LAr_var[:,:,:] = real.(BRr) / norm_factor
+            LAi_var[:,:,:] = real.(BIr) / norm_factor
+
+            LAr_var.attrib["units"] = "wave amplitude"
+            LAr_var.attrib["long_name"] = "L+A real part"
+            LAi_var.attrib["units"] = "wave amplitude"
+            LAi_var.attrib["long_name"] = "L+A imaginary part"
+        end
+
+        # Global attributes
         ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
         ds.attrib["created_at"] = string(Dates.now())
         ds.attrib["model_time"] = time
+
+        # Add parameter information if provided
+        if params !== nothing
+            ds.attrib["nx"] = params.nx
+            ds.attrib["ny"] = params.ny
+            ds.attrib["nz"] = params.nz
+            ds.attrib["f0"] = params.f0
+            ds.attrib["dt"] = params.dt
+        end
     end
+
+    @info "Wrote gathered state file: $filepath (t=$time)"
 end
 
 """
