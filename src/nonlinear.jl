@@ -396,7 +396,9 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, psik, G::Grid, plans; Lmask=noth
     rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
     nx_local, ny_local, nz_local = size(psi_arr)
 
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
+    # Dealiasing: use inline check for efficiency when Lmask not provided
+    use_inline_dealias = isnothing(Lmask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
     zetak = similar(psik)
