@@ -149,19 +149,36 @@ This allows larger time steps while maintaining stability.
 
 ## Wave Feedback
 
-When waves are present, the QG equation includes a feedback term:
+When waves are present, the QG equation includes a feedback term through a modified effective PV.
+
+### The Wave Feedback Mechanism
+
+The wave-induced PV ``q^w`` is computed from the wave envelope ``B``:
 
 ```math
-\frac{\partial q}{\partial t} + J(\psi, q) + \underbrace{J(\psi, q^w)}_{\text{wave feedback}} = \mathcal{D}_q
+q^w = Ro \cdot W2F \cdot \left[ \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2 \right]
 ```
 
-The wave-induced PV ``q^w`` is computed from the wave amplitude:
+where:
+- ``Ro = U/(f_0 L)`` is the Rossby number
+- ``W2F = (U_w/U)^2`` is the wave-to-flow velocity ratio squared
+- ``B = B_R + i B_I`` is the complex wave envelope
+
+### Effective PV for Inversion
+
+The streamfunction is obtained by inverting the **effective** PV:
 
 ```math
-q^w = \frac{1}{2}\nabla^2|A|^2 - \frac{1}{2}\frac{\partial^2|A|^2}{\partial z^2}
+q^* = q - q^w
 ```
 
-See [Wave-Mean Interaction](@ref wave-mean) for details.
+```math
+\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q^*
+```
+
+This means the wave feedback **modifies the inversion** rather than appearing as an explicit advection term.
+
+See [Wave-Mean Interaction](@ref wave-mean) for detailed formulas and implementation.
 
 ## Implementation
 
