@@ -268,7 +268,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             In terms of real/imaginary parts:
                 ∂BR/∂t = -J(ψ,BR) - (kₕ²·N²/(2f))AI + (1/2)BI×ζ
                 ∂BI/∂t = -J(ψ,BI) + (kₕ²·N²/(2f))AR - (1/2)BR×ζ =#
-            αdisp = par.N2 / (2.0 * par.f0)  # Dispersion coefficient N²/(2f)
+            αdisp = par.N² / (2.0 * par.f₀)  # Dispersion coefficient N²/(2f)
             BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
                       - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
                       + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
@@ -535,7 +535,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             #= Update B (real and imaginary parts)
             BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + (kₕ²·N²/(2f))AI - (1/2)BI×ζ]×e^(-λdt)
             BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - (kₕ²·N²/(2f))AR + (1/2)BR×ζ]×e^(-λdt) =#
-            αdisp = par.N2 / (2.0 * par.f0)  # Dispersion coefficient N²/(2f)
+            αdisp = par.N² / (2.0 * par.f₀)  # Dispersion coefficient N²/(2f)
             BRtemp_arr[i,j,k] = Complex(real(Bnm1_arr[i,j,k]),0)*exp(-2λʷ) -
                            2*par.dt*( nBRk_arr[i,j,k] +
                                      αdisp*kₕ²*Complex(imag(An_arr[i,j,k]),0) -
@@ -552,7 +552,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     #= Step 5: Robert-Asselin filter
     Damps the computational mode: φ̃^n = φ^n + γ(φ^(n-1) - 2φ^n + φ^(n+1))
     Store filtered values in Snm1 (they become the "n-1" for next step) =#
-    γ = par.gamma
+    γ = par.γ
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for dealias mask lookup
         i_global = local_to_global(i, 1, G)

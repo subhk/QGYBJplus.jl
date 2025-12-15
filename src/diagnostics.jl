@@ -479,7 +479,7 @@ Matches the potential energy computation in `diag_zentrum` (ps term).
 function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-    a_ell_coeff = par.f0^2 / par.N2  # Elliptic coefficient f²/N²
+    a_ell_coeff = par.f₀^2 / par.N²  # Elliptic coefficient f²/N²
 
     # Get local dimensions
     bk_arr = parent(bk)
@@ -804,7 +804,7 @@ In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global totals.
 function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-    a_ell_coeff = par.f0^2 / par.N2  # Elliptic coefficient f²/N²
+    a_ell_coeff = par.f₀^2 / par.N²  # Elliptic coefficient f²/N²
 
     # Get local dimensions
     BR_arr = parent(BR)
