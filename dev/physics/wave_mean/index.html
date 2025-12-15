@@ -16,27 +16,44 @@
     │         ↓           │
     │    Anticyclone      │  ← Enhanced dissipation
     │      (ζ &lt; 0)        │
-    └─────────────────────┘</code></pre><p>Waves are funneled into anticyclones, enhancing deep mixing.</p><h2 id="Implementation"><a class="docs-heading-anchor" href="#Implementation">Implementation</a><a id="Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation" title="Permalink"></a></h2><h3 id="Computing-Wave-Feedback"><a class="docs-heading-anchor" href="#Computing-Wave-Feedback">Computing Wave Feedback</a><a id="Computing-Wave-Feedback-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-Wave-Feedback" title="Permalink"></a></h3><pre><code class="language-julia hljs"># In nonlinear.jl
-function wavefb!(rqk, A, grid, params, plans)
-    # Compute |A|²
-    compute_wave_intensity!(A2, A, plans)
+    └─────────────────────┘</code></pre><p>Waves are funneled into anticyclones, enhancing deep mixing.</p><h2 id="Implementation"><a class="docs-heading-anchor" href="#Implementation">Implementation</a><a id="Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation" title="Permalink"></a></h2><h3 id="Computing-Wave-Feedback"><a class="docs-heading-anchor" href="#Computing-Wave-Feedback">Computing Wave Feedback</a><a id="Computing-Wave-Feedback-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-Wave-Feedback" title="Permalink"></a></h3><pre><code class="language-julia hljs"># In nonlinear.jl: compute_qw!
+function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
+    # 1. Compute derivatives of BR and BI
+    # BRx = ∂BR/∂x, BRy = ∂BR/∂y, etc.
+    BRxk = im * kx .* BRk
+    BRyk = im * ky .* BRk
+    BIxk = im * kx .* BIk
+    BIyk = im * ky .* BIk
 
-    # Compute ∇²|A|² (horizontal Laplacian)
-    horizontal_laplacian!(lap_A2, A2, grid)
+    # 2. Transform to real space
+    # ...
 
-    # Compute ∂²|A|²/∂z² (vertical second derivative)
-    vertical_second_deriv!(d2z_A2, A2, grid)
+    # 3. Compute Jacobian term: BRy*BIx - BRx*BIy
+    qwr = BRyr .* BIxr - BRxr .* BIyr
 
-    # Wave-induced PV: qw = 0.5*(∇²|A|² - ∂²|A|²/∂z²)
-    @. qw = 0.5 * (lap_A2 - d2z_A2)
+    # 4. Compute |B|² = BR² + BI²
+    mag2 = BRr.^2 + BIr.^2
 
-    # Add J(ψ, qw) to tendency
-    jacobian_spectral!(rqk, psi, qw, ...)
-end</code></pre><h3 id="Enabling/Disabling"><a class="docs-heading-anchor" href="#Enabling/Disabling">Enabling/Disabling</a><a id="Enabling/Disabling-1"></a><a class="docs-heading-anchor-permalink" href="#Enabling/Disabling" title="Permalink"></a></h3><pre><code class="language-julia hljs"># With wave feedback (default)
-params = QGParams(; no_feedback=false)
+    # 5. Assemble in spectral space
+    # qw = J_term - (1/4)*kh²*|B|²  (note: -∇² → +kh² in spectral)
+    qwk = (fft(qwr) - 0.25 * kh2 .* fft(mag2)) / norm
+
+    # 6. Scale by Ro * W2F
+    qwk .*= (par.Ro * par.W2F)
+end</code></pre><h3 id="Usage-in-Time-Stepping"><a class="docs-heading-anchor" href="#Usage-in-Time-Stepping">Usage in Time Stepping</a><a id="Usage-in-Time-Stepping-1"></a><a class="docs-heading-anchor-permalink" href="#Usage-in-Time-Stepping" title="Permalink"></a></h3><p>The wave feedback enters via q* = q - qw:</p><pre><code class="language-julia hljs"># After computing q at new time step
+if wave_feedback_enabled
+    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+    q_arr .-= qwk_arr  # q* = q - qw
+end
+
+# Then invert q* to get ψ
+invert_q_to_psi!(state, grid; a=a_vec)</code></pre><h3 id="Enabling/Disabling"><a class="docs-heading-anchor" href="#Enabling/Disabling">Enabling/Disabling</a><a id="Enabling/Disabling-1"></a><a class="docs-heading-anchor-permalink" href="#Enabling/Disabling" title="Permalink"></a></h3><pre><code class="language-julia hljs"># With wave feedback (default)
+params = QGParams(; no_feedback=false, no_wave_feedback=false)
 
 # Without wave feedback
-params = QGParams(; no_feedback=true)</code></pre><p>Disabling is useful for:</p><ul><li>Studying one-way wave-flow interaction</li><li>Isolating wave dynamics from flow effects</li><li>Computational efficiency when feedback is weak</li></ul><h2 id="Scaling-Analysis"><a class="docs-heading-anchor" href="#Scaling-Analysis">Scaling Analysis</a><a id="Scaling-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling-Analysis" title="Permalink"></a></h2><h3 id="When-is-Feedback-Important?"><a class="docs-heading-anchor" href="#When-is-Feedback-Important?">When is Feedback Important?</a><a id="When-is-Feedback-Important?-1"></a><a class="docs-heading-anchor-permalink" href="#When-is-Feedback-Important?" title="Permalink"></a></h3><p>The feedback strength scales as:</p><p class="math-container">\[\frac{|q^w|}{|q|} \sim \left(\frac{A_0}{U}\right)^2 \cdot \left(\frac{L_w}{L}\right)^2\]</p><p>where:</p><ul><li><span>$A_0/U$</span>: Wave-to-flow velocity ratio</li><li><span>$L_w/L$</span>: Wave-to-eddy length ratio</li></ul><p>Feedback matters when:</p><ul><li>Strong wind forcing (large <span>$A_0$</span>)</li><li>Compact wave packets (small <span>$L_w$</span>)</li><li>Weak background flow (small <span>$U$</span>)</li></ul><h3 id="Typical-Values"><a class="docs-heading-anchor" href="#Typical-Values">Typical Values</a><a id="Typical-Values-1"></a><a class="docs-heading-anchor-permalink" href="#Typical-Values" title="Permalink"></a></h3><table><tr><th style="text-align: left">Scenario</th><th style="text-align: left">Wave Feedback</th></tr><tr><td style="text-align: left">Weak winds, strong eddies</td><td style="text-align: left">Negligible</td></tr><tr><td style="text-align: left">Storm forcing</td><td style="text-align: left">Moderate (1-10%)</td></tr><tr><td style="text-align: left">Tropical cyclone</td><td style="text-align: left">Strong (10-50%)</td></tr></table><h2 id="Coupled-Dynamics"><a class="docs-heading-anchor" href="#Coupled-Dynamics">Coupled Dynamics</a><a id="Coupled-Dynamics-1"></a><a class="docs-heading-anchor-permalink" href="#Coupled-Dynamics" title="Permalink"></a></h2><h3 id="Feedback-Loop"><a class="docs-heading-anchor" href="#Feedback-Loop">Feedback Loop</a><a id="Feedback-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Feedback-Loop" title="Permalink"></a></h3><pre><code class="nohighlight hljs">┌──────────────┐         ┌──────────────┐
+params = QGParams(; no_feedback=true)
+# or
+params = QGParams(; no_wave_feedback=true)</code></pre><p>Disabling is useful for:</p><ul><li>Studying one-way wave-flow interaction</li><li>Isolating wave dynamics from flow effects</li><li>Computational efficiency when feedback is weak</li></ul><h2 id="Scaling-Analysis"><a class="docs-heading-anchor" href="#Scaling-Analysis">Scaling Analysis</a><a id="Scaling-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling-Analysis" title="Permalink"></a></h2><h3 id="When-is-Feedback-Important?"><a class="docs-heading-anchor" href="#When-is-Feedback-Important?">When is Feedback Important?</a><a id="When-is-Feedback-Important?-1"></a><a class="docs-heading-anchor-permalink" href="#When-is-Feedback-Important?" title="Permalink"></a></h3><p>The feedback strength scales as:</p><p class="math-container">\[\frac{|q^w|}{|q|} \sim \left(\frac{A_0}{U}\right)^2 \cdot \left(\frac{L_w}{L}\right)^2\]</p><p>where:</p><ul><li><span>$A_0/U$</span>: Wave-to-flow velocity ratio</li><li><span>$L_w/L$</span>: Wave-to-eddy length ratio</li></ul><p>Feedback matters when:</p><ul><li>Strong wind forcing (large <span>$A_0$</span>)</li><li>Compact wave packets (small <span>$L_w$</span>)</li><li>Weak background flow (small <span>$U$</span>)</li></ul><h3 id="Typical-Values"><a class="docs-heading-anchor" href="#Typical-Values">Typical Values</a><a id="Typical-Values-1"></a><a class="docs-heading-anchor-permalink" href="#Typical-Values" title="Permalink"></a></h3><table><tr><th style="text-align: left">Scenario</th><th style="text-align: left">Wave Feedback</th></tr><tr><td style="text-align: left">Weak winds, strong eddies</td><td style="text-align: left">Negligible</td></tr><tr><td style="text-align: left">Storm forcing</td><td style="text-align: left">Moderate (1-10%)</td></tr><tr><td style="text-align: left">Tropical cyclone</td><td style="text-align: left">Strong (10-50%)</td></tr></table><h2 id="Coupled-Dynamics"><a class="docs-heading-anchor" href="#Coupled-Dynamics">Coupled Dynamics</a><a id="Coupled-Dynamics-1"></a><a class="docs-heading-anchor-permalink" href="#Coupled-Dynamics" title="Permalink"></a></h2><h3 id="Feedback-Loop"><a class="docs-heading-anchor" href="#Feedback-Loop">Feedback Loop</a><a id="Feedback-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Feedback-Loop" title="Permalink"></a></h3><pre><code class="nohighlight hljs">┌──────────────┐         ┌──────────────┐
 │              │         │              │
 │   Eddies     │◄────────│    Waves     │
 │   (ψ, q)     │         │   (A, B)     │
