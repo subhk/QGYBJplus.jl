@@ -26,17 +26,20 @@ The domain is distributed across a 2D process grid (px × py), allowing scaling 
 
 ## Key Concept: Pencil Configurations
 
-Different operations require data arranged differently:
+Different operations require data arranged differently. QGYBJ uses **three pencil configurations**:
 
-| Configuration | Distribution | Z Local? | Use Case |
-|:--------------|:-------------|:---------|:---------|
-| **xy-pencil** | x local, (y,z) distributed | No | Horizontal FFTs |
-| **z-pencil** | (x,y) distributed, z local | **Yes** | Vertical operations |
+| Configuration | `decomp_dims` | Distribution | Local Dim | Use Case |
+|:--------------|:--------------|:-------------|:----------|:---------|
+| **xy-pencil** | (2, 3) | y,z distributed | x | Horizontal FFTs |
+| **xz-pencil** | (1, 3) | x,z distributed | y | Intermediate transpose |
+| **z-pencil** | (1, 2) | x,y distributed | **z** | Vertical operations |
 
-**Why two configurations?**
+**Why three configurations?**
 - Horizontal FFTs need consecutive x-data → xy-pencil
 - Vertical tridiagonal solves need all z-data → z-pencil
-- **Transpose operations** switch between configurations automatically
+- **PencilArrays constraint**: Transpose requires decomp_dims to differ by at most ONE dimension
+- Since (2,3)→(1,2) differs by TWO dimensions, we need intermediate xz-pencil (1,3)
+- **Two-step transpose** automatically switches between configurations
 
 ## Requirements
 
@@ -137,31 +140,58 @@ The decomposition is stored in `grid.decomp`:
 # Access decomposition info
 decomp = grid.decomp
 
-# Two pencil configurations
-decomp.pencil_xy  # For horizontal operations (FFTs)
-decomp.pencil_z   # For vertical operations (tridiagonal solves)
+# Three pencil configurations
+decomp.pencil_xy  # decomp_dims=(2,3): y,z distributed, x local - for FFTs
+decomp.pencil_xz  # decomp_dims=(1,3): x,z distributed, y local - INTERMEDIATE
+decomp.pencil_z   # decomp_dims=(1,2): x,y distributed, z local - for vertical ops
 
-# Local index ranges
-decomp.local_range_xy  # (1:nx_local, y_start:y_end, z_start:z_end)
+# Local index ranges for each configuration
+decomp.local_range_xy  # (1:nx, y_start:y_end, z_start:z_end)
+decomp.local_range_xz  # (x_start:x_end, 1:ny, z_start:z_end)
 decomp.local_range_z   # (x_start:x_end, y_start:y_end, 1:nz)
 
-# Transpose operations
-decomp.transpose_xy_to_z  # Move data for vertical ops
-decomp.transpose_z_to_xy  # Move data back for FFTs
+# Global dimensions and topology
+decomp.global_dims  # (nx, ny, nz)
+decomp.topology     # (px, py) process grid
 ```
 
 ### How Transposes Work
 
+QGYBJ uses **two-step transpose** because PencilArrays requires that pencil decompositions differ by at most one dimension. Since xy-pencil (2,3) and z-pencil (1,2) differ in both dimensions, we use an intermediate xz-pencil (1,3):
+
 ```
-    xy-pencil (for FFTs)              z-pencil (for vertical ops)
-   ┌─────────────────────┐           ┌─────────────────────┐
-   │ x: LOCAL            │           │ x: DISTRIBUTED      │
-   │ y: distributed      │  ←─────→  │ y: distributed      │
-   │ z: distributed      │ transpose │ z: LOCAL            │
-   └─────────────────────┘           └─────────────────────┘
+                         QGYBJ Two-Step Transpose Architecture
+
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                         xy-pencil (2,3)                                     │
+    │                    y,z distributed; x local                                 │
+    │                  Used for: FFTs, horizontal operations                      │
+    └─────────────────────────────┬───────────────────────────────────────────────┘
+                                  │
+                    transpose!(buffer, src)  [changes 2→1]
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                         xz-pencil (1,3)                                     │
+    │                    x,z distributed; y local                                 │
+    │                       INTERMEDIATE for transposes                           │
+    └─────────────────────────────┬───────────────────────────────────────────────┘
+                                  │
+                    transpose!(dst, buffer)  [changes 3→2]
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                          z-pencil (1,2)                                     │
+    │                    x,y distributed; z local                                 │
+    │               Used for: Tridiagonal solves, vertical ops                    │
+    └─────────────────────────────────────────────────────────────────────────────┘
+
+    Transpose path satisfies PencilArrays constraint (max 1 dim change per step):
+    • xy→z: (2,3) → (1,3) → (1,2)  ✓
+    • z→xy: (1,2) → (1,3) → (2,3)  ✓
 ```
 
-Example: Inverting q to ψ requires a vertical tridiagonal solve:
+The two-step transpose is handled automatically by `transpose_to_z_pencil!` and `transpose_to_xy_pencil!`.
+
+**Example:** Inverting q to ψ requires a vertical tridiagonal solve:
 
 ```julia
 function invert_q_to_psi!(S, G; a, workspace)
@@ -169,13 +199,13 @@ function invert_q_to_psi!(S, G; a, workspace)
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        # 1. Transpose q from xy-pencil to z-pencil
+        # 1. Two-step transpose: xy(2,3) → xz(1,3) → z(1,2)
         transpose_to_z_pencil!(workspace.q_z, S.q, G)
 
         # 2. Solve tridiagonal system (z now fully local!)
         # ... Thomas algorithm for each (i,j) column ...
 
-        # 3. Transpose ψ back to xy-pencil
+        # 3. Two-step transpose back: z(1,2) → xz(1,3) → xy(2,3)
         transpose_to_xy_pencil!(S.psi, workspace.psi_z, G)
     else
         # Serial: direct solve
@@ -519,8 +549,8 @@ The following MPI functions are provided:
 - `mpi_reduce_sum` - Sum values across all processes
 
 ### Transpose Functions
-- `transpose_to_z_pencil!` - Transpose from xy-pencil to z-pencil
-- `transpose_to_xy_pencil!` - Transpose from z-pencil to xy-pencil
+- `transpose_to_z_pencil!` - Two-step transpose: xy(2,3) → xz(1,3) → z(1,2)
+- `transpose_to_xy_pencil!` - Two-step transpose: z(1,2) → xz(1,3) → xy(2,3)
 
 ### Index Mapping Functions
 - `local_to_global` - Map local index to global (xy-pencil), with dimension argument
@@ -533,5 +563,6 @@ The following MPI functions are provided:
 - `is_dealiased` - Check if a mode is within dealiasing radius
 
 ### Array Allocation
-- `allocate_xy_pencil` - Allocate array in xy-pencil layout
-- `allocate_z_pencil` - Allocate array in z-pencil layout
+- `allocate_xy_pencil` - Allocate array in xy-pencil layout (for FFTs)
+- `allocate_xz_pencil` - Allocate array in xz-pencil layout (intermediate)
+- `allocate_z_pencil` - Allocate array in z-pencil layout (for vertical ops)
