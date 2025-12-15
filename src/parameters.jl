@@ -8,27 +8,25 @@ parameters for the QG-YBJ+ model. Parameters are organized into categories:
 
 1. DOMAIN PARAMETERS: Grid resolution and physical domain size
 2. TIME STEPPING: Time step, number of steps
-3. PHYSICAL PARAMETERS: Coriolis, stratification
+3. PHYSICAL PARAMETERS: Coriolis f0, stratification N²
 4. VISCOSITY/HYPERVISCOSITY: Dissipation parameters
-5. NONDIMENSIONAL NUMBERS: Burger number, wave-flow ratio
-6. PHYSICS SWITCHES: Control different physics modes
-7. STRATIFICATION PROFILES: Parameters for N²(z) profiles
+5. PHYSICS SWITCHES: Control different physics modes
+6. STRATIFICATION PROFILES: Parameters for N²(z) profiles
 
-DEFAULT PARAMETERS (Ro=Bu=1):
------------------------------
-By default, the model uses Ro=1, Bu=1, f0=1, N²=1 which gives:
-- Dispersion coefficient: 1/(2·Bu·Ro) = 0.5 = N²/(2f)
-- Inertial period: T = 2π/f = 2π
-- The equations are effectively "dimensional" with f=N=1 as reference values
+DIMENSIONAL PARAMETERS:
+-----------------------
+The model uses dimensional-like parameters directly:
+- f0: Coriolis parameter (default 1.0)
+- N2: Buoyancy frequency squared N² (default 1.0)
 
-This simplifies usage: users only need to specify relative amplitudes
-(flow velocity, wave amplitude, surface layer depth) rather than computing
-nondimensional numbers from physical scales.
+Key coefficients derived from these:
+- Wave dispersion coefficient: N²/(2f)
+- Elliptic coefficient: a = f²/N² = 1/N² when f=1
+- Inertial period: T = 2π/f
 
-For advanced users who want to match specific dimensional setups, Ro and Bu
-can be computed from physical parameters as:
-- Ro = U/(f·L)  where U=velocity scale, f=Coriolis, L=length scale
-- Bu = (N·H/(f·L))² where N=stratification, H=depth scale
+With defaults f0=1, N2=1:
+- Dispersion coefficient = 0.5
+- Inertial period = 2π
 
 FORTRAN CORRESPONDENCE:
 ----------------------
@@ -64,9 +62,9 @@ The model uses two hyperdiffusion operators for stability:
 
 The hyperdiffusion term is: ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2
 
-# Nondimensional Numbers
+# Physical Parameters
+- `N2`: Buoyancy frequency squared N² (default 1.0)
 - `W2F`: (Uw/U)² - ratio of wave to flow velocity squared
-- `Bu`: Burger number = (NH/fL)²
 - `gamma`: Robert-Asselin filter coefficient (typically 10⁻³)
 
 # Physics Switches
@@ -148,17 +146,16 @@ Base.@kwdef mutable struct QGParams{T}
     nuz::T                     # Vertical diffusion coefficient for q
 
     #= ====================================================================
-                        NONDIMENSIONAL NUMBERS
+                        PHYSICAL PARAMETERS
     ====================================================================
-    The nondimensional numbers match the Fortran QG_YBJp code:
-    - Ro = U/(f*L) : Rossby number
-    - Fr = U/(N*H) : Froude number
-    - Bu = Fr²/Ro² = (N*H*L)²/(f*L*U)² = (NH/fL)² : Burger number
+    These are the key physical parameters that control the wave dynamics:
+    - f0: Coriolis parameter (default 1.0)
+    - N2: Buoyancy frequency squared N² (default 1.0 for constant_N)
 
-    The wave dispersion coefficient is: N²/(2f) → 1/(2*Bu*Ro) in nondim form
+    The wave dispersion coefficient is: N²/(2f)
+    The elliptic coefficient is: a = f²/N² (= 1/N² when f=1)
     ==================================================================== =#
-    Ro::T                      # Rossby number = U/(f*L)
-    Bu::T                      # Burger number = Fr²/Ro² = (NH/fL)²
+    N2::T                      # Buoyancy frequency squared N² (default 1.0)
     W2F::T                     # (Uw/U)² = wave-to-flow velocity ratio squared
     gamma::T                   # Robert-Asselin filter parameter (typ. 10⁻³)
 
