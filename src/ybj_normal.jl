@@ -127,8 +127,10 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
     @inbounds for j in 1:ny_local, i in 1:nx_local
         i_global = local_to_global(i, 1, G)
         j_global = local_to_global(j, 2, G)
+        # Compute kh2 from global kx, ky arrays (works in both serial and parallel)
+        kh2 = G.kx[i_global]^2 + G.ky[j_global]^2
 
-        if L[i_global, j_global] && G.kh2[i_global, j_global] > 0
+        if L[i_global, j_global] && kh2 > 0
             s = 0.0 + 0.0im
             for k in 1:nz
                 s += B_arr[i,j,k]
