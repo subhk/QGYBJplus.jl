@@ -515,9 +515,9 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     w_arr = parent(S.w)
     nx_local, ny_local, _ = size(tmpw_arr)
 
-    norm = nx * ny
+    # IFFT is normalized - extract real parts directly
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -683,10 +683,9 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     fft_backward!(tmpw, wk_ybj, plans)
     tmpw_arr = parent(tmpw)
 
-    # Store in state (real part, normalized)
-    norm = nx * ny
+    # IFFT is normalized - extract real parts directly
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -790,9 +789,9 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     tmpw_arr = parent(tmpw)
     w_arr = parent(S.w)
 
-    norm = nx * ny
+    # IFFT is normalized - extract real parts directly
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -961,13 +960,10 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     u_wave_real_arr = parent(u_wave_real)
     v_wave_real_arr = parent(v_wave_real)
 
-    # Normalization
-    norm = nx * ny
-
-    # Add wave velocities to existing QG velocities
+    # IFFT is normalized - add wave velocities to existing QG velocities directly
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] += real(u_wave_real_arr[i_local, j_local, k]) / norm
-        v_arr[i_local, j_local, k] += real(v_wave_real_arr[i_local, j_local, k]) / norm
+        u_arr[i_local, j_local, k] += real(u_wave_real_arr[i_local, j_local, k])
+        v_arr[i_local, j_local, k] += real(v_wave_real_arr[i_local, j_local, k])
     end
 
     return S
