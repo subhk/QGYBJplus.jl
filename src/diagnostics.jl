@@ -849,11 +849,11 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
                 # WKE: |BR|² + |BI|²
                 wke_k += abs2(BR_arr[i,j,k]) + abs2(BI_arr[i,j,k])
 
-                # WPE: (0.5/(ρ₂×Bu)) × kh² × (|CR|² + |CI|²)
-                wpe_k += (0.5 / (ρ₂ₖ * Bu)) * kₕ² * (abs2(CR_arr[i,j,k]) + abs2(CI_arr[i,j,k]))
+                # WPE: (0.5/(ρ₂×a_ell)) × kh² × (|CR|² + |CI|²)
+                wpe_k += (0.5 / (ρ₂ₖ * a_ell_coeff)) * kₕ² * (abs2(CR_arr[i,j,k]) + abs2(CI_arr[i,j,k]))
 
-                # WCE: (1/8) × (1/Bu²) × kh⁴ × (|AR|² + |AI|²)
-                wce_k += (1.0/8.0) * (1.0/(Bu*Bu)) * kₕ²*kₕ² * (abs2(AR_arr[i,j,k]) + abs2(AI_arr[i,j,k]))
+                # WCE: (1/8) × (1/a_ell²) × kh⁴ × (|AR|² + |AI|²)
+                wce_k += (1.0/8.0) * (1.0/(a_ell_coeff*a_ell_coeff)) * kₕ²*kₕ² * (abs2(AR_arr[i,j,k]) + abs2(AI_arr[i,j,k]))
             end
         end
 

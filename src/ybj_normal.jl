@@ -280,8 +280,8 @@ function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, L
         end
     end
 
-    # Scale by Bu*Ro to match Fortran (derivatives.f90 line 1067)
-    σ .*= (par.Bu * par.Ro)
+    # Scale by f/N² (inverse of dispersion coefficient factor)
+    σ .*= (par.f0 / par.N2)
 
     return σ
 end
@@ -329,8 +329,8 @@ function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask
         end
     end
 
-    # Scale by Bu*Ro to match Fortran (derivatives.f90 line 1067)
-    σ .*= (par.Bu * par.Ro)
+    # Scale by f/N² (inverse of dispersion coefficient factor)
+    σ .*= (par.f0 / par.N2)
 
     return σ
 end
