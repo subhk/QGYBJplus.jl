@@ -738,11 +738,17 @@ Scatter an array from root to all processes as PencilArrays.
 
 This function efficiently distributes data from root to all processes,
 only requiring the full array to exist on the root process.
+
+# Implementation Note
+PencilArrays uses a Cartesian topology where `range_local(pencil, n)` takes
+a linear index `n` into the process grid (1-indexed, column-major order).
+We must convert MPI ranks to the correct linear index based on the topology.
 """
 function QGYBJ.scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     decomp = grid.decomp
     pencil_xy = decomp.pencil_xy
     local_range = decomp.local_range_xy
+    topo = mpi_config.topology  # (px, py)
 
     # Allocate distributed array (only local portion on each rank)
     T = mpi_config.is_root ? eltype(arr) : ComplexF64
@@ -760,8 +766,22 @@ function QGYBJ.scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     if mpi_config.is_root
         # Root extracts and sends each process's portion
         for rank in 0:(mpi_config.nprocs - 1)
-            # Get the range for this rank
-            rank_range = PencilArrays.range_local(pencil_xy, rank + 1)  # 1-indexed
+            # Convert MPI rank to PencilArrays linear index
+            # PencilArrays uses column-major ordering for the 2D topology:
+            # Linear index n corresponds to coordinates (i, j) where:
+            #   i = ((n-1) % px) + 1
+            #   j = ((n-1) ÷ px) + 1
+            # MPI rank to coordinates (assuming row-major MPI ordering):
+            #   coord_x = rank % px
+            #   coord_y = rank ÷ px
+            # PencilArrays linear index (column-major):
+            #   linear_idx = coord_x + coord_y * px + 1
+            coord_x = rank % topo[1]
+            coord_y = rank ÷ topo[1]
+            linear_idx = coord_x + coord_y * topo[1] + 1  # 1-indexed
+
+            # Get the range for this process using linear index
+            rank_range = PencilArrays.range_local(pencil_xy, linear_idx)
 
             # Extract the portion for this rank
             portion = arr[rank_range[1], rank_range[2], rank_range[3]]

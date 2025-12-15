@@ -179,13 +179,18 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     tmpu_arr = parent(tmpu)
     tmpv_arr = parent(tmpv)
 
-    # Normalization: Both FFTW.ifft and PencilFFTs ldiv! are normalized transforms.
-    # The division by (nx*ny) here maintains consistency with the pseudo-spectral
-    # convention used throughout this codebase (see nonlinear.jl convolutions).
-    norm = nx * ny
+    # Note on normalization:
+    # - FFTW.ifft and PencilFFTs ldiv! are NORMALIZED (divide by N internally)
+    # - After fft_backward!, tmpu and tmpv contain correct physical-space values
+    # - NO additional normalization is needed here
+    #
+    # This differs from pseudo-spectral convolutions (nonlinear.jl) where:
+    # - We do: IFFT → multiply → FFT → divide by N
+    # - The division compensates for unnormalized FFT output
+    # Here we're only doing IFFT, so no extra division.
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] = real(tmpu_arr[i_local, j_local, k]) / norm
-        v_arr[i_local, j_local, k] = real(tmpv_arr[i_local, j_local, k]) / norm
+        u_arr[i_local, j_local, k] = real(tmpu_arr[i_local, j_local, k])
+        v_arr[i_local, j_local, k] = real(tmpv_arr[i_local, j_local, k])
     end
 
     # Compute vertical velocity if requested
@@ -394,10 +399,10 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     fft_backward!(tmpw, wk, plans)
     tmpw_arr = parent(tmpw)
 
-    # Normalization for consistency with pseudo-spectral convention
-    norm = nx * ny
+    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
+    # No additional normalization needed here
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -516,10 +521,10 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     w_arr = parent(S.w)
     nx_local, ny_local, _ = size(tmpw_arr)
 
-    # Normalization for consistency with pseudo-spectral convention
-    norm = nx * ny
+    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
+    # No additional normalization needed here
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -685,10 +690,10 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     fft_backward!(tmpw, wk_ybj, plans)
     tmpw_arr = parent(tmpw)
 
-    # Normalization for consistency with pseudo-spectral convention
-    norm = nx * ny
+    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
+    # No additional normalization needed here
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -792,10 +797,10 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     tmpw_arr = parent(tmpw)
     w_arr = parent(S.w)
 
-    # Normalization for consistency with pseudo-spectral convention
-    norm = nx * ny
+    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
+    # No additional normalization needed here
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k]) / norm
+        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -964,13 +969,13 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     u_wave_real_arr = parent(u_wave_real)
     v_wave_real_arr = parent(v_wave_real)
 
-    # Normalization for consistency with pseudo-spectral convention
-    norm = nx * ny
+    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
+    # No additional normalization needed here
 
     # Add wave velocities to existing QG velocities
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] += real(u_wave_real_arr[i_local, j_local, k]) / norm
-        v_arr[i_local, j_local, k] += real(v_wave_real_arr[i_local, j_local, k]) / norm
+        u_arr[i_local, j_local, k] += real(u_wave_real_arr[i_local, j_local, k])
+        v_arr[i_local, j_local, k] += real(v_wave_real_arr[i_local, j_local, k])
     end
 
     return S
