@@ -1083,6 +1083,37 @@ function QGYBJ.allocate_xy_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
     return arr
 end
 
+"""
+    allocate_xz_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
+
+Allocate an array in xz-pencil (intermediate) configuration.
+
+This is the intermediate pencil used for two-step transpose between
+xy-pencil and z-pencil configurations. In xz-pencil:
+- decomp_dims = (1, 3): x and z are distributed, y is local
+
+# Return Type
+- **Serial mode** (`grid.decomp === nothing`): Returns `Array{T,3}` of size (nx, ny, nz)
+- **Parallel mode**: Returns `PencilArray{T,3}` with xz-pencil decomposition
+
+# Example
+```julia
+work = allocate_xz_pencil(grid, ComplexF64)
+parent_arr = parent(work)  # Works for both Array and PencilArray
+```
+"""
+function QGYBJ.allocate_xz_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
+    decomp = grid.decomp
+    if decomp === nothing
+        # Serial mode - return standard Array
+        return zeros(T, grid.nx, grid.ny, grid.nz)
+    end
+    # Parallel mode - return PencilArray with xz-pencil (intermediate) decomposition
+    arr = PencilArray{T}(undef, decomp.pencil_xz)
+    fill!(arr, zero(T))
+    return arr
+end
+
 # Export extension types
 export MPIConfig, MPIPlans, PencilDecomp, MPIWorkspace
 
