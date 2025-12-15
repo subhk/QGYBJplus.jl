@@ -479,6 +479,11 @@ PencilFFTs automatically handles the transposes needed for 2D distributed FFTs:
 - Forward FFT: x-pencil → y-pencil → output (handles x-FFT, transpose, y-FFT)
 - Backward FFT: Uses ldiv!(dst, forward_plan, src) for normalized inverse
 
+# Pencil Configuration Note
+For complex-to-complex FFTs with NoTransform on z, the output pencil decomposition
+should match the input pencil decomposition because dimensions don't change.
+If they differ, the code uses work arrays for correct data handling.
+
 # Note on Inverse Transform
 We use `ldiv!(dst, plan, src)` with the forward plan for inverse FFT because:
 1. It gives normalized inverse (consistent with FFTW.ifft)
@@ -489,6 +494,7 @@ struct MPIPlans{P, PI, PO}
     input_pencil::PI
     output_pencil::PO
     work_arrays::NamedTuple
+    pencils_match::Bool  # True if output_pencil decomposition matches input_pencil
 end
 
 """
@@ -498,6 +504,13 @@ Create PencilFFTs plans for parallel 2D horizontal FFT execution.
 
 PencilFFTs handles the transposes between pencil configurations automatically
 for the FFT operations. The returned plans transform dimensions 1 and 2 (x, y).
+
+# Pencil Configuration
+- `input_pencil`: Configuration for physical space arrays (from `first_pencil(plan)`)
+- `output_pencil`: Configuration for spectral space arrays (from `last_pencil(plan)`)
+
+For complex-to-complex FFTs, these should have matching decompositions. If they
+differ, work arrays are used for correct data handling.
 
 # Example
 ```julia
@@ -529,7 +542,16 @@ function QGYBJ.plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
     input_pencil = first_pencil(plan)
     output_pencil = last_pencil(plan)
 
-    # Allocate work arrays for transforms
+    # Check if pencil decompositions match (important for correct data handling)
+    # For C2C transforms, they should match since dimensions don't change
+    pencils_match = _check_pencil_compatibility(input_pencil, output_pencil, pencil_xy)
+
+    if !pencils_match && mpi_config.is_root
+        @warn "PencilFFTs input/output pencils have different decompositions. " *
+              "Work arrays will be used for FFT operations, which may impact performance."
+    end
+
+    # Allocate work arrays for transforms (used when pencils don't match)
     work_in = PencilArray{Complex{Float64}}(undef, input_pencil)
     work_out = PencilArray{Complex{Float64}}(undef, output_pencil)
 
@@ -541,8 +563,36 @@ function QGYBJ.plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
         plan,
         input_pencil,
         output_pencil,
-        (input=work_in, output=work_out)
+        (input=work_in, output=work_out),
+        pencils_match
     )
+end
+
+"""
+    _check_pencil_compatibility(input_pencil, output_pencil, pencil_xy) -> Bool
+
+Check if the input/output pencil configurations are compatible with pencil_xy.
+Returns true if arrays allocated with pencil_xy can be used directly with FFT operations.
+
+For C2C FFTs, pencils are compatible if they have the same decomposition pattern.
+"""
+function _check_pencil_compatibility(input_pencil, output_pencil, pencil_xy)
+    # Check that input_pencil matches pencil_xy (required for physical space)
+    in_range = range_local(input_pencil)
+    xy_range = range_local(pencil_xy)
+
+    if in_range != xy_range
+        return false
+    end
+
+    # Check that output_pencil matches pencil_xy (required for spectral space)
+    out_range = range_local(output_pencil)
+
+    if out_range != xy_range
+        return false
+    end
+
+    return true
 end
 
 """
