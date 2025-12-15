@@ -422,11 +422,19 @@ main()
 
 ```julia
 # Allocate array in xy-pencil configuration (for FFTs)
+# decomp_dims=(2,3): y,z distributed; x local
 arr_xy = QGYBJ.allocate_xy_pencil(grid, ComplexF64)
 
+# Allocate array in xz-pencil configuration (intermediate for transposes)
+# decomp_dims=(1,3): x,z distributed; y local
+arr_xz = QGYBJ.allocate_xz_pencil(grid, ComplexF64)
+
 # Allocate array in z-pencil configuration (for vertical ops)
+# decomp_dims=(1,2): x,y distributed; z local
 arr_z = QGYBJ.allocate_z_pencil(grid, ComplexF64)
 ```
+
+In serial mode, all three functions return standard `Array{T,3}` of size `(nx, ny, nz)`.
 
 ## Performance Considerations
 
@@ -443,9 +451,11 @@ QGYBJ.jl with 2D decomposition scales to O(N²) processes for N³ grid.
 
 | Operation | Communication Pattern | Cost |
 |:----------|:---------------------|:-----|
-| Transpose xy↔z | All-to-all | O(N³/P) data moved |
+| Transpose xy↔z | **Two-step** all-to-all via xz-pencil | 2 × O(N³/P) data moved |
 | FFT | Internal transposes | Handled by PencilFFTs |
 | Reduction | Global sum | O(log P) |
+
+**Note:** The two-step transpose (xy↔xz↔z) doubles the communication compared to a single transpose, but is required by PencilArrays' constraint that decomp_dims can only differ by one dimension per transpose.
 
 ### Optimization Tips
 
