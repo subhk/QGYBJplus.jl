@@ -59,6 +59,9 @@ using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
 using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJ: local_to_global_z, allocate_z_pencil
 
+# Reference to parent module for accessing is_dealiased
+const PARENT = Base.parentmodule(@__MODULE__)
+
 #=
 ================================================================================
                         JACOBIAN OPERATOR
@@ -273,7 +276,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
         j_global = local_to_global(j_local, 2, G)
         kx_val = G.kx[i_global]
         ky_val = G.ky[j_global]
-        if L[i_global, j_global]
+        if should_keep(i_global, j_global)
             # J(ψ,q) = ∂(uq)/∂x + ∂(vq)/∂y = ikₓ(ûq) + ikᵧ(v̂q)
             nqk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
@@ -295,7 +298,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
         j_global = local_to_global(j_local, 2, G)
         kx_val = G.kx[i_global]
         ky_val = G.ky[j_global]
-        if L[i_global, j_global]
+        if should_keep(i_global, j_global)
             nBRk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
             nBRk_arr[i_local, j_local, k] = 0
@@ -316,7 +319,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
         j_global = local_to_global(j_local, 2, G)
         kx_val = G.kx[i_global]
         ky_val = G.ky[j_global]
-        if L[i_global, j_global]
+        if should_keep(i_global, j_global)
             nBIk_arr[i_local, j_local, k] = im*kx_val*uterm_arr[i_local, j_local, k] + im*ky_val*vterm_arr[i_local, j_local, k]
         else
             nBIk_arr[i_local, j_local, k] = 0
