@@ -238,47 +238,88 @@ function compute_stratification_profile(profile::StratificationProfile{T}, G::Gr
 end
 
 """
-    compute_stratification_coefficients(N2_profile::Vector, G::Grid)
+    compute_stratification_coefficients(N2_profile::Vector, G::Grid; Bu::Real=1.0)
 
 Compute stratification-dependent coefficients for the model.
+
+Following the Fortran init_base_state routine:
+- r_1 = 1.0 (unity for Boussinesq)
+- r_2 = N² (buoyancy frequency squared)
+- r_3 = 0.0 (not used in standard QG formulation)
+- a_ell = Bu/N² (elliptic coefficient for PV inversion)
+- rho = 1.0 (Boussinesq approximation)
+
+# Arguments
+- `N2_profile::Vector`: Buoyancy frequency squared N²(z) at each vertical level
+- `G::Grid`: Grid structure
+- `Bu::Real`: Burger number (default 1.0)
+
+# Returns
+Named tuple with coefficients:
+- `r_1`: Unity array (length nz)
+- `r_2`: N² profile (length nz)
+- `r_3`: Zero array (length nz)
+- `a_ell_u`: Bu/N² at unstaggered points (length nz)
+- `a_ell_s`: Bu/N² at staggered points (length nz)
+- `rho_u`: Unity density at unstaggered points (length nz)
+- `rho_s`: Unity density at staggered points (length nz)
 """
-function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid) where T
+function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; Bu::Real=T(1.0)) where T
     nz = G.nz
-    
-    # Initialize coefficient arrays (following Fortran code structure)
-    r_1 = zeros(T, nz)      # Unstaggered r₁ coefficient  
-    r_2 = zeros(T, nz)      # Unstaggered r₂ coefficient
-    r_3 = zeros(T, nz)      # Staggered r₃ coefficient
-    
-    a_ell = zeros(T, nz)    # Elliptic equation coefficients
-    b_ell = zeros(T, nz)
-    
-    dz = 2π / nz
-    
-    # Compute r coefficients based on stratification
+    dz = nz > 1 ? (G.z[2] - G.z[1]) : T(2π / nz)
+
+    # Initialize coefficient arrays (following Fortran init_base_state)
+    # Unstaggered (at cell centers)
+    r_1_u = ones(T, nz)         # r₁ = 1.0 (Boussinesq)
+    r_2_u = zeros(T, nz)        # r₂ = N² at unstaggered points
+    r_3_u = zeros(T, nz)        # r₃ = 0.0 (not used in standard QG)
+    a_ell_u = zeros(T, nz)      # a_ell = Bu/N² at unstaggered points
+    rho_u = ones(T, nz)         # ρ = 1.0 (Boussinesq)
+
+    # Staggered (at cell faces)
+    r_1_s = ones(T, nz)         # r₁ = 1.0 at staggered points
+    r_2_s = zeros(T, nz)        # r₂ = N² at staggered points
+    r_3_s = zeros(T, nz)        # r₃ = 0.0 at staggered points
+    a_ell_s = zeros(T, nz)      # a_ell = Bu/N² at staggered points
+    rho_s = ones(T, nz)         # ρ = 1.0 at staggered points
+
+    # Compute coefficients at each vertical level
     for k in 1:nz
-        # Basic coefficients (these would depend on specific formulation)
-        r_1[k] = N2_profile[k]  # Simplified - adjust based on actual QG formulation
-        r_2[k] = 1.0 / N2_profile[k]
-        
-        # Staggered r₃ (average of neighboring points)
+        # Unstaggered values (cell centers)
+        N2_u = N2_profile[k]
+        r_2_u[k] = N2_u
+        a_ell_u[k] = Bu / max(N2_u, eps(T))  # Avoid division by zero
+
+        # Staggered values (cell faces at z + dz/2)
+        # Interpolate N² to staggered grid
         if k < nz
-            r_3[k] = 0.5 * (N2_profile[k] + N2_profile[k+1])
+            N2_s = T(0.5) * (N2_profile[k] + N2_profile[k+1])
         else
-            r_3[k] = N2_profile[k]
+            N2_s = N2_profile[k]  # At top boundary, use cell center value
         end
-        
-        # Elliptic equation coefficients for ∇²ψ = q equation
-        a_ell[k] = r_2[k] / dz^2  # Vertical coefficient
-        b_ell[k] = r_1[k]         # Horizontal coefficient multiplier
+        r_2_s[k] = N2_s
+        a_ell_s[k] = Bu / max(N2_s, eps(T))
     end
-    
+
     return (
-        r_1 = r_1,
-        r_2 = r_2, 
-        r_3 = r_3,
-        a_ell = a_ell,
-        b_ell = b_ell
+        # Unstaggered coefficients
+        r_1_u = r_1_u,
+        r_2_u = r_2_u,
+        r_3_u = r_3_u,
+        a_ell_u = a_ell_u,
+        rho_u = rho_u,
+        # Staggered coefficients
+        r_1_s = r_1_s,
+        r_2_s = r_2_s,
+        r_3_s = r_3_s,
+        a_ell_s = a_ell_s,
+        rho_s = rho_s,
+        # Legacy aliases for backward compatibility
+        r_1 = r_1_u,
+        r_2 = r_2_u,
+        r_3 = r_3_u,
+        a_ell = a_ell_u,
+        b_ell = zeros(T, nz)  # Not used in standard formulation
     )
 end
 
