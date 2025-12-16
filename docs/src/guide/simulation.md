@@ -27,7 +27,7 @@ result = run_simple_simulation(config)
 ```julia
 # Setup
 grid = Grid(nx=64, ny=64, nz=32)
-params = QGParams()
+params = default_params()
 state = create_state(grid)
 initialize_random_flow!(state, grid)
 initialize_random_waves!(state, grid)
@@ -268,7 +268,7 @@ function run_production(;
     # Setup
     mkpath(output_dir)
     grid = Grid(nx=nx, ny=ny, nz=nz)
-    params = QGParams()
+    params = default_params()
     state = create_state(grid)
     initialize_random_flow!(state, grid)
     initialize_random_waves!(state, grid)

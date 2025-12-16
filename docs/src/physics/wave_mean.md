@@ -30,10 +30,10 @@ Near-inertial waves carry momentum and energy. When they:
 Following Xie & Vanneste (2015), the wave-induced potential vorticity is:
 
 ```math
-q^w = Ro \cdot W2F \cdot \left[ \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2 \right]
+q^w = \frac{W2F}{f_0} \cdot \left[ \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2 \right]
 ```
 
-where ``W2F = (U_w/U)^2`` is the wave-to-flow velocity ratio squared.
+where ``W2F = (U_w/U)^2`` is the wave-to-flow velocity ratio squared and ``f_0`` is the Coriolis parameter.
 
 ### Decomposition in Real/Imaginary Parts
 
@@ -52,7 +52,7 @@ And the wave intensity:
 So the complete formula is:
 
 ```math
-q^w = Ro \cdot W2F \cdot \left[ \left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) + \frac{k_h^2}{4} (B_R^2 + B_I^2) \right]
+q^w = \frac{W2F}{f_0} \cdot \left[ \left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) + \frac{k_h^2}{4} (B_R^2 + B_I^2) \right]
 ```
 
 Note: In spectral space, ``\nabla_h^2 \to -k_h^2``, so ``-\frac{1}{4}\nabla_h^2|B|^2 \to +\frac{k_h^2}{4}|B|^2``.
@@ -167,8 +167,8 @@ function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
     # qw = J_term - (1/4)*kh²*|B|²  (note: -∇² → +kh² in spectral)
     qwk = (fft(qwr) - 0.25 * kh2 .* fft(mag2)) / norm
 
-    # 6. Scale by Ro * W2F
-    qwk .*= (par.Ro * par.W2F)
+    # 6. Scale by W2F / f₀
+    qwk .*= (par.W2F / par.f₀)
 end
 ```
 
@@ -191,12 +191,12 @@ invert_q_to_psi!(state, grid; a=a_vec)
 
 ```julia
 # With wave feedback (default)
-params = QGParams(; no_feedback=false, no_wave_feedback=false)
+params = default_params(; no_feedback=false, no_wave_feedback=false)
 
 # Without wave feedback
-params = QGParams(; no_feedback=true)
+params = default_params(; no_feedback=true)
 # or
-params = QGParams(; no_wave_feedback=true)
+params = default_params(; no_wave_feedback=true)
 ```
 
 Disabling is useful for:

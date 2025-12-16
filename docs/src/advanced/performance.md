@@ -352,7 +352,7 @@ end
 ```julia
 function benchmark_simulation(nx, ny, nz; nsteps=100)
     grid = Grid(nx=nx, ny=ny, nz=nz)
-    params = QGParams()
+    params = default_params()
     state = create_state(grid)
     initialize_random!(state, grid)
 
