@@ -63,12 +63,12 @@ config = create_simple_config(
     no_wave_feedback = false,    # Disable wave feedback on flow
     ybj_plus = true,             # Use YBJ+ (vs normal YBJ)
 
-    # Dissipation parameters
-    nu_h1 = 0.0,                 # Large-scale hyperdiffusion
-    p1 = 1,                      # Power for nu_h1
-    nu_h2 = 1e-8,                # Small-scale hyperviscosity
-    p2 = 4,                      # Power for nu_h2
-    nu_z = 0.0,                  # Vertical diffusion
+    # Dissipation parameters (hyperviscosity)
+    νₕ₁ = 0.01,                  # First hyperviscosity (flow)
+    ilap1 = 2,                   # Laplacian power for νₕ₁
+    νₕ₂ = 10.0,                  # Second hyperviscosity (flow)
+    ilap2 = 6,                   # Laplacian power for νₕ₂
+    νz = 0.0,                    # Vertical diffusion
 
     # Output
     output_interval = 100,       # Steps between output
@@ -87,10 +87,10 @@ For complete control, create components separately:
 ### Step 1: Create Parameters
 
 ```julia
-params = QGParams(;
+params = default_params(;
     # Physical parameters
-    f0 = 1.0,                    # Coriolis parameter
-    N0 = 1.0,                    # Reference buoyancy frequency
+    f₀ = 1.0,                    # Coriolis parameter (type: f\_0<tab>)
+    N² = 1.0,                    # Buoyancy frequency squared (type: N\^2<tab>)
 
     # Model options
     ybj_plus = true,
@@ -98,12 +98,12 @@ params = QGParams(;
     inviscid = false,
     linear = false,
 
-    # Dissipation
-    nu_h1 = 0.0,
-    p1 = 1,
-    nu_h2 = 1e-8,
-    p2 = 4,
-    nu_z = 0.0,
+    # Dissipation (hyperviscosity)
+    νₕ₁ = 0.01,                  # First hyperviscosity (type: \nu\_h\_1<tab>)
+    ilap1 = 2,                   # Power for νₕ₁ (biharmonic)
+    νₕ₂ = 10.0,                  # Second hyperviscosity
+    ilap2 = 6,                   # Power for νₕ₂ (hyper-6)
+    νz = 0.0,                    # Vertical diffusion (type: \nu\_z<tab>)
 )
 ```
 
@@ -165,10 +165,12 @@ end
 
 | Parameter | Type | Default | Description |
 |:----------|:-----|:--------|:------------|
-| `f0` | Float64 | 1.0 | Coriolis parameter |
-| `N0` | Float64 | 1.0 | Reference buoyancy frequency |
-| `g` | Float64 | 1.0 | Gravitational acceleration |
-| `rho0` | Float64 | 1.0 | Reference density |
+| `f₀` | Float64 | 1.0 | Coriolis parameter |
+| `N²` | Float64 | 1.0 | Buoyancy frequency squared |
+| `W2F` | Float64 | 0.01 | Wave-to-flow velocity ratio squared |
+| `γ` | Float64 | 1e-3 | Robert-Asselin filter coefficient |
+
+Note: Type Unicode characters in Julia REPL using `\` + name + `<tab>`, e.g., `f\_0<tab>` → `f₀`
 
 ### Model Flags
 
@@ -185,13 +187,17 @@ end
 
 ### Dissipation Parameters
 
+The model uses two hyperdiffusion operators: `ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2`
+
 | Parameter | Type | Default | Description |
 |:----------|:-----|:--------|:------------|
-| `nu_h1` | Float64 | 0.0 | Large-scale horizontal diffusivity |
-| `p1` | Int | 1 | Power for nu_h1 (1=Laplacian, 2=biharmonic) |
-| `nu_h2` | Float64 | 1e-8 | Small-scale horizontal hyperviscosity |
-| `p2` | Int | 4 | Power for nu_h2 |
-| `nu_z` | Float64 | 0.0 | Vertical diffusivity |
+| `νₕ₁` | Float64 | 0.01 | First hyperviscosity coefficient (flow) |
+| `ilap1` | Int | 2 | Laplacian power for νₕ₁ (2=biharmonic) |
+| `νₕ₂` | Float64 | 10.0 | Second hyperviscosity coefficient (flow) |
+| `ilap2` | Int | 6 | Laplacian power for νₕ₂ (hyper-6) |
+| `νₕ₁ʷ` | Float64 | 0.0 | First hyperviscosity coefficient (waves) |
+| `νₕ₂ʷ` | Float64 | 10.0 | Second hyperviscosity coefficient (waves) |
+| `νz` | Float64 | 0.0 | Vertical diffusivity |
 
 ### Grid Parameters
 

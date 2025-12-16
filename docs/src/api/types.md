@@ -18,31 +18,37 @@ QGParams
 
 | Field | Type | Description |
 |:------|:-----|:------------|
-| `f0` | Float64 | Coriolis parameter |
-| `N0` | Float64 | Reference buoyancy frequency |
+| `f₀` | Float64 | Coriolis parameter |
+| `N²` | Float64 | Buoyancy frequency squared |
+| `W2F` | Float64 | Wave-to-flow velocity ratio squared |
+| `γ` | Float64 | Robert-Asselin filter coefficient |
 | `ybj_plus` | Bool | Use YBJ+ formulation |
 | `no_feedback` | Bool | Disable wave feedback |
 | `inviscid` | Bool | Disable all dissipation |
 | `linear` | Bool | Disable nonlinear terms |
-| `nu_h1` | Float64 | Large-scale horizontal diffusivity |
-| `p1` | Int | Power for nu_h1 |
-| `nu_h2` | Float64 | Small-scale horizontal hyperviscosity |
-| `p2` | Int | Power for nu_h2 |
-| `nu_z` | Float64 | Vertical diffusivity |
+| `νₕ₁` | Float64 | First hyperviscosity coefficient (flow) |
+| `ilap1` | Int | Laplacian power for νₕ₁ |
+| `νₕ₂` | Float64 | Second hyperviscosity coefficient (flow) |
+| `ilap2` | Int | Laplacian power for νₕ₂ |
+| `νₕ₁ʷ` | Float64 | First hyperviscosity coefficient (waves) |
+| `νₕ₂ʷ` | Float64 | Second hyperviscosity coefficient (waves) |
+| `νz` | Float64 | Vertical diffusivity |
+
+Note: Type Unicode characters using `\` + name + `<tab>` in Julia REPL (e.g., `f\_0<tab>` → `f₀`)
 
 ### Constructors
 
 ```julia
 # Default parameters
-params = QGParams()
+params = default_params()
 
 # Custom parameters
-params = QGParams(;
-    f0 = 1.0,
-    N0 = 1.0,
+params = default_params(;
+    f₀ = 1.0,
+    N² = 1.0,
     ybj_plus = true,
-    nu_h2 = 1e-8,
-    p2 = 4
+    νₕ₂ = 10.0,
+    ilap2 = 6
 )
 ```
 
@@ -50,11 +56,11 @@ params = QGParams(;
 
 ```julia
 # High-resolution parameters
-params = QGParams(;
+params = default_params(;
     ybj_plus = true,
     no_feedback = false,
-    nu_h2 = 1e-12,
-    p2 = 8
+    νₕ₂ = 1e-12,
+    ilap2 = 8
 )
 ```
 

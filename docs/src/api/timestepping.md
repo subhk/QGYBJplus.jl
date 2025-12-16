@@ -248,15 +248,17 @@ end
 
 ## Robert-Asselin Filter Parameter
 
-The filter coefficient γ (`gamma` in `QGParams`) controls damping of the computational mode:
+The filter coefficient γ (`γ` in `QGParams`) controls damping of the computational mode:
 
 - **Too large** (γ > 0.01): Excessive damping, accuracy loss
 - **Too small** (γ < 0.0001): Computational mode growth
 - **Recommended**: γ ≈ 0.001 (default)
 
 ```julia
-params = default_params(nx=64, ny=64, nz=32; gamma=0.001)
+params = default_params(nx=64, ny=64, nz=32; γ=0.001)
 ```
+
+Note: Type `\gamma<tab>` in the Julia REPL to enter `γ`.
 
 ## Time Level Management
 

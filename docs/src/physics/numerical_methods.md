@@ -74,12 +74,14 @@ q^{n+1} = \left[ q^n - \Delta t \cdot J(\psi, q)^n + \Delta t \cdot D_q^n \right
 For the wave envelope (in real/imaginary form):
 
 ```math
-B_R^{n+1} = \left[ B_R^n - \Delta t \cdot J(\psi, B_R) - \Delta t \cdot \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I + \Delta t \cdot \frac{1}{2} r_{BI} \right] \cdot e^{-\lambda_w \Delta t}
+B_R^{n+1} = \left[ B_R^n - \Delta t \cdot J(\psi, B_R) - \Delta t \cdot \frac{N^2 k_h^2}{2 f_0} A_I + \Delta t \cdot \frac{1}{2} r_{BI} \right] \cdot e^{-\lambda_w \Delta t}
 ```
 
 ```math
-B_I^{n+1} = \left[ B_I^n - \Delta t \cdot J(\psi, B_I) + \Delta t \cdot \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R - \Delta t \cdot \frac{1}{2} r_{BR} \right] \cdot e^{-\lambda_w \Delta t}
+B_I^{n+1} = \left[ B_I^n - \Delta t \cdot J(\psi, B_I) + \Delta t \cdot \frac{N^2 k_h^2}{2 f_0} A_R - \Delta t \cdot \frac{1}{2} r_{BR} \right] \cdot e^{-\lambda_w \Delta t}
 ```
+
+where ``N^2`` is the buoyancy frequency squared and ``f_0`` is the Coriolis parameter.
 
 #### Leapfrog (Subsequent Steps)
 
@@ -90,11 +92,11 @@ q^{n+1} = q^{n-1} \cdot e^{-2\lambda \Delta t} - 2\Delta t \cdot J(\psi, q)^n \c
 ```
 
 ```math
-B_R^{n+1} = B_R^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_R) + \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I - \frac{1}{2} r_{BI} \right]^n \cdot e^{-\lambda_w \Delta t}
+B_R^{n+1} = B_R^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_R) + \frac{N^2 k_h^2}{2 f_0} A_I - \frac{1}{2} r_{BI} \right]^n \cdot e^{-\lambda_w \Delta t}
 ```
 
 ```math
-B_I^{n+1} = B_I^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_I) - \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R + \frac{1}{2} r_{BR} \right]^n \cdot e^{-\lambda_w \Delta t}
+B_I^{n+1} = B_I^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_I) - \frac{N^2 k_h^2}{2 f_0} A_R + \frac{1}{2} r_{BR} \right]^n \cdot e^{-\lambda_w \Delta t}
 ```
 
 #### Robert-Asselin Filter
@@ -121,12 +123,12 @@ leapfrog_step!(state_np1, state_n, state_nm1, grid, params, plans;
 The integrating factor ``\lambda`` handles hyperdiffusion exactly:
 
 ```math
-\lambda = \nu_{h1} \left( |k_x|^{2p_1} + |k_y|^{2p_1} \right) + \nu_{h2} \left( |k_x|^{2p_2} + |k_y|^{2p_2} \right)
+\lambda = \nu_{h1} \left( |k_x|^{2 \cdot ilap1} + |k_y|^{2 \cdot ilap1} \right) + \nu_{h2} \left( |k_x|^{2 \cdot ilap2} + |k_y|^{2 \cdot ilap2} \right)
 ```
 
-where:
-- ``\nu_{h1}, p_1``: First hyperdiffusion operator (often for large-scale drag)
-- ``\nu_{h2}, p_2``: Second hyperdiffusion operator (often ``p_2 = 4`` for small-scale dissipation)
+where (using Unicode parameters):
+- ``\nu_{h1}`` (`νₕ₁`), `ilap1`: First hyperdiffusion operator (default: biharmonic with ilap1=2)
+- ``\nu_{h2}`` (`νₕ₂`), `ilap2`: Second hyperdiffusion operator (default: hyper-6 with ilap2=6)
 
 The wave field has its own integrating factor ``\lambda_w`` with potentially different coefficients.
 

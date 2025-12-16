@@ -355,10 +355,10 @@ function main()
     end
 
     # Parameters
-    params = QGParams(
+    params = default_params(
         nx = 256, ny = 256, nz = 128,
         Lx = 2π, Ly = 2π,
-        f0 = 1.0,
+        f₀ = 1.0,
         stratification = :constant_N,
         ybj_plus = true
     )

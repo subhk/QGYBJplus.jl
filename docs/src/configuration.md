@@ -60,7 +60,7 @@ output = create_output_config(
 ```julia
 config = create_model_config(domain, strat, init, output;
     dt=1e-3, total_time=10.0,
-    f0=1.0,
+    f₀=1.0,                    # Coriolis parameter (type: f\_0<tab>)
     # Model switches
     ybj_plus=true,
     no_wave_feedback=false,
