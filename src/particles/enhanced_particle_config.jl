@@ -313,6 +313,184 @@ function create_uniform_horizontal_distribution(z_level::Real;
 end
 
 """
+    create_circular_distribution(z_level; x_center, y_center, radius, n_particles, pattern, kwargs...)
+
+Create particles distributed in a circular disk at a single z-level.
+
+Particles are distributed uniformly within a circular region using either a
+sunflower (Fibonacci) pattern or concentric rings. The sunflower pattern
+provides excellent uniform coverage and is commonly used in Lagrangian studies.
+
+# Arguments
+- `z_level::Real`: The vertical level where particles are placed
+- `x_center::Real=π`: x-coordinate of circle center
+- `y_center::Real=π`: y-coordinate of circle center
+- `radius::Real=1.0`: Radius of the circular region
+- `n_particles::Int=100`: Number of particles to place
+- `pattern::Symbol=:sunflower`: Distribution pattern
+  - `:sunflower` - Fibonacci/sunflower spiral (recommended, very uniform)
+  - `:rings` - Concentric rings with uniform radial spacing
+  - `:random` - Uniform random distribution within disk
+
+# Returns
+`ParticleConfig3D` configured with custom positions forming the circular distribution.
+
+# Mathematical Background
+The sunflower pattern uses the golden angle θ = π(3 - √5) ≈ 137.5° to achieve
+uniform area coverage:
+- θₙ = n × golden_angle
+- rₙ = R × √(n/N)  (ensures uniform area density)
+
+# Example
+```julia
+# 100 particles in a circle of radius 1.0 centered at (π, π) at z=π/2
+config = create_circular_distribution(π/2;
+    x_center=π, y_center=π,
+    radius=1.0,
+    n_particles=100
+)
+
+# Larger circle with more particles using concentric rings
+config = create_circular_distribution(1.0;
+    x_center=π, y_center=π,
+    radius=2.0,
+    n_particles=200,
+    pattern=:rings
+)
+
+# Random distribution within disk
+config = create_circular_distribution(π/4;
+    x_center=3.0, y_center=3.0,
+    radius=0.5,
+    n_particles=50,
+    pattern=:random
+)
+
+# Initialize tracker
+initialize_particles_3d!(tracker, config)
+```
+"""
+function create_circular_distribution(z_level::T;
+                                     x_center::T=T(π),
+                                     y_center::T=T(π),
+                                     radius::T=T(1.0),
+                                     n_particles::Int=100,
+                                     pattern::Symbol=:sunflower,
+                                     kwargs...) where T<:AbstractFloat
+
+    @assert radius > 0 "radius must be positive"
+    @assert n_particles > 0 "n_particles must be positive"
+
+    # Generate particle positions based on pattern
+    custom_x = Vector{T}(undef, n_particles)
+    custom_y = Vector{T}(undef, n_particles)
+    custom_z = fill(z_level, n_particles)
+
+    if pattern == :sunflower
+        # Sunflower/Fibonacci pattern - very uniform distribution
+        # Golden angle in radians
+        golden_angle = T(π) * (T(3) - sqrt(T(5)))
+
+        for i in 1:n_particles
+            # Radius: sqrt distribution for uniform area density
+            r = radius * sqrt(T(i) / T(n_particles))
+            # Angle: golden angle increment
+            θ = T(i) * golden_angle
+
+            custom_x[i] = x_center + r * cos(θ)
+            custom_y[i] = y_center + r * sin(θ)
+        end
+
+    elseif pattern == :rings
+        # Concentric rings with uniform radial spacing
+        # Determine number of rings based on particle count
+        n_rings = max(1, round(Int, sqrt(n_particles / π)))
+        particles_placed = 0
+
+        for ring in 1:n_rings
+            # Radius of this ring
+            r = radius * T(ring) / T(n_rings)
+
+            # Number of particles on this ring (proportional to circumference)
+            if ring == 1
+                n_on_ring = max(1, round(Int, n_particles / (n_rings * n_rings)))
+            else
+                n_on_ring = max(1, round(Int, 2π * ring * n_particles / (π * n_rings * n_rings)))
+            end
+
+            # Don't exceed total particles
+            n_on_ring = min(n_on_ring, n_particles - particles_placed)
+
+            for j in 1:n_on_ring
+                θ = T(2π) * T(j - 1) / T(n_on_ring)
+                idx = particles_placed + j
+                if idx <= n_particles
+                    custom_x[idx] = x_center + r * cos(θ)
+                    custom_y[idx] = y_center + r * sin(θ)
+                end
+            end
+            particles_placed += n_on_ring
+
+            if particles_placed >= n_particles
+                break
+            end
+        end
+
+        # Fill any remaining particles at center
+        for i in (particles_placed + 1):n_particles
+            custom_x[i] = x_center
+            custom_y[i] = y_center
+        end
+
+    elseif pattern == :random
+        # Uniform random distribution within disk
+        # Use rejection sampling or sqrt(r) transformation
+        for i in 1:n_particles
+            # sqrt transformation for uniform area density
+            r = radius * sqrt(rand(T))
+            θ = T(2π) * rand(T)
+
+            custom_x[i] = x_center + r * cos(θ)
+            custom_y[i] = y_center + r * sin(θ)
+        end
+
+    else
+        error("Unknown pattern: $pattern. Use :sunflower, :rings, or :random")
+    end
+
+    # Compute bounding box for the circular region
+    x_min = x_center - radius
+    x_max = x_center + radius
+    y_min = y_center - radius
+    y_max = y_center + radius
+
+    return ParticleConfig3D{T}(
+        x_min=x_min, x_max=x_max,
+        y_min=y_min, y_max=y_max,
+        z_min=z_level, z_max=z_level,
+        distribution_type=CUSTOM,
+        nx_particles=n_particles, ny_particles=1, nz_particles=1,
+        custom_x=custom_x, custom_y=custom_y, custom_z=custom_z;
+        kwargs...
+    )
+end
+
+# Convenience method with default Float64 type
+function create_circular_distribution(z_level::Real;
+                                     x_center::Real=π,
+                                     y_center::Real=π,
+                                     radius::Real=1.0,
+                                     kwargs...)
+    T = Float64
+    return create_circular_distribution(T(z_level);
+        x_center=T(x_center),
+        y_center=T(y_center),
+        radius=T(radius),
+        kwargs...
+    )
+end
+
+"""
     initialize_particles_3d!(tracker, config3d)
 
 Initialize particles using 3D configuration.
