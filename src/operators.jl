@@ -710,41 +710,45 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
     end
 
-    # Step 4: Compute YBJ vertical velocity
+    # Step 4: Compute YBJ vertical velocity in PHYSICAL space
     # w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-    wₖ_ybj = similar(S.psi)
-    wₖ_ybj_arr = parent(wₖ_ybj)
-    fill!(wₖ_ybj_arr, 0.0)
+    #   = -(f²/N²) * 2 * Re[(∂A/∂x)_z - i(∂A/∂y)_z]
+    #   = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
+    #
+    # Previous code incorrectly computed complex_term + conj(complex_term) in spectral
+    # space, which gives 2*Re(C_k) for each mode k rather than the IFFT of the real-space
+    # expression. Must transform derivatives to physical space first, then combine.
 
+    # Transform horizontal derivatives to physical space
+    dAz_dx_phys = similar(dAz_dxₖ)
+    dAz_dy_phys = similar(dAz_dyₖ)
+    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
+    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
+    dAz_dx_phys_arr = parent(dAz_dx_phys)
+    dAz_dy_phys_arr = parent(dAz_dy_phys)
+
+    # Compute w in physical space
+    # w = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         k_out = k + 1  # Shift to match output grid
         N²ₗ = N2_profile[k_out]
 
-        # YBJ formula
-        ybj_factor = -(f^2) / N²ₗ
-        complex_term = dAz_dxₖ_arr[i_local, j_local, k] - im * dAz_dyₖ_arr[i_local, j_local, k]
-
-        # Apply the + c.c. operation to get real result
-        wₖ_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
+        # YBJ formula in physical space
+        ybj_factor = -2.0 * (f^2) / N²ₗ
+        # complex_term + c.c. = 2*Re(complex_term) where complex_term = dA_dx - i*dA_dy
+        # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
+        w_arr[i_local, j_local, k_out] = ybj_factor * (
+            real(dAz_dx_phys_arr[i_local, j_local, k]) +
+            imag(dAz_dy_phys_arr[i_local, j_local, k])
+        )
     end
 
     # Apply boundary conditions: w = 0 at top and bottom
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        wₖ_ybj_arr[i_local, j_local, 1] = 0.0
+        w_arr[i_local, j_local, 1] = 0.0
         if nz > 1
-            wₖ_ybj_arr[i_local, j_local, nz] = 0.0
+            w_arr[i_local, j_local, nz] = 0.0
         end
-    end
-
-    # Transform to real space
-    tmpw = similar(wₖ_ybj)
-    fft_backward!(tmpw, wₖ_ybj, plans)
-    tmpw_arr = parent(tmpw)
-
-    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
-    # No additional normalization needed here
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
@@ -833,37 +837,40 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
         dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
     end
 
-    # Compute YBJ vertical velocity
-    wₖ_ybj = similar(S.psi)
-    wₖ_ybj_arr = parent(wₖ_ybj)
-    fill!(wₖ_ybj_arr, 0.0)
+    # Compute YBJ vertical velocity in PHYSICAL space (2D decomposition version)
+    # w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
+    #   = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
+    #
+    # Must transform derivatives to physical space first, then combine.
 
+    # Transform horizontal derivatives to physical space
+    dAz_dx_phys = similar(dAz_dxₖ)
+    dAz_dy_phys = similar(dAz_dyₖ)
+    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
+    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
+    dAz_dx_phys_arr = parent(dAz_dx_phys)
+    dAz_dy_phys_arr = parent(dAz_dy_phys)
+
+    w_arr = parent(S.w)
+
+    # Compute w in physical space
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         k_out = k + 1
         N²ₗ = N2_profile[k_out]
-        ybj_factor = -(f^2) / N²ₗ
-        complex_term = dAz_dxₖ_arr[i_local, j_local, k] - im * dAz_dyₖ_arr[i_local, j_local, k]
-        wₖ_ybj_arr[i_local, j_local, k_out] = ybj_factor * (complex_term + conj(complex_term))
+        ybj_factor = -2.0 * (f^2) / N²ₗ
+        # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
+        w_arr[i_local, j_local, k_out] = ybj_factor * (
+            real(dAz_dx_phys_arr[i_local, j_local, k]) +
+            imag(dAz_dy_phys_arr[i_local, j_local, k])
+        )
     end
 
     # Apply boundary conditions
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        wₖ_ybj_arr[i_local, j_local, 1] = 0.0
+        w_arr[i_local, j_local, 1] = 0.0
         if nz > 1
-            wₖ_ybj_arr[i_local, j_local, nz] = 0.0
+            w_arr[i_local, j_local, nz] = 0.0
         end
-    end
-
-    # Transform to real space
-    tmpw = similar(wₖ_ybj)
-    fft_backward!(tmpw, wₖ_ybj, plans)
-    tmpw_arr = parent(tmpw)
-    w_arr = parent(S.w)
-
-    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
-    # No additional normalization needed here
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
     end
 end
 
