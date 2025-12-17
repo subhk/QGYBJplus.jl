@@ -264,6 +264,9 @@ Named tuple with coefficients:
 - `rho_s`: Unity density at staggered points (length nz)
 """
 function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_sq::Real=T(1.0)) where T
+    # Check for empty profile
+    length(N2_profile) > 0 || error("Empty N2_profile: cannot compute stratification coefficients")
+
     nz = G.nz
     dz = nz > 1 ? (G.z[2] - G.z[1]) : T(G.Lz / nz)
 
@@ -411,7 +414,13 @@ Check that stratification profile is physically reasonable.
 function validate_stratification(N2_profile::Vector{T}) where T
     warnings = String[]
     errors = String[]
-    
+
+    # Check for empty profile
+    if length(N2_profile) == 0
+        push!(errors, "Empty N² profile - no stratification data provided")
+        return errors, warnings
+    end
+
     # Check for negative N²
     if any(N2_profile .<= 0)
         push!(errors, "Negative or zero N² values detected - stratification unstable")
@@ -445,6 +454,9 @@ end
 Compute first baroclinic deformation radius.
 """
 function compute_deformation_radius(N2_profile::Vector{T}, f0::Real, H::Real) where T
+    # Check for empty profile
+    length(N2_profile) > 0 || error("Empty N2_profile: cannot compute deformation radius")
+
     # Compute N_avg as depth-weighted average
     N_avg = sqrt(sum(N2_profile) / length(N2_profile))
     
