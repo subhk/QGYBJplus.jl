@@ -640,13 +640,20 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         f = 1.0  # Default
     end
 
-    # Get N² profile - use provided profile or default to constant
+    # Get N² value from params (default to 1.0 if not available)
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile - use provided profile, or create constant profile from params.N²
     if N2_profile === nothing
-        N2_profile = ones(eltype(S.psi), nz)
+        N2_profile = fill(eltype(S.psi)(N2_const), nz)
     else
         if length(N2_profile) != nz
-            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=1.0"
-            N2_profile = ones(eltype(S.psi), nz)
+            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=$(N2_const)"
+            N2_profile = fill(eltype(S.psi)(N2_const), nz)
         end
     end
 
@@ -654,10 +661,13 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Step 1: Recover A from B = L⁺A using centralized YBJ+ inversion
     # a(z) = f²/N²(z) is the elliptic coefficient
+    # NOTE: This re-inverts B→A with the given N² profile. If the timestep already
+    # computed A with a different stratification, this will overwrite S.A and S.C.
+    # Ensure N2_profile matches what was used in the timestep!
     a_vec = similar(G.z)
     f_sq = f^2
     @inbounds for k in eachindex(a_vec)
-        a_vec[k] = f_sq / N2_profile[k]  # a = f²/N² (was incorrectly 1/N²)
+        a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
     end
     invert_B_to_A!(S, G, params, a_vec)
     Aₖ = S.A
