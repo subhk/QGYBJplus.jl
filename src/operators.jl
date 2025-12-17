@@ -431,7 +431,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 end
 
 # 2D decomposition version with transposes
-function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace)
+function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get stratification parameters
@@ -460,9 +460,9 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     work_z = workspace !== nothing && hasfield(typeof(workspace), :work_z) ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
     wk_z = allocate_z_pencil(G, ComplexF64)
 
-    # Step 1: Compute RHS in xy-pencil configuration
+    # Step 1: Compute RHS in xy-pencil configuration with proper dealiasing
     rhsk = similar(S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans)
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
 
     # Step 2: Transpose RHS to z-pencil
     transpose_to_z_pencil!(work_z, rhsk, G)
@@ -625,24 +625,35 @@ This represents vertical motion induced by:
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
 - `L`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
+  Use this when A/C were already computed in the timestep with the correct stratification.
+  Default: false (re-inverts for safety).
 
 # Fortran Correspondence
 Matches YBJ vertical velocity computation in the Fortran implementation.
+
+# Important Note
+When `skip_inversion=false` (default), this function re-inverts B→A using the provided
+N2_profile (or constant N² fallback). If the timestep computed A/C with a different
+stratification, this will give inconsistent results. For runs with nonuniform N²,
+either:
+1. Pass `skip_inversion=true` and ensure A/C are already computed correctly
+2. Pass the exact same N2_profile that was used in the timestep
 """
-function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, L=nothing, workspace=nothing)
+function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, L=nothing, workspace=nothing, skip_inversion=false)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace)
+        _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)
     else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile)
+        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile)
+function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -680,15 +691,21 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Step 1: Recover A from B = L⁺A using centralized YBJ+ inversion
     # a(z) = f²/N²(z) is the elliptic coefficient
-    # NOTE: This re-inverts B→A with the given N² profile. If the timestep already
-    # computed A with a different stratification, this will overwrite S.A and S.C.
-    # Ensure N2_profile matches what was used in the timestep!
-    a_vec = similar(G.z)
-    f_sq = f^2
-    @inbounds for k in eachindex(a_vec)
-        a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
+    if skip_inversion
+        # Use existing S.A and S.C computed by the timestep with correct stratification.
+        # This avoids re-inverting with a potentially different (constant) N² profile.
+        @assert !all(iszero, parent(S.A)) "skip_inversion=true but S.A is all zeros - compute A first"
+    else
+        # Re-invert B→A with the given N² profile.
+        # WARNING: If the timestep computed A with a different stratification,
+        # this will give inconsistent results.
+        a_vec = similar(G.z)
+        f_sq = f^2
+        @inbounds for k in eachindex(a_vec)
+            a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
+        end
+        invert_B_to_A!(S, G, params, a_vec)
     end
-    invert_B_to_A!(S, G, params, a_vec)
     Aₖ = S.A
     Aₖ_arr = parent(Aₖ)
 
