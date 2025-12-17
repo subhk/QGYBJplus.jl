@@ -927,7 +927,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         plans = plan_transforms!(G)
     end
 
-    # Compute horizontal derivatives of A: ∂A/∂x, ∂A/∂y
+    # Compute horizontal derivatives of A: ∂A/∂x, ∂A/∂y in spectral space
     dA_dxₖ = similar(S.A)
     dA_dyₖ = similar(S.A)
     dA_dxₖ_arr = parent(dA_dxₖ)
@@ -942,44 +942,38 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         dA_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_arr[i_local, j_local, k]
     end
 
-    # Compute wave velocity contributions in spectral space
-    uʷₖ = similar(S.A)
-    vʷₖ = similar(S.A)
-    uʷₖ_arr = parent(uʷₖ)
-    vʷₖ_arr = parent(vʷₖ)
+    # Transform A, ∂A/∂x, ∂A/∂y to physical space
+    # The Stokes drift formula u_wave = 2*Re[A* ∂A/∂x] is a product of fields
+    # and MUST be computed in physical space, not spectral space
+    Aᵣ = similar(S.A)
+    dA_dxᵣ = similar(S.A)
+    dA_dyᵣ = similar(S.A)
 
+    fft_backward!(Aᵣ, S.A, plans)
+    fft_backward!(dA_dxᵣ, dA_dxₖ, plans)
+    fft_backward!(dA_dyᵣ, dA_dyₖ, plans)
+
+    Aᵣ_arr = parent(Aᵣ)
+    dA_dxᵣ_arr = parent(dA_dxᵣ)
+    dA_dyᵣ_arr = parent(dA_dyᵣ)
+
+    # Compute Stokes drift in physical space:
+    # u_wave = 2 * Re[A* ∂A/∂x] = ∂|A|²/∂x (gradient of wave energy density)
+    # v_wave = 2 * Re[A* ∂A/∂y] = ∂|A|²/∂y
+    # Note: fft_backward! is normalized, so Aᵣ and derivatives are in physical space
+
+    # Add wave velocities to existing QG velocities directly in physical space
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-        if kₕ² > 0  # Dealias
-            uʷₖ_arr[i_local, j_local, k] = 2.0 * real(conj(Aₖ_arr[i_local, j_local, k]) * dA_dxₖ_arr[i_local, j_local, k])
-            vʷₖ_arr[i_local, j_local, k] = 2.0 * real(conj(Aₖ_arr[i_local, j_local, k]) * dA_dyₖ_arr[i_local, j_local, k])
-        else
-            uʷₖ_arr[i_local, j_local, k] = 0.0
-            vʷₖ_arr[i_local, j_local, k] = 0.0
-        end
-    end
+        A_phys = Aᵣ_arr[i_local, j_local, k]
+        dAdx_phys = dA_dxᵣ_arr[i_local, j_local, k]
+        dAdy_phys = dA_dyᵣ_arr[i_local, j_local, k]
 
-    # Transform to real space
-    uʷᵣ = similar(S.u)
-    vʷᵣ = similar(S.v)
+        # Stokes drift: u_wave = 2 * Re[conj(A) * ∂A/∂x]
+        u_wave = 2.0 * real(conj(A_phys) * dAdx_phys)
+        v_wave = 2.0 * real(conj(A_phys) * dAdy_phys)
 
-    fft_backward!(uʷᵣ, uʷₖ, plans)
-    fft_backward!(vʷᵣ, vʷₖ, plans)
-
-    uʷᵣ_arr = parent(uʷᵣ)
-    vʷᵣ_arr = parent(vʷᵣ)
-
-    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
-    # No additional normalization needed here
-
-    # Add wave velocities to existing QG velocities
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] += real(uʷᵣ_arr[i_local, j_local, k])
-        v_arr[i_local, j_local, k] += real(vʷᵣ_arr[i_local, j_local, k])
+        u_arr[i_local, j_local, k] += u_wave
+        v_arr[i_local, j_local, k] += v_wave
     end
 
     return S
