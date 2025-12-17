@@ -550,6 +550,7 @@ include("ybj_normal.jl")    # sumB!, compute_sigma, compute_A! for normal YBJ
 
 # Diagnostics
 include("diagnostics.jl")   # Energy diagnostics, omega equation RHS
+include("energy_diagnostics.jl")  # Separate energy output files (wave KE, PE, mean flow KE)
 
 # Configuration and I/O (must be included before model_interface.jl)
 include("config.jl")            # Configuration types (DomainConfig, etc.)

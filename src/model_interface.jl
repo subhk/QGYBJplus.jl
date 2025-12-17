@@ -12,6 +12,10 @@ using ..QGYBJ: first_projection_step!, leapfrog_step!
 using ..QGYBJ: invert_q_to_psi!, compute_velocities!
 using ..QGYBJ: local_to_global
 
+# Energy diagnostics module for separate file output
+using ..QGYBJ.EnergyDiagnostics: EnergyDiagnosticsManager, should_output, record_energies!
+using ..QGYBJ.EnergyDiagnostics: write_all_energy_files!, finalize!
+
 # Note: config.jl, netcdf_io.jl, initialization.jl, stratification.jl, parallel_interface.jl
 # are included in QGYBJ.jl before this file to avoid duplicate includes
 
@@ -46,9 +50,12 @@ mutable struct QGYBJSimulation{T}
     # Time stepping
     current_time::T
     time_step::Int
-    
+
     # Diagnostics
     diagnostics::Dict{String, Any}
+
+    # Energy diagnostics manager (saves to diagnostic/ folder)
+    energy_diagnostics_manager::EnergyDiagnosticsManager{T}
 end
 
 """
