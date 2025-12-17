@@ -330,13 +330,13 @@ The domain is split in the x-direction across MPI ranks:
 ```
 ┌─────────────────────────────────────────────────────┐
 │           Domain: [0, Lx] × [0, Ly] × [0, Lz]       │
-│                                                      │
+│                                                     │
 │   ┌──────────┬──────────┬──────────┬──────────┐     │
 │   │  Rank 0  │  Rank 1  │  Rank 2  │  Rank 3  │     │
 │   │x∈[0,Lx/4)│x∈[Lx/4,  │x∈[Lx/2,  │x∈[3Lx/4, │     │
 │   │          │   Lx/2)  │  3Lx/4)  │   Lx)    │     │
 │   └──────────┴──────────┴──────────┴──────────┘     │
-│                                                      │
+│                                                     │
 │   Each rank owns particles within its x-range       │
 └─────────────────────────────────────────────────────┘
 ```
@@ -350,16 +350,16 @@ For interpolation near domain boundaries, velocity data is exchanged between nei
 │                     HALO EXCHANGE                           │
 │                                                             │
 │   Rank 0                        Rank 1                      │
-│   ┌─────────────────┐          ┌─────────────────┐         │
-│   │ Local │  Right  │          │ Left  │ Local   │         │
-│   │ Data  │  Halo   │  ←────→  │ Halo  │ Data    │         │
-│   │       │ (ghost) │          │(ghost)│         │         │
-│   └───────┴─────────┘          └───────┴─────────┘         │
+│   ┌─────────────────┐          ┌─────────────────┐          │
+│   │ Local │  Right  │          │ Left  │ Local   │          │
+│   │ Data  │  Halo   │  ←────→  │ Halo  │ Data    │          │
+│   │       │ (ghost) │          │(ghost)│         │          │
+│   └───────┴─────────┘          └───────┴─────────┘          │
 │                                                             │
-│   • Rank 0 sends RIGHT edge → Rank 1's LEFT halo           │
-│   • Rank 1 sends LEFT edge  → Rank 0's RIGHT halo          │
+│   • Rank 0 sends RIGHT edge → Rank 1's LEFT halo            │
+│   • Rank 1 sends LEFT edge  → Rank 0's RIGHT halo           │
 │                                                             │
-│   Halo width = 2 cells (enough for trilinear/tricubic)     │
+│   Halo width = 2 cells (enough for trilinear/tricubic)      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
