@@ -11,7 +11,7 @@ using ..QGYBJ: plan_transforms!, init_grid, init_state
 using ..QGYBJ: first_projection_step!, leapfrog_step!
 using ..QGYBJ: invert_q_to_psi!, compute_velocities!
 using ..QGYBJ: local_to_global
-using ..QGYBJ: a_ell_ut, dealias_mask, init_workspace
+using ..QGYBJ: a_ell_ut, dealias_mask
 using ..QGYBJ: OutputManager, write_state_file, OutputConfig, ParallelConfig
 
 # Energy diagnostics module for separate file output
@@ -848,8 +848,10 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     is_root = !is_mpi || mpi_config.is_root
 
     # Setup workspace if not provided
-    if workspace === nothing
-        workspace = is_mpi ? init_mpi_workspace(G, mpi_config) : init_workspace(G)
+    # For MPI mode, init_mpi_workspace provides pre-allocated arrays for transposes
+    # For serial mode, workspace=nothing is fine (arrays allocated on demand)
+    if workspace === nothing && is_mpi
+        workspace = init_mpi_workspace(G, mpi_config)
     end
 
     # Setup parallel config if not provided (for I/O)
