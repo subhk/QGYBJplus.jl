@@ -342,23 +342,32 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::ParticleConfig3D{T}) where T
     print_box_top(io, "ParticleConfig3D{$T}", width)
 
     print_section_header(io, "Distribution", width)
-    print_box_row(io, "Type", string(cfg.distribution.type), width; key_width)
-    n_particles = cfg.distribution.n_total
-    print_box_row(io, "Total particles", format_number(n_particles), width; key_width)
+    print_box_row(io, "Type", string(cfg.distribution_type), width; key_width)
+    n_total = cfg.nx_particles * cfg.ny_particles * cfg.nz_particles
+    print_box_row(io, "Grid (nx×ny×nz)", "$(cfg.nx_particles)×$(cfg.ny_particles)×$(cfg.nz_particles)", width; key_width)
+    print_box_row(io, "Total particles", format_number(n_total), width; key_width)
+
+    print_section_header(io, "Domain", width)
+    print_box_row(io, "x range", "[$(format_number(cfg.x_min)), $(format_number(cfg.x_max))]", width; key_width)
+    print_box_row(io, "y range", "[$(format_number(cfg.y_min)), $(format_number(cfg.y_max))]", width; key_width)
+    print_box_row(io, "z range", "[$(format_number(cfg.z_min)), $(format_number(cfg.z_max))]", width; key_width)
 
     print_section_header(io, "Integration", width)
     print_box_row(io, "Method", string(cfg.integration_method), width; key_width)
     print_box_row(io, "Save interval", format_number(cfg.save_interval), width; key_width)
+    print_box_row(io, "Interpolation", string(cfg.interpolation_method), width; key_width)
 
-    print_section_header(io, "Interpolation", width)
-    print_box_row(io, "Method", string(cfg.interp_method), width; key_width)
+    print_section_header(io, "Physics", width)
+    print_box_row(io, "3D advection", format_number(cfg.use_3d_advection), width; key_width)
+    print_box_row(io, "YBJ w-velocity", format_number(cfg.use_ybj_w), width; key_width)
 
     print_box_bottom(io, width)
 end
 
 # Compact single-line show
-function Base.show(io::IO, cfg::ParticleConfig3D)
-    print(io, "ParticleConfig3D($(cfg.distribution.type), n=$(cfg.distribution.n_total))")
+function Base.show(io::IO, cfg::ParticleConfig3D{T}) where T
+    n_total = cfg.nx_particles * cfg.ny_particles * cfg.nz_particles
+    print(io, "ParticleConfig3D{$T}($(cfg.distribution_type), n=$n_total)")
 end
 
 # ============================================================================
@@ -435,4 +444,153 @@ end
 # Compact single-line show
 function Base.show(io::IO, plans::Plans)
     print(io, "Plans(FFTW)")
+end
+
+# ============================================================================
+#                       DomainConfig PRETTY PRINTING
+# ============================================================================
+
+function Base.show(io::IO, ::MIME"text/plain", cfg::DomainConfig{T}) where T
+    width = 50
+    key_width = 18
+
+    print_box_top(io, "DomainConfig{$T}", width)
+
+    print_section_header(io, "Grid Resolution", width)
+    print_box_row(io, "Points (nx×ny×nz)", format_size(cfg.nx, cfg.ny, cfg.nz), width; key_width)
+
+    print_section_header(io, "Domain Size", width)
+    print_box_row(io, "Lx", format_number(cfg.Lx), width; key_width)
+    print_box_row(io, "Ly", format_number(cfg.Ly), width; key_width)
+    print_box_row(io, "Lz", format_number(cfg.Lz), width; key_width)
+
+    if cfg.dom_x_m !== nothing
+        print_section_header(io, "Physical Size (m)", width)
+        print_box_row(io, "x", format_number(cfg.dom_x_m), width; key_width)
+        print_box_row(io, "y", format_number(cfg.dom_y_m), width; key_width)
+        print_box_row(io, "z", format_number(cfg.dom_z_m), width; key_width)
+    end
+
+    print_box_bottom(io, width)
+end
+
+function Base.show(io::IO, cfg::DomainConfig)
+    print(io, "DomainConfig($(cfg.nx)×$(cfg.ny)×$(cfg.nz))")
+end
+
+# ============================================================================
+#                       StratificationConfig PRETTY PRINTING
+# ============================================================================
+
+function Base.show(io::IO, ::MIME"text/plain", cfg::StratificationConfig{T}) where T
+    width = 50
+    key_width = 18
+
+    print_box_top(io, "StratificationConfig{$T}", width)
+
+    print_section_header(io, "Profile Type", width)
+    print_box_row(io, "Type", string(cfg.type), width; key_width)
+
+    if cfg.type == :constant_N
+        print_box_row(io, "N₀", format_number(cfg.N0), width; key_width)
+    elseif cfg.type == :skewed_gaussian
+        print_section_header(io, "Skewed Gaussian", width)
+        print_box_row(io, "N₀²", format_number(cfg.N02_sg), width; key_width)
+        print_box_row(io, "N₁²", format_number(cfg.N12_sg), width; key_width)
+        print_box_row(io, "σ", format_number(cfg.sigma_sg), width; key_width)
+        print_box_row(io, "z₀", format_number(cfg.z0_sg), width; key_width)
+        print_box_row(io, "α", format_number(cfg.alpha_sg), width; key_width)
+    elseif cfg.type == :tanh_profile
+        print_section_header(io, "Tanh Profile", width)
+        print_box_row(io, "N upper", format_number(cfg.N_upper), width; key_width)
+        print_box_row(io, "N lower", format_number(cfg.N_lower), width; key_width)
+        print_box_row(io, "z pycno", format_number(cfg.z_pycno), width; key_width)
+        print_box_row(io, "Width", format_number(cfg.width), width; key_width)
+    elseif cfg.type == :from_file && cfg.filename !== nothing
+        print_box_row(io, "File", cfg.filename, width; key_width)
+    end
+
+    print_box_bottom(io, width)
+end
+
+function Base.show(io::IO, cfg::StratificationConfig)
+    print(io, "StratificationConfig($(cfg.type))")
+end
+
+# ============================================================================
+#                       InitialConditionConfig PRETTY PRINTING
+# ============================================================================
+
+function Base.show(io::IO, ::MIME"text/plain", cfg::InitialConditionConfig{T}) where T
+    width = 50
+    key_width = 18
+
+    print_box_top(io, "InitialConditionConfig{$T}", width)
+
+    print_section_header(io, "Streamfunction (ψ)", width)
+    print_box_row(io, "Type", string(cfg.psi_type), width; key_width)
+    print_box_row(io, "Amplitude", format_number(cfg.psi_amplitude), width; key_width)
+    if cfg.psi_filename !== nothing
+        print_box_row(io, "File", cfg.psi_filename, width; key_width)
+    end
+
+    print_section_header(io, "Wave Field (L⁺A)", width)
+    print_box_row(io, "Type", string(cfg.wave_type), width; key_width)
+    print_box_row(io, "Amplitude", format_number(cfg.wave_amplitude), width; key_width)
+    if cfg.wave_filename !== nothing
+        print_box_row(io, "File", cfg.wave_filename, width; key_width)
+    end
+
+    print_box_row(io, "Random seed", format_number(cfg.random_seed), width; key_width)
+
+    print_box_bottom(io, width)
+end
+
+function Base.show(io::IO, cfg::InitialConditionConfig)
+    print(io, "InitialConditionConfig(ψ=$(cfg.psi_type), waves=$(cfg.wave_type))")
+end
+
+# ============================================================================
+#                       ModelConfig PRETTY PRINTING
+# ============================================================================
+
+function Base.show(io::IO, ::MIME"text/plain", cfg::ModelConfig{T}) where T
+    width = 55
+    key_width = 20
+
+    print_box_top(io, "ModelConfig{$T}", width)
+
+    # Domain summary
+    print_section_header(io, "Domain", width)
+    d = cfg.domain
+    print_box_row(io, "Resolution", format_size(d.nx, d.ny, d.nz), width; key_width)
+    print_box_row(io, "Size (Lx×Ly×Lz)", "$(format_number(d.Lx))×$(format_number(d.Ly))×$(format_number(d.Lz))", width; key_width)
+
+    # Time stepping
+    print_section_header(io, "Time Stepping", width)
+    print_box_row(io, "dt", format_number(cfg.dt), width; key_width)
+    print_box_row(io, "Total time", format_number(cfg.total_time), width; key_width)
+    n_steps = round(Int, cfg.total_time / cfg.dt)
+    print_box_row(io, "Steps", format_number(n_steps), width; key_width)
+
+    # Physics
+    print_section_header(io, "Physics", width)
+    print_box_row(io, "f₀ (Coriolis)", format_number(cfg.f0), width; key_width)
+    print_box_row(io, "Stratification", string(cfg.stratification.type), width; key_width)
+
+    # Initial conditions
+    print_section_header(io, "Initial Conditions", width)
+    print_box_row(io, "ψ type", string(cfg.initial_conditions.psi_type), width; key_width)
+    print_box_row(io, "Wave type", string(cfg.initial_conditions.wave_type), width; key_width)
+
+    # Output
+    print_section_header(io, "Output", width)
+    print_box_row(io, "Directory", cfg.output.output_dir, width; key_width)
+
+    print_box_bottom(io, width)
+end
+
+function Base.show(io::IO, cfg::ModelConfig)
+    d = cfg.domain
+    print(io, "ModelConfig($(d.nx)×$(d.ny)×$(d.nz), T=$(format_number(cfg.total_time)))")
 end
