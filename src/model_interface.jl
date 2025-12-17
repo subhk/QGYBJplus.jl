@@ -215,12 +215,19 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
     
     # Create unified output manager that handles both serial and parallel I/O
     output_manager = OutputManager(config.output, params, parallel_config)
-    
+
+    # Create energy diagnostics manager for separate energy files in diagnostic/ folder
+    energy_diag_manager = EnergyDiagnosticsManager(
+        config.output.output_dir;
+        output_interval=config.output.diagnostics_interval
+    )
+    @info "Energy diagnostics will be saved to: $(energy_diag_manager.diagnostic_dir)"
+
     # Initialize diagnostics
     diagnostics = Dict{String, Any}(
         "initial_conditions" => ic_diagnostics
     )
-    
+
     simulation = QGYBJSimulation{T}(
         config,
         params,
@@ -234,7 +241,8 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         N2_profile,
         T(0),  # current_time
         0,     # time_step
-        diagnostics
+        diagnostics,
+        energy_diag_manager  # Energy diagnostics manager
     )
     
     @info "Simulation setup complete"
@@ -306,9 +314,12 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
         end
     end
     
+    # Finalize energy diagnostics - write all energy files to diagnostic/ folder
+    finalize!(sim.energy_diagnostics_manager)
+
     @info "Simulation completed successfully"
     @info "Final time: $(sim.current_time)"
-    
+
     return sim
 end
 
