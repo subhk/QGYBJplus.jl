@@ -153,7 +153,6 @@ function Base.show(io::IO, ::MIME"text/plain", par::QGParams{T}) where T
     print_section_header(io, "Physical Parameters", width)
     print_box_row(io, "Coriolis (f₀)", format_number(par.f₀), width; key_width)
     print_box_row(io, "Stratification (N²)", format_number(par.N²), width; key_width)
-    print_box_row(io, "Wave-flow ratio (W2F)", format_number(par.W2F), width; key_width)
     print_box_row(io, "Stratification type", string(par.stratification), width; key_width)
 
     # Derived quantities

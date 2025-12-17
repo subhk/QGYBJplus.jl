@@ -64,7 +64,7 @@ The hyperdiffusion term is: ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2
 
 # Physical Parameters
 - `N²`: Buoyancy frequency squared (default 1.0)
-- `W2F`: (Uw/U)² - ratio of wave to flow velocity squared
+- `W2F`: DEPRECATED - not used since we solve dimensional equations where B has actual amplitude
 - `γ`: Robert-Asselin filter coefficient (typically 10⁻³)
 
 # Physics Switches
@@ -156,7 +156,7 @@ Base.@kwdef mutable struct QGParams{T}
     The elliptic coefficient is: a = f²/N² (= 1/N² when f=1)
     ==================================================================== =#
     N²::T                      # Buoyancy frequency squared (default 1.0)
-    W2F::T                     # (Uw/U)² = wave-to-flow velocity ratio squared
+    W2F::T                     # DEPRECATED: not used (dimensional equations have B with actual amplitude)
     γ::T                       # Robert-Asselin filter parameter (typ. 10⁻³)
 
     #= ====================================================================
@@ -277,7 +277,6 @@ With f₀=1, N²=1 (constant_N stratification):
 **Physical Parameters:**
 - `f₀`: Coriolis parameter f (default: 1.0)
 - `N²`: Buoyancy frequency squared (default: 1.0)
-- `W2F`: Wave-to-flow velocity ratio squared (default: 0.01)
 - `stratification`: :constant_N or :skewed_gaussian (default: :constant_N)
 
 **Hyperdiffusion:**
