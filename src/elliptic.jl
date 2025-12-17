@@ -865,11 +865,22 @@ function thomas_solve!(x, dₗ, d, dᵤ, b)
     d̃ = copy(d)
     x .= b
 
+    # Singularity tolerance
+    tol = sqrt(eps(eltype(d)))
+
     # Forward sweep
+    if abs(d̃[1]) < tol
+        error("Singular matrix in Thomas solver: d[1] ≈ 0 (|d[1]| = $(abs(d̃[1]))). " *
+              "This may indicate ill-conditioned elliptic problem from N²≈0 or degenerate wavenumber.")
+    end
     c[1] /= d̃[1]
     x[1] /= d̃[1]
     @inbounds for i in 2:n
         denom = d̃[i] - dₗ[i]*c[i-1]
+        if abs(denom) < tol
+            error("Singular matrix in Thomas solver at i=$i: |denom| = $(abs(denom)). " *
+                  "This may indicate ill-conditioned system from N²≈0 or unstable stratification.")
+        end
         c[i] /= denom
         x[i] = (x[i] - dₗ[i]*x[i-1]) / denom
     end
