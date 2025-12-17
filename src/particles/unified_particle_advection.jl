@@ -589,27 +589,38 @@ end
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
 """
-function update_velocity_fields!(tracker::ParticleTracker{T}, 
+function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid) where T
     # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
-    compute_total_velocities!(state, grid; 
+    compute_total_velocities!(state, grid;
                               plans=tracker.plans,
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w)
-    
+
     # Copy to tracker workspace
-    tracker.u_field .= state.u
-    tracker.v_field .= state.v
-    tracker.w_field .= state.w
-    
+    # Use parent() to extract raw array from PencilArrays in parallel mode
+    # This ensures compatibility with both serial (Array) and parallel (PencilArray) modes
+    u_data = parent(state.u)
+    v_data = parent(state.v)
+    w_data = parent(state.w)
+
+    # Verify sizes match (both should be local size in parallel mode)
+    if size(u_data) != size(tracker.u_field)
+        error("Velocity field size mismatch: state has $(size(u_data)), tracker has $(size(tracker.u_field))")
+    end
+
+    tracker.u_field .= u_data
+    tracker.v_field .= v_data
+    tracker.w_field .= w_data
+
     # Exchange halo data for cross-domain interpolation
     if tracker.is_parallel && tracker.halo_info !== nothing
-        exchange_velocity_halos!(tracker.halo_info, 
-                               tracker.u_field, 
-                               tracker.v_field, 
+        exchange_velocity_halos!(tracker.halo_info,
+                               tracker.u_field,
+                               tracker.v_field,
                                tracker.w_field)
     end
-    
+
     return tracker
 end
 
