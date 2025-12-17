@@ -283,10 +283,12 @@ mutable struct ParticleTracker{T<:AbstractFloat}
 
         # Set up transform plans (using unified interface)
         plans = plan_transforms!(grid, parallel_config)
-        
-        # Set up halo exchange system for parallel runs
-        halo_info = is_parallel ? setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T) : nothing
-        
+
+        # Defer halo exchange setup until first velocity update
+        # This allows us to get actual local dimensions from State arrays
+        # (which may differ from 1D decomposition assumption in 2D pencil decomposition)
+        halo_info = nothing  # Will be set up lazily in update_velocity_fields!
+
         new{T}(
             config, particles,
             grid.nx, grid.ny, grid.nz,
@@ -306,13 +308,18 @@ end
 ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
 
 """
-    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T)
+    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing)
 
 Helper function to set up halo exchange system.
+
+# Arguments
+- `local_dims`: Tuple (nx_local, ny_local, nz_local) for 2D pencil decomposition.
+                If nothing, assumes 1D decomposition in x.
 """
-function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T}) where T
+function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
+                                     local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing) where T
     try
-        return HaloInfo{T}(grid, rank, nprocs, comm)
+        return HaloInfo{T}(grid, rank, nprocs, comm; local_dims=local_dims)
     catch e
         @warn "Failed to set up halo exchange: $e"
         return nothing
@@ -588,6 +595,8 @@ end
 
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
+
+Handles 2D pencil decomposition by getting actual local dimensions from State arrays.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid) where T
@@ -597,21 +606,33 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w)
 
-    # Copy to tracker workspace
-    # Use parent() to extract raw array from PencilArrays in parallel mode
-    # This ensures compatibility with both serial (Array) and parallel (PencilArray) modes
+    # Get actual local dimensions from State arrays
+    # This handles both serial (full grid) and parallel (2D pencil decomposition)
     u_data = parent(state.u)
     v_data = parent(state.v)
     w_data = parent(state.w)
+    local_dims = size(u_data)
+    nx_local, ny_local, nz_local = local_dims
 
-    # Verify sizes match (both should be local size in parallel mode)
-    if size(u_data) != size(tracker.u_field)
-        error("Velocity field size mismatch: state has $(size(u_data)), tracker has $(size(tracker.u_field))")
+    # Resize tracker velocity fields if needed (first call or dimension change)
+    if size(tracker.u_field) != local_dims
+        tracker.u_field = zeros(T, nx_local, ny_local, nz_local)
+        tracker.v_field = zeros(T, nx_local, ny_local, nz_local)
+        tracker.w_field = zeros(T, nx_local, ny_local, nz_local)
     end
 
+    # Copy velocity data
     tracker.u_field .= u_data
     tracker.v_field .= v_data
     tracker.w_field .= w_data
+
+    # Lazily initialize halo exchange system with actual local dimensions
+    if tracker.is_parallel && tracker.halo_info === nothing
+        tracker.halo_info = setup_halo_exchange_for_grid(
+            grid, tracker.rank, tracker.nprocs, tracker.comm, T;
+            local_dims=local_dims
+        )
+    end
 
     # Exchange halo data for cross-domain interpolation
     if tracker.is_parallel && tracker.halo_info !== nothing
