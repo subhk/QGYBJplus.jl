@@ -614,10 +614,20 @@ gif(anim, "particles.gif", fps=20)
 
 See the [Particle API Reference](../api/particles.md) for complete documentation of:
 
+**Types:**
 - [`ParticleConfig`](@ref) - Configuration options
 - [`ParticleState`](@ref) - Particle positions and velocities
 - [`ParticleTracker`](@ref) - Main tracking object
-- [`create_particle_config`](@ref) - Configuration constructor
+
+**Initialization Constructors:**
+- [`particles_in_box`](@ref) - 2D box at fixed z-level
+- [`particles_in_circle`](@ref) - Circular disk at fixed z-level
+- [`particles_in_grid_3d`](@ref) - Uniform 3D grid
+- [`particles_in_layers`](@ref) - Multiple z-levels
+- [`particles_random_3d`](@ref) - Random 3D distribution
+- [`particles_custom`](@ref) - User-specified positions
+
+**Core Functions:**
 - [`initialize_particles!`](@ref) - Initialize particle positions
 - [`advect_particles!`](@ref) - Advect particles one timestep
 - [`interpolate_velocity_at_position`](@ref) - Velocity interpolation
