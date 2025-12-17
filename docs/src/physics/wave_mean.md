@@ -30,10 +30,14 @@ Near-inertial waves carry momentum and energy. When they:
 Following Xie & Vanneste (2015), the wave-induced potential vorticity is:
 
 ```math
-q^w = \frac{W2F}{f_0} \cdot \left[ \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2 \right]
+q^w = \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2
 ```
 
-where ``W2F = (U_w/U)^2`` is the wave-to-flow velocity ratio squared and ``f_0`` is the Coriolis parameter.
+where ``B`` is the complex wave envelope with units of velocity (m/s).
+
+!!! note "Dimensional Equations"
+    The model solves dimensional equations where ``B`` has actual velocity amplitude.
+    No additional scaling factors (like W2F) are needed.
 
 ### Decomposition in Real/Imaginary Parts
 
@@ -49,10 +53,10 @@ And the wave intensity:
 |B|^2 = B_R^2 + B_I^2
 ```
 
-So the complete formula is:
+So the complete formula in spectral space is:
 
 ```math
-q^w = \frac{W2F}{f_0} \cdot \left[ \left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) + \frac{k_h^2}{4} (B_R^2 + B_I^2) \right]
+q^w = \left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) + \frac{k_h^2}{4} (B_R^2 + B_I^2)
 ```
 
 Note: In spectral space, ``\nabla_h^2 \to -k_h^2``, so ``-\frac{1}{4}\nabla_h^2|B|^2 \to +\frac{k_h^2}{4}|B|^2``.
