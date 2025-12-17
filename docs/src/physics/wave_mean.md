@@ -167,11 +167,10 @@ function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
     mag2 = BRr.^2 + BIr.^2
 
     # 5. Assemble in spectral space
-    # qw = J_term - (1/4)*kh²*|B|²  (note: -∇² → +kh² in spectral)
-    qwk = (fft(qwr) - 0.25 * kh2 .* fft(mag2)) / norm
+    # qw = J_term + (1/4)*kh²*|B|²  (note: -∇² → +kh² in spectral)
+    qwk = (fft(qwr) + 0.25 * kh2 .* fft(mag2)) / norm
 
-    # 6. Scale by W2F / f₀
-    qwk .*= (par.W2F / par.f₀)
+    # Note: No additional scaling needed - B has dimensional velocity units (m/s)
 end
 ```
 
@@ -412,7 +411,7 @@ qw = compute_qw(state, grid, params, plans)
 P_exchange = -sum(psi .* jacobian(psi, qw, grid, plans))
 ```
 
-### Nondimensional Energy Scales
+### Energy Scales
 
 Using the characteristic scales:
 - Velocity: ``U`` (mean flow), ``U_w`` (waves)
@@ -421,13 +420,13 @@ Using the characteristic scales:
 
 The energy ratio scales as:
 ```math
-\frac{E^{wave}}{E^{flow}} \sim \left(\frac{U_w}{U}\right)^2 = W2F
+\frac{E^{wave}}{E^{flow}} \sim \left(\frac{U_w}{U}\right)^2
 ```
 
-Typical oceanic values:
-- Gulf Stream region: ``W2F \sim 10^{-2}`` to ``10^{-1}``
-- Open ocean: ``W2F \sim 10^{-3}``
-- After storm: ``W2F \sim 1``
+Typical oceanic values for wave-to-flow energy ratio:
+- Gulf Stream region: ``\sim 10^{-2}`` to ``10^{-1}``
+- Open ocean: ``\sim 10^{-3}``
+- After storm: ``\sim 1``
 
 ### Diagnostic Implementation
 
