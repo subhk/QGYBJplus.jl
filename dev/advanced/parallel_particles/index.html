@@ -60,29 +60,34 @@ end</code></pre><p><strong>Example</strong>: 256 grid points, 4 ranks → 64 poi
 │   nx = local grid points                                               │
 │                                                                        │
 │   Total extended size: nx + 2*hw                                       │
-└────────────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Communication-Pattern"><a class="docs-heading-anchor" href="#Communication-Pattern">Communication Pattern</a><a id="Communication-Pattern-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Pattern" title="Permalink"></a></h3><pre><code class="nohighlight hljs">┌────────────────────────────────────────────────────────────────────────┐
-│                      HALO EXCHANGE COMMUNICATION                       │
+└────────────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Communication-Pattern-(Periodic-Boundaries)"><a class="docs-heading-anchor" href="#Communication-Pattern-(Periodic-Boundaries)">Communication Pattern (Periodic Boundaries)</a><a id="Communication-Pattern-(Periodic-Boundaries)-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Pattern-(Periodic-Boundaries)" title="Permalink"></a></h3><p>For doubly-periodic domains, the halo exchange wraps around:</p><pre><code class="nohighlight hljs">┌────────────────────────────────────────────────────────────────────────┐
+│                  PERIODIC HALO EXCHANGE COMMUNICATION                  │
 │                                                                        │
-│   RANK 0                 RANK 1                 RANK 2                 │
+│   RANK 0                 RANK 1                 RANK 2 (last)          │
 │   ┌──────────────┐       ┌──────────────┐       ┌──────────────┐       │
 │   │ L │ Local│ R │       │ L │ Local│ R │       │ L │ Local│ R │       │
 │   │   │      │   │       │   │      │   │       │   │      │   │       │
 │   └───┴──────┴───┘       └───┴──────┴───┘       └───┴──────┴───┘       │
+│     ↑                                                      │           │
+│     └──────────────── Periodic wrap ──────────────────────┘           │
 │                                                                        │
-│   Communication:                                                       │
-│   ═══════════════                                                      │
+│   Interior Communication (same as before):                             │
+│   ═════════════════════════════════════                                │
+│   Rank 0 → Rank 1:  send_right → recv_left                             │
+│   Rank 1 → Rank 0:  send_left  → recv_right                            │
+│   Rank 1 → Rank 2:  send_right → recv_left                             │
+│   Rank 2 → Rank 1:  send_left  → recv_right                            │
 │                                                                        │
-│   Rank 0 → Rank 1:  send_right (R0&#39;s right edge) → recv_left (R1)      │
-│   Rank 1 → Rank 0:  send_left  (R1&#39;s left edge)  → recv_right (R0)     │
-│                                                                        │
-│   Rank 1 → Rank 2:  send_right (R1&#39;s right edge) → recv_left (R2)      │
-│   Rank 2 → Rank 1:  send_left  (R2&#39;s left edge)  → recv_right (R1)     │
+│   Periodic Boundary Communication:                                     │
+│   ════════════════════════════════                                     │
+│   Rank 2 → Rank 0:  send_right (R2&#39;s right edge) → recv_left (R0)      │
+│   Rank 0 → Rank 2:  send_left  (R0&#39;s left edge)  → recv_right (R2)     │
 │                                                                        │
 │   After exchange:                                                      │
-│   • R1&#39;s left halo contains R0&#39;s right edge data                       │
-│   • R1&#39;s right halo contains R2&#39;s left edge data                       │
-│   • Particles in R1 can interpolate using neighbor data                │
-└────────────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Implementation"><a class="docs-heading-anchor" href="#Implementation">Implementation</a><a id="Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function exchange_velocity_halos!(halo_info, u_field, v_field, w_field)
+│   • R0&#39;s left halo contains R2&#39;s right edge data (periodic wrap!)      │
+│   • R2&#39;s right halo contains R0&#39;s left edge data (periodic wrap!)      │
+│   • All particles can interpolate correctly near boundaries            │
+└────────────────────────────────────────────────────────────────────────┘</code></pre><p><strong>Key</strong>: With <code>periodic_x=true</code> (default), rank 0&#39;s left neighbor is the last rank, and the last rank&#39;s right neighbor is rank 0. This ensures correct velocity interpolation for particles near the periodic boundaries.</p><h3 id="Implementation"><a class="docs-heading-anchor" href="#Implementation">Implementation</a><a id="Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function exchange_velocity_halos!(halo_info, u_field, v_field, w_field)
     # 1. Copy local data to center of extended arrays
     copy_local_to_extended!(halo_info, u_field, v_field, w_field)
 
@@ -381,4 +386,4 @@ if rank == 0
     println(&quot;Local data start: &quot;, halo_info.u_extended[3:4, 1, 1])
 end</code></pre><h3 id="Monitor-Migration"><a class="docs-heading-anchor" href="#Monitor-Migration">Monitor Migration</a><a id="Monitor-Migration-1"></a><a class="docs-heading-anchor-permalink" href="#Monitor-Migration" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Track particles crossing boundaries
 n_migrated = sum(length.(tracker.send_buffers)) ÷ 6
-println(&quot;Rank $rank migrating $n_migrated particles&quot;)</code></pre><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../particles/">Particle Advection</a> - General particle documentation</li><li><a href="../parallel/">MPI Parallelization</a> - Overall parallel architecture</li><li><a href="../../api/particles/">API Reference</a> - Function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../particles/">« Particle Advection</a><a class="docs-footer-nextpage" href="../interpolation/">Interpolation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 17 December 2025 12:42">Wednesday 17 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+println(&quot;Rank $rank migrating $n_migrated particles&quot;)</code></pre><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../particles/">Particle Advection</a> - General particle documentation</li><li><a href="../parallel/">MPI Parallelization</a> - Overall parallel architecture</li><li><a href="../../api/particles/">API Reference</a> - Function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../particles/">« Particle Advection</a><a class="docs-footer-nextpage" href="../interpolation/">Interpolation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 17 December 2025 12:43">Wednesday 17 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
