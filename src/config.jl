@@ -322,7 +322,24 @@ function validate_config(config::ModelConfig)
     if config.f0 == 0
         push!(errors, "Coriolis parameter f0 cannot be zero (use negative values for southern hemisphere)")
     end
-    
+
+    # Stratification validation
+    supported_stratifications = (:constant_N, :skewed_gaussian)
+    if config.stratification.type ∉ supported_stratifications
+        if config.stratification.type in (:tanh_profile, :from_file)
+            push!(errors, "Stratification type :$(config.stratification.type) is not yet implemented in the solver. " *
+                         "Supported types: $(supported_stratifications)")
+        else
+            push!(errors, "Unknown stratification type :$(config.stratification.type). " *
+                         "Supported types: $(supported_stratifications)")
+        end
+    end
+
+    # N0 validation for constant_N
+    if config.stratification.type == :constant_N && config.stratification.N0 <= 0
+        push!(errors, "Stratification N0 must be positive for constant_N (got N0=$(config.stratification.N0))")
+    end
+
     # File existence checks
     if config.initial_conditions.psi_type == :from_file
         if isnothing(config.initial_conditions.psi_filename)
