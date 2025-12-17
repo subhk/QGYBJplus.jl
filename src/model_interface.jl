@@ -892,6 +892,7 @@ This is the recommended high-level interface that handles all the details of:
 - `mpi_config=nothing`: MPI configuration for parallel runs
 - `parallel_config=nothing`: Parallel I/O configuration
 - `workspace=nothing`: Pre-allocated workspace arrays
+- `N2_profile=nothing`: Optional N²(z) profile for vertical velocity computation (defaults to constant N²=1)
 - `print_progress::Bool=true`: Print progress to stdout
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
 
@@ -926,6 +927,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          mpi_config=nothing,
                          parallel_config=nothing,
                          workspace=nothing,
+                         N2_profile=nothing,
                          print_progress::Bool=true,
                          progress_interval::Int=0)
 
@@ -956,7 +958,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     L_mask = dealias_mask(G)
 
     # Initial velocity computation
-    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace)
+    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile)
 
     # Create output manager if config provided
     output_manager = nothing
@@ -970,12 +972,17 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
     end
 
-    # First projection step (Forward Euler to initialize leapfrog)
-    first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace)
-
-    # Setup leapfrog states
-    Sn = deepcopy(S)
+    # Setup leapfrog states - save initial state BEFORE advancing
+    # Snm1 = state at time 0 (initial condition)
     Snm1 = deepcopy(S)
+
+    # First projection step (Forward Euler to initialize leapfrog)
+    # Advances S from time 0 to time dt
+    first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+
+    # Sn = state at time dt (after first projection step)
+    Sn = deepcopy(S)
+    # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
     Snp1 = deepcopy(S)
 
     # Determine progress interval
@@ -1007,7 +1014,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     for step in 1:nt
         # Leapfrog step
         leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                       a=a_ell, dealias_mask=L_mask, workspace=workspace)
+                       a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
         # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
         Snm1, Sn, Snp1 = Sn, Snp1, Snm1
