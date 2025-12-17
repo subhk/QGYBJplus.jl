@@ -32,16 +32,27 @@ const ny = 128
 const nz = 64
 
 # Physical parameters from Asselin et al. (2020)
-const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹]
+const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
 const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
 
+# Domain size [m] - typical mesoscale eddy domain
+const Lx = 500e3             # 500 km horizontal domain
+const Ly = 500e3             # 500 km horizontal domain
+# Note: Vertical grid is nondimensional z ∈ [0, 2π], surface at z = 2π
+
+# Time stepping
 const n_inertial_periods = 15
-const T_inertial = 2π / f₀   # Inertial period = 2π/f [s]
+const T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
 const dt = 100.0             # Time step [s]
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
-const u0_wave = 0.3
-const sigma_z = 0.01 * 2π
+# Wave parameters
+const u0_wave = 0.05         # Wave velocity amplitude [m/s]
+const sigma_z = 0.01 * 2π    # Vertical decay scale (nondimensional, surface-confined)
+
+# Flow parameters
+const U0_flow = 0.5          # Flow velocity scale [m/s]
+const psi0 = U0_flow * Lx / (2π)  # Streamfunction amplitude [m²/s]
 
 # Output settings
 const output_dir = "output_asselin"
@@ -76,10 +87,10 @@ function main()
     )
 
     # Parameters matching Asselin et al. (2020)
-    # Note: W2F is not needed since we solve dimensional equations
-    # where B has actual wave amplitude (u0_wave)
+    # Dimensional simulation with physical domain size
     par = QGYBJ.default_params(
         nx = nx, ny = ny, nz = nz,
+        Lx = Lx, Ly = Ly,      # Domain size [m]
         dt = dt, nt = nt,
         f₀ = f₀,               # Coriolis parameter [s⁻¹]
         N² = N²,               # Buoyancy frequency squared [s⁻²]
@@ -96,18 +107,20 @@ function main()
 
     local_range = QGYBJ.get_local_range_xy(G)
 
-    # Set up dipole: ψ = sin(x - π/2) cos(y)
+    # Set up dipole: ψ = ψ₀ × sin(2πx/Lx - π/2) × cos(2πy/Ly)
+    # This creates a barotropic dipole eddy with velocity scale U0_flow
     if is_root; println("\nSetting up dipole..."); end
     psi_local = parent(S.psi)
     for k_local in axes(psi_local, 3)
         k_global = local_range[3][k_local]
         for j_local in axes(psi_local, 2)
             j_global = local_range[2][j_local]
-            y = (j_global - 1) * G.dy
+            y = (j_global - 1) * G.dy  # Physical y coordinate [m]
             for i_local in axes(psi_local, 1)
                 i_global = local_range[1][i_local]
-                x = (i_global - 1) * G.dx
-                psi_local[i_local, j_local, k_local] = complex(sin(x - π/2) * cos(y))
+                x = (i_global - 1) * G.dx  # Physical x coordinate [m]
+                # Dimensional streamfunction [m²/s]
+                psi_local[i_local, j_local, k_local] = complex(psi0 * sin(2π*x/Lx - π/2) * cos(2π*y/Ly))
             end
         end
     end
@@ -127,18 +140,20 @@ function main()
         end
     end
 
-    # Set up wave IC: surface-confined, (0,0) mode only
+    # Set up wave IC: surface-confined, horizontally uniform (k=0 mode only)
+    # Wave envelope B has amplitude u0_wave [m/s] at surface, decaying with depth
     if is_root; println("Setting up waves..."); end
     B_local = parent(S.B)
     for k_local in axes(B_local, 3)
         k_global = local_range[3][k_local]
-        depth = 2π - G.z[k_global]
+        depth = 2π - G.z[k_global]  # Distance from surface (nondimensional)
         wave_profile = exp(-(depth^2) / (sigma_z^2))
         for j_local in axes(B_local, 2)
             j_global = local_range[2][j_local]
             for i_local in axes(B_local, 1)
                 i_global = local_range[1][i_local]
                 if i_global == 1 && j_global == 1
+                    # B in spectral space: k=0 mode scaled by (nx*ny) for FFT normalization
                     B_local[i_local, j_local, k_local] = u0_wave * wave_profile * (nx * ny)
                 else
                     B_local[i_local, j_local, k_local] = 0.0
