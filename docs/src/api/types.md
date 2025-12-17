@@ -39,11 +39,12 @@ Note: Type Unicode characters using `\` + name + `<tab>` in Julia REPL (e.g., `f
 ### Constructors
 
 ```julia
-# Default parameters
-params = default_params()
+# Domain size is REQUIRED (no defaults)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
 
-# Custom parameters
+# Custom parameters with domain size
 params = default_params(;
+    Lx = 500e3, Ly = 500e3, Lz = 4000.0,  # Domain size (REQUIRED)
     f₀ = 1.0,
     N² = 1.0,
     ybj_plus = true,
@@ -55,8 +56,9 @@ params = default_params(;
 ### Example
 
 ```julia
-# High-resolution parameters
+# High-resolution parameters (domain size REQUIRED)
 params = default_params(;
+    Lx = 500e3, Ly = 500e3, Lz = 4000.0,
     ybj_plus = true,
     no_feedback = false,
     νₕ₂ = 1e-12,

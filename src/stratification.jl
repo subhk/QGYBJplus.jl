@@ -227,13 +227,12 @@ Compute N² profile on model grid.
 """
 function compute_stratification_profile(profile::StratificationProfile{T}, G::Grid) where T
     N2_profile = zeros(T, G.nz)
-    dz = 2π / G.nz  # Assuming domain [0, 2π] - adjust as needed
-    
+
     for k in 1:G.nz
-        z = (k - 1) * dz
+        z = G.z[k]  # Use actual grid z-values
         N2_profile[k] = evaluate_N2(profile, z)
     end
-    
+
     return N2_profile
 end
 
@@ -266,7 +265,7 @@ Named tuple with coefficients:
 """
 function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_sq::Real=T(1.0)) where T
     nz = G.nz
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : T(2π / nz)
+    dz = nz > 1 ? (G.z[2] - G.z[1]) : T(G.Lz / nz)
 
     # Initialize coefficient arrays (following Fortran init_base_state)
     # Unstaggered (at cell centers)
@@ -338,57 +337,69 @@ function load_stratification_from_file(filename::String)
 end
 
 """
-    create_standard_profiles()
+    create_standard_profiles(Lz::Real)
 
 Create some standard stratification profiles for testing.
+
+# Arguments
+- `Lz`: Domain depth in meters (REQUIRED)
+
+# Returns
+Dictionary of standard stratification profiles with keys:
+- `:constant`: Constant N² = 1.0
+- `:strong`: Strong stratification N² = 5.0
+- `:weak`: Weak stratification N² = 0.2
+- `:pycnocline`: Tanh profile (pycnocline-like)
+- `:ocean`: Exponential profile (ocean-like)
+- `:two_layer`: Piecewise two-layer profile
 """
-function create_standard_profiles()
+function create_standard_profiles(Lz::Real)
     T = Float64
+
     profiles = Dict{Symbol, StratificationProfile{T}}()
-    
+
     # Constant stratification
     profiles[:constant] = ConstantN{T}(1.0)
-    
-    # Strong stratification  
+
+    # Strong stratification
     profiles[:strong] = ConstantN{T}(5.0)
-    
+
     # Weak stratification
     profiles[:weak] = ConstantN{T}(0.2)
-    
-    # Tropopause-like
-    profiles[:pycnocline] = TanhProfile{T}(0.01, 0.025, 0.6, 0.05)
-    
-    # Ocean-like (exponential)
-    profiles[:ocean] = ExponentialProfile{T}(0.02, 0.3, 0.001)
-    
-    # Two-layer
+
+    # Pycnocline-like (positions scaled by Lz)
+    profiles[:pycnocline] = TanhProfile{T}(0.01, 0.025, 0.6 * Lz, 0.05 * Lz)
+
+    # Ocean-like (exponential, scale height relative to Lz)
+    profiles[:ocean] = ExponentialProfile{T}(0.02, 0.3 * Lz, 0.001)
+
+    # Two-layer (interfaces scaled by Lz)
     profiles[:two_layer] = PiecewiseProfile{T}(
-        [0.0, 0.5, 2π],  # interfaces
-        [0.01, 0.03]     # N values
+        T[0.0, 0.5 * Lz, Lz],  # interfaces at 0, mid-depth, bottom
+        T[0.01, 0.03]          # N values
     )
-    
-    # Skewed Gaussian (test1 parameters)
-    profiles[:test1] = SkewedGaussian{T}(
-        0.537713935783168,
-        2.684198470106461, 
-        0.648457170048730,
-        6.121537923499139,
-        -5.338431587899242
-    )
-    
+
     return profiles
 end
 
 """
-    plot_stratification_profile(profile::StratificationProfile, nz::Int=100)
+    plot_stratification_profile(profile::StratificationProfile, Lz::Real; nz::Int=100)
 
 Generate data for plotting stratification profile.
+
+# Arguments
+- `profile`: Stratification profile to plot
+- `Lz`: Domain depth in meters (REQUIRED)
+- `nz`: Number of points for plotting (default: 100)
+
+# Returns
+Tuple of (z_vals, N2_vals, N_vals) for plotting
 """
-function plot_stratification_profile(profile::StratificationProfile{T}, nz::Int=100) where T
-    z_vals = LinRange(0, 2π, nz)
+function plot_stratification_profile(profile::StratificationProfile{T}, Lz::Real; nz::Int=100) where T
+    z_vals = LinRange(0, Lz, nz)
     N2_vals = [evaluate_N2(profile, z) for z in z_vals]
     N_vals = sqrt.(N2_vals)
-    
+
     return collect(z_vals), N2_vals, N_vals
 end
 

@@ -8,10 +8,12 @@ extracting slices.
 ```julia
 using QGYBJ
 
-G, S, plans, a = setup_model()
+# Create parameters with domain size (REQUIRED)
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
+G, S, plans, a = setup_model(par)
 
 # Invert q → ψ and compute omega‑equation RHS
-invert_q_to_psi!(S, G; a, par=default_params())
+invert_q_to_psi!(S, G; a, par=par)
 rhs = similar(S.psi)
 omega_eqn_rhs!(rhs, S.psi, G, plans)
 

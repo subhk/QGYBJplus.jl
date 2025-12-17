@@ -25,9 +25,9 @@ result = run_simple_simulation(config)
 ### Manual Control
 
 ```julia
-# Setup
+# Setup with domain size (REQUIRED)
 grid = Grid(nx=64, ny=64, nz=32)
-params = default_params()
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
 state = create_state(grid)
 initialize_random_flow!(state, grid)
 initialize_random_waves!(state, grid)
@@ -261,6 +261,7 @@ using JLD2
 
 function run_production(;
     nx, ny, nz, dt, nsteps,
+    Lx, Ly, Lz,  # Domain size is REQUIRED
     output_interval=100,
     checkpoint_interval=1000,
     output_dir="output"
@@ -268,7 +269,7 @@ function run_production(;
     # Setup
     mkpath(output_dir)
     grid = Grid(nx=nx, ny=ny, nz=nz)
-    params = default_params()
+    params = default_params(Lx=Lx, Ly=Ly, Lz=Lz)  # Domain size is REQUIRED
     state = create_state(grid)
     initialize_random_flow!(state, grid)
     initialize_random_waves!(state, grid)

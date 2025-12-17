@@ -43,7 +43,7 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 
 # Domain Parameters
 - `nx, ny, nz`: Grid resolution in x, y, z directions
-- `Lx, Ly, Lz`: Domain size in x, y, z (2π for nondimensional, or meters for dimensional)
+- `Lx, Ly, Lz`: Domain size in x, y, z in meters (REQUIRED - no default)
 
 # Time Stepping
 - `dt`: Time step size
@@ -90,7 +90,7 @@ For the skewed Gaussian N²(z) profile:
 
 # Example
 ```julia
-par = default_params(nx=128, ny=128, nz=64, dt=0.001, nt=10000)
+par = default_params(nx=128, ny=128, nz=64, Lx=500e3, Ly=500e3, Lz=4000.0, dt=0.001, nt=10000)
 ```
 
 See also: [`default_params`](@ref), [`with_density_profiles`](@ref)
@@ -102,9 +102,9 @@ Base.@kwdef mutable struct QGParams{T}
     nx::Int                    # Number of grid points in x (horizontal)
     ny::Int                    # Number of grid points in y (horizontal)
     nz::Int                    # Number of grid points in z (vertical)
-    Lx::T                      # Domain size in x [m] (or 2π for nondimensional)
-    Ly::T                      # Domain size in y [m] (or 2π for nondimensional)
-    Lz::T                      # Domain size in z [m] (or 2π for nondimensional)
+    Lx::T                      # Domain size in x [m] (REQUIRED)
+    Ly::T                      # Domain size in y [m] (REQUIRED)
+    Lz::T                      # Domain size in z [m] (REQUIRED)
 
     #= ====================================================================
                             TIME STEPPING
@@ -271,7 +271,7 @@ With f₀=1, N²=1 (constant_N stratification):
 
 **Domain and Time:**
 - `nx, ny, nz`: Grid resolution (default: 64)
-- `Lx, Ly, Lz`: Domain size (default: 2π for all)
+- `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no default)
 - `dt`: Time step (default: 0.001)
 - `nt`: Number of steps (default: 10000)
 
@@ -297,22 +297,23 @@ With f₀=1, N²=1 (constant_N stratification):
 
 # Example
 ```julia
-# Basic usage - f₀=1, N²=1 by default
-par = default_params()
+# Basic dimensional setup - domain size is REQUIRED
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
 
 # Custom resolution with steady flow
-par = default_params(nx=128, ny=128, nz=64, fixed_flow=true)
+par = default_params(nx=128, ny=128, nz=64, Lx=500e3, Ly=500e3, Lz=4000.0, fixed_flow=true)
 
 # Custom stratification (stronger N²)
-par = default_params(N²=4.0)  # Dispersion = 4/(2×1) = 2.0
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, N²=4.0)
 
 # Enable wave feedback on mean flow
-par = default_params(no_wave_feedback=false)
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, no_wave_feedback=false)
 ```
 
 See also: [`QGParams`](@ref)
 """
-function default_params(; nx=64, ny=64, nz=64, Lx=2π, Ly=2π, Lz=2π,
+function default_params(; nx=64, ny=64, nz=64,
+                           Lx::Real, Ly::Real, Lz::Real,  # REQUIRED - no defaults
                            dt=1e-3, nt=10_000, f₀=1.0, N²=1.0,
                            W2F=0.01, γ=1e-3,
                            νₕ=0.0, νᵥ=0.0,

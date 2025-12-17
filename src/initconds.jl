@@ -10,7 +10,7 @@ Populate real-space ψ with a random-phase Gaussian ring at |k|≈initial_k, the
 apply optional vertical structure: 0=QG-consistent kz~kh, 1=linear in z,
 2=constant kz=1. Returns S with ψ set in spectral space.
 """
-function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_vert_structure=0, par::QGParams=default_params())
+function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_vert_structure=0)
     nx, ny, nz = G.nx, G.ny, G.nz
     # Build ψ in real space then FFT to spectral
     ψᵣ = zeros(Float64, nx, ny, nz)
@@ -25,16 +25,20 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
         for k in 1:nz, i in 1:nx, j in 1:ny
             z = G.z[k]
             phase = phase_for(ikₓ, ikᵧ)
+            # Horizontal phase: uses normalized coordinates (domain-independent)
+            horiz_phase = ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + phase
             if linear_vert_structure == 1
-                # linear in z around z₀ = π (center of domain)
-                z₀ = π
-                ψᵣ[i,j,k] += (z - z₀) * amp * cos(ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + phase)
+                # Linear in z around center of domain
+                z₀ = G.Lz / 2
+                ψᵣ[i,j,k] += (z - z₀) * amp * cos(horiz_phase)
             elseif linear_vert_structure == 2
-                kz = 1.0
-                ψᵣ[i,j,k] += amp * cos(ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + kz*z + phase)
+                # Single vertical mode
+                kz = 2π / G.Lz
+                ψᵣ[i,j,k] += amp * cos(horiz_phase + kz*z)
             else
-                kz = kₕ  # Normalized (f = N = 1)
-                ψᵣ[i,j,k] += amp * cos(ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + kz*z + phase)
+                # QG-consistent: kz ~ kh (scaled to domain)
+                kz = kₕ * 2π / G.Lz
+                ψᵣ[i,j,k] += amp * cos(horiz_phase + kz*z)
             end
         end
     end

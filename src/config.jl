@@ -11,22 +11,26 @@ using ..QGYBJ: QGParams, Grid, State
     DomainConfig
 
 Configuration for computational domain.
+
+# Fields
+- `nx, ny, nz`: Grid resolution (default: 64)
+- `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no default)
+
+# Example
+```julia
+domain = DomainConfig{Float64}(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
+```
 """
 Base.@kwdef struct DomainConfig{T}
     # Grid resolution
     nx::Int = 64
     ny::Int = 64
     nz::Int = 64
-    
-    # Domain size
-    Lx::T = 2π
-    Ly::T = 2π
-    Lz::T = 2π
-    
-    # Physical domain size (optional, for dimensional analysis)
-    dom_x_m::Union{T,Nothing} = nothing  # meters
-    dom_y_m::Union{T,Nothing} = nothing  # meters  
-    dom_z_m::Union{T,Nothing} = nothing  # meters
+
+    # Domain size (REQUIRED - no defaults)
+    Lx::T
+    Ly::T
+    Lz::T
 end
 
 """
@@ -144,21 +148,23 @@ Base.@kwdef struct ModelConfig{T}
 end
 
 """
-    create_domain_config(; kwargs...)
+    create_domain_config(; Lx, Ly, Lz, kwargs...)
 
 Create a domain configuration with user-friendly parameters.
 
+# Arguments
+- `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no defaults)
+- `nx, ny, nz`: Grid resolution (default: 64)
+
 # Examples
 ```julia
-# Simple cubic domain
-domain = create_domain_config(nx=128, ny=128, nz=64, Lx=4π, Ly=4π, Lz=2π)
+# Mesoscale ocean domain (500km × 500km × 4km depth)
+domain = create_domain_config(Lx=500e3, Ly=500e3, Lz=4000.0, nx=128, ny=128, nz=64)
 
-# With physical dimensions
+# Large domain (1000km × 1000km × 5km depth)
 domain = create_domain_config(
     nx=256, ny=256, nz=128,
-    dom_x_m=314159.0,  # ~314 km
-    dom_y_m=314159.0,  # ~314 km  
-    dom_z_m=4000.0     # 4 km depth
+    Lx=1000e3, Ly=1000e3, Lz=5000.0
 )
 ```
 """

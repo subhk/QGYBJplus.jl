@@ -350,9 +350,9 @@ end
 ### Full Benchmark Suite
 
 ```julia
-function benchmark_simulation(nx, ny, nz; nsteps=100)
+function benchmark_simulation(nx, ny, nz; nsteps=100, Lx=500e3, Ly=500e3, Lz=4000.0)
     grid = Grid(nx=nx, ny=ny, nz=nz)
-    params = default_params()
+    params = default_params(Lx=Lx, Ly=Ly, Lz=Lz)  # Domain size is REQUIRED
     state = create_state(grid)
     initialize_random!(state, grid)
 
