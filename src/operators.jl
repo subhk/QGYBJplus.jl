@@ -725,9 +725,11 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
     # Step 1: Recover A from B = L⁺A (invert_B_to_A! handles 2D decomposition internally)
+    # a(z) = f²/N²(z) is the elliptic coefficient
     a_vec = similar(G.z)
+    f_sq = f^2
     @inbounds for k in eachindex(a_vec)
-        a_vec[k] = one(eltype(a_vec)) / N2_profile[k]
+        a_vec[k] = f_sq / N2_profile[k]  # a = f²/N² (was incorrectly 1/N²)
     end
     # Pass workspace if available
     invert_B_to_A!(S, G, params, a_vec; workspace=workspace)
