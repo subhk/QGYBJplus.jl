@@ -476,7 +476,9 @@ export QGParams, Grid, State,
         sumB!, compute_sigma, compute_A!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz,
         # Global energy diagnostics (MPI-aware)
-        flow_kinetic_energy_global, wave_energy_global
+        flow_kinetic_energy_global, wave_energy_global,
+        # Separate energy output files (diagnostic/ folder)
+        EnergyDiagnosticsManager, record_energies!, write_all_energy_files!
 
 # Public API - New user interface
 export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig, ModelConfig,
