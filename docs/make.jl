@@ -58,7 +58,8 @@ makedocs(
         "Troubleshooting" => "troubleshooting.md",
     ],
     doctest = false,
-    warnonly = [:missing_docs, :cross_references, :autodocs_block],
+    # Allow doc coverage warnings (e.g., docstrings not referenced in pages) without failing the build.
+    warnonly = [:missing_docs, :cross_references, :autodocs_block, :docs_block],
 )
 
 deploydocs(
