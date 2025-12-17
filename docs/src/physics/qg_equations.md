@@ -156,13 +156,14 @@ When waves are present, the QG equation includes a feedback term through a modif
 The wave-induced PV ``q^w`` is computed from the wave envelope ``B``:
 
 ```math
-q^w = Ro \cdot W2F \cdot \left[ \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2 \right]
+q^w = \frac{i}{2} J(B^*, B) - \frac{1}{4} \nabla_h^2 |B|^2
 ```
 
-where:
-- ``Ro = U/(f_0 L)`` is the Rossby number
-- ``W2F = (U_w/U)^2`` is the wave-to-flow velocity ratio squared
-- ``B = B_R + i B_I`` is the complex wave envelope
+where ``B = B_R + i B_I`` is the complex wave envelope with units of velocity (m/s).
+
+!!! note "Dimensional Equations"
+    The model solves dimensional equations where ``B`` has actual velocity amplitude.
+    No additional scaling factors are needed.
 
 ### Effective PV for Inversion
 

@@ -112,7 +112,6 @@ The model uses nondimensional variables scaled by:
 Key nondimensional parameters:
 - **Rossby number**: ``Ro = U/(f_0 L)`` ≈ 0.1
 - **Burger number**: ``Bu = (N_0 H / f_0 L)^2`` ≈ 1
-- **Wave-to-flow ratio**: ``W2F = A_0/U`` (amplitude ratio)
 
 ## Prognostic vs Diagnostic Variables
 
