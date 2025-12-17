@@ -49,8 +49,9 @@ The MPI extension is automatically loaded when these packages are imported.
 ```julia
 using QGYBJ
 
-# Create configuration
+# Create configuration (Lx, Ly, Lz are REQUIRED)
 config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # 500km × 500km × 4km
     nx=64, ny=64, nz=32,
     dt=0.001,
     total_time=1.0,
@@ -73,8 +74,11 @@ using MPI, PencilArrays, PencilFFTs, QGYBJ
 MPI.Init()
 mpi_config = QGYBJ.setup_mpi_environment()
 
-# Setup distributed simulation
-params = default_params(nx=256, ny=256, nz=128)
+# Setup distributed simulation (Lx, Ly, Lz are REQUIRED)
+params = default_params(
+    nx=256, ny=256, nz=128,
+    Lx=1000e3, Ly=1000e3, Lz=5000.0  # 1000km × 1000km × 5km
+)
 grid = QGYBJ.init_mpi_grid(params, mpi_config)
 state = QGYBJ.init_mpi_state(grid, mpi_config)
 workspace = QGYBJ.init_mpi_workspace(grid, mpi_config)

@@ -1047,14 +1047,15 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         nz = config.domain.nz,
         Lx = config.domain.Lx,
         Ly = config.domain.Ly,
+        Lz = config.domain.Lz,  # Was missing!
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
-        f0 = config.f0
+        f₀ = config.f0  # Note: QGParams uses f₀, ModelConfig uses f0
     )
-    
+
     grid = init_grid(params)
-    state = init_state(params)
+    state = init_state(grid)  # Fixed: init_state takes Grid, not QGParams
     plans = plan_transforms!(grid)
-    
+
     return params, grid, state, plans
 end

@@ -41,12 +41,13 @@ These two types of motion **interact strongly**: eddies refract and focus waves,
 ```julia
 using QGYBJ
 
-# Create configuration
+# Create configuration (Lx, Ly, Lz are REQUIRED)
 config = create_simple_config(
-    nx=64, ny=64, nz=32,      # Grid size
-    dt=0.001,                  # Time step
-    total_time=1.0,            # Simulation duration
-    output_interval=100        # Output frequency
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # 500km × 500km × 4km (required)
+    nx=64, ny=64, nz=32,             # Grid size
+    dt=0.001,                         # Time step
+    total_time=1.0,                   # Simulation duration
+    output_interval=100               # Output frequency
 )
 
 # Run simulation

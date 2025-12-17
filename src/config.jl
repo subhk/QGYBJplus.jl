@@ -120,29 +120,34 @@ Base.@kwdef struct ModelConfig{T}
     stratification::StratificationConfig{T}
     initial_conditions::InitialConditionConfig{T}
     output::OutputConfig{T}
-    
+
     # Physical parameters
-    f0::T = 1.0        # Coriolis parameter
-    
+    f0::T = 1.0        # Coriolis parameter (can be negative for southern hemisphere)
+
     # Time stepping
     dt::T = 1e-3
     total_time::T = 10.0
-    
+
     # Numerical parameters
     nu_h::T = 0.0      # Horizontal viscosity
     nu_v::T = 0.0      # Vertical viscosity
-    
+
     # Model switches
+    # NOTE: These defaults differ from default_params() for historical reasons:
+    #   - ModelConfig: inviscid=true, no_wave_feedback=false (idealized runs)
+    #   - default_params: inviscid=false, no_wave_feedback=true (production runs)
+    # When using setup_model_with_config(), these ModelConfig values are used.
+    # When using default_params() directly, that function's defaults apply.
     linear::Bool = false
-    inviscid::Bool = true
+    inviscid::Bool = true              # NOTE: default_params() uses inviscid=false
     no_dispersion::Bool = false
     passive_scalar::Bool = false
     ybj_plus::Bool = true
-    
+
     # Wave-mean flow interaction controls
-    no_wave_feedback::Bool = false     # true: waves don't affect mean flow (qw = 0)
+    no_wave_feedback::Bool = false     # NOTE: default_params() uses no_wave_feedback=true
     fixed_mean_flow::Bool = false      # true: mean flow doesn't evolve in time
-    
+
     # Legacy compatibility
     no_feedback::Bool = false          # Deprecated: use no_wave_feedback instead
 end

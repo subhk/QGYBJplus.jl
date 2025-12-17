@@ -118,6 +118,10 @@ function a_ell_ut(par::QGParams, G::Grid)
     if par.stratification === :constant_N
         #= Constant N²: a = f²/N² =#
         T = eltype(a)
+        # Warn once if division guard activates (N² ≈ 0)
+        if par.N² < sqrt(eps(T))
+            @warn "N² ≈ 0 in constant_N stratification (N²=$(par.N²)), using eps for numerical stability" maxlog=1
+        end
         @inbounds for k in 1:nz
             a[k] = f₀_sq / max(par.N², eps(T))
         end
@@ -132,9 +136,15 @@ function a_ell_ut(par::QGParams, G::Grid)
         - Background N₀² in deep ocean =#
         T = eltype(a)
         N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; z0 = par.z₀_sg; α = par.α_sg
+        division_guard_warned = false
         @inbounds for k in 1:nz
             z = G.z[k]
             N2_z = N12*exp(-((z - z0)^2)/(σ^2))*(1 + erf(α*(z - z0)/(σ*sqrt(2.0)))) + N02
+            # Warn once if division guard activates at any level
+            if N2_z < sqrt(eps(T)) && !division_guard_warned
+                @warn "N²(z) ≈ 0 at z=$(z) in skewed_gaussian stratification, using eps for numerical stability" maxlog=1
+                division_guard_warned = true
+            end
             a[k] = f₀_sq / max(N2_z, eps(T))  # a = f²/N²(z), protected against N²≈0
         end
 

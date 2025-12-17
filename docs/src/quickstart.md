@@ -26,6 +26,11 @@ The easiest way to set up a simulation is with `create_simple_config`:
 
 ```julia
 config = create_simple_config(
+    # Domain size (REQUIRED - in meters)
+    Lx = 500e3,   # 500 km
+    Ly = 500e3,   # 500 km
+    Lz = 4000.0,  # 4 km depth
+
     # Grid dimensions
     nx = 64,
     ny = 64,
@@ -41,7 +46,7 @@ config = create_simple_config(
 )
 ```
 
-This creates a complete configuration with sensible defaults.
+This creates a complete configuration with sensible defaults. Note that `Lx`, `Ly`, and `Lz` are **required** parameters - there are no default domain sizes.
 
 ## Step 3: Run the Simulation
 
@@ -121,8 +126,9 @@ Here's the complete code:
 ```julia
 using QGYBJ
 
-# Configure
+# Configure (Lx, Ly, Lz are REQUIRED)
 config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # 500km × 500km × 4km
     nx=64, ny=64, nz=32,
     dt=0.001, total_time=1.0,
     output_interval=100
@@ -149,6 +155,7 @@ println("Final Wave Energy: ", wave_energy(result.state.B, result.state.A))
 
 ```julia
 config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size required
     nx=64, ny=64, nz=32,
     stratification_type = :skewed_gaussian,  # Realistic pycnocline
     # Or use :constant_N for uniform stratification
@@ -159,6 +166,7 @@ config = create_simple_config(
 
 ```julia
 config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,
     nx=64, ny=64, nz=32,
 
     # Disable wave feedback on mean flow
@@ -176,8 +184,9 @@ config = create_simple_config(
 
 ```julia
 config = create_simple_config(
-    nx=256, ny=256, nz=128,  # Larger grid
-    dt=0.0005,                # Smaller time step for stability
+    Lx=1000e3, Ly=1000e3, Lz=5000.0,  # 1000km × 1000km × 5km
+    nx=256, ny=256, nz=128,            # Larger grid
+    dt=0.0005,                          # Smaller time step for stability
     total_time=10.0,
 )
 ```
@@ -197,8 +206,11 @@ using MPI, PencilArrays, PencilFFTs, QGYBJ
 MPI.Init()
 mpi_config = QGYBJ.setup_mpi_environment()
 
-# Setup distributed simulation
-params = default_params(nx=256, ny=256, nz=128)
+# Setup distributed simulation (Lx, Ly, Lz are REQUIRED)
+params = default_params(
+    nx=256, ny=256, nz=128,
+    Lx=1000e3, Ly=1000e3, Lz=5000.0  # 1000km × 1000km × 5km
+)
 grid = QGYBJ.init_mpi_grid(params, mpi_config)
 state = QGYBJ.init_mpi_state(grid, mpi_config)
 workspace = QGYBJ.init_mpi_workspace(grid, mpi_config)
