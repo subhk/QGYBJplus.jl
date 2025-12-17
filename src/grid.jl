@@ -176,7 +176,12 @@ function init_grid(par::QGParams)
     #= Vertical grid: z ∈ [0, Lz]
     z[k] ranges from 0 to Lz with nz points
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
-    z = T.(collect(range(0, par.Lz; length=nz)))
+    # Handle nz=1 edge case: range() requires length>=2 when endpoints differ
+    z = if nz == 1
+        T[par.Lz / 2]  # Single point at mid-depth
+    else
+        T.(collect(range(0, par.Lz; length=nz)))
+    end
     # Handle nz=1 edge case: diff returns empty array, so use full domain depth
     dz = nz > 1 ? diff(z) : T[par.Lz]
 
