@@ -107,6 +107,56 @@ wave_energy
 
 Flow energy can be computed from velocity fields using standard summation.
 
+### Spectral Energy Functions
+
+The following spectral energy functions compute energy with proper dealiasing and density weighting:
+
+```@docs
+flow_kinetic_energy_spectral
+flow_potential_energy_spectral
+wave_energy_spectral
+```
+
+### Global Energy Functions (MPI-aware)
+
+For parallel simulations, use these MPI-aware versions that reduce across all processes:
+
+```@docs
+flow_kinetic_energy_spectral_global
+flow_potential_energy_spectral_global
+wave_energy_spectral_global
+```
+
+### Energy Diagnostics Manager
+
+The `EnergyDiagnosticsManager` provides automatic saving of energy time series to separate NetCDF files:
+
+```@docs
+EnergyDiagnosticsManager
+record_energies!
+write_all_energy_files!
+```
+
+**Output Files:**
+- `diagnostic/wave_KE.nc` - Wave kinetic energy
+- `diagnostic/wave_PE.nc` - Wave potential energy
+- `diagnostic/wave_CE.nc` - Wave correction energy (YBJ+)
+- `diagnostic/mean_flow_KE.nc` - Mean flow kinetic energy
+- `diagnostic/mean_flow_PE.nc` - Mean flow potential energy
+- `diagnostic/total_energy.nc` - Summary with all energies
+
+**Usage:**
+```julia
+# Automatic (created during setup_simulation)
+sim = setup_simulation(config)
+run_simulation!(sim)  # Energies saved automatically
+
+# Manual
+manager = EnergyDiagnosticsManager("output_dir"; output_interval=1.0)
+record_energies!(manager, time, wke, wpe, wce, mke, mpe)
+write_all_energy_files!(manager)
+```
+
 ### Omega Equation
 
 ```@docs

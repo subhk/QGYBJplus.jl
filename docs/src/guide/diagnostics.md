@@ -244,18 +244,6 @@ else
 end
 ```
 
-### Fortran Correspondence
-
-The energy diagnostic formulations match the Fortran QG_YBJp code:
-
-| Julia File | Fortran Routine | Reference |
-|:-----------|:----------------|:----------|
-| `wave_KE.nc` | `wave_energy` | `diagnostics.f90:647-680` |
-| `wave_PE.nc` | `wave_energy` | `diagnostics.f90:700-720` |
-| `wave_CE.nc` | `wave_energy` | `diagnostics.f90:710-730` |
-| `mean_flow_KE.nc` | `diag_zentrum` | `diagnostics.f90:127-161` |
-| `mean_flow_PE.nc` | `diag_zentrum` | `diagnostics.f90:150-180` |
-
 ## Enstrophy
 
 ### Relative Enstrophy
