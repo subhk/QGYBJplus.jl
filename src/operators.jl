@@ -890,28 +890,33 @@ For wave amplitude A:
 ```
 u_wave = Re[(∂A*/∂x)A + A*(∂A/∂x)] = 2 Re[A* ∂A/∂x]
 v_wave = Re[(∂A*/∂y)A + A*(∂A/∂y)] = 2 Re[A* ∂A/∂y]
+w_wave = Re[(∂A*/∂z)A + A*(∂A/∂z)] = 2 Re[A* ∂A/∂z]
 ```
 
 # Physical Interpretation
 - The Stokes drift is proportional to the gradient of |A|²
 - Particles drift from regions of low to high wave amplitude
+- Horizontal drift: particles move toward regions of high wave energy
+- Vertical drift: particles move along vertical wave energy gradients
 - Important for Lagrangian dispersion in NIW-active regions
 
 # Algorithm
 1. Compute horizontal gradients: ∂A/∂x, ∂A/∂y in spectral space
-2. Compute wave velocity: u_wave = 2 Re[A* ∂A/∂x]
-3. Transform to physical space
-4. Add to existing u, v fields (in-place modification)
+2. Use S.C = A_z = ∂A/∂z (computed by invert_B_to_A!)
+3. Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
+4. Compute wave velocities: u_wave, v_wave, w_wave = 2 Re[A* ∂A/∂(x,y,z)]
+5. Add to existing u, v, w fields (in-place modification)
 
 # Arguments
-- `S::State`: State with A (input) and u, v modified (output)
+- `S::State`: State with A, C (input) and u, v, w modified (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters
 
 # Note
-This function modifies u, v in-place by adding wave contributions.
+This function modifies u, v, w in-place by adding wave contributions.
 Call after compute_velocities! to get total velocity.
+S.C must contain A_z (set by invert_B_to_A!) before calling this function.
 """
 function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -919,7 +924,9 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Get underlying arrays
     u_arr = parent(S.u)
     v_arr = parent(S.v)
+    w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
+    # S.C = A_z = ∂A/∂z is already computed by invert_B_to_A!
     nx_local, ny_local, nz_local = size(Aₖ_arr)
 
     # Set up plans if needed
@@ -942,24 +949,28 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         dA_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_arr[i_local, j_local, k]
     end
 
-    # Transform A, ∂A/∂x, ∂A/∂y to physical space
+    # Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
     # The Stokes drift formula u_wave = 2*Re[A* ∂A/∂x] is a product of fields
     # and MUST be computed in physical space, not spectral space
     Aᵣ = similar(S.A)
     dA_dxᵣ = similar(S.A)
     dA_dyᵣ = similar(S.A)
+    dA_dzᵣ = similar(S.A)
 
     fft_backward!(Aᵣ, S.A, plans)
     fft_backward!(dA_dxᵣ, dA_dxₖ, plans)
     fft_backward!(dA_dyᵣ, dA_dyₖ, plans)
+    fft_backward!(dA_dzᵣ, S.C, plans)  # S.C = A_z in spectral space
 
     Aᵣ_arr = parent(Aᵣ)
     dA_dxᵣ_arr = parent(dA_dxᵣ)
     dA_dyᵣ_arr = parent(dA_dyᵣ)
+    dA_dzᵣ_arr = parent(dA_dzᵣ)
 
     # Compute Stokes drift in physical space:
     # u_wave = 2 * Re[A* ∂A/∂x] = ∂|A|²/∂x (gradient of wave energy density)
     # v_wave = 2 * Re[A* ∂A/∂y] = ∂|A|²/∂y
+    # w_wave = 2 * Re[A* ∂A/∂z] = ∂|A|²/∂z (vertical Stokes drift)
     # Note: fft_backward! is normalized, so Aᵣ and derivatives are in physical space
 
     # Add wave velocities to existing QG velocities directly in physical space
@@ -967,13 +978,16 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         A_phys = Aᵣ_arr[i_local, j_local, k]
         dAdx_phys = dA_dxᵣ_arr[i_local, j_local, k]
         dAdy_phys = dA_dyᵣ_arr[i_local, j_local, k]
+        dAdz_phys = dA_dzᵣ_arr[i_local, j_local, k]
 
-        # Stokes drift: u_wave = 2 * Re[conj(A) * ∂A/∂x]
+        # Stokes drift: (u,v,w)_wave = 2 * Re[conj(A) * ∂A/∂(x,y,z)]
         u_wave = 2.0 * real(conj(A_phys) * dAdx_phys)
         v_wave = 2.0 * real(conj(A_phys) * dAdy_phys)
+        w_wave = 2.0 * real(conj(A_phys) * dAdz_phys)
 
         u_arr[i_local, j_local, k] += u_wave
         v_arr[i_local, j_local, k] += v_wave
+        w_arr[i_local, j_local, k] += w_wave
     end
 
     return S
