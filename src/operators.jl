@@ -276,20 +276,20 @@ w = 0 at z = 0 and z = Lz (rigid lid and bottom).
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
 """
-function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing)
+function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace)
+        _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, dealias_mask)
     else
-        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile)
+        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile)
+function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -299,9 +299,10 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
 
-    # Get RHS of omega equation
+    # Get RHS of omega equation with proper dealiasing
+    # Previous code never passed dealias_mask, causing aliasing in the quadratic RHS term
     rhsk = similar(S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans)
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
     rhsk_arr = parent(rhsk)
 
     # Get stratification parameters
