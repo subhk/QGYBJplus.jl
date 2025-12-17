@@ -98,7 +98,7 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
 
 Compute geostrophic velocities from the spectral streamfunction ψ̂.
 
@@ -130,6 +130,8 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 - `params`: Model parameters (for f₀, N²)
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula instead of omega equation
+- `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Modified State with updated u, v, w fields.
@@ -141,7 +143,7 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -197,10 +199,10 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     if compute_w
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
-            compute_ybj_vertical_velocity!(S, G, plans, params)
+            compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace)
         else
             # Use standard QG omega equation
-            compute_vertical_velocity!(S, G, plans, params)
+            compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace)
         end
     else
         # Set w to zero (leading-order QG approximation)
@@ -822,7 +824,7 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
 
 Compute the TOTAL velocity field for Lagrangian particle advection.
 
@@ -858,13 +860,15 @@ For Lagrangian particle advection, always use this function rather than
 - `params`: Model parameters
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula for w
+- `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Returns
 Modified State with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false)
+function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
     # First compute QG velocities
-    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w)
+    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace)
 
     # Add wave-induced velocities
     compute_wave_velocities!(S, G; plans=plans, params=params)
