@@ -349,6 +349,27 @@ function check_and_output!(sim::QGYBJSimulation)
 end
 
 """
+    reduce_if_mpi(val, parallel_config)
+
+Reduce a value across MPI processes if running in parallel mode.
+Returns the global sum in MPI mode, or the value unchanged in serial mode.
+"""
+function reduce_if_mpi(val::T, parallel_config::ParallelConfig) where T
+    if !parallel_config.use_mpi || parallel_config.comm === nothing
+        return val
+    end
+
+    # MPI reduction - use dynamic dispatch to avoid direct MPI dependency
+    try
+        MPI = Base.require(Main, :MPI)
+        return MPI.Allreduce(val, +, parallel_config.comm)
+    catch
+        # If MPI not available, return local value
+        return val
+    end
+end
+
+"""
     compute_and_output_diagnostics!(sim::QGYBJSimulation)
 
 Compute diagnostic quantities and write to file.
@@ -360,16 +381,25 @@ Energy diagnostics are saved to separate files in the diagnostic/ folder:
 - mean_flow_KE.nc: Mean flow kinetic energy
 - mean_flow_PE.nc: Mean flow potential energy
 - total_energy.nc: Summary file with all energies
+
+In MPI mode, energies are reduced across all processes to get global totals.
 """
 function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     diagnostics = Dict{String, Any}()
 
-    # Mean flow energy diagnostics
-    mean_flow_KE = compute_kinetic_energy(sim.state, sim.grid, sim.plans)
-    mean_flow_PE = compute_potential_energy(sim.state, sim.grid, sim.plans, sim.N2_profile)
+    # Mean flow energy diagnostics (local)
+    mean_flow_KE_local = compute_kinetic_energy(sim.state, sim.grid, sim.plans)
+    mean_flow_PE_local = compute_potential_energy(sim.state, sim.grid, sim.plans, sim.N2_profile)
 
-    # Wave energy diagnostics (detailed: WKE, WPE, WCE)
-    wave_KE, wave_PE, wave_CE = compute_detailed_wave_energy(sim.state, sim.grid, sim.params)
+    # Wave energy diagnostics (local, detailed: WKE, WPE, WCE)
+    wave_KE_local, wave_PE_local, wave_CE_local = compute_detailed_wave_energy(sim.state, sim.grid, sim.params)
+
+    # Reduce across MPI processes if running in parallel
+    mean_flow_KE = reduce_if_mpi(mean_flow_KE_local, sim.parallel_config)
+    mean_flow_PE = reduce_if_mpi(mean_flow_PE_local, sim.parallel_config)
+    wave_KE = reduce_if_mpi(wave_KE_local, sim.parallel_config)
+    wave_PE = reduce_if_mpi(wave_PE_local, sim.parallel_config)
+    wave_CE = reduce_if_mpi(wave_CE_local, sim.parallel_config)
 
     # Record to energy diagnostics manager (will be written to diagnostic/ folder)
     record_energies!(
