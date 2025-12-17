@@ -366,7 +366,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
                     LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵣ)
                     solᵣ .= rhsᵣ
                 catch e
-                    @warn "LAPACK gtsv failed for real part: $e"
+                    error("LAPACK gtsv failed for vertical velocity (real part) at kx=$(kₓ), ky=$(kᵧ): $e. " *
+                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
                 end
 
                 dₗ_work = copy(dₗ)
@@ -377,7 +378,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
                     LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵢ)
                     solᵢ .= rhsᵢ
                 catch e
-                    @warn "LAPACK gtsv failed for imag part: $e"
+                    error("LAPACK gtsv failed for vertical velocity (imag part) at kx=$(kₓ), ky=$(kᵧ): $e. " *
+                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
                 end
 
                 solution = solᵣ .+ im .* solᵢ
@@ -486,7 +488,8 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
                     LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵣ)
                     solᵣ .= rhsᵣ
                 catch e
-                    @warn "LAPACK gtsv failed for real part in 2D vertical velocity: $e" maxlog=1
+                    error("LAPACK gtsv failed for vertical velocity (real part, 2D decomp) at kx=$(G.kx[i_global]), ky=$(G.ky[j_global]): $e. " *
+                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
                 end
 
                 dₗ_work = copy(dₗ)
@@ -497,7 +500,8 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
                     LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵢ)
                     solᵢ .= rhsᵢ
                 catch e
-                    @warn "LAPACK gtsv failed for imag part in 2D vertical velocity: $e" maxlog=1
+                    error("LAPACK gtsv failed for vertical velocity (imag part, 2D decomp) at kx=$(G.kx[i_global]), ky=$(G.ky[j_global]): $e. " *
+                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
                 end
 
                 solution = solᵣ .+ im .* solᵢ
