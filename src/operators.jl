@@ -408,8 +408,11 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
             end
 
         elseif kₕ² > 0 && nz <= 2
+            # With rigid lid BCs (w=0 at top and bottom), there are no interior points
+            # for nz <= 2. The only consistent solution is w=0 everywhere.
+            # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
             for k in 1:nz
-                wk_arr[i_local, j_local, k] = -rhsk_arr[i_local, j_local, k] / kₕ²
+                wk_arr[i_local, j_local, k] = 0.0
             end
         end
     end
@@ -541,8 +544,11 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
             end
 
         elseif kₕ² > 0 && nz <= 2
+            # With rigid lid BCs (w=0 at top and bottom), there are no interior points
+            # for nz <= 2. The only consistent solution is w=0 everywhere.
+            # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
             for k in 1:nz
-                wk_z_arr[i_local, j_local, k] = -rhsk_z_arr[i_local, j_local, k] / kₕ²
+                wk_z_arr[i_local, j_local, k] = 0.0
             end
         end
     end
