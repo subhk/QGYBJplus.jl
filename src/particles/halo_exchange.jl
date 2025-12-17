@@ -46,32 +46,50 @@ mutable struct HaloInfo{T<:AbstractFloat}
     rank::Int
     nprocs::Int
     
-    function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm, halo_width::Int=2) where T
-        # Extended grid dimensions (original + 2*halo_width in x-direction)
-        nx_ext = grid.nx + 2*halo_width
+    function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm, halo_width::Int=2; periodic_x::Bool=true) where T
+        # Compute LOCAL grid size from global grid (1D decomposition in x)
+        # This is critical: grid.nx is GLOBAL, but each rank only owns a portion
+        nx_global = grid.nx
+        nx_local = nx_global ÷ nprocs
+        remainder = nx_global % nprocs
+
+        # Handle uneven distribution: first 'remainder' ranks get one extra point
+        if rank < remainder
+            nx_local += 1
+        end
+
+        # Extended grid dimensions (local + 2*halo_width in x-direction)
+        nx_ext = nx_local + 2*halo_width
         ny_ext = grid.ny  # No halo in y for 1D decomposition
         nz_ext = grid.nz  # No halo in z for 1D decomposition
-        
-        # Create extended arrays
+
+        # Create extended arrays (sized for LOCAL domain + halos)
         u_extended = zeros(T, nx_ext, ny_ext, nz_ext)
         v_extended = zeros(T, nx_ext, ny_ext, nz_ext)
         w_extended = zeros(T, nx_ext, ny_ext, nz_ext)
-        
+
         # Local domain indices in extended array (1-based)
         local_start = (halo_width + 1, 1, 1)
-        local_end = (halo_width + grid.nx, grid.ny, grid.nz)
-        
-        # Determine neighbors (1D decomposition in x)
-        left_neighbor = rank > 0 ? rank - 1 : -1
-        right_neighbor = rank < nprocs - 1 ? rank + 1 : -1
-        
+        local_end = (halo_width + nx_local, grid.ny, grid.nz)
+
+        # Determine neighbors (1D decomposition in x with periodic boundaries)
+        if periodic_x
+            # Periodic: rank 0 connects to last rank, last rank connects to rank 0
+            left_neighbor = rank > 0 ? rank - 1 : nprocs - 1
+            right_neighbor = rank < nprocs - 1 ? rank + 1 : 0
+        else
+            # Non-periodic: boundary ranks have no neighbor on that side
+            left_neighbor = rank > 0 ? rank - 1 : -1
+            right_neighbor = rank < nprocs - 1 ? rank + 1 : -1
+        end
+
         # Communication buffer sizes (halo_width * ny * nz * 3_components)
         buffer_size = halo_width * grid.ny * grid.nz * 3
         send_left = Vector{T}(undef, buffer_size)
         send_right = Vector{T}(undef, buffer_size)
         recv_left = Vector{T}(undef, buffer_size)
         recv_right = Vector{T}(undef, buffer_size)
-        
+
         new{T}(
             halo_width,
             u_extended, v_extended, w_extended,
