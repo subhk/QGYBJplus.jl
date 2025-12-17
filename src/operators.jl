@@ -306,14 +306,22 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
         f = 1.0  # Default
     end
 
-    # Get N² profile - use provided profile or default to constant
+    # Get N² value from params (default to 1.0 if not available)
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile - use provided profile, or create constant profile from params.N²
     if N2_profile === nothing
-        N2_profile = ones(eltype(S.psi), nz)
+        # Use params.N² as constant profile (not hardcoded 1.0)
+        N2_profile = fill(eltype(S.psi)(N2_const), nz)
     else
         # Ensure N2_profile has correct length and type
         if length(N2_profile) != nz
-            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=1.0"
-            N2_profile = ones(eltype(S.psi), nz)
+            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=$(N2_const)"
+            N2_profile = fill(eltype(S.psi)(N2_const), nz)
         end
     end
 
@@ -421,12 +429,19 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
         f = 1.0
     end
 
-    # Get N² profile
+    # Get N² value from params (default to 1.0 if not available)
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile - use provided profile, or create constant profile from params.N²
     if N2_profile === nothing
-        N2_profile = ones(Float64, nz)
+        N2_profile = fill(N2_const, nz)
     elseif length(N2_profile) != nz
-        @warn "N2_profile length mismatch, using constant N²=1.0"
-        N2_profile = ones(Float64, nz)
+        @warn "N2_profile length mismatch, using constant N²=$(N2_const)"
+        N2_profile = fill(N2_const, nz)
     end
 
     # Allocate z-pencil workspace
