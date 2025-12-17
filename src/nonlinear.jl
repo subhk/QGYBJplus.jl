@@ -678,8 +678,14 @@ function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local"
 
-    # Vertical grid spacing
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    # Handle nz=1 case: no vertical diffusion possible with single layer
+    if nz <= 1
+        fill!(dqk_arr, zero(eltype(dqk_arr)))
+        return
+    end
+
+    # Vertical grid spacing (safe now since nz >= 2)
+    Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
     νz = par.νz
 
@@ -703,6 +709,13 @@ end
 function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
     nz = G.nz
 
+    # Handle nz=1 case: no vertical diffusion possible with single layer
+    if nz <= 1
+        dqk_arr = parent(dqk)
+        fill!(dqk_arr, zero(eltype(dqk_arr)))
+        return
+    end
+
     # Allocate z-pencil workspace
     qok_z = workspace !== nothing ? workspace.q_z : allocate_z_pencil(G, ComplexF64)
     dqk_z = workspace !== nothing ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
@@ -717,8 +730,8 @@ function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
 
     @assert nz_local == nz "After transpose, z must be fully local"
 
-    # Vertical grid spacing
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+    # Vertical grid spacing (safe now since nz >= 2)
+    Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
     νz = par.νz
 
