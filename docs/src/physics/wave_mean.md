@@ -81,7 +81,6 @@ Then ``\psi`` is computed from ``q^*`` via the elliptic inversion:
 |:-----|:--------|
 | ``J(B^*, B)`` | Jacobian of complex wave field (wave momentum flux) |
 | ``\nabla_h^2\|B\|^2`` | Horizontal curvature of wave energy density |
-| ``Ro \cdot W2F`` | Scaling by Rossby number and wave amplitude |
 
 The wave feedback represents:
 - **Radiation stress** from wave momentum flux
