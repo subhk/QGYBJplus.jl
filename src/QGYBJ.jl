@@ -574,4 +574,7 @@ include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.
 include("particles/particle_advection.jl")  # Particle tracking core
 include("particles/particle_io.jl")                  # Particle trajectory I/O
 
+# Pretty printing (must be after all struct definitions)
+include("pretty_printing.jl")
+
 end # module
