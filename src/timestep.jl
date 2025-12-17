@@ -633,3 +633,183 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     return Snp1
 end
+
+#= ============================================================================
+                    HIGH-LEVEL SIMULATION RUNNER
+============================================================================ =#
+
+"""
+    run_simulation!(S, G, par, plans; kwargs...)
+
+Run a complete QG-YBJ+ simulation with automatic time-stepping, output, and diagnostics.
+
+This is the recommended high-level interface that handles all the details of:
+- Leapfrog time integration with Robert-Asselin filter
+- State array rotation (no manual management needed)
+- Periodic output to NetCDF files
+- Progress reporting and diagnostics
+
+# Arguments
+- `S::State`: Initial state (will be modified in-place)
+- `G::Grid`: Spatial grid
+- `par::QGParams`: Model parameters (includes dt, nt)
+- `plans::Plans`: FFT plans
+
+# Keyword Arguments
+- `output_config::OutputConfig`: Output configuration (required for saving)
+- `mpi_config=nothing`: MPI configuration for parallel runs
+- `parallel_config=nothing`: Parallel I/O configuration
+- `workspace=nothing`: Pre-allocated workspace arrays
+- `print_progress::Bool=true`: Print progress to stdout
+- `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
+
+# Returns
+- Final `State` at the end of the simulation
+
+# Example
+```julia
+# Setup
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, dt=100.0, nt=5000)
+G, S, plans, a = setup_model(par)
+
+# Initialize flow and waves
+initialize_dipole!(S, G, par)
+initialize_surface_waves!(S, G, par)
+
+# Configure output
+output_config = OutputConfig(
+    output_dir = "output",
+    psi_interval = 2π / par.f₀,     # Save every inertial period
+    wave_interval = 2π / par.f₀
+)
+
+# Run simulation - all time-stepping handled automatically
+S_final = run_simulation!(S, G, par, plans; output_config=output_config)
+```
+
+See also: [`OutputConfig`](@ref), [`leapfrog_step!`](@ref)
+"""
+function run_simulation!(S::State, G::Grid, par::QGParams, plans::Plans;
+                         output_config::Union{OutputConfig,Nothing}=nothing,
+                         mpi_config=nothing,
+                         parallel_config=nothing,
+                         workspace=nothing,
+                         print_progress::Bool=true,
+                         progress_interval::Int=0)
+
+    # Determine if running in MPI mode
+    is_mpi = mpi_config !== nothing
+    is_root = !is_mpi || mpi_config.is_root
+
+    # Setup workspace if not provided
+    if workspace === nothing
+        workspace = is_mpi ? init_mpi_workspace(G, mpi_config) : init_workspace(G)
+    end
+
+    # Setup parallel config if not provided (for I/O)
+    if parallel_config === nothing && is_mpi
+        parallel_config = ParallelConfig(
+            use_mpi = true,
+            comm = mpi_config.comm,
+            parallel_io = false
+        )
+    elseif parallel_config === nothing
+        parallel_config = ParallelConfig(use_mpi = false)
+    end
+
+    # Compute coefficients
+    a_ell = a_ell_ut(par, G)
+    L_mask = dealias_mask(G)
+
+    # Initial velocity computation
+    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace)
+
+    # Create output manager if config provided
+    output_manager = nothing
+    if output_config !== nothing
+        output_manager = OutputManager(output_config, par, parallel_config)
+
+        # Save initial state
+        if is_root && print_progress
+            println("Saving initial state...")
+        end
+        write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
+    end
+
+    # First projection step (Forward Euler to initialize leapfrog)
+    first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace)
+
+    # Setup leapfrog states
+    Sn = deepcopy(S)
+    Snm1 = deepcopy(S)
+    Snp1 = deepcopy(S)
+
+    # Determine progress interval
+    nt = par.nt
+    dt = par.dt
+    if progress_interval <= 0
+        progress_interval = max(1, nt ÷ 20)  # ~20 progress updates
+    end
+
+    # Compute save intervals in steps
+    psi_save_steps = output_config !== nothing && output_config.psi_interval > 0 ?
+                     max(1, round(Int, output_config.psi_interval / dt)) : 0
+    wave_save_steps = output_config !== nothing && output_config.wave_interval > 0 ?
+                      max(1, round(Int, output_config.wave_interval / dt)) : 0
+    save_steps = psi_save_steps > 0 ? psi_save_steps : wave_save_steps
+
+    # Print header
+    if is_root && print_progress
+        println("\n" * "="^60)
+        println("Starting time integration...")
+        println("  Steps: $nt, dt: $dt")
+        if save_steps > 0
+            println("  Saving every $save_steps steps")
+        end
+        println("="^60 * "\n")
+    end
+
+    # Time integration loop
+    for step in 1:nt
+        # Leapfrog step
+        leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
+                       a=a_ell, dealias_mask=L_mask, workspace=workspace)
+
+        # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
+        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+
+        current_time = step * dt
+
+        # Progress output
+        if is_root && print_progress && step % progress_interval == 0
+            progress_pct = round(100 * step / nt, digits=1)
+            @printf("  Step %d/%d (%.1f%%) - t = %.2e\n", step, nt, progress_pct, current_time)
+        end
+
+        # Save state
+        if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
+            write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
+        end
+    end
+
+    # Copy final state back to S
+    copyto!(parent(S.psi), parent(Sn.psi))
+    copyto!(parent(S.q), parent(Sn.q))
+    copyto!(parent(S.B), parent(Sn.B))
+    copyto!(parent(S.A), parent(Sn.A))
+    copyto!(parent(S.u), parent(Sn.u))
+    copyto!(parent(S.v), parent(Sn.v))
+    copyto!(parent(S.w), parent(Sn.w))
+
+    # Print completion message
+    if is_root && print_progress
+        println("\n" * "="^60)
+        println("Simulation complete!")
+        if output_manager !== nothing
+            println("Output saved to: $(output_config.output_dir)/")
+        end
+        println("="^60)
+    end
+
+    return S
+end
