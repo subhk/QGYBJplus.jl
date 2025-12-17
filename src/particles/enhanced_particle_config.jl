@@ -188,20 +188,126 @@ end
 Create custom particle distribution from user-provided positions.
 """
 function create_custom_distribution(positions::Vector{Tuple{T,T,T}}; kwargs...) where T
-    
+
     custom_x = [pos[1] for pos in positions]
-    custom_y = [pos[2] for pos in positions]  
+    custom_y = [pos[2] for pos in positions]
     custom_z = [pos[3] for pos in positions]
-    
+
     x_min, x_max = extrema(custom_x)
     y_min, y_max = extrema(custom_y)
     z_min, z_max = extrema(custom_z)
-    
+
     return ParticleConfig3D{T}(
         x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max, z_min=z_min, z_max=z_max,
         distribution_type=CUSTOM,
         nx_particles=length(positions), ny_particles=1, nz_particles=1,
         custom_x=custom_x, custom_y=custom_y, custom_z=custom_z;
+        kwargs...
+    )
+end
+
+"""
+    create_uniform_horizontal_distribution(z_level; x_min, x_max, y_min, y_max, n_particles, kwargs...)
+
+Create a uniform distribution of particles in a horizontal area at a single z-level.
+
+This is the simplest way to initialize particles: specify a z-level, horizontal bounds,
+and total number of particles. The particles are distributed uniformly in a grid pattern.
+
+# Arguments
+- `z_level::Real`: The vertical level where particles are placed
+- `x_min::Real=0.0`: Minimum x-coordinate of the horizontal area
+- `x_max::Real=2π`: Maximum x-coordinate of the horizontal area
+- `y_min::Real=0.0`: Minimum y-coordinate of the horizontal area
+- `y_max::Real=2π`: Maximum y-coordinate of the horizontal area
+- `n_particles::Int=100`: Total number of particles (distributed as √n × √n grid)
+
+# Alternative grid specification
+Instead of `n_particles`, you can specify `nx` and `ny` directly:
+- `nx::Int`: Number of particles in x-direction
+- `ny::Int`: Number of particles in y-direction
+
+# Returns
+`ParticleConfig3D` configured for uniform horizontal distribution at the specified z-level.
+
+# Example
+```julia
+# Simple: 100 particles uniformly in [0,2π]×[0,2π] at z=π/2
+config = create_uniform_horizontal_distribution(π/2; n_particles=100)
+
+# Custom area: 64 particles in a subregion at z=1.0
+config = create_uniform_horizontal_distribution(1.0;
+    x_min=π/4, x_max=3π/4,
+    y_min=π/4, y_max=3π/4,
+    n_particles=64
+)
+
+# Explicit grid: 10×8 = 80 particles at z=π
+config = create_uniform_horizontal_distribution(π;
+    x_min=0.0, x_max=2π,
+    y_min=0.0, y_max=2π,
+    nx=10, ny=8
+)
+
+# Initialize tracker with this config
+initialize_particles_3d!(tracker, config)
+```
+"""
+function create_uniform_horizontal_distribution(z_level::T;
+                                               x_min::T=T(0.0), x_max::T=T(2π),
+                                               y_min::T=T(0.0), y_max::T=T(2π),
+                                               n_particles::Union{Int,Nothing}=nothing,
+                                               nx::Union{Int,Nothing}=nothing,
+                                               ny::Union{Int,Nothing}=nothing,
+                                               kwargs...) where T<:AbstractFloat
+
+    # Determine nx and ny from inputs
+    if nx !== nothing && ny !== nothing
+        # User specified nx and ny directly
+        nx_particles = nx
+        ny_particles = ny
+    elseif n_particles !== nothing
+        # Compute approximately square grid from total particle count
+        nx_particles = round(Int, sqrt(n_particles))
+        ny_particles = round(Int, n_particles / nx_particles)
+        # Ensure we get at least n_particles (may be slightly more for non-square numbers)
+        while nx_particles * ny_particles < n_particles
+            ny_particles += 1
+        end
+    else
+        # Default: 10×10 = 100 particles
+        nx_particles = 10
+        ny_particles = 10
+    end
+
+    @assert x_max > x_min "x_max must be greater than x_min"
+    @assert y_max > y_min "y_max must be greater than y_min"
+    @assert nx_particles > 0 "nx_particles must be positive"
+    @assert ny_particles > 0 "ny_particles must be positive"
+
+    return ParticleConfig3D{T}(
+        x_min=x_min, x_max=x_max,
+        y_min=y_min, y_max=y_max,
+        z_min=z_level, z_max=z_level,  # Single z-level
+        distribution_type=LAYERED,
+        nx_particles=nx_particles,
+        ny_particles=ny_particles,
+        nz_particles=1,
+        z_levels=T[z_level],  # Single z-level
+        particles_per_level=Int[nx_particles * ny_particles];
+        kwargs...
+    )
+end
+
+# Convenience method with default Float64 type
+function create_uniform_horizontal_distribution(z_level::Real;
+                                               x_min::Real=0.0, x_max::Real=2π,
+                                               y_min::Real=0.0, y_max::Real=2π,
+                                               kwargs...)
+    T = Float64
+    return create_uniform_horizontal_distribution(T(z_level);
+        x_min=T(x_min), x_max=T(x_max),
+        y_min=T(y_min), y_max=T(y_max),
         kwargs...
     )
 end

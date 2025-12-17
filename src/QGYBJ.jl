@@ -512,7 +512,8 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        # 3D particle distributions
        ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
-       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution
+       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution,
+       create_uniform_horizontal_distribution
 
 #=
 ================================================================================
