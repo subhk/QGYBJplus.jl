@@ -162,12 +162,7 @@ function main()
         end
     end
 
-    # Time integration
-    a_ell = QGYBJ.a_ell_ut(par, G)
-    L_mask = QGYBJ.dealias_mask(G)
-    QGYBJ.compute_velocities!(S, G; plans=plans, params=par, workspace=workspace)
-
-    # Create OutputManager using codebase
+    # Configure output
     output_config = QGYBJ.OutputConfig(
         output_dir = output_dir,
         state_file_pattern = "state%04d.nc",
@@ -180,59 +175,21 @@ function main()
         save_vorticity = false,
         save_diagnostics = false
     )
-    output_manager = QGYBJ.OutputManager(output_config, par, parallel_config)
+
+    # Run simulation - all time-stepping handled automatically
+    # This handles: leapfrog state management, initial projection step,
+    # output file saving, and progress reporting
+    QGYBJ.run_simulation!(S, G, par, plans;
+        output_config = output_config,
+        mpi_config = mpi_config,
+        parallel_config = parallel_config,
+        workspace = workspace,
+        print_progress = is_root
+    )
 
     if is_root
-        println("\n" * "="^70)
-        println("Starting time integration...")
-        println("="^70)
-    end
-
-    output_interval = round(Int, T_inertial / dt)
-    save_interval = round(Int, save_interval_IP * T_inertial / dt)
-
-    # Initial diagnostics
-    local_EB = sum(abs2.(parent(S.B)))
-    global_EB = QGYBJ.mpi_reduce_sum(local_EB, mpi_config)
-    if is_root; @printf("\nt = 0.0 IP: E_B = %.4e\n", global_EB / (nx*ny*nz)); end
-
-    # Save initial state using codebase OutputManager
-    if is_root; println("\nSaving initial state..."); end
-    QGYBJ.write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
-
-    QGYBJ.first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace)
-
-    Sn, Snm1, Snp1 = deepcopy(S), deepcopy(S), deepcopy(S)
-
-    for step in 1:nt
-        QGYBJ.leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                             a=a_ell, dealias_mask=L_mask, workspace=workspace)
-        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-
-        current_time = step * dt
-
-        # Print diagnostics every inertial period
-        if step % output_interval == 0
-            t_IP = current_time / T_inertial
-            local_EB = sum(abs2.(parent(Sn.B)))
-            global_EB = QGYBJ.mpi_reduce_sum(local_EB, mpi_config)
-            if is_root; @printf("t = %.1f IP: E_B = %.4e\n", t_IP, global_EB / (nx*ny*nz)); end
-        end
-
-        # Save state at specified interval using codebase OutputManager
-        if step % save_interval == 0
-            QGYBJ.write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
-        end
-    end
-
-    if is_root
-        println("\n" * "="^70)
-        println("Simulation complete!")
-        println("="^70)
-        println("Output files saved to: $output_dir/")
-        println("  - state0001.nc to state$(lpad(output_manager.psi_counter-1, 4, '0')).nc")
+        println("\nOutput files saved to: $output_dir/")
         println("  - Variables: psi (flow), LAr, LAi (waves)")
-        println("="^70)
     end
 
     MPI.Finalize()
