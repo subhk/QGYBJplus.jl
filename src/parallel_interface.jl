@@ -65,7 +65,8 @@ function init_parallel_grid(params::QGParams, pconfig::ParallelConfig)
     dx = params.Lx / nx
     dy = params.Ly / ny
     z = T.(collect(range(0, params.Lz; length=nz)))
-    dz = diff(z)
+    # Handle nz=1 edge case: diff returns empty array, so use full domain depth
+    dz = nz > 1 ? diff(z) : T[params.Lz]
 
     # Wavenumbers (same on all processes)
     kx = T.([i <= nx÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
