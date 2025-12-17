@@ -313,8 +313,9 @@ function validate_config(config::ModelConfig)
     end
     
     # Physical parameter validation
-    if config.f0 <= 0
-        push!(errors, "Coriolis parameter f0 must be positive")
+    # Note: f0 can be negative for southern hemisphere simulations
+    if config.f0 == 0
+        push!(errors, "Coriolis parameter f0 cannot be zero (use negative values for southern hemisphere)")
     end
     
     # File existence checks

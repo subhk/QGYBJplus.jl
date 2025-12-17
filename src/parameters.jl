@@ -345,7 +345,8 @@ function default_params(; nx=64, ny=64, nz=64,
 
     # Physical parameters
     N² > 0 || throw(ArgumentError("N² (buoyancy frequency squared) must be positive (got N²=$N²)"))
-    f₀ != 0 || throw(ArgumentError("f₀ (Coriolis parameter) cannot be zero"))
+    # Note: f₀ can be negative for southern hemisphere simulations (f₀ < 0 when latitude < 0)
+    f₀ != 0 || throw(ArgumentError("f₀ (Coriolis parameter) cannot be zero (use negative values for southern hemisphere)"))
 
     # Robert-Asselin filter coefficient
     0 <= γ <= 1 || throw(ArgumentError("γ (Robert-Asselin coefficient) must be in [0,1] (got γ=$γ)"))

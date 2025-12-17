@@ -151,6 +151,14 @@ function QGYBJ.setup_mpi_environment(; topology=nothing)
         @info "MPI initialized with 2D decomposition" nprocs topology=topo
     end
 
+    # Register atexit handler to ensure MPI.Finalize() is called on program exit
+    # This prevents resource leaks and MPI errors on abnormal termination
+    atexit() do
+        if MPI.Initialized() && !MPI.Finalized()
+            MPI.Finalize()
+        end
+    end
+
     return MPIConfig(comm, rank, nprocs, is_root, topo)
 end
 
