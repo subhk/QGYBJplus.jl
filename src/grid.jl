@@ -177,7 +177,8 @@ function init_grid(par::QGParams)
     z[k] ranges from 0 to Lz with nz points
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
     z = T.(collect(range(0, par.Lz; length=nz)))
-    dz = diff(z)
+    # Handle nz=1 edge case: diff returns empty array, so use full domain depth
+    dz = nz > 1 ? diff(z) : T[par.Lz]
 
     #= Wavenumbers for periodic domain
     Following FFTW convention:

@@ -6,6 +6,80 @@ const TEST_Lx = 500e3  # 500 km
 const TEST_Ly = 500e3  # 500 km
 const TEST_Lz = 4000.0 # 4 km
 
+#=
+================================================================================
+                    ERROR HANDLING TESTS
+================================================================================
+=#
+
+@testset "Parameter validation errors" begin
+    # Grid dimensions must be positive
+    @test_throws ArgumentError default_params(nx=0, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    @test_throws ArgumentError default_params(nx=8, ny=-1, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=0, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+
+    # Domain sizes must be positive
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=0.0, Ly=TEST_Ly, Lz=TEST_Lz)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=-1.0, Lz=TEST_Lz)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=0.0)
+
+    # Time stepping parameters
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, dt=0.0)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, dt=-0.1)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, nt=0)
+
+    # Physical parameters
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, N²=0.0)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, N²=-1.0)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, f₀=0.0)
+
+    # Robert-Asselin filter coefficient
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=-0.1)
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=1.5)
+
+    # Hyperviscosity must be non-negative
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, νₕ₁=-0.1)
+
+    # Laplacian powers must be positive
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, ilap1=0)
+
+    # Invalid stratification type
+    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, stratification=:invalid_type)
+
+    # Valid southern hemisphere case (negative f₀ should work)
+    par_south = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, f₀=-1e-4)
+    @test par_south.f₀ < 0
+end
+
+@testset "Stratification validation" begin
+    # Empty N² profile should error
+    @test_throws ErrorException QGYBJ.compute_deformation_radius(Float64[], 1e-4, 4000.0)
+
+    # Empty profile in compute_stratification_coefficients
+    par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G = QGYBJ.init_grid(par)
+    @test_throws ErrorException QGYBJ.compute_stratification_coefficients(Float64[], G)
+
+    # validate_stratification should return errors for empty profile
+    errors, warnings = QGYBJ.validate_stratification(Float64[])
+    @test !isempty(errors)
+    @test any(occursin("Empty", e) for e in errors)
+end
+
+@testset "Edge cases" begin
+    # nz=1 should work (single vertical level)
+    par_nz1 = default_params(nx=8, ny=8, nz=1, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G_nz1 = QGYBJ.init_grid(par_nz1)
+    @test length(G_nz1.z) == 1
+    @test length(G_nz1.dz) == 1  # Should have fallback value, not empty
+    @test G_nz1.dz[1] == TEST_Lz
+
+    # Small grid should work
+    par_small = default_params(nx=4, ny=4, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G_small, S_small, plans_small, a_small = setup_model(par_small)
+    @test size(S_small.q) == (4, 4, 4)
+end
+
 @testset "QGYBJ basic API" begin
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, stratification=:constant_N)
     G, S, plans, a = setup_model(par)
