@@ -20,7 +20,6 @@ QGParams
 |:------|:-----|:------------|
 | `f₀` | Float64 | Coriolis parameter |
 | `N²` | Float64 | Buoyancy frequency squared |
-| `W2F` | Float64 | Wave-to-flow velocity ratio squared |
 | `γ` | Float64 | Robert-Asselin filter coefficient |
 | `ybj_plus` | Bool | Use YBJ+ formulation |
 | `no_feedback` | Bool | Disable wave feedback |

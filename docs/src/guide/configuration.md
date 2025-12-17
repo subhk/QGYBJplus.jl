@@ -167,7 +167,6 @@ end
 |:----------|:-----|:--------|:------------|
 | `f₀` | Float64 | 1.0 | Coriolis parameter |
 | `N²` | Float64 | 1.0 | Buoyancy frequency squared |
-| `W2F` | Float64 | 0.01 | Wave-to-flow velocity ratio squared |
 | `γ` | Float64 | 1e-3 | Robert-Asselin filter coefficient |
 
 Note: Type Unicode characters in Julia REPL using `\` + name + `<tab>`, e.g., `f\_0<tab>` → `f₀`
