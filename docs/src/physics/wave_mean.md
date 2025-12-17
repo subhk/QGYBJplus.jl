@@ -279,7 +279,177 @@ exchange_rate = compute_energy_exchange(state.psi, qw, grid, plans)
 2. Compute their time derivatives
 3. Compare with wave feedback term to verify energy conservation
 
+## Complete Energy Budget
+
+### Energy Components
+
+The total energy of the QG-YBJ+ system consists of five components:
+
+```math
+E_{total} = \underbrace{E_{KE}^{flow} + E_{PE}^{flow}}_{\text{Mean flow energy}} + \underbrace{E_{KE}^{wave} + E_{PE}^{wave} + E_{CE}^{wave}}_{\text{Wave energy}}
+```
+
+#### Mean Flow Kinetic Energy
+
+```math
+E_{KE}^{flow} = \frac{1}{2} \int \int \int (u^2 + v^2) \, dx\, dy\, dz
+```
+
+In spectral space with dealiasing:
+```math
+E_{KE}^{flow} = \frac{1}{2} \sum_{k_x, k_y, z} L(k_x, k_y) \cdot k_h^2 |\hat{\psi}|^2 - \frac{1}{2}|\hat{\psi}(k_h=0)|^2
+```
+
+where ``L(k_x, k_y)`` is the dealiasing mask (2/3 rule) and the second term corrects for the zero-wavenumber mode.
+
+#### Mean Flow Potential Energy
+
+```math
+E_{PE}^{flow} = \frac{1}{2} \int \int \int \frac{f_0^2}{N^2} \left(\frac{\partial \psi}{\partial z}\right)^2 dx\, dy\, dz
+```
+
+In spectral space:
+```math
+E_{PE}^{flow} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{f_0^2}{N^2(z)} |\hat{b}|^2
+```
+
+where ``b = \partial\psi/\partial z`` is the buoyancy from thermal wind balance.
+
+#### Wave Kinetic Energy
+
+```math
+E_{KE}^{wave} = \frac{1}{2} \int \int \int |B|^2 \, dx\, dy\, dz
+```
+
+In spectral space with ``B = B_R + iB_I``:
+```math
+E_{KE}^{wave} = \frac{1}{2} \sum_{k_x, k_y, z} (|\hat{B}_R|^2 + |\hat{B}_I|^2) - \frac{1}{2}|\hat{B}(k_h=0)|^2
+```
+
+#### Wave Potential Energy
+
+From the YBJ+ formulation, the wave potential energy involves ``C = \partial A/\partial z``:
+
+```math
+E_{PE}^{wave} = \frac{1}{2} \int \int \int \frac{N^2}{2f_0^2} k_h^2 |C|^2 \, dx\, dy\, dz
+```
+
+In spectral space:
+```math
+E_{PE}^{wave} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{k_h^2}{2 a_{ell}} (|\hat{C}_R|^2 + |\hat{C}_I|^2)
+```
+
+where ``a_{ell} = f_0^2/N^2`` is the elliptic coefficient.
+
+#### Wave Correction Energy (YBJ+)
+
+The YBJ+ equation introduces a higher-order correction:
+
+```math
+E_{CE}^{wave} = \frac{1}{8} \int \int \int \frac{N^4}{f_0^4} k_h^4 |A|^2 \, dx\, dy\, dz
+```
+
+In spectral space:
+```math
+E_{CE}^{wave} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{k_h^4}{8 a_{ell}^2} (|\hat{A}_R|^2 + |\hat{A}_I|^2)
+```
+
+This term accounts for horizontal wave dispersion and becomes significant at small scales.
+
+### Energy Conservation Theorem
+
+**Theorem**: In the inviscid limit (no dissipation), the total energy is conserved:
+
+```math
+\frac{dE_{total}}{dt} = 0
+```
+
+**Proof sketch**:
+1. The QG PV equation conserves mean flow energy in the absence of wave feedback
+2. The YBJ+ equation conserves wave energy in the absence of mean flow
+3. The wave feedback term ``q^w`` transfers energy between waves and flow without dissipation
+4. The refraction term ``\frac{1}{2}B \cdot \zeta`` exchanges energy via wave-vorticity interaction
+
+### Energy Transfer Pathways
+
+```
+                    Wind Forcing
+                         │
+                         ▼
+    ┌────────────────────────────────────────┐
+    │           Wave Energy                  │
+    │   E_KE^wave + E_PE^wave + E_CE^wave    │
+    └────────────────┬───────────────────────┘
+                     │
+           Refraction │ Wave Feedback
+           (B·ζ term) │ (q^w term)
+                     │
+                     ▼
+    ┌────────────────────────────────────────┐
+    │         Mean Flow Energy               │
+    │        E_KE^flow + E_PE^flow           │
+    └────────────────┬───────────────────────┘
+                     │
+                     ▼
+              Viscous Dissipation
+```
+
+### Energy Exchange Rate
+
+The rate of energy transfer from waves to mean flow is:
+
+```math
+\mathcal{P}_{w \to f} = -\int \psi \cdot J(\psi, q^w) \, dV
+```
+
+This can be computed diagnostically:
+```julia
+# Compute energy exchange rate
+qw = compute_qw(state, grid, params, plans)
+P_exchange = -sum(psi .* jacobian(psi, qw, grid, plans))
+```
+
+### Nondimensional Energy Scales
+
+Using the characteristic scales:
+- Velocity: ``U`` (mean flow), ``U_w`` (waves)
+- Length: ``L`` (horizontal), ``H`` (vertical)
+- Time: ``1/f_0``
+
+The energy ratio scales as:
+```math
+\frac{E^{wave}}{E^{flow}} \sim \left(\frac{U_w}{U}\right)^2 = W2F
+```
+
+Typical oceanic values:
+- Gulf Stream region: ``W2F \sim 10^{-2}`` to ``10^{-1}``
+- Open ocean: ``W2F \sim 10^{-3}``
+- After storm: ``W2F \sim 1``
+
+### Diagnostic Implementation
+
+Energy diagnostics are automatically saved to separate files:
+
+```julia
+# Output files in diagnostic/ folder:
+# - wave_KE.nc: E_KE^wave time series
+# - wave_PE.nc: E_PE^wave time series
+# - wave_CE.nc: E_CE^wave time series
+# - mean_flow_KE.nc: E_KE^flow time series
+# - mean_flow_PE.nc: E_PE^flow time series
+# - total_energy.nc: All energies + totals
+
+# Verify conservation
+ds = NCDataset("output/diagnostic/total_energy.nc")
+E_total = ds["total_energy"][:]
+dE = (E_total[end] - E_total[1]) / E_total[1]
+# Should be < 10^-6 for inviscid runs
+```
+
+See [Diagnostics Guide](../guide/diagnostics.md#energy-diagnostics-output-files) for detailed usage.
+
 ## References
 
 - Xie, J.-H., & Vanneste, J. (2015). A generalised-Lagrangian-mean model of the interactions between near-inertial waves and mean flow. *J. Fluid Mech.*, 774, 143-169.
 - Wagner, G. L., & Young, W. R. (2016). A three-component model for the coupled evolution of near-inertial waves, quasi-geostrophic flow and the near-inertial second harmonic. *J. Fluid Mech.*, 802, 806-837.
+- Asselin, O., & Young, W. R. (2019). An improved model of near-inertial wave dynamics. *J. Fluid Mech.*, 876, 428-448.
