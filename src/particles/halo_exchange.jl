@@ -193,27 +193,30 @@ end
 
 """
 Pack halo data into send buffers.
+
+The left neighbor needs our LEFT edge data (to fill their RIGHT halo).
+The right neighbor needs our RIGHT edge data (to fill their LEFT halo).
 """
 function pack_halo_data!(halo_info::HaloInfo{T}) where T
     hw = halo_info.halo_width
     i_start, j_start, k_start = halo_info.local_start
     i_end, j_end, k_end = halo_info.local_end
-    
-    # Pack data to send to left neighbor (right boundary of local domain)
+
+    # Pack data to send to left neighbor (our LEFT boundary, for their RIGHT halo)
     if halo_info.left_neighbor >= 0
         idx = 1
-        for k in k_start:k_end, j in j_start:j_end, i in (i_end-hw+1):i_end
+        for k in k_start:k_end, j in j_start:j_end, i in i_start:(i_start+hw-1)
             halo_info.send_left[idx] = halo_info.u_extended[i, j, k]
             halo_info.send_left[idx + 1] = halo_info.v_extended[i, j, k]
             halo_info.send_left[idx + 2] = halo_info.w_extended[i, j, k]
             idx += 3
         end
     end
-    
-    # Pack data to send to right neighbor (left boundary of local domain)
+
+    # Pack data to send to right neighbor (our RIGHT boundary, for their LEFT halo)
     if halo_info.right_neighbor >= 0
         idx = 1
-        for k in k_start:k_end, j in j_start:j_end, i in i_start:(i_start+hw-1)
+        for k in k_start:k_end, j in j_start:j_end, i in (i_end-hw+1):i_end
             halo_info.send_right[idx] = halo_info.u_extended[i, j, k]
             halo_info.send_right[idx + 1] = halo_info.v_extended[i, j, k]
             halo_info.send_right[idx + 2] = halo_info.w_extended[i, j, k]
