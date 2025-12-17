@@ -37,9 +37,17 @@ end
     StratificationConfig
 
 Configuration for background stratification.
+
+# Supported stratification types
+- `:constant_N` - Uniform buoyancy frequency N throughout the domain (default)
+- `:skewed_gaussian` - Realistic pycnocline with skewed Gaussian N² profile
+
+# Not yet implemented (will error at runtime)
+- `:tanh_profile` - Tanh transition between upper and lower N values
+- `:from_file` - Load N² profile from NetCDF file
 """
 Base.@kwdef struct StratificationConfig{T}
-    type::Symbol = :constant_N  # :constant_N, :skewed_gaussian, :from_file, :tanh_profile
+    type::Symbol = :constant_N  # Supported: :constant_N, :skewed_gaussian
     
     # For constant N
     N0::T = 1.0
