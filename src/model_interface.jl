@@ -114,12 +114,20 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
     end
     
     # Create QGParams from configuration
+    # For constant_N stratification, use N0² from config; otherwise use default
+    N²_value = if config.stratification.type == :constant_N
+        T(config.stratification.N0^2)  # N² = N0²
+    else
+        T(1.0)  # Default for non-constant stratification (profile-based)
+    end
+
     params = QGParams{T}(;
         nx = config.domain.nx,
         ny = config.domain.ny,
         nz = config.domain.nz,
         Lx = config.domain.Lx,
         Ly = config.domain.Ly,
+        Lz = config.domain.Lz,  # Was missing!
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
         f₀ = config.f0,
@@ -128,7 +136,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         linear_vert_structure = 0,
         stratification = config.stratification.type,
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
-        N² = T(1.0),    # Default buoyancy frequency squared
+        N² = N²_value,  # From config.stratification.N0 for constant_N
         γ = T(1e-3),    # Robert-Asselin filter
         νₕ₁ = T(0.01), νₕ₂ = T(10.0), ilap1 = 2, ilap2 = 6,
         νₕ₁ʷ = T(0.0), νₕ₂ʷ = T(10.0), ilap1w = 2, ilap2w = 6,
