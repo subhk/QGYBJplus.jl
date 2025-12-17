@@ -43,6 +43,7 @@ makedocs(
         "Advanced Topics" => [
             "MPI Parallelization" => "advanced/parallel.md",
             "Particle Advection" => "advanced/particles.md",
+            "Parallel Particle Algorithm" => "advanced/parallel_particles.md",
             "Interpolation" => "advanced/interpolation.md",
             "Performance Tips" => "advanced/performance.md",
         ],
