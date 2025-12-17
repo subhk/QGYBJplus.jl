@@ -509,11 +509,12 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        enable_auto_file_splitting!, finalize_trajectory_files!,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
-       # 3D particle distributions
-       ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
-       initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
-       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution,
-       create_circular_distribution
+       # Particle initialization (simplified API)
+       particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
+       particles_random_3d, particles_custom,
+       # 3D particle distributions (types and internals)
+       ParticleConfig3D, ParticleDistribution, initialize_particles_3d!,
+       UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM
 
 #=
 ================================================================================
@@ -570,7 +571,7 @@ include("parallel_interface.jl") # Parallel configuration types
 include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.
 
 # Particle advection system (for Lagrangian tracking)
-include("particles/unified_particle_advection.jl")  # Particle tracking core
+include("particles/particle_advection.jl")  # Particle tracking core
 include("particles/particle_io.jl")                  # Particle trajectory I/O
 
 end # module

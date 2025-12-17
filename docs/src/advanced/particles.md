@@ -80,16 +80,12 @@ config = SimulationConfig(
 # Set up simulation
 sim = setup_simulation(config)
 
-# Create particle configuration
-particle_config = create_particle_config(
-    x_min = 0.0, x_max = 2π,
-    y_min = 0.0, y_max = 2π,
-    z_level = π/2,           # Vertical level
-    nx_particles = 10,       # 10×10 = 100 particles
-    ny_particles = 10,
-    integration_method = :rk4,
-    interpolation_method = TRILINEAR,
-    save_interval = 0.1
+# Create particle configuration (100 particles in a box at z = π/2)
+particle_config = particles_in_box(π/2;
+    nx=10, ny=10,
+    integration_method=:rk4,
+    interpolation_method=TRILINEAR,
+    save_interval=0.1
 )
 
 # Create particle tracker
@@ -116,7 +112,7 @@ Three integration schemes are available:
 ```
 
 ```julia
-config = create_particle_config(integration_method = :euler, ...)
+config = particles_in_box(π/2; integration_method=:euler)
 ```
 
 ### RK2 Midpoint Method (2nd order)
@@ -130,7 +126,7 @@ config = create_particle_config(integration_method = :euler, ...)
 ```
 
 ```julia
-config = create_particle_config(integration_method = :rk2, ...)
+config = particles_in_box(π/2; integration_method=:rk2)
 ```
 
 ### RK4 Classical Method (4th order)
@@ -145,7 +141,7 @@ config = create_particle_config(integration_method = :rk2, ...)
 ```
 
 ```julia
-config = create_particle_config(integration_method = :rk4, ...)
+config = particles_in_box(π/2; integration_method=:rk4)
 ```
 
 | Method | Order | Velocity Evaluations/Step | Recommended Use |
@@ -164,7 +160,7 @@ Velocity must be interpolated from the grid to particle positions.
 - **Smoothness**: C⁰ continuous
 
 ```julia
-config = create_particle_config(interpolation_method = TRILINEAR, ...)
+config = particles_in_box(π/2; interpolation_method=TRILINEAR)
 ```
 
 ### Tricubic
@@ -173,7 +169,7 @@ config = create_particle_config(interpolation_method = TRILINEAR, ...)
 - **Smoothness**: C¹ continuous
 
 ```julia
-config = create_particle_config(interpolation_method = TRICUBIC, ...)
+config = particles_in_box(π/2; interpolation_method=TRICUBIC)
 ```
 
 ### Quintic
@@ -182,14 +178,14 @@ config = create_particle_config(interpolation_method = TRICUBIC, ...)
 - **Smoothness**: C⁴ continuous
 
 ```julia
-config = create_particle_config(interpolation_method = QUINTIC, ...)
+config = particles_in_box(π/2; interpolation_method=QUINTIC)
 ```
 
 ### Adaptive
 Automatically selects trilinear or tricubic based on local field smoothness.
 
 ```julia
-config = create_particle_config(interpolation_method = ADAPTIVE, ...)
+config = particles_in_box(π/2; interpolation_method=ADAPTIVE)
 ```
 
 | Method | Points | Error | Best For |
@@ -201,50 +197,102 @@ config = create_particle_config(interpolation_method = ADAPTIVE, ...)
 
 ## Particle Initialization
 
-### 2D Uniform Grid
+QGYBJ.jl provides simple, intuitive constructors for initializing particles:
+
+| Constructor | Description |
+|:------------|:------------|
+| `particles_in_box(z; ...)` | Uniform grid in a 2D rectangular box at fixed z |
+| `particles_in_circle(z; ...)` | Circular disk at fixed z (sunflower/rings/random) |
+| `particles_in_grid_3d(; ...)` | Uniform 3D rectangular grid |
+| `particles_in_layers(z_levels; ...)` | Multiple 2D grids at different z-levels |
+| `particles_random_3d(n; ...)` | Random distribution in 3D volume |
+| `particles_custom(positions; ...)` | User-specified positions |
+
+### Particles in a Box (2D at fixed z)
 
 ```julia
-config = create_particle_config(
-    x_min = π/4, x_max = 7π/4,
-    y_min = π/4, y_max = 7π/4,
-    z_level = π,              # Single z-level
-    nx_particles = 20,
-    ny_particles = 20         # 400 particles total
+# 100 particles (10×10) in a box at z = π/2
+config = particles_in_box(π/2; nx=10, ny=10)
+
+# Custom domain
+config = particles_in_box(π/2;
+    x_min=π/4, x_max=7π/4,
+    y_min=π/4, y_max=7π/4,
+    nx=20, ny=20              # 400 particles
 )
 ```
 
-### 3D Layered Distribution
+### Particles in a Circle (2D at fixed z)
 
 ```julia
-# Particles at multiple vertical levels
-config = create_layered_distribution(
-    0.0, 2π,        # x range
-    0.0, 2π,        # y range
-    [π/4, π/2, 3π/4],  # z levels
-    10, 10          # nx, ny per level
+# 100 particles in a circle of radius 1.0 at z = π/2
+config = particles_in_circle(π/2; radius=1.0, n=100)
+
+# Custom center and pattern
+config = particles_in_circle(1.0;
+    center=(2.0, 2.0),        # Circle center
+    radius=1.5,
+    n=200,
+    pattern=:sunflower        # :sunflower, :rings, or :random
 )
-# Creates 300 particles (10×10×3)
 ```
 
-### 3D Random Distribution
+**Available patterns:**
+- `:sunflower` - Fibonacci spiral (very uniform, recommended)
+- `:rings` - Concentric rings
+- `:random` - Uniform random within disk
+
+### Particles in a 3D Grid
 
 ```julia
-config = create_random_3d_distribution(
-    0.0, 2π,        # x range
-    0.0, 2π,        # y range
-    0.0, 2π,        # z range
-    500             # total particles
+# 500 particles in a 10×10×5 grid
+config = particles_in_grid_3d(; nx=10, ny=10, nz=5)
+
+# Custom domain
+config = particles_in_grid_3d(;
+    x_min=0, x_max=π,
+    z_min=0.5, z_max=2.5,
+    nx=8, ny=8, nz=4
+)
+```
+
+### Particles in Layers (multiple z-levels)
+
+```julia
+# 300 particles at 3 z-levels (10×10 per level)
+config = particles_in_layers([π/4, π/2, 3π/4]; nx=10, ny=10)
+
+# Custom horizontal domain
+config = particles_in_layers([0.5, 1.0, 1.5, 2.0];
+    x_min=0, x_max=π,
+    nx=5, ny=5
+)
+```
+
+### Random 3D Distribution
+
+```julia
+# 500 random particles in default domain
+config = particles_random_3d(500)
+
+# Custom domain with seed
+config = particles_random_3d(1000;
+    x_min=0, x_max=π,
+    z_min=0.5, z_max=2.5,
+    seed=42
 )
 ```
 
 ### Custom Positions
 
 ```julia
-x_custom = [1.0, 2.0, 3.0]
-y_custom = [1.0, 2.0, 3.0]
-z_custom = [π/2, π/2, π/2]
-
-config = create_custom_distribution(x_custom, y_custom, z_custom)
+# Particles at specific (x, y, z) locations
+config = particles_custom([
+    (1.0, 1.0, 0.5),
+    (2.0, 2.0, 1.0),
+    (3.0, 1.5, 0.75),
+    (1.5, 3.0, 1.25)
+])
 ```
 
 ## Boundary Conditions
@@ -270,11 +318,10 @@ end
 
 Configure via:
 ```julia
-config = create_particle_config(
-    periodic_x = true,
-    periodic_y = true,
-    reflect_z = true,     # Reflective vertical BCs
-    ...
+config = particles_in_box(π/2;
+    periodic_x=true,
+    periodic_y=true,
+    reflect_z=true      # Reflective vertical BCs
 )
 ```
 
@@ -283,10 +330,7 @@ config = create_particle_config(
 Start advecting particles after the flow has developed:
 
 ```julia
-config = create_particle_config(
-    particle_advec_time = 1.0,  # Start advecting at t=1.0
-    ...
-)
+config = particles_in_box(π/2; particle_advec_time=1.0)  # Start at t=1.0
 ```
 
 Particles remain stationary until `current_time >= particle_advec_time`.
@@ -297,10 +341,9 @@ Particles remain stationary until `current_time >= particle_advec_time`.
 
 Control how often positions are recorded:
 ```julia
-config = create_particle_config(
-    save_interval = 0.1,      # Save every 0.1 time units
-    max_save_points = 1000,   # Max points per file
-    ...
+config = particles_in_box(π/2;
+    save_interval=0.1,       # Save every 0.1 time units
+    max_save_points=1000     # Max points per file
 )
 ```
 

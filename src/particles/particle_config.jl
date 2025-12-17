@@ -271,70 +271,40 @@ function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}}; kwargs...)
 end
 
 """
-    create_circular_distribution(z_level; x_center, y_center, radius, n_particles, pattern, kwargs...)
+    particles_in_circle(z; center, radius, n, pattern, kwargs...)
 
-Create particles distributed in a circular disk at a single z-level.
-
-Particles are distributed uniformly within a circular region using either a
-sunflower (Fibonacci) pattern or concentric rings. The sunflower pattern
-provides excellent uniform coverage and is commonly used in Lagrangian studies.
+Create particles distributed in a circular disk at a fixed z-level.
 
 # Arguments
-- `z_level::Real`: The vertical level where particles are placed
-- `x_center::Real=π`: x-coordinate of circle center
-- `y_center::Real=π`: y-coordinate of circle center
-- `radius::Real=1.0`: Radius of the circular region
-- `n_particles::Int=100`: Number of particles to place
-- `pattern::Symbol=:sunflower`: Distribution pattern
-  - `:sunflower` - Fibonacci/sunflower spiral (recommended, very uniform)
-  - `:rings` - Concentric rings with uniform radial spacing
-  - `:random` - Uniform random distribution within disk
-
-# Returns
-`ParticleConfig3D` configured with custom positions forming the circular distribution.
-
-# Mathematical Background
-The sunflower pattern uses the golden angle θ = π(3 - √5) ≈ 137.5° to achieve
-uniform area coverage:
-- θₙ = n × golden_angle
-- rₙ = R × √(n/N)  (ensures uniform area density)
+- `z`: Vertical level where particles are placed
+- `center`: (x, y) center of circle (default: (π, π))
+- `radius`: Radius of the circular region (default: 1.0)
+- `n`: Number of particles (default: 100)
+- `pattern`: Distribution pattern (default: :sunflower)
+  - `:sunflower` - Fibonacci spiral (very uniform, recommended)
+  - `:rings` - Concentric rings
+  - `:random` - Uniform random within disk
 
 # Example
 ```julia
-# 100 particles in a circle of radius 1.0 centered at (π, π) at z=π/2
-config = create_circular_distribution(π/2;
-    x_center=π, y_center=π,
-    radius=1.0,
-    n_particles=100
-)
+# 100 particles in a circle at z = π/2
+config = particles_in_circle(π/2; radius=1.0, n=100)
 
-# Larger circle with more particles using concentric rings
-config = create_circular_distribution(1.0;
-    x_center=π, y_center=π,
-    radius=2.0,
-    n_particles=200,
-    pattern=:rings
-)
+# Custom center and larger circle
+config = particles_in_circle(1.0; center=(2.0, 2.0), radius=2.0, n=200)
 
-# Random distribution within disk
-config = create_circular_distribution(π/4;
-    x_center=3.0, y_center=3.0,
-    radius=0.5,
-    n_particles=50,
-    pattern=:random
-)
-
-# Initialize tracker
-initialize_particles_3d!(tracker, config)
+# Random distribution
+config = particles_in_circle(π/4; radius=0.5, n=50, pattern=:random)
 ```
 """
-function create_circular_distribution(z_level::T;
-                                     x_center::T=T(π),
-                                     y_center::T=T(π),
-                                     radius::T=T(1.0),
-                                     n_particles::Int=100,
-                                     pattern::Symbol=:sunflower,
-                                     kwargs...) where T<:AbstractFloat
+function particles_in_circle(z_level::T;
+                            center::Tuple{T,T}=(T(π), T(π)),
+                            radius::T=T(1.0),
+                            n::Int=100,
+                            pattern::Symbol=:sunflower,
+                            kwargs...) where T<:AbstractFloat
+    x_center, y_center = center
+    n_particles = n
 
     @assert radius > 0 "radius must be positive"
     @assert n_particles > 0 "n_particles must be positive"
@@ -434,16 +404,18 @@ function create_circular_distribution(z_level::T;
 end
 
 # Convenience method with default Float64 type
-function create_circular_distribution(z_level::Real;
-                                     x_center::Real=π,
-                                     y_center::Real=π,
-                                     radius::Real=1.0,
-                                     kwargs...)
+function particles_in_circle(z_level::Real;
+                            center::Tuple{Real,Real}=(π, π),
+                            radius::Real=1.0,
+                            n::Int=100,
+                            pattern::Symbol=:sunflower,
+                            kwargs...)
     T = Float64
-    return create_circular_distribution(T(z_level);
-        x_center=T(x_center),
-        y_center=T(y_center),
+    return particles_in_circle(T(z_level);
+        center=(T(center[1]), T(center[2])),
         radius=T(radius),
+        n=n,
+        pattern=pattern,
         kwargs...
     )
 end
