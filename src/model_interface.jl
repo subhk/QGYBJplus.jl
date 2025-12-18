@@ -965,7 +965,11 @@ This is the recommended high-level interface that handles all the details of:
 - `mpi_config=nothing`: MPI configuration for parallel runs
 - `parallel_config=nothing`: Parallel I/O configuration
 - `workspace=nothing`: Pre-allocated workspace arrays
-- `N2_profile=nothing`: Optional N²(z) profile for vertical velocity computation (defaults to constant N²=1)
+- `N2_profile=nothing`: Optional N²(z) profile for consistent stratification physics.
+  When provided, this profile is used for:
+  - Elliptic coefficient a_ell = f²/N²(z) in q↔ψ and B↔A inversions
+  - Vertical velocity computation (omega equation and YBJ w)
+  When `nothing`, uses constant N² from `par.N²`.
 - `print_progress::Bool=true`: Print progress to stdout
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
 
@@ -1027,7 +1031,19 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
 
     # Compute coefficients
-    a_ell = a_ell_ut(par, G)
+    # Use N2_profile for elliptic coefficient if provided, ensuring consistent physics
+    # across q↔ψ inversions, B↔A inversions, and vertical velocity calculations
+    if N2_profile !== nothing && length(N2_profile) == G.nz
+        a_ell = a_ell_from_N2(N2_profile, par)
+    else
+        a_ell = a_ell_ut(par, G)
+        # Warn if stratification is non-constant but no profile provided
+        if hasfield(typeof(par), :stratification) && par.stratification != :constant_N
+            @warn "run_simulation!: par.stratification=$(par.stratification) but no N2_profile provided. " *
+                  "Using constant N² from par.N² for elliptic inversions. For consistent physics, " *
+                  "pass N2_profile or use QGYBJSimulation API." maxlog=1
+        end
+    end
     L_mask = dealias_mask(G)
 
     # Initial velocity computation
