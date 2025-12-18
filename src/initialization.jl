@@ -91,24 +91,37 @@ Based on the generate_fields_stag routine from Fortran code.
 """
 function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
     @info "Initializing analytical stream function (amplitude=$amplitude)"
-    
-    # Create wavenumber arrays
-    kx_max = G.nx ÷ 2
-    ky_max = G.ny ÷ 2
-    
-    # Initialize in real space first
-    psir = zeros(Float64, G.nx, G.ny, G.nz)
-    
+
+    # Get local dimensions from psik (works for both Array and PencilArray)
+    psik_arr = parent(psik)
+    nx_local, ny_local, nz_local = size(psik_arr)
+
+    # Initialize in real space with LOCAL dimensions
+    # Use similar() to get correct array type (Array or PencilArray)
+    psir = similar(psik, Float64)
+    psir_arr = parent(psir)
+
     dx = G.Lx / G.nx
     dy = G.Ly / G.ny
     dz = G.Lz / G.nz
 
-    for k in 1:G.nz
-        z = (k - 1) * dz
-        for j in 1:G.ny
-            y = (j - 1) * dy
-            for i in 1:G.nx
-                x = (i - 1) * dx
+    for k in 1:nz_local
+        # Get global z-index for correct coordinate
+        k_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
+                   local_to_global(k, 3, G) : k
+        z = (k_global - 1) * dz
+
+        for j_local in 1:ny_local
+            # Get global y-index
+            j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
+                       local_to_global(j_local, 2, G) : j_local
+            y = (j_global - 1) * dy
+
+            for i_local in 1:nx_local
+                # Get global x-index
+                i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
+                           local_to_global(i_local, 1, G) : i_local
+                x = (i_global - 1) * dx
 
                 # Example: sum of Rossby waves with different modes
                 # Use normalized coordinates for wave patterns: x̃ = 2πx/Lx, etc.
@@ -117,7 +130,7 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
                 z_norm = 2π * z / G.Lz
 
                 # This mimics typical geostrophic turbulence patterns
-                psir[i,j,k] = amplitude * (
+                psir_arr[i_local, j_local, k] = amplitude * (
                     sin(2*x_norm) * cos(y_norm) * cos(z_norm) +
                     0.5 * cos(x_norm) * sin(2*y_norm) * sin(z_norm) +
                     0.3 * sin(3*x_norm) * sin(y_norm) * cos(2*z_norm) +
@@ -126,7 +139,7 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
             end
         end
     end
-    
+
     # Transform to spectral space
     fft_forward!(psik, psir, plans)
 end
