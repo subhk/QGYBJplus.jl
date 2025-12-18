@@ -371,20 +371,31 @@ end
     apply_dealiasing_mask!(field, G::Grid)
 
 Apply 2/3 dealiasing mask to spectral field.
+Handles both serial (Array) and parallel (PencilArray) cases.
 """
 function apply_dealiasing_mask!(field, G::Grid)
     kx_max = G.nx ÷ 3  # 2/3 rule
     ky_max = G.ny ÷ 3
-    
-    for k in 1:G.nz
-        for j in 1:G.ny
-            ky = j <= G.ny÷2 ? j-1 : j-1-G.ny
-            
-            for i in 1:size(field, 1)
-                kx = i-1
-                
+
+    # Get local array and its dimensions
+    field_arr = parent(field)
+    nx_local, ny_local, nz_local = size(field_arr)
+
+    for k in 1:nz_local
+        for j_local in 1:ny_local
+            # Get global j index for wavenumber lookup
+            j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
+                       local_to_global(j_local, 2, G) : j_local
+            ky = j_global <= G.ny÷2 ? j_global-1 : j_global-1-G.ny
+
+            for i_local in 1:nx_local
+                # Get global i index for wavenumber lookup
+                i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
+                           local_to_global(i_local, 1, G) : i_local
+                kx = i_global - 1
+
                 if abs(kx) > kx_max || abs(ky) > ky_max
-                    field[i, j, k] = zero(eltype(field))
+                    field_arr[i_local, j_local, k] = zero(eltype(field_arr))
                 end
             end
         end
