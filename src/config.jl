@@ -420,8 +420,9 @@ function print_config_summary(config::ModelConfig)
     println("Domain:")
     println("  Grid: $(config.domain.nx) × $(config.domain.ny) × $(config.domain.nz)")
     println("  Size: $(config.domain.Lx) × $(config.domain.Ly) × $(config.domain.Lz)")
-    if !isnothing(config.domain.dom_x_m)
-        println("  Physical: $(config.domain.dom_x_m/1000) × $(config.domain.dom_y_m/1000) × $(config.domain.dom_z_m/1000) km")
+    # Print physical size in km if values are large (likely in meters)
+    if config.domain.Lx > 1000 || config.domain.Ly > 1000 || config.domain.Lz > 100
+        println("  Physical: $(config.domain.Lx/1000) × $(config.domain.Ly/1000) × $(config.domain.Lz/1000) km")
     end
     println()
     
