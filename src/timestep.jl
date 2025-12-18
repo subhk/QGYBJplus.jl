@@ -307,7 +307,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
                 ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
             # Use depth-varying N²(z) for dispersion coefficient
-            αdisp = αdisp_profile[k]
+            # Use global z-index for correct N² lookup in 2D decomposition
+            k_global = local_to_global(k, 3, G)
+            αdisp = αdisp_profile[k_global]
             BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
                       - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
                       + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
