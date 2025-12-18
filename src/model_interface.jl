@@ -560,7 +560,9 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
-    a_ell = params.f₀^2 / params.N²  # Elliptic coefficient
+    # Guard against N² ≈ 0 to avoid division by zero
+    N2_safe = max(params.N², eps(T))
+    a_ell = params.f₀^2 / N2_safe  # Elliptic coefficient
 
     # Get arrays
     B_arr = parent(state.B)
