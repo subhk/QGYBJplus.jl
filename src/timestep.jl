@@ -138,10 +138,10 @@ This matches the projection step in main_waqg.f90.
 # Example
 ```julia
 # Initialize and run projection step
-state = init_state(grid, params)
-init_random_psi!(state, grid, params, plans)
+state = init_state(grid)
+init_random_psi!(state, grid)
 a = a_ell_ut(params, grid)
-L = dealias_mask(params, grid)
+L = dealias_mask(grid)
 first_projection_step!(state, grid, params, plans; a=a, dealias_mask=L)
 ```
 """
