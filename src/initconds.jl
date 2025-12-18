@@ -7,8 +7,12 @@ Provides a simple random-phase ring in k-space with optional vertical structure.
     init_random_psi!(S, G; initial_k=5, amp_width=2.0, linear_vert_structure=0)
 
 Populate real-space ψ with a random-phase Gaussian ring at |k|≈initial_k, then
-apply optional vertical structure: 0=QG-consistent kz~kh, 1=linear in z,
-2=constant kz=1. Returns S with ψ set in spectral space.
+apply optional vertical structure:
+- 0 = QG-consistent kz ~ kh (kz scales with horizontal wavenumber)
+- 1 = Linear in z (amplitude varies linearly from domain center)
+- 2 = Single vertical mode (kz = 2π/Lz, one wavelength in z)
+
+Returns S with ψ set in spectral space.
 
 Note: FFT plans are created internally for each call. For efficiency in repeated
 initialization, consider using the initialization routines in initialization.jl
