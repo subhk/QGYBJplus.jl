@@ -112,7 +112,7 @@ Result is normalized by (nx × ny) to account for unnormalized inverse FFT.
 jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
-function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans)
+function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -120,6 +120,10 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans)
     χ_arr = parent(χₖ)
     dst_arr = parent(dstk)
     nx_local, ny_local, nz_local = size(φ_arr)
+
+    # Dealiasing: use inline check for efficiency when Lmask not provided
+    use_inline_dealias = isnothing(Lmask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Step 1: Compute spectral derivatives
     In spectral space: ∂/∂x → ikₓ, ∂/∂y → ikᵧ =#
@@ -161,8 +165,17 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans)
                                       real(φᵧᵣ[i_local, j_local, k])*real(χₓᵣ[i_local, j_local, k]))
     end
 
-    #= Step 4: Transform back to spectral space =#
+    #= Step 4: Transform back to spectral space and apply dealiasing =#
     fft_forward!(dstk, J, plans)
+
+    # Apply 2/3 dealiasing mask to remove aliased modes from quadratic nonlinearity
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        if !should_keep(i_global, j_global)
+            dst_arr[i_local, j_local, k] = 0  # Zero aliased modes
+        end
+    end
 
     #= Normalization note:
     The pseudo-spectral convolution involves:
