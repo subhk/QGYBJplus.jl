@@ -54,10 +54,10 @@ FORTRAN CORRESPONDENCE:
 
 module Nonlinear
 
-using ..QGYBJ: Grid, local_to_global, get_local_dims
-using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
+using ..QGYBJ: Grid, local_to_global
+using ..QGYBJ: fft_forward!, fft_backward!
 using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJ: local_to_global_z, allocate_z_pencil
+using ..QGYBJ: allocate_z_pencil
 
 # Reference to parent module for accessing is_dealiased
 const PARENT = Base.parentmodule(@__MODULE__)
