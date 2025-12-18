@@ -846,6 +846,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         ky_val = G.ky[j_global]
         kh2 = kx_val^2 + ky_val^2
 
+        # Special case: kₕ² = 0 (horizontal mean mode) - see docstring for rationale
         if kh2 == 0
             @inbounds for k in 1:nz
                 A_z_arr[i_local, j_local, k] = 0
