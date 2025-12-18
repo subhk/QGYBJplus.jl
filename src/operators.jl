@@ -644,6 +644,15 @@ either:
 2. Pass the exact same N2_profile that was used in the timestep
 """
 function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, L=nothing, workspace=nothing, skip_inversion=false)
+    # Warn about potential stratification inconsistency
+    # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
+    # This can give inconsistent results if the simulation uses variable stratification.
+    if !skip_inversion && N2_profile === nothing
+        @warn "compute_ybj_vertical_velocity!: Re-inverting B→A with constant N² (no N2_profile provided). " *
+              "If your simulation uses variable stratification, pass N2_profile or use skip_inversion=true " *
+              "to avoid inconsistent vertical velocity." maxlog=1
+    end
+
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
