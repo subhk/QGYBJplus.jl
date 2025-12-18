@@ -24,7 +24,7 @@ test cases, and are populated during `setup_simulation`.
 You can override them if needed via parameter hooks:
 
 ```julia
-par = default_params(nx=64, ny=64, nz=32)
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
 rho_ut = ones(par.nz); rho_st = ones(par.nz)   # or custom profiles
 par = with_density_profiles(par; rho_ut=rho_ut, rho_st=rho_st)
 ```
