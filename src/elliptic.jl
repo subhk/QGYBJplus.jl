@@ -485,6 +485,12 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     bot_bc_arr = bot_bc !== nothing ? parent(bot_bc) : nothing
     top_bc_arr = top_bc !== nothing ? parent(top_bc) : nothing
 
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhsᵣ = zeros(eltype(a), nz)
+    rhsᵢ = zeros(eltype(a), nz)
+    solᵣ = zeros(eltype(a), nz)
+    solᵢ = zeros(eltype(a), nz)
+
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
