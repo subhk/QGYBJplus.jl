@@ -304,6 +304,12 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
             continue
         end
 
+        # Special case: nz == 1 (single-layer / 2D mode)
+        if nz == 1
+            @inbounds ψ_z_arr[i_local, j_local, 1] = -q_z_arr[i_local, j_local, 1] / kₕ²
+            continue
+        end
+
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
         d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + kₕ²*Δz² )
