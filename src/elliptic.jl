@@ -66,7 +66,7 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJ: Grid, State, get_kx, get_ky, get_local_dims, local_to_global
+using ..QGYBJ: Grid, State, local_to_global
 using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJ: local_to_global_z, allocate_z_pencil
 const PARENT = Base.parentmodule(@__MODULE__)

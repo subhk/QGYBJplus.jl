@@ -975,6 +975,7 @@ For Lagrangian particle advection, always use this function rather than
 - `use_ybj_w::Bool`: If true, use YBJ formula for w
 - `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS
 
 # Returns
 Modified State with total velocity fields u, v, w.
