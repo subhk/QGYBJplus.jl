@@ -590,20 +590,35 @@ function advect_particles!(tracker::ParticleTracker{T},
 end
 
 """
-    update_velocity_fields!(tracker, state, grid)
+    update_velocity_fields!(tracker, state, grid; params=nothing, N2_profile=nothing)
 
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
 
 Handles 2D pencil decomposition by getting actual local dimensions from State arrays.
+
+# Arguments
+- `params`: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
+- `N2_profile`: Optional N²(z) profile for nonuniform stratification. If not provided and
+  `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
+  simulation's actual stratification.
+
+# Important
+When using YBJ vertical velocity (`use_ybj_w=true`) with variable stratification, you MUST
+pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
+will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
-                                state::State, grid::Grid) where T
+                                state::State, grid::Grid;
+                                params=nothing, N2_profile=nothing) where T
     # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
+    # Pass params and N2_profile to ensure consistent stratification handling
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
+                              params=params,
                               compute_w=true,
-                              use_ybj_w=tracker.config.use_ybj_w)
+                              use_ybj_w=tracker.config.use_ybj_w,
+                              N2_profile=N2_profile)
 
     # Get actual local dimensions from State arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
