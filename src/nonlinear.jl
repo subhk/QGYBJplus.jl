@@ -78,6 +78,11 @@ The Jacobian conserves both φ and χ integrals (energy and enstrophy).
 
 Compute the Jacobian J(φ, χ) = ∂φ/∂x ∂χ/∂y - ∂φ/∂y ∂χ/∂x using pseudo-spectral method.
 
+!!! note "Usage Note"
+    This function is exported for user convenience but is **not used** in the main
+    time-stepping code. The main code uses `convol_waqg!` instead, which computes
+    advection terms using the divergence form with precomputed velocities.
+
 # Mathematical Definition
 The Jacobian (also called Poisson bracket) is:
 
@@ -92,23 +97,25 @@ In vector form: J(φ, χ) = ẑ · (∇φ × ∇χ)
 
 # Algorithm
 1. Compute spectral derivatives: φ̂ₓ = ikₓφ̂, φ̂ᵧ = ikᵧφ̂
-2. Transform derivatives to real space
+2. Transform derivatives to physical space
 3. Compute product: J = φₓχᵧ - φᵧχₓ (pointwise)
 4. Transform result back to spectral space
 
 # Arguments
 - `dstk`: Output array for Ĵ(φ, χ) in spectral space
-- `phik`: φ̂ in spectral space
-- `chik`: χ̂ in spectral space
+- `phik`: φ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
+- `chik`: χ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
 - `G::Grid`: Grid with wavenumber arrays
 - `plans`: FFT plans from plan_transforms!
 
-# Note
-Result is normalized by (nx × ny) to account for unnormalized inverse FFT.
+# Important
+This function assumes φ and χ are **real-valued fields** in physical space. For real
+fields, IFFT of spectral derivatives (im*k*φ̂) yields purely imaginary results, so
+the physical derivatives are extracted via `imag()`.
 
 # Example
 ```julia
-# Compute J(ψ, q)
+# Compute J(ψ, q) for real fields ψ and q
 jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
@@ -158,14 +165,17 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     φₓᵣ = parent(φₓ); φᵧᵣ = parent(φᵧ)
     χₓᵣ = parent(χₓ); χᵧᵣ = parent(χᵧ)
 
-    #= Step 3: Compute Jacobian in real space (pointwise multiplication)
-    J = φₓχᵧ - φᵧχₓ =#
+    #= Step 3: Compute Jacobian in physical space (pointwise multiplication)
+    J = φₓχᵧ - φᵧχₓ
+
+    For real fields: IFFT(im*k*φ̂) is purely imaginary, so the physical
+    derivative is in the imaginary part. We use imag() to extract it. =#
     J = similar(φₖ)
     J_arr = parent(J)
-  
+
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        J_arr[i_local, j_local, k] = (real(φₓᵣ[i_local, j_local, k])*real(χᵧᵣ[i_local, j_local, k]) -
-                                      real(φᵧᵣ[i_local, j_local, k])*real(χₓᵣ[i_local, j_local, k]))
+        J_arr[i_local, j_local, k] = (imag(φₓᵣ[i_local, j_local, k])*imag(χᵧᵣ[i_local, j_local, k]) -
+                                      imag(φᵧᵣ[i_local, j_local, k])*imag(χₓᵣ[i_local, j_local, k]))
     end
 
     #= Step 4: Transform back to spectral space and apply dealiasing =#
