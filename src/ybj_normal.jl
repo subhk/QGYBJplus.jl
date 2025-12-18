@@ -333,7 +333,10 @@ function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask
     end
 
     # Scale by f/N² (inverse of dispersion coefficient factor)
-    σ .*= (par.f₀ / par.N²)
+    # Use vertical mean of N²(z) for variable stratification
+    N² = N2_ut(par, G)
+    N²_mean = sum(N²) / nz
+    σ .*= (par.f₀ / N²_mean)
 
     return σ
 end
