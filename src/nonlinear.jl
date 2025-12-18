@@ -136,6 +136,7 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
+    
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
 
@@ -148,6 +149,7 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     #= Step 2: Transform derivatives to real space =#
     φₓ = similar(φₖ); φᵧ = similar(φₖ)
     χₓ = similar(χₖ); χᵧ = similar(χₖ)
+  
     fft_backward!(φₓ, φₓₖ, plans)
     fft_backward!(φᵧ, φᵧₖ, plans)
     fft_backward!(χₓ, χₓₖ, plans)
@@ -160,6 +162,7 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     J = φₓχᵧ - φᵧχₓ =#
     J = similar(φₖ)
     J_arr = parent(J)
+  
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         J_arr[i_local, j_local, k] = (real(φₓᵣ[i_local, j_local, k])*real(χᵧᵣ[i_local, j_local, k]) -
                                       real(φᵧᵣ[i_local, j_local, k])*real(χₓᵣ[i_local, j_local, k]))
@@ -262,6 +265,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     qᵣ  = similar(qk)
     BRᵣ = similar(BRk)
     BIᵣ = similar(BIk)
+  
     fft_backward!(qᵣ,  qk,  plans)
     fft_backward!(BRᵣ, BRk, plans)
     fft_backward!(BIᵣ, BIk, plans)
@@ -272,6 +276,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Compute products u*q and v*q in real space
     uterm = similar(qk); vterm = similar(qk)
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
+  
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
         vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
@@ -280,6 +285,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Transform to spectral and compute divergence
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+  
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
@@ -302,11 +308,13 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+  
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
+    
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
@@ -323,13 +331,16 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
+  
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
+    
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
+    
         if should_keep(i_global, j_global)
             nBIk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
         else
@@ -412,6 +423,7 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
     ζₖ = similar(ψₖ)
     ζₖ_arr = parent(ζₖ)
+  
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
@@ -424,6 +436,7 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     #= Transform to real space =#
     ζᵣ = similar(ζₖ)
     BRᵣ = similar(BRk); BIᵣ = similar(BIk)
+  
     fft_backward!(ζᵣ, ζₖ, plans)
     fft_backward!(BRᵣ, BRk, plans)
     fft_backward!(BIᵣ, BIk, plans)
@@ -433,7 +446,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
 
     #= Compute products in real space: rB = ζ × B =#
     rBRᵣ = similar(BRᵣ); rBIᵣ = similar(BIᵣ)
-    rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ)
+    rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ
+  
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         rBRᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k])*real(BRᵣ_arr[i_local, j_local, k])
         rBIᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k])*real(BIᵣ_arr[i_local, j_local, k])
@@ -448,6 +462,7 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     fft_backward! uses normalized IFFT (divides by N internally).
     Previous code incorrectly divided by nx*ny, weakening refraction terms.
     Just apply dealiasing mask. =#
+    
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
@@ -543,8 +558,10 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
+      
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
+      
         BRₓₖ_arr[i_local, j_local, k] = im*kₓ*BRk_arr[i_local, j_local, k]  # ∂BR/∂x
         BRᵧₖ_arr[i_local, j_local, k] = im*kᵧ*BRk_arr[i_local, j_local, k]  # ∂BR/∂y
         BIₓₖ_arr[i_local, j_local, k] = im*kₓ*BIk_arr[i_local, j_local, k]  # ∂BI/∂x
@@ -580,6 +597,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
     mag² = similar(BRk)
     mag²_arr = parent(mag²)
+    
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         mag²_arr[i_local, j_local, k] = real(BRᵣ_arr[i_local, j_local, k])^2 + real(BIᵣ_arr[i_local, j_local, k])^2
     end
@@ -605,6 +623,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
+      
         if should_keep(i_global, j_global)
             # qʷ = (i/2)J(B*, B) - (1/4)∇²|B|²
             # For dimensional equations, B has actual amplitude - no W2F scaling needed
