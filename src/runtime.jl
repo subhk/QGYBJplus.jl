@@ -82,19 +82,28 @@ end
     compute_N2_skewed_gaussian(z::Vector, par::QGParams) -> Vector
 
 Compute N² profile using skewed Gaussian parameters from par.
+
+The skewed Gaussian formula is:
+    N²(z) = N₀² + N₁² × exp(-((z̃ - z₀)/σ)² × (1 + erf(α(z̃ - z₀))))
+
+where z̃ = z/Lz is the normalized vertical coordinate.
+
+Note: The parameters z₀_sg, σ_sg are in normalized coordinates (0 to 1),
+matching the Fortran test1 configuration.
 """
 function compute_N2_skewed_gaussian(z::Vector{T}, par::QGParams) where T
     nz = length(z)
     N2_profile = Vector{T}(undef, nz)
 
-    # Get skewed Gaussian parameters
-    N02 = par.N02_sg
-    N12 = par.N12_sg
-    σ = par.sigma_sg
-    z0 = par.z0_sg
-    α = par.alpha_sg
+    # Get skewed Gaussian parameters (Unicode field names from QGParams)
+    N02 = par.N₀²_sg
+    N12 = par.N₁²_sg
+    σ = par.σ_sg
+    z0 = par.z₀_sg
+    α = par.α_sg
 
     # Compute N² at each level
+    # z₀_sg and σ_sg are in normalized coordinates, so we normalize z
     for k in 1:nz
         zk = z[k] / par.Lz  # Normalize by domain depth
         N2_profile[k] = N02 + N12 * exp(-((zk - z0)/σ)^2 * (1 + erf(α * (zk - z0))))
