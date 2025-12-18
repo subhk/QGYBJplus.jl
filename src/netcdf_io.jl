@@ -389,10 +389,10 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
             ds.dim["time"] = 1
 
             # Create coordinate variables
-            x_var = NCDatasets.NCDatasets.defVar(ds, "x", Float64, ("x",))
-            y_var = NCDatasets.NCDatasets.defVar(ds, "y", Float64, ("y",))
-            z_var = NCDatasets.NCDatasets.defVar(ds, "z", Float64, ("z",))
-            time_var = NCDatasets.NCDatasets.defVar(ds, "time", Float64, ("time",))
+            x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+            y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+            z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+            time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
 
             # Set coordinate values using actual domain size
             dx = G.Lx / G.nx
@@ -414,9 +414,9 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
             time_var.attrib["long_name"] = "time"
 
             # Create and write data variables (already normalized by fft_backward!)
-            psi_var = NCDatasets.NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            LAr_var = NCDatasets.NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
-            LAi_var = NCDatasets.NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
             psi_var[:,:,:] = real.(psir)
             LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
@@ -424,7 +424,7 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
 
             # Add attributes
             ds.attrib["title"] = "QG-YBJ Model State"
-            ds.attrib["created_at"] = string(Dates.now())
+            ds.attrib["created_at"] = string(now())
             ds.attrib["model_time"] = time
             ds.attrib["n_processes"] = nprocs
 
@@ -506,10 +506,10 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         ds.dim["time"] = 1
 
         # Create coordinate variables
-        x_var = NCDatasets.NCDatasets.defVar(ds, "x", Float64, ("x",))
-        y_var = NCDatasets.NCDatasets.defVar(ds, "y", Float64, ("y",))
-        z_var = NCDatasets.NCDatasets.defVar(ds, "z", Float64, ("z",))
-        time_var = NCDatasets.NCDatasets.defVar(ds, "time", Float64, ("time",))
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
+        time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
 
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
@@ -532,7 +532,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         # Write streamfunction (already normalized by fft_backward!)
         if gathered_psi !== nothing
-            psi_var = NCDatasets.NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+            psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             psi_var[:,:,:] = real.(psir)
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "stream function"
@@ -541,8 +541,8 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         # Write wave fields (L+A real and imaginary parts)
         # Extract real and imag parts of the PHYSICAL field (already normalized)
         if gathered_B !== nothing
-            LAr_var = NCDatasets.NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
-            LAi_var = NCDatasets.NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+            LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+            LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
             LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
             LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
@@ -555,7 +555,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         # Global attributes
         ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
-        ds.attrib["created_at"] = string(Dates.now())
+        ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
 
         # Add parameter information if provided
@@ -1043,9 +1043,9 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         ds.dim["z"] = G.nz
 
         # Create coordinate variables
-        x_var = NCDatasets.NCDatasets.defVar(ds, "x", Float64, ("x",))
-        y_var = NCDatasets.NCDatasets.defVar(ds, "y", Float64, ("y",))
-        z_var = NCDatasets.NCDatasets.defVar(ds, "z", Float64, ("z",))
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
 
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
@@ -1063,7 +1063,7 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         z_var.attrib["long_name"] = "z coordinate (vertical depth)"
 
         # Write psi (already normalized by fft_backward!)
-        psi_var = NCDatasets.NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
+        psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
         psi_var[:,:,:] = real.(psir)
         psi_var.attrib["units"] = "m²/s"
         psi_var.attrib["long_name"] = "stream function"
@@ -1096,9 +1096,9 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         ds.dim["z"] = G.nz
 
         # Create coordinate variables
-        x_var = NCDatasets.NCDatasets.defVar(ds, "x", Float64, ("x",))
-        y_var = NCDatasets.NCDatasets.defVar(ds, "y", Float64, ("y",))
-        z_var = NCDatasets.NCDatasets.defVar(ds, "z", Float64, ("z",))
+        x_var = NCDatasets.defVar(ds, "x", Float64, ("x",))
+        y_var = NCDatasets.defVar(ds, "y", Float64, ("y",))
+        z_var = NCDatasets.defVar(ds, "z", Float64, ("z",))
 
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
@@ -1116,8 +1116,8 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         z_var.attrib["long_name"] = "z coordinate (vertical depth)"
 
         # Write wave field real and imaginary parts (already normalized)
-        LAr_var = NCDatasets.NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
-        LAi_var = NCDatasets.NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
+        LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
+        LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
         LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
         LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field

@@ -402,11 +402,45 @@ function validate_config(config::ModelConfig)
         push!(errors, "Vertical viscosity nu_v must be non-negative (got nu_v=$(config.nu_v))")
     end
 
+    # Hyperdiffusion coefficient validation (must be non-negative)
+    if config.nu_h1 < 0
+        push!(errors, "Hyperviscosity nu_h1 must be non-negative (got nu_h1=$(config.nu_h1))")
+    end
+    if config.nu_h2 < 0
+        push!(errors, "Hyperviscosity nu_h2 must be non-negative (got nu_h2=$(config.nu_h2))")
+    end
+    if config.nu_h1_wave < 0
+        push!(errors, "Wave hyperviscosity nu_h1_wave must be non-negative (got nu_h1_wave=$(config.nu_h1_wave))")
+    end
+    if config.nu_h2_wave < 0
+        push!(errors, "Wave hyperviscosity nu_h2_wave must be non-negative (got nu_h2_wave=$(config.nu_h2_wave))")
+    end
+
+    # Laplacian power validation (must be positive integers)
+    if config.ilap1 < 1
+        push!(errors, "Laplacian power ilap1 must be >= 1 (got ilap1=$(config.ilap1))")
+    end
+    if config.ilap2 < 1
+        push!(errors, "Laplacian power ilap2 must be >= 1 (got ilap2=$(config.ilap2))")
+    end
+    if config.ilap1_wave < 1
+        push!(errors, "Wave Laplacian power ilap1_wave must be >= 1 (got ilap1_wave=$(config.ilap1_wave))")
+    end
+    if config.ilap2_wave < 1
+        push!(errors, "Wave Laplacian power ilap2_wave must be >= 1 (got ilap2_wave=$(config.ilap2_wave))")
+    end
+
     # FFT efficiency warning
     if !ispow2(config.domain.nx) || !ispow2(config.domain.ny)
         push!(warnings, "Grid dimensions (nx=$(config.domain.nx), ny=$(config.domain.ny)) are not powers of 2 - FFTs may be slower")
     end
-    
+
+    # Deprecation warning for no_feedback
+    if config.no_feedback
+        push!(warnings, "Field 'no_feedback' is deprecated, use 'no_wave_feedback' instead. " *
+                       "Currently no_feedback=$(config.no_feedback), no_wave_feedback=$(config.no_wave_feedback)")
+    end
+
     return errors, warnings
 end
 
