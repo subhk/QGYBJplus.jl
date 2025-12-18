@@ -125,6 +125,26 @@ where r_ut, r_st are density weights (unity for Boussinesq).
 # Fortran Correspondence
 This matches `psi_solver` in elliptic.f90.
 
+# Mean Mode (kₕ=0) Handling
+For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
+    ∂/∂z(a(z) ∂ψ/∂z) = q
+
+With Neumann boundary conditions (∂ψ/∂z=0 at both boundaries), this operator
+is **singular**: the homogeneous equation has the constant function as its
+null space. Consequently:
+1. A solution exists only if ∫q dz = 0 (compatibility condition)
+2. The solution is determined only up to an arbitrary constant
+
+This implementation sets ψ=0 for kₕ=0 because:
+- For periodic domains, the mean streamfunction doesn't affect velocities
+  (u = -∂ψ/∂y, v = ∂ψ/∂x, both zero for constant ψ)
+- Standard spectral QG codes typically ignore the barotropic mean
+- Initial conditions and forcing are assumed to have zero horizontal mean
+
+If your application requires tracking vertically-varying barotropic modes,
+you would need to solve the singular ODE with an additional constraint
+(e.g., ∫ψ dz = 0) to uniquely determine the solution.
+
 # Example
 ```julia
 a_vec = a_ell_ut(params, G)  # Compute a_ell = f²/N²
@@ -655,6 +675,20 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 # Output Fields
 - `S.A`: Recovered wave amplitude A
 - `S.C`: Vertical derivative C = ∂A/∂z (for wave velocity computation)
+
+# Mean Mode (kₕ=0) Handling
+For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
+    a(z) ∂²A/∂z² = B
+
+With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
+is **singular** - the constant function is in its null space. This implementation
+sets A=0 and C=0 for kₕ=0 because:
+- Horizontally uniform waves (kₕ=0) have no horizontal gradients
+- The YBJ vertical velocity formula involves ∂A/∂x, ∂A/∂y which vanish for kₕ=0
+- Standard NIW codes assume waves have horizontal structure
+
+If your application requires horizontally uniform wave modes, you would need
+to solve the singular ODE with an additional constraint (e.g., ∫A dz = 0).
 
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90.
