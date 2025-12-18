@@ -278,13 +278,13 @@ Following the Fortran init_base_state routine:
 
 # Returns
 Named tuple with coefficients:
-- `r_1`: Unity array (length nz)
-- `r_2`: N² profile (length nz)
-- `r_3`: Zero array (length nz)
-- `a_ell_u`: f²/N² at unstaggered points (length nz)
-- `a_ell_s`: f²/N² at staggered points (length nz)
-- `rho_u`: Unity density at unstaggered points (length nz)
-- `rho_s`: Unity density at staggered points (length nz)
+- `r_1_u`, `r_1_s`: Unity arrays at unstaggered/staggered points (length nz)
+- `r_2_u`, `r_2_s`: N² at unstaggered/staggered points (length nz)
+- `r_3_u`, `r_3_s`: Zero arrays (length nz, not used in standard QG)
+- `a_ell_u`, `a_ell_s`: f²/N² at unstaggered/staggered points (length nz)
+- `rho_u`, `rho_s`: Unity density at unstaggered/staggered points (length nz)
+- `r_1`, `r_2`, `r_3`, `a_ell`: Legacy aliases (equal to `*_u` versions)
+- `b_ell`: Zero array (length nz, reserved for future use)
 """
 function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_sq::Real=T(1.0)) where T
     # Check for empty profile
