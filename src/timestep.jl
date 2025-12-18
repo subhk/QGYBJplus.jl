@@ -156,9 +156,10 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     nx_local, ny_local, nz_local = size(q_arr)
     nz = G.nz
 
-    # Note: For 2D decomposition, nz_local may be < nz (z distributed in xy-pencil)
+    # Note: In xy-pencil format, z is fully local (nz_local = nz).
+    # In z-pencil format (after transpose), xy are distributed.
     # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
-    # handle transposes internally
+    # handle transposes internally when using 2D decomposition.
 
     # Dealias mask - use global indices for lookup
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
@@ -459,8 +460,8 @@ Modified Snp1 with solution at time n+1.
 # Time Level Management
 After this call:
 - Snp1 contains fields at n+1
-- Snm1 contains **filtered** fields at n (for next step's n-1)
-- Sn is unchanged (use Snm1 as new Sn in next call)
+- Sn contains **filtered** fields at n (becomes new n-1 after rotation)
+- Snm1 is unchanged (will be overwritten after rotation)
 
 Typical loop structure:
 ```julia
@@ -497,9 +498,10 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     nx_local, ny_local, nz_local = size(qn_arr)
     nz = G.nz
 
-    # Note: For 2D decomposition, nz_local may be < nz (z distributed in xy-pencil)
+    # Note: In xy-pencil format, z is fully local (nz_local = nz).
+    # In z-pencil format (after transpose), xy are distributed.
     # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
-    # handle transposes internally
+    # handle transposes internally when using 2D decomposition.
 
     # Dealias mask - use global indices for lookup
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
