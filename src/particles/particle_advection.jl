@@ -1338,67 +1338,44 @@ end
 finalize_trajectory_files!(tracker)
 ```
 """
-function enable_auto_file_splitting!(tracker::ParticleTracker, base_filename::String; 
-                                     max_points_per_file::Int=1000)
+function enable_auto_file_splitting!(tracker::ParticleTracker{T}, base_filename::String;
+                                     max_points_per_file::Int=1000) where T
     # Update tracker configuration
     tracker.base_output_filename = base_filename
     tracker.auto_file_splitting = true
     tracker.output_file_sequence = 0
-    
-    # Update particle config for new max_save_points if provided
-    if max_points_per_file != tracker.config.max_save_points
-        # Create new config with updated max_save_points and auto_split_files
-        new_config = ParticleConfig(
-            tracker.config.x_min, tracker.config.x_max,
-            tracker.config.y_min, tracker.config.y_max,
-            tracker.config.z_min, tracker.config.z_max,
-            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
-            tracker.config.z_level,
-            
-            # Copy other settings
-            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
-            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
-            tracker.config.particle_advec_time,
-            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
-            tracker.config.integration_method, tracker.config.interpolation_method,
-            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
-            
-            # Updated I/O settings
-            tracker.config.save_interval,
-            max_points_per_file,      # New max_save_points
-            true                      # Enable auto_split_files
-        )
-        
-        tracker.config = new_config
-    else
-        # Just enable auto splitting with existing config
-        tracker.config = ParticleConfig(
-            tracker.config.x_min, tracker.config.x_max,
-            tracker.config.y_min, tracker.config.y_max,
-            tracker.config.z_min, tracker.config.z_max,
-            tracker.config.nx_particles, tracker.config.ny_particles, tracker.config.nz_particles,
-            tracker.config.z_level,
-            
-            # Copy other settings
-            tracker.config.distribution_type, tracker.config.z_levels, tracker.config.particles_per_level,
-            tracker.config.custom_x, tracker.config.custom_y, tracker.config.custom_z,
-            tracker.config.particle_advec_time,
-            tracker.config.use_ybj_w, tracker.config.use_3d_advection,
-            tracker.config.integration_method, tracker.config.interpolation_method,
-            tracker.config.periodic_x, tracker.config.periodic_y, tracker.config.reflect_z,
-            
-            # Updated I/O settings
-            tracker.config.save_interval,
-            tracker.config.max_save_points,
-            true                      # Enable auto_split_files
-        )
-    end
-    
+
+    # Create new config with updated max_save_points and auto_split_files
+    # Use keyword arguments as ParticleConfig uses @kwdef
+    old_config = tracker.config
+    new_config = ParticleConfig{T}(
+        x_min = old_config.x_min,
+        x_max = old_config.x_max,
+        y_min = old_config.y_min,
+        y_max = old_config.y_max,
+        z_level = old_config.z_level,
+        nx_particles = old_config.nx_particles,
+        ny_particles = old_config.ny_particles,
+        use_ybj_w = old_config.use_ybj_w,
+        use_3d_advection = old_config.use_3d_advection,
+        particle_advec_time = old_config.particle_advec_time,
+        integration_method = old_config.integration_method,
+        interpolation_method = old_config.interpolation_method,
+        periodic_x = old_config.periodic_x,
+        periodic_y = old_config.periodic_y,
+        reflect_z = old_config.reflect_z,
+        save_interval = old_config.save_interval,
+        max_save_points = max_points_per_file,
+        auto_split_files = true
+    )
+
+    tracker.config = new_config
+
     println("✅ Auto file splitting enabled:")
     println("  Base filename: $base_filename")
     println("  Max points per file: $max_points_per_file")
     println("  Files will be created: $(base_filename).nc, $(base_filename)_part1.nc, ...")
-    
+
     return tracker
 end
 
