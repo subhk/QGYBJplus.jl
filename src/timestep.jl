@@ -527,9 +527,10 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     convol_waqg!(nqk, nBRk, nBIk, Sn.u, Sn.v, Sn.q, BRk, BIk, G, plans; Lmask=L)
     refraction_waqg!(rBRk, rBIk, BRk, BIk, Sn.psi, G, plans; Lmask=L)
 
-    # Vertical diffusion uses q at n-1 (for leapfrog stability)
-    # Handles 2D decomposition transposes internally
-    dissipation_q_nv!(dqk, Snm1.q, par, G; workspace=workspace)
+    # Vertical diffusion at time n (NOT n-1!)
+    # Previous code used Snm1.q which lagged the operator and broke second-order accuracy.
+    # All tendencies should be evaluated at time n and multiplied by exp(-λdt).
+    dissipation_q_nv!(dqk, Sn.q, par, G; workspace=workspace)
 
     #= Step 3: Apply physics switches =#
     if par.inviscid; dqk .= 0; end
@@ -576,13 +577,14 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             λʷ = int_factor(kₓ, kᵧ, par; waves=true)
 
             #= Update q
-            q^(n+1) = q^(n-1)×e^(-2λdt) - 2dt×J(ψ,q)^n×e^(-λdt) + 2dt×diff^(n-1)×e^(-2λdt) =#
+            q^(n+1) = q^(n-1)×e^(-2λdt) + 2dt×[-J(ψ,q)^n + diff^n]×e^(-λdt)
+            All tendencies (advection, diffusion) evaluated at time n, scaled by e^(-λdt).
+            Previous code incorrectly used diff at n-1 with e^(-2λdt), breaking second-order accuracy. =#
             if par.fixed_flow
                 qtemp_arr[i,j,k] = qn_arr[i,j,k]  # Keep unchanged
             else
-                qtemp_arr[i,j,k] = qnm1_arr[i,j,k]*exp(-2λₑ) -
-                               2*par.dt*nqk_arr[i,j,k]*exp(-λₑ) +
-                               2*par.dt*dqk_arr[i,j,k]*exp(-2λₑ)
+                qtemp_arr[i,j,k] = qnm1_arr[i,j,k]*exp(-2λₑ) +
+                               2*par.dt*(-nqk_arr[i,j,k] + dqk_arr[i,j,k])*exp(-λₑ)
             end
 
             #= Update B (real and imaginary parts)
@@ -605,7 +607,11 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     #= Step 5: Robert-Asselin filter
     Damps the computational mode: φ̃^n = φ^n + γ(φ^(n-1) - 2φ^n + φ^(n+1))
-    Store filtered values in Snm1 (they become the "n-1" for next step) =#
+
+    IMPORTANT: Store filtered values in Sn (not Snm1!), so that after the rotation
+    (Snm1, Sn, Snp1) = (Sn, Snp1, Snm1), the filtered n state becomes the new n-1 state.
+    Previous code stored in Snm1, but after rotation the old unfiltered Sn became the
+    new Snm1, effectively leaving leapfrog unfiltered. =#
     γ = par.γ
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for dealias mask lookup
@@ -613,14 +619,14 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         j_global = local_to_global(j, 2, G)
 
         if L[i_global, j_global]
-            # Filter q
-            qnm1_arr[i,j,k] = qn_arr[i,j,k] + γ*( qnm1_arr[i,j,k] - 2qn_arr[i,j,k] + qtemp_arr[i,j,k] )
+            # Filter q - store in Sn so it becomes new Snm1 after rotation
+            qn_arr[i,j,k] = qn_arr[i,j,k] + γ*( qnm1_arr[i,j,k] - 2qn_arr[i,j,k] + qtemp_arr[i,j,k] )
 
-            # Filter B
+            # Filter B - store in Sn so it becomes new Snm1 after rotation
             Bnp1 = Complex(real(BRtemp_arr[i,j,k]),0) + im*Complex(real(BItemp_arr[i,j,k]),0)
-            Bnm1_arr[i,j,k] = Bn_arr[i,j,k] + γ*( Bnm1_arr[i,j,k] - 2Bn_arr[i,j,k] + Bnp1 )
+            Bn_arr[i,j,k] = Bn_arr[i,j,k] + γ*( Bnm1_arr[i,j,k] - 2Bn_arr[i,j,k] + Bnp1 )
         else
-            qnm1_arr[i,j,k] = 0; Bnm1_arr[i,j,k] = 0
+            qn_arr[i,j,k] = 0; Bn_arr[i,j,k] = 0
         end
     end
 
