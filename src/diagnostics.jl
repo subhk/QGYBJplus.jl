@@ -411,9 +411,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     # Get density profile for weighting (ρₛ at staggered points)
-    ρₛ = if isdefined(PARENT, :rho_s) && par !== nothing
-        PARENT.rho_s(par, G)
-    elseif isdefined(PARENT, :rho_st) && par !== nothing
+    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
         PARENT.rho_st(par, G)
     else
         ones(Float64, nz)
@@ -514,8 +512,8 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
         ones(Float64, nz)
     end
 
-    ρₛ = if isdefined(PARENT, :rho_s) && par !== nothing
-        PARENT.rho_s(par, G)
+    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
+        PARENT.rho_st(par, G)
     else
         ones(Float64, nz)
     end
