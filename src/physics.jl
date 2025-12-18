@@ -92,8 +92,8 @@ For the YBJ+ wave operator, a(z) also appears in the L⁺ operator that relates
 the wave envelope B to wave amplitude A.
 
 # Stratification Options
-- `:constant_N`: Returns a(z) = 1 everywhere (uniform stratification)
-- `:skewed_gaussian`: Returns a(z) = 1/N²(z) with skewed Gaussian N² profile
+- `:constant_N`: Returns a(z) = f₀²/N² everywhere (uniform stratification with user-specified N²)
+- `:skewed_gaussian`: Returns a(z) = f₀²/N²(z) with skewed Gaussian N² profile
 
 # Arguments
 - `par::QGParams`: Parameters including stratification choice and coefficients
@@ -364,7 +364,7 @@ where ρ is the background density profile. N² controls:
 - Deep ocean: N² ≈ 10⁻⁶ s⁻² (weak stratification)
 
 # Stratification Profiles
-1. `:constant_N`: N² = 1 everywhere (nondimensional)
+1. `:constant_N`: N² = par.N² everywhere (user-specified constant)
    - Simplest case, constant vertical wave speed
 
 2. `:skewed_gaussian`: Realistic ocean profile
