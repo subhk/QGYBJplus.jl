@@ -78,7 +78,8 @@ const PARENT = Base.parentmodule(@__MODULE__)
 This is the core elliptic inversion that relates QGPV to streamfunction.
 
 PHYSICS:
-    q = ∇²ψ + (1/a_ell) ∂²ψ/∂z²
+    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
+      = ∇²ψ + a_ell ∂²ψ/∂z²
 
 where a_ell = f²/N² is the "elliptic coefficient" that varies with
 stratification.
