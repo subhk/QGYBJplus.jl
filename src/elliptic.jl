@@ -640,8 +640,6 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        solᵣ .= rhsᵣ
-        solᵢ .= rhsᵢ
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
@@ -801,15 +799,13 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
         d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + (kₕ²*Δz²)/4 )
 
-        # Build RHS (reusing pre-allocated arrays)
+        # Build RHS
         @inbounds for k in 1:nz
             # RHS is just Δz² * B (no a_ell_coeff - that was incorrect)
             rhsᵣ[k] = Δz² * real(B_arr[i_local, j_local, k])
             rhsᵢ[k] = Δz² * imag(B_arr[i_local, j_local, k])
         end
 
-        solᵣ .= rhsᵣ
-        solᵢ .= rhsᵢ
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
@@ -899,7 +895,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
         d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
 
-        # Build RHS (reusing pre-allocated arrays)
+        # Build RHS
         # RHS is just Δ² * B (no a_coeff - that was incorrect)
         # The a(z) profile is already in the LHS operator matrix
         @inbounds for k in 1:nz
@@ -907,8 +903,6 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
             rhs_i[k] = Δ2 * imag(B_z_arr[i_local, j_local, k])
         end
 
-        solr .= rhs_r
-        soli .= rhs_i
         thomas_solve!(solr, dl, d, du, rhs_r)
         thomas_solve!(soli, dl, d, du, rhs_i)
 

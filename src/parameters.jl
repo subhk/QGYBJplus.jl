@@ -54,6 +54,7 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 
 # Viscosity/Hyperviscosity
 The model uses two hyperdiffusion operators for stability:
+- `νₕ, νᵥ`: Legacy generic viscosity coefficients (prefer specific coefficients below)
 - `νₕ₁, ilap1`: First hyperviscosity coefficient and Laplacian power for mean flow
 - `νₕ₂, ilap2`: Second hyperviscosity coefficient and Laplacian power for mean flow
 - `νₕ₁ʷ, ilap1w`: First hyperviscosity for waves
@@ -64,8 +65,9 @@ The hyperdiffusion term is: ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2
 
 # Physical Parameters
 - `N²`: Buoyancy frequency squared (default 1.0)
-- `W2F`: DEPRECATED - not used since we solve dimensional equations where B has actual amplitude
+- `W2F`: DEPRECATED - no longer used (kept for backward compatibility)
 - `γ`: Robert-Asselin filter coefficient (typically 10⁻³)
+- `linear_vert_structure`: Legacy Fortran flag (0 or 1), typically 0
 
 # Physics Switches
 These boolean flags control different physics modes:
