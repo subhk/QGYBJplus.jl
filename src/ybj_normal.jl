@@ -22,10 +22,12 @@ PHYSICAL CONTEXT:
 -----------------
 The normal YBJ equation describes near-inertial wave evolution:
 
-    ∂B/∂t + J(ψ, B) + B ∂ζ/∂t = dispersion + refraction
+    ∂B/∂t + J(ψ, B) = i·αdisp·kh²·A - (i/2)ζ·B
 
-where B is related to the wave amplitude A by:
-    B = N² ∂²A/∂z² (simplified)
+where:
+- αdisp = N²/(2f) is the dispersion coefficient
+- ζ = ∇²ψ is the relative vorticity
+- B is related to the wave amplitude A by: B ≈ N² ∂²A/∂z² (simplified)
 
 To recover A from B, we integrate twice in z with appropriate constraints.
 
