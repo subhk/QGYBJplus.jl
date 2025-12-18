@@ -53,11 +53,11 @@ QGYBJ
 ### Setup
 
 ```julia
-# Create parameters
-par = default_params(nx=64, ny=64, nz=32)
+# Create parameters (domain size REQUIRED)
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
 
 # Initialize everything at once
-G, S, plans, a = setup_model(; par)
+G, S, plans, a = setup_model(par)
 ```
 
 ### Time Stepping
