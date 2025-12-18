@@ -402,6 +402,9 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     vk_arr = parent(vk)
     nx_local, ny_local, nz_local = size(uk_arr)
 
+    # Check if 2D decomposition is active (z may be distributed in xy-pencil)
+    need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
+
     # Get density profile for weighting (ρₛ at staggered points)
     ρₛ = if isdefined(PARENT, :rho_s) && par !== nothing
         PARENT.rho_s(par, G)
@@ -414,8 +417,8 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     KE_total = 0.0
 
     @inbounds for k in 1:nz_local
-        # Get density at this level
-        k_global = k  # In serial mode; for MPI would need local_to_global_z
+        # Use global z-index for correct profile lookup in 2D decomposition
+        k_global = need_z_global ? local_to_global_z(k, 3, G) : k
         ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         ke_k = 0.0
