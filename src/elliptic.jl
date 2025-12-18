@@ -526,9 +526,7 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         dₗ[nz] = a[nz] - 0.5*b[nz]*Δz
         d[nz]  = -a[nz] + 0.5*b[nz]*Δz - scale_kh2*kₕ²*Δz²
 
-        # Build RHS
-        rhsᵣ = zeros(eltype(a), nz)
-        rhsᵢ = zeros(eltype(a), nz)
+        # Build RHS (reusing pre-allocated arrays)
         @inbounds for k in 1:nz
             rhsᵣ[k] = Δz² * real(rhs_arr[i_local, j_local, k])
             rhsᵢ[k] = Δz² * imag(rhs_arr[i_local, j_local, k])
@@ -547,8 +545,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        solᵣ = copy(rhsᵣ)
-        solᵢ = copy(rhsᵢ)
+        solᵣ .= rhsᵣ
+        solᵢ .= rhsᵢ
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
