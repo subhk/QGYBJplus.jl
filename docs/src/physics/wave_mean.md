@@ -193,12 +193,12 @@ invert_q_to_psi!(state, grid; a=a_vec)
 
 ```julia
 # With wave feedback (default)
-params = default_params(; no_feedback=false, no_wave_feedback=false)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0; no_feedback=false, no_wave_feedback=false)
 
 # Without wave feedback
-params = default_params(; no_feedback=true)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0; no_feedback=true)
 # or
-params = default_params(; no_wave_feedback=true)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0; no_wave_feedback=true)
 ```
 
 Disabling is useful for:
