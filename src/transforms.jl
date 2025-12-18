@@ -60,18 +60,19 @@ end
 """
     _naive_ifft2!(dst, src)
 
-Inverse 2D DFT fallback; unnormalized (match FFTW.ifft convention we assume
-and divide by nx*ny outside).
+Inverse 2D DFT fallback; NORMALIZED to match FFTW.ifft behavior.
+FFTW.ifft divides by N (nx*ny for 2D), so this implementation does the same.
 """
 function _naive_ifft2!(dst::AbstractMatrix{T}, src::AbstractMatrix{T}) where {T<:Complex}
     nx, ny = size(src)
+    norm_factor = one(real(T)) / (nx * ny)  # Normalization to match FFTW.ifft
     for y in 0:ny-1, x in 0:nx-1
         s = zero(T)
         for ky in 0:ny-1, kx in 0:nx-1
             angle = 2π * ( (kx*x)/nx + (ky*y)/ny )
             s += src[kx+1, ky+1] * cis(angle)
         end
-        dst[x+1, y+1] = s
+        dst[x+1, y+1] = s * norm_factor
     end
     return dst
 end
