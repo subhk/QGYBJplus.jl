@@ -511,7 +511,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        # Particle initialization (simplified API)
-       particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
+       particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom,
        # 3D particle distributions (types and internals)
        ParticleConfig3D, ParticleDistribution, initialize_particles_3d!,
