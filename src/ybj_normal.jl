@@ -245,9 +245,9 @@ function compute_sigma(par::QGParams, G::Grid,
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        return _compute_sigma_2d(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace)
+        return _compute_sigma_2d(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
     else
-        return _compute_sigma_direct(par, G, nBRk, nBIk, rBRk, rBIk, Lmask)
+        return _compute_sigma_direct(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
     end
 end
 
