@@ -59,7 +59,7 @@ ProfileSVG.save(&quot;profile.svg&quot;)</code></pre><h3 id="Typical-Time-Distri
 @btime invert_q_to_psi!($state, $grid, $params, $a_ell)
 
 # Time full step
-@btime timestep!($state, $grid, $params, $work, $plans, $a_ell, $dt)</code></pre><h2 id="Numerical-Efficiency"><a class="docs-heading-anchor" href="#Numerical-Efficiency">Numerical Efficiency</a><a id="Numerical-Efficiency-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-Efficiency" title="Permalink"></a></h2><h3 id="Time-Step-Selection"><a class="docs-heading-anchor" href="#Time-Step-Selection">Time Step Selection</a><a id="Time-Step-Selection-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Step-Selection" title="Permalink"></a></h3><p>Use the largest stable time step:</p><pre><code class="language-julia hljs"># CFL-based time step
+@btime leapfrog_step!($S, $G, $params, $plans, $a_ell)</code></pre><h2 id="Numerical-Efficiency"><a class="docs-heading-anchor" href="#Numerical-Efficiency">Numerical Efficiency</a><a id="Numerical-Efficiency-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-Efficiency" title="Permalink"></a></h2><h3 id="Time-Step-Selection"><a class="docs-heading-anchor" href="#Time-Step-Selection">Time Step Selection</a><a id="Time-Step-Selection-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Step-Selection" title="Permalink"></a></h3><p>Use the largest stable time step:</p><pre><code class="language-julia hljs"># CFL-based time step
 u_max = maximum(abs.(state.u))
 dt_cfl = 0.5 * grid.dx / u_max
 
