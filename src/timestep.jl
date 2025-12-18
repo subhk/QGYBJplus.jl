@@ -594,7 +594,9 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
             BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
             # Use depth-varying N²(z) for dispersion coefficient
-            αdisp = αdisp_profile[k]
+            # Use global z-index for correct N² lookup in 2D decomposition
+            k_global = local_to_global(k, 3, G)
+            αdisp = αdisp_profile[k_global]
             BRtemp_arr[i,j,k] = Complex(real(Bnm1_arr[i,j,k]),0)*exp(-2λʷ) -
                            2*par.dt*( nBRk_arr[i,j,k] +
                                      αdisp*kₕ²*Complex(imag(An_arr[i,j,k]),0) -
