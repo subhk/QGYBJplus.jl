@@ -135,49 +135,79 @@ end
     init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
 
 Initialize stream function with random field having specified spectral slope.
+
+The streamfunction ψ is real-valued, so its Fourier transform must satisfy
+Hermitian symmetry: ψ̂(-k) = conj(ψ̂(k)). For the rfft representation used here
+(only kx ≥ 0 stored), this requires:
+- For kx = 0: ψ̂(0, ky) = conj(ψ̂(0, -ky))
+- For kx = nx/2 (if nx even): ψ̂(nx/2, ky) = conj(ψ̂(nx/2, -ky))
+- ψ̂(0, 0) and ψ̂(0, ny/2) must be real
+
+This function enforces these constraints to ensure IFFT produces real output.
 """
 function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
     @info "Initializing random stream function (amplitude=$amplitude, slope=$slope)"
-    
-    # Generate random phases
-    phases = 2π * rand(Float64, G.nx÷2+1, G.ny, G.nz)
-    
+
+    nx, ny, nz = G.nx, G.ny, G.nz
+    kx_max = nx ÷ 2
+    ky_max = ny ÷ 2
+
     # Create spectral field with desired slope
     fill!(psik, 0.0)
-    
-    kx_max = G.nx ÷ 2
-    ky_max = G.ny ÷ 2
-    
-    for k in 1:G.nz
-        for j in 1:G.ny
-            ky = j <= ky_max ? j-1 : j-1-G.ny
-            
-            for i in 1:(G.nx÷2+1)
+
+    for k in 1:nz
+        for j in 1:ny
+            ky = j <= ky_max ? j-1 : j-1-ny
+
+            for i in 1:(nx÷2+1)
                 kx = i-1
-                
+
                 if kx == 0 && ky == 0
                     continue  # Skip mean mode
                 end
-                
+
                 # Total wavenumber
                 k_total = sqrt(Float64(kx^2 + ky^2))
-                
+
                 if k_total > 0
                     # Energy spectrum E(k) ∝ k^slope
                     energy = amplitude * k_total^slope
-                    
-                    # Random amplitude with specified energy
-                    amp = sqrt(2 * energy) * randn()
-                    
-                    # Set complex amplitude
-                    phase = phases[i, j, k]
-                    psik[i, j, k] = amp * cis(phase)
+
+                    # For Hermitian symmetry at kx=0 and kx=nx/2:
+                    # Only set modes with ky >= 0, then set conjugate for ky < 0
+                    if kx == 0 || (kx == kx_max && iseven(nx))
+                        # These columns need Hermitian symmetry in ky
+                        if ky > 0
+                            # Set this mode with random phase
+                            amp = sqrt(2 * energy) * randn()
+                            phase = 2π * rand()
+                            psik[i, j, k] = amp * cis(phase)
+                            # Set conjugate at -ky (j_conj = ny - j + 2 for j > 1)
+                            j_conj = ny - j + 2
+                            psik[i, j_conj, k] = conj(psik[i, j, k])
+                        elseif ky == 0
+                            # ky=0 mode must be real
+                            amp = sqrt(2 * energy) * randn()
+                            psik[i, j, k] = amp  # Real value
+                        elseif ky == -ky_max && iseven(ny)
+                            # Nyquist mode in y (ky = -ny/2 = ny/2) must be real
+                            amp = sqrt(2 * energy) * randn()
+                            psik[i, j, k] = amp  # Real value
+                        end
+                        # ky < 0 modes are set as conjugates above, skip them here
+                    else
+                        # kx > 0 and kx < kx_max: no special symmetry needed
+                        # (the kx < 0 modes are implicitly conjugates in rfft)
+                        amp = sqrt(2 * energy) * randn()
+                        phase = 2π * rand()
+                        psik[i, j, k] = amp * cis(phase)
+                    end
                 end
             end
         end
     end
-    
-    # Apply dealiasing mask if needed
+
+    # Apply dealiasing mask
     apply_dealiasing_mask!(psik, G)
 end
 
