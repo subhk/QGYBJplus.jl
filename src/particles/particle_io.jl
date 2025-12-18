@@ -16,27 +16,8 @@ Key Features:
 module ParticleIO
 
 using Dates
+using NCDatasets
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
-
-# Check if NCDatasets is available using same approach as netcdf_io.jl
-# Uses Base.require at module load time for consistency
-const HAS_NCDS = try
-    Base.require(Base.PkgId(Base.UUID("85f8d34a-cbdd-5861-8df4-14fed0d494ab"), "NCDatasets"))
-    true
-catch
-    false
-end
-
-# Load NCDatasets at module load time if available
-if HAS_NCDS
-    import NCDatasets
-end
-
-function ensure_ncds_loaded()
-    # No-op: NCDatasets is loaded at module initialization if available
-    # This function exists for backward compatibility
-    nothing
-end
 
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file,
@@ -279,7 +260,6 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -347,7 +327,6 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions (time is unlimited)
@@ -418,7 +397,6 @@ function append_to_streaming_file!(manager::ParticleOutputManager{T},
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "a") do ds
             # Get current time index
@@ -497,7 +475,6 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -585,7 +562,6 @@ function update_streaming_metadata!(manager::ParticleOutputManager)
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "a") do ds
             nt = length(ds["time"])
@@ -666,7 +642,6 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
     # Check if NCDatasets is available
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -761,7 +736,6 @@ println("Initial x positions: ", traj.x[:, 1])
 function read_particle_trajectories(filename::String)
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         x = nothing
         y = nothing
@@ -840,7 +814,6 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
@@ -909,7 +882,6 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, mode) do ds
             if !append_mode
@@ -978,7 +950,6 @@ function append_particle_data!(filename::String, tracker::ParticleTracker, time_
 
     try
         HAS_NCDS || error("NCDatasets not available")
-        ensure_ncds_loaded()
 
         NCDatasets.Dataset(filename, "a") do ds
             # Get current time dimension size
