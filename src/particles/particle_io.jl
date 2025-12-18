@@ -19,6 +19,9 @@ using Dates
 using NCDatasets
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
+# NCDatasets is always available since it's a required dependency (using NCDatasets above)
+const HAS_NCDS = true
+
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file,
        write_particle_trajectories_by_zlevel,

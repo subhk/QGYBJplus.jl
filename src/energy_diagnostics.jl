@@ -30,6 +30,9 @@ using Printf
 using Dates
 using NCDatasets
 
+# NCDatasets is always available since it's a required dependency (using NCDatasets above)
+const HAS_NCDS = true
+
 """
     EnergyDiagnosticsManager
 

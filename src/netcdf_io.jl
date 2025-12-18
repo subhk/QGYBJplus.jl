@@ -14,6 +14,9 @@ using Dates
 using ..QGYBJ: Grid, State, QGParams
 using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
 
+# NCDatasets is always available since it's a required dependency (using NCDatasets above)
+const HAS_NCDS = true
+
 """
     OutputManager
 
@@ -299,14 +302,18 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
 
     if parallel_config.use_mpi && G.decomp !== nothing
         rank = MPI.Comm_rank(parallel_config.comm)
-        
+
         if parallel_config.parallel_io
             # Use parallel NetCDF I/O
             write_parallel_netcdf_file(filepath, S, G, plans, time, parallel_config; params=params)
         else
             # Gather to rank 0 and write
+            # IMPORTANT: gather_state_for_io calls gather_to_root which is a collective
+            # operation - ALL ranks must participate, not just rank 0
+            gathered_state = gather_state_for_io(S, G, parallel_config)
+
+            # Only rank 0 writes the file
             if rank == 0
-                gathered_state = gather_state_for_io(S, G, parallel_config)
                 write_gathered_state_file(filepath, gathered_state, G, plans, time; params=params)
             end
             MPI.Barrier(parallel_config.comm)
