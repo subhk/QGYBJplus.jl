@@ -82,7 +82,7 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 
 ## Vertical Grid
 - `z::Vector{T}`: Unstaggered vertical levels, length nz
-- `dz::Vector{T}`: Layer thicknesses between levels, length nz-1
+- `dz::Vector{T}`: Layer thicknesses between levels, length nz-1 (or length 1 containing Lz when nz=1)
 
 ## Spectral Wavenumbers
 - `kx::Vector{T}`: x-wavenumbers following FFTW convention, length nx
