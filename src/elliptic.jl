@@ -860,6 +860,12 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
     r_ut = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
     r_st = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
 
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhs_r = zeros(eltype(a), nz)
+    rhs_i = zeros(eltype(a), nz)
+    solr  = zeros(eltype(a), nz)
+    soli  = zeros(eltype(a), nz)
+
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 1, G)
         j_global = local_to_global_z(j_local, 2, G)
@@ -898,8 +904,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
         d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
 
-        rhs_r = zeros(eltype(a), nz)
-        rhs_i = zeros(eltype(a), nz)
+        # Build RHS (reusing pre-allocated arrays)
         # RHS is just Δ² * B (no a_coeff - that was incorrect)
         # The a(z) profile is already in the LHS operator matrix
         @inbounds for k in 1:nz
@@ -907,8 +912,8 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
             rhs_i[k] = Δ2 * imag(B_z_arr[i_local, j_local, k])
         end
 
-        solr = copy(rhs_r)
-        soli = copy(rhs_i)
+        solr .= rhs_r
+        soli .= rhs_i
         thomas_solve!(solr, dl, d, du, rhs_r)
         thomas_solve!(soli, dl, d, du, rhs_i)
 
