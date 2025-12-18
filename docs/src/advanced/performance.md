@@ -254,15 +254,16 @@ end
 ```julia
 using CUDA
 
+# Note: GPU support is experimental/future feature
 # Move arrays to GPU
-state_gpu = cu(state)
-grid_gpu = cu(grid)
+S_gpu = cu(S)
+G_gpu = cu(G)
 
 # GPU FFT plans
-plans_gpu = plan_gpu_transforms!(grid_gpu)
+plans_gpu = plan_gpu_transforms!(G_gpu)
 
 # Run on GPU
-timestep!(state_gpu, grid_gpu, params, work_gpu, plans_gpu, a_ell_gpu, dt)
+leapfrog_step!(S_gpu, G_gpu, params, plans_gpu, a_ell_gpu)
 ```
 
 ### When to Use GPU
