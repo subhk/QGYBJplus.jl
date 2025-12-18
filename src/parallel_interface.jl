@@ -180,7 +180,7 @@ function parallel_initialization_from_config(config, pconfig)
         γ = T(1e-3),
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), ilap1 = config.ilap1, ilap2 = config.ilap2,
         νₕ₁ʷ = T(config.nu_h1_wave), νₕ₂ʷ = T(config.nu_h2_wave), ilap1w = config.ilap1_wave, ilap2w = config.ilap2_wave,
-        νz = T(0.0),
+        νz = T(config.nu_v),  # Vertical diffusion coefficient for q
         inviscid = config.inviscid,
         linear = config.linear,
         no_dispersion = config.no_dispersion,

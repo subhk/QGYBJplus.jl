@@ -836,32 +836,11 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
         invert_B_to_A!(S, G, params, a_vec; workspace=workspace)
     end
 
-    # Now A and C (A_z) are in xy-pencil form
-    # For vertical derivative computation in YBJ w, we need z local
-    # However, invert_B_to_A! already computed A_z and stored it in S.C
-    # We need to transpose A to z-pencil to compute proper vertical derivative
-
-    # Allocate z-pencil workspace
-    A_z_pencil = workspace !== nothing && hasfield(typeof(workspace), :A_z) ? workspace.A_z : allocate_z_pencil(G, ComplexF64)
-    Az_z_pencil = allocate_z_pencil(G, ComplexF64)
-
-    # Transpose A to z-pencil for vertical derivative
-    transpose_to_z_pencil!(A_z_pencil, S.A, G)
-
-    # Compute vertical derivative A_z on z-pencil (z now fully local)
-    A_z_arr = parent(A_z_pencil)
-    Az_z_arr = parent(Az_z_pencil)
-    fill!(Az_z_arr, 0.0)
-
-    nx_local_z, ny_local_z, _ = size(A_z_arr)
-
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local_z, i_local in 1:nx_local_z
-        Az_z_arr[i_local, j_local, k] = (A_z_arr[i_local, j_local, k+1] - A_z_arr[i_local, j_local, k]) / Δz
-    end
-
-    # Transpose A_z back to xy-pencil for horizontal derivatives
-    Aₖ_z = similar(S.A)
-    transpose_to_xy_pencil!(Aₖ_z, Az_z_pencil, G)
+    # Now A and C (A_z) are in xy-pencil form.
+    # invert_B_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
+    # Use S.C directly instead of recomputing - this ensures MPI and serial paths match,
+    # and respects skip_inversion=true which promises to reuse precomputed A/C.
+    Aₖ_z = S.C
     Aₖ_z_arr = parent(Aₖ_z)
 
     # Compute horizontal derivatives of A_z in xy-pencil

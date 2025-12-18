@@ -140,7 +140,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         γ = T(1e-3),    # Robert-Asselin filter
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), ilap1 = config.ilap1, ilap2 = config.ilap2,
         νₕ₁ʷ = T(config.nu_h1_wave), νₕ₂ʷ = T(config.nu_h2_wave), ilap1w = config.ilap1_wave, ilap2w = config.ilap2_wave,
-        νz = T(0.0),
+        νz = T(config.nu_v),  # Vertical diffusion coefficient for q
         inviscid = config.inviscid,
         linear = config.linear,
         no_dispersion = config.no_dispersion,
@@ -1268,8 +1268,8 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         ilap1w = config.ilap1_wave,
         ilap2w = config.ilap2_wave,
 
-        # Vertical diffusion
-        νz = T(0.0),
+        # Vertical diffusion (from config)
+        νz = T(config.nu_v),
 
         # Flags
         linear_vert_structure = 0,
