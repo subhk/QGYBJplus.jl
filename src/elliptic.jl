@@ -321,6 +321,7 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
 
+        # Special case: kₕ² = 0 (horizontal mean mode) - see docstring for rationale
         if kₕ² == 0
             @inbounds for k in 1:nz
                 ψ_z_arr[i_local, j_local, k] = 0
