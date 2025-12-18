@@ -371,64 +371,8 @@ function check_and_output!(sim::QGYBJSimulation)
     end
 end
 
-"""
-    reduce_sum_if_mpi(val, parallel_config)
-
-Reduce a value across MPI processes using SUM if running in parallel mode.
-Returns the global sum in MPI mode, or the value unchanged in serial mode.
-"""
-function reduce_sum_if_mpi(val::T, parallel_config::ParallelConfig) where T
-    if !parallel_config.use_mpi || parallel_config.comm === nothing
-        return val
-    end
-
-    # MPI reduction - use dynamic dispatch to avoid direct MPI dependency
-    try
-        MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-        return MPI.Allreduce(val, +, parallel_config.comm)
-    catch
-        # If MPI not available, return local value
-        return val
-    end
-end
-
-"""
-    reduce_min_if_mpi(val, parallel_config)
-
-Reduce a value across MPI processes using MIN if running in parallel mode.
-"""
-function reduce_min_if_mpi(val::T, parallel_config::ParallelConfig) where T
-    if !parallel_config.use_mpi || parallel_config.comm === nothing
-        return val
-    end
-
-    try
-        MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-        return MPI.Allreduce(val, min, parallel_config.comm)
-    catch
-        return val
-    end
-end
-
-"""
-    reduce_max_if_mpi(val, parallel_config)
-
-Reduce a value across MPI processes using MAX if running in parallel mode.
-"""
-function reduce_max_if_mpi(val::T, parallel_config::ParallelConfig) where T
-    if !parallel_config.use_mpi || parallel_config.comm === nothing
-        return val
-    end
-
-    try
-        MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-        return MPI.Allreduce(val, max, parallel_config.comm)
-    catch
-        return val
-    end
-end
-
-# Alias for backward compatibility
+# MPI reduction functions are now defined in parallel_mpi.jl
+# Re-export for backward compatibility
 const reduce_if_mpi = reduce_sum_if_mpi
 
 """
