@@ -393,9 +393,9 @@ function N2_ut(par::QGParams, G::Grid)
     N2 = similar(G.z)
 
     if par.stratification === :constant_N
-        #= Uniform stratification: N² = 1 (nondimensional)
+        #= Uniform stratification: N² = par.N² (user-specified constant)
         Corresponds to constant vertical group velocity for internal waves =#
-        @inbounds fill!(N2, 1.0)
+        @inbounds fill!(N2, par.N²)
 
     elseif par.stratification === :skewed_gaussian
         #= Skewed Gaussian profile for realistic pycnocline:
