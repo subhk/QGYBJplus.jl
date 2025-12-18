@@ -107,6 +107,7 @@ In vector form: J(φ, χ) = ẑ · (∇φ × ∇χ)
 - `chik`: χ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
 - `G::Grid`: Grid with wavenumber arrays
 - `plans`: FFT plans from plan_transforms!
+- `Lmask`: Optional 2/3 dealiasing mask (true = keep mode, false = zero)
 
 # Important
 This function assumes φ and χ are **real-valued fields** in physical space. For real
