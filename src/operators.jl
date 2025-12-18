@@ -602,7 +602,7 @@ Wave-induced vertical motion from the YBJ+ formulation.
 =#
 
 """
-    compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=nothing, L=nothing, workspace=nothing)
+    compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
 
 Compute vertical velocity from near-inertial wave envelope using YBJ+ formulation.
 
@@ -644,7 +644,6 @@ This represents vertical motion induced by:
 - `plans`: FFT plans
 - `params`: Model parameters (f₀)
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
-- `L`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
   Use this when A/C were already computed in the timestep with the correct stratification.
@@ -661,7 +660,7 @@ either:
 1. Pass `skip_inversion=true` and ensure A/C are already computed correctly
 2. Pass the exact same N2_profile that was used in the timestep
 """
-function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, L=nothing, workspace=nothing, skip_inversion=false)
+function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
