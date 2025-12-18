@@ -140,7 +140,7 @@ using BenchmarkTools
 @btime invert_q_to_psi!($state, $grid, $params, $a_ell)
 
 # Time full step
-@btime timestep!($state, $grid, $params, $work, $plans, $a_ell, $dt)
+@btime leapfrog_step!($S, $G, $params, $plans, $a_ell)
 ```
 
 ## Numerical Efficiency
