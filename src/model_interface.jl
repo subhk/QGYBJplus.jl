@@ -469,9 +469,14 @@ In MPI mode, energies are reduced across all processes to get global totals.
 function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     diagnostics = Dict{String, Any}()
 
+    # Compute f² for potential energy scaling
+    # PE = (1/2) ∫ (ψ_z)² × (f²/N²) dV, so a_ell should be f²
+    # (the function already divides by N² internally via r_2)
+    f_squared = sim.params.f₀^2
+
     # Mean flow energy diagnostics (local)
     mean_flow_KE_local = compute_kinetic_energy(sim.state, sim.grid, sim.plans)
-    mean_flow_PE_local = compute_potential_energy(sim.state, sim.grid, sim.plans, sim.N2_profile)
+    mean_flow_PE_local = compute_potential_energy(sim.state, sim.grid, sim.plans, sim.N2_profile; a_ell=f_squared)
 
     # Wave energy diagnostics (local, detailed: WKE, WPE, WCE)
     wave_KE_local, wave_PE_local, wave_CE_local = compute_detailed_wave_energy(sim.state, sim.grid, sim.params)
@@ -717,20 +722,32 @@ end
 
 Compute domain-integrated potential energy following the Fortran diag_zentrum routine.
 
-The potential energy is computed from buoyancy as:
-    PE = (1/2) ∑_{kx,ky,z} |b|² × (a_ell × r_1/r_2)
+The potential energy is computed as:
+    PE = (1/2) ∑_{kx,ky,z} |ψ_z|² × (a_ell / N²(z))
 
-where b = ∂ψ/∂z / r_1 (thermal wind balance) and a_ell = f²/N².
+For dimensionally correct QG available potential energy, use `a_ell = f₀²`:
+    PE = (1/2) ∑_{kx,ky,z} |ψ_z|² × (f₀² / N²(z))
+
+This matches the standard QG APE formula: PE = (1/2) ∫ (f²/N²) (∂ψ/∂z)² dV
 
 # Arguments
 - `state::State`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure
 - `plans`: FFT plans
 - `N2_profile::Vector`: Buoyancy frequency squared N²(z)
-- `a_ell::Real`: Elliptic coefficient f²/N² (default 1.0)
+- `a_ell::Real`: Scaling factor (default 1.0). For physical PE, use `f₀²` (Coriolis squared).
 
 # Returns
 Domain-integrated potential energy (scalar).
+
+# Example
+```julia
+# Dimensionless PE (a_ell=1, default)
+PE_nondim = compute_potential_energy(state, grid, plans, N2_profile)
+
+# Physical PE with f² scaling
+PE_phys = compute_potential_energy(state, grid, plans, N2_profile; a_ell=params.f₀^2)
+```
 """
 function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0)) where T
     nz = grid.nz
