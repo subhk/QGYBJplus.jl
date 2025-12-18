@@ -383,11 +383,11 @@ function Base.show(io::IO, ::MIME"text/plain", tracker::ParticleTracker{T}) wher
     print_box_top(io, "ParticleTracker{$T}", width)
 
     print_section_header(io, "Status", width)
-    n_active = tracker.n_active
-    n_total = length(tracker.x)
+    n_active = tracker.particles.np
+    n_total = length(tracker.particles.x)
     print_box_row(io, "Active particles", format_number(n_active), width; key_width)
     print_box_row(io, "Allocated slots", format_number(n_total), width; key_width)
-    print_box_row(io, "History entries", format_number(length(tracker.history_t)), width; key_width)
+    print_box_row(io, "History entries", format_number(length(tracker.particles.time_history)), width; key_width)
 
     print_section_header(io, "Domain", width)
     print_box_row(io, "x range", "[0, $(format_number(tracker.Lx))]", width; key_width)
@@ -398,7 +398,7 @@ end
 
 # Compact single-line show
 function Base.show(io::IO, tracker::ParticleTracker)
-    print(io, "ParticleTracker(n_active=$(tracker.n_active))")
+    print(io, "ParticleTracker(n_active=$(tracker.particles.np))")
 end
 
 # ============================================================================
@@ -466,11 +466,12 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::DomainConfig{T}) where T
     print_box_row(io, "Ly", format_number(cfg.Ly), width; key_width)
     print_box_row(io, "Lz", format_number(cfg.Lz), width; key_width)
 
-    if cfg.dom_x_m !== nothing
-        print_section_header(io, "Physical Size (m)", width)
-        print_box_row(io, "x", format_number(cfg.dom_x_m), width; key_width)
-        print_box_row(io, "y", format_number(cfg.dom_y_m), width; key_width)
-        print_box_row(io, "z", format_number(cfg.dom_z_m), width; key_width)
+    # Print physical size in km if values are large (likely in meters)
+    if cfg.Lx > 1000 || cfg.Ly > 1000 || cfg.Lz > 100
+        print_section_header(io, "Physical Size (km)", width)
+        print_box_row(io, "x", format_number(cfg.Lx / 1000), width; key_width)
+        print_box_row(io, "y", format_number(cfg.Ly / 1000), width; key_width)
+        print_box_row(io, "z", format_number(cfg.Lz / 1000), width; key_width)
     end
 
     print_box_bottom(io, width)

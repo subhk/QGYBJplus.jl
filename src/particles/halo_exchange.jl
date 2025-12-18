@@ -147,52 +147,55 @@ function exchange_velocity_halos!(halo_info::HaloInfo{T},
         if Base.find_package("MPI") === nothing
             @warn "MPI not available; skipping halo exchange"; return halo_info
         end
-        
+
+        # Import MPI module
+        M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+
         # Copy local data to extended arrays
         copy_local_to_extended!(halo_info, u_field, v_field, w_field)
-        
+
         # Prepare send buffers
         pack_halo_data!(halo_info)
-        
+
         # Post non-blocking receives
-        recv_reqs = MPI.Request[]
-        
+        recv_reqs = M.Request[]
+
         if halo_info.left_neighbor >= 0
-            req = MPI.Irecv!(halo_info.recv_left, halo_info.left_neighbor, 0, halo_info.comm)
+            req = M.Irecv!(halo_info.recv_left, halo_info.left_neighbor, 0, halo_info.comm)
             push!(recv_reqs, req)
         end
-        
+
         if halo_info.right_neighbor >= 0
-            req = MPI.Irecv!(halo_info.recv_right, halo_info.right_neighbor, 1, halo_info.comm)
+            req = M.Irecv!(halo_info.recv_right, halo_info.right_neighbor, 1, halo_info.comm)
             push!(recv_reqs, req)
         end
-        
+
         # Send data
-        send_reqs = MPI.Request[]
-        
+        send_reqs = M.Request[]
+
         if halo_info.right_neighbor >= 0
-            req = MPI.Isend(halo_info.send_right, halo_info.right_neighbor, 0, halo_info.comm)
+            req = M.Isend(halo_info.send_right, halo_info.right_neighbor, 0, halo_info.comm)
             push!(send_reqs, req)
         end
-        
+
         if halo_info.left_neighbor >= 0
-            req = MPI.Isend(halo_info.send_left, halo_info.left_neighbor, 1, halo_info.comm)
+            req = M.Isend(halo_info.send_left, halo_info.left_neighbor, 1, halo_info.comm)
             push!(send_reqs, req)
         end
-        
+
         # Wait for receives to complete
         if !isempty(recv_reqs)
-            MPI.Waitall(recv_reqs)
+            M.Waitall(recv_reqs)
         end
-        
+
         # Unpack received data
         unpack_halo_data!(halo_info)
-        
+
         # Wait for sends to complete
         if !isempty(send_reqs)
-            MPI.Waitall(send_reqs)
+            M.Waitall(send_reqs)
         end
-        
+
     catch e
         @warn "Halo exchange failed: $e"
     end

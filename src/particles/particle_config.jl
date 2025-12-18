@@ -10,7 +10,12 @@ This module extends the basic ParticleConfig to support:
 
 module EnhancedParticleConfig
 
+using Random
 using ..InterpolationSchemes: InterpolationMethod, TRILINEAR
+
+# Access ParticleConfig from parent module (UnifiedParticleAdvection)
+const _PARENT = parentmodule(@__MODULE__)
+const ParticleConfig = _PARENT.ParticleConfig
 
 export ParticleConfig3D, ParticleDistribution,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
