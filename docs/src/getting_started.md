@@ -29,7 +29,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 |:--------|:--------|:---------|
 | FFTW.jl | FFT transforms | Yes |
 | LinearAlgebra | Matrix operations | Yes (stdlib) |
-| NCDatasets.jl | NetCDF I/O | Optional |
+| NCDatasets.jl | NetCDF I/O | Yes (bundled) |
 
 ### MPI Support (Optional)
 
@@ -102,8 +102,9 @@ All model parameters in one struct:
 
 ```julia
 params = default_params(
-    nx=64, ny=64, nz=32,      # Grid dimensions
-    Lx=2π, Ly=2π,              # Domain size
+    nx=64, ny=64, nz=32,       # Grid dimensions
+    Lx=500e3, Ly=500e3,        # Horizontal domain size [m] (REQUIRED)
+    Lz=4000.0,                 # Vertical domain depth [m] (REQUIRED)
     f₀=1.0,                    # Coriolis parameter
     N²=1.0,                    # Buoyancy frequency squared
     dt=0.001,                  # Time step
