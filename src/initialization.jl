@@ -166,7 +166,7 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
     ky_max = ny ÷ 2
 
     # Create spectral field with desired slope
-    fill!(psik, 0.0)
+    fill!(psik, zero(eltype(psik)))
 
     for k in 1:nz
         for j in 1:ny
@@ -316,7 +316,7 @@ function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
     phases_r = 2π * rand(Float64, G.nx÷2+1, G.ny, G.nz)
     phases_i = 2π * rand(Float64, G.nx÷2+1, G.ny, G.nz)
     
-    fill!(Bk, 0.0)
+    fill!(Bk, zero(eltype(Bk)))
     
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
@@ -364,7 +364,7 @@ Initialize with zero mean flow (fixed flow case).
 """
 function init_zero_mean_flow!(psik)
     @info "Initializing zero mean flow"
-    fill!(psik, 0.0)
+    fill!(psik, zero(eltype(psik)))
 end
 
 """
@@ -384,7 +384,7 @@ function apply_dealiasing_mask!(field, G::Grid)
                 kx = i-1
                 
                 if abs(kx) > kx_max || abs(ky) > ky_max
-                    field[i, j, k] = 0.0
+                    field[i, j, k] = zero(eltype(field))
                 end
             end
         end
