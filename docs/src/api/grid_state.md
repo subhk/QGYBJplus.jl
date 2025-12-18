@@ -50,7 +50,7 @@ end
 
 ```julia
 # Initialize from parameters (serial mode)
-params = default_params(nx=64, ny=64, nz=32)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
 grid = init_grid(params)
 
 # Initialize with MPI decomposition
