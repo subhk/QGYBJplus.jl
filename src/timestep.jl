@@ -429,7 +429,7 @@ Note: All tendencies are evaluated at time n and scaled by e^(-λdt) for second-
 q̃^n = q^n + γ(q^(n-1) - 2q^n + q^(n+1))
 B̃^n = B^n + γ(B^(n-1) - 2B^n + B^(n+1))
 ```
-The filtered values are stored in Snm1 for the next step.
+The filtered values are stored in Sn (which becomes Snm1 after rotation).
 
 **4. Wave feedback (if enabled):**
 ```
