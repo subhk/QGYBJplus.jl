@@ -59,19 +59,27 @@ REFERENCES:
 
 CODE STRUCTURE:
 ---------------
-- parameters.jl   : Model parameters (QGParams struct)
-- grid.jl         : Spatial grid and spectral wavenumbers
-- transforms.jl   : FFT planning (serial and parallel)
-- physics.jl      : Stratification profiles, N², a_ell coefficients
-- elliptic.jl     : Tridiagonal solvers for ψ and A inversions
-- operators.jl    : Velocity computation from ψ
-- nonlinear.jl    : Jacobians, refraction, wave feedback qʷ
-- timestep.jl     : Time integration (Euler, Leapfrog)
-- ybj_normal.jl   : Normal YBJ (non-plus) operators
-- diagnostics.jl  : Energy diagnostics, omega equation
-- model_interface.jl : High-level simulation API
-- netcdf_io.jl    : NetCDF input/output
-- particles/      : Lagrangian particle advection
+- parameters.jl       : Model parameters (QGParams struct)
+- grid.jl             : Spatial grid and spectral wavenumbers
+- transforms.jl       : FFT planning (serial and parallel)
+- physics.jl          : Stratification profiles, N², a_ell coefficients
+- elliptic.jl         : Tridiagonal solvers for ψ and A inversions
+- operators.jl        : Velocity computation from ψ
+- runtime.jl          : Setup helpers and utilities
+- nonlinear.jl        : Jacobians, refraction, wave feedback qʷ
+- timestep.jl         : Time integration (Euler, Leapfrog)
+- initconds.jl        : Random and analytic initial conditions
+- ybj_normal.jl       : Normal YBJ (non-plus) operators
+- diagnostics.jl      : Energy diagnostics, omega equation
+- energy_diagnostics.jl : Separate energy output files
+- config.jl           : Configuration types (DomainConfig, etc.)
+- netcdf_io.jl        : NetCDF input/output
+- initialization.jl   : Field initialization helpers
+- stratification.jl   : Stratification profiles
+- parallel_interface.jl : Parallel configuration types
+- model_interface.jl  : High-level simulation API
+- particles/          : Lagrangian particle advection
+- pretty_printing.jl  : Display formatting for structs
 
 GETTING STARTED:
 ----------------
@@ -96,7 +104,6 @@ using LinearAlgebra
 
 # External backends are optional. If you wish to use MPI/PencilArrays/PencilFFTs,
 # load them in your environment before using QGYBJ. Serial mode works by default.
-@info "MPI/PencilArrays/PencilFFTs not loaded yet. You can still use serial mode."
 
 #=
 ================================================================================

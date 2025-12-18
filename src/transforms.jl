@@ -9,7 +9,7 @@ extension with PencilFFTs.jl.
 
 SERIAL MODE (default):
 - Uses FFTW.jl for efficient FFT computation
-- Falls back to naive O(n^4) DFT if FFTW not available
+- FFTW.jl is a required dependency
 
 PARALLEL MODE (with extension):
 - Uses PencilFFTs.jl for distributed FFTs
@@ -18,7 +18,8 @@ PARALLEL MODE (with extension):
 
 TRANSFORM CONVENTION:
 - Horizontal 2D FFTs (x,y dimensions) for each vertical level
-- FFTW convention: inverse FFT is unnormalized (divide by nx*ny outside)
+- FFTW.ifft is NORMALIZED (divides by N = nx*ny internally)
+- No manual normalization needed after fft_backward!
 - Wavenumber layout follows FFTW convention (see grid.jl)
 
 ================================================================================
@@ -32,9 +33,10 @@ import FFTW
 
 #=
 ================================================================================
-                        NAIVE FFT FALLBACKS
+                        NAIVE FFT (for reference/testing only)
 ================================================================================
-For testing and environments without FFTW. O(n^4) complexity per plane.
+These naive DFT implementations are provided for reference and tiny-size testing.
+They are NOT used in production - FFTW.jl is always used. O(n^4) per plane.
 ================================================================================
 =#
 
