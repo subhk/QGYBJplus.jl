@@ -217,6 +217,10 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         kₕ² = kₓ^2 + kᵧ^2   # Horizontal wavenumber squared
 
         # Special case: kₕ² = 0 (horizontal mean mode)
+        # The operator ∂/∂z(a ∂/∂z) with Neumann BCs is singular (constant null space).
+        # We set ψ=0 because: (1) mean ψ doesn't affect velocities in periodic domains,
+        # (2) the ODE solution is only determined up to an arbitrary constant.
+        # See docstring for details on this design choice.
         if kₕ² == 0
             @inbounds for k in 1:nz
                 ψ_arr[i_local, j_local, k] = 0
@@ -741,6 +745,11 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
 
+        # Special case: kₕ² = 0 (horizontal mean mode)
+        # The operator a(z)∂²/∂z² with Neumann BCs is singular (constant null space).
+        # We set A=C=0 because: (1) kₕ=0 waves have no horizontal gradients for velocities,
+        # (2) YBJ vertical velocity involves ∂A/∂x, ∂A/∂y which vanish anyway.
+        # See docstring for details on this design choice.
         if kₕ² == 0
             @inbounds for k in 1:nz
                 A_arr[i_local, j_local, k] = 0
