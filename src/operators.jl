@@ -862,6 +862,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
+    # Compute derivatives for k = 1:(nz-1) where A_z is defined
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 1, G)
         j_global = local_to_global(j_local, 2, G)
@@ -869,6 +870,12 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
         ikᵧ = im * G.ky[j_global]
         dAz_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_z_arr[i_local, j_local, k]
         dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
+    end
+
+    # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
+    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+        dAz_dxₖ_arr[i_local, j_local, nz] = 0
+        dAz_dyₖ_arr[i_local, j_local, nz] = 0
     end
 
     # Compute YBJ vertical velocity in PHYSICAL space (2D decomposition version)
