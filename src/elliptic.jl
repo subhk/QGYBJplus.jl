@@ -206,6 +206,12 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
     end
 
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhs  = zeros(eltype(a), nz)
+    rhsᵢ = zeros(eltype(a), nz)
+    solᵣ = zeros(eltype(a), nz)
+    solᵢ = zeros(eltype(a), nz)
+
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global indices for wavenumber lookup
@@ -254,19 +260,17 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
         d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
-        # Solve for real and imaginary parts separately
-        rhs = zeros(eltype(a), nz)
+        # Solve for real and imaginary parts separately (reusing pre-allocated arrays)
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_arr[i_local, j_local, k])
         end
-        solᵣ = copy(rhs)
+        solᵣ .= rhs
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
-        rhsᵢ = zeros(eltype(a), nz)
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_arr[i_local, j_local, k])
         end
-        solᵢ = copy(rhsᵢ)
+        solᵢ .= rhsᵢ
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         # Combine into complex solution
@@ -310,6 +314,12 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
            (isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz))
     ρₛₜ = par === nothing ? ones(eltype(a), nz) :
            (isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz))
+
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhs  = zeros(eltype(a), nz)
+    rhsᵢ = zeros(eltype(a), nz)
+    solᵣ = zeros(eltype(a), nz)
+    solᵢ = zeros(eltype(a), nz)
 
     # Loop over LOCAL wavenumbers in z-pencil configuration
     for j_local in 1:ny_local, i_local in 1:nx_local
