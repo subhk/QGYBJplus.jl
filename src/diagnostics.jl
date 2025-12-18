@@ -345,11 +345,13 @@ Total kinetic energy (domain sum, not mean) in nondimensional units.
 """
 function flow_kinetic_energy(u, v)
     # Works with any array (regular or PencilArray)
+    # Uses real() to handle both real and complex arrays correctly
+    # (for real arrays, real() is a no-op; for complex, extracts real part)
     u_arr = parent(u)
     v_arr = parent(v)
     KE = 0.0
     @inbounds for i in eachindex(u_arr)
-        KE += 0.5 * (u_arr[i]^2 + v_arr[i]^2)
+        KE += 0.5 * (real(u_arr[i])^2 + real(v_arr[i])^2)
     end
     return KE
 end

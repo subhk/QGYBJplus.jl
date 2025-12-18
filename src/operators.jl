@@ -215,7 +215,7 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     else
         # Set w to zero (leading-order QG approximation)
         w_arr = parent(S.w)
-        fill!(w_arr, 0.0)
+        fill!(w_arr, zero(eltype(w_arr)))
     end
 
     return S
@@ -723,7 +723,10 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     if skip_inversion
         # Use existing S.A and S.C computed by the timestep with correct stratification.
         # This avoids re-inverting with a potentially different (constant) N² profile.
-        @assert !all(iszero, parent(S.A)) "skip_inversion=true but S.A is all zeros - compute A first"
+        # Note: S.A being all zeros is valid (e.g., no waves), so we just warn if unexpected
+        if all(iszero, parent(S.A))
+            @warn "skip_inversion=true but S.A is all zeros - vertical velocity will be zero" maxlog=1
+        end
     else
         # Re-invert B→A with the given N² profile.
         # WARNING: If the timestep computed A with a different stratification,
@@ -839,7 +842,10 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     # a(z) = f²/N²(z) is the elliptic coefficient
     if skip_inversion
         # Use existing S.A and S.C computed by the timestep with correct stratification.
-        @assert !all(iszero, parent(S.A)) "skip_inversion=true but S.A is all zeros - compute A first"
+        # Note: S.A being all zeros is valid (e.g., no waves), so we just warn if unexpected
+        if all(iszero, parent(S.A))
+            @warn "skip_inversion=true but S.A is all zeros - vertical velocity will be zero" maxlog=1
+        end
     else
         # Re-invert B→A with the given N² profile.
         # WARNING: If the timestep computed A with a different stratification,
@@ -972,9 +978,9 @@ For Lagrangian particle advection, always use this function rather than
 # Returns
 Modified State with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
-    # First compute QG velocities
-    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace)
+function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
+    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace, dealias_mask=dealias_mask)
 
     # Add wave-induced velocities
     compute_wave_velocities!(S, G; plans=plans, params=params)
