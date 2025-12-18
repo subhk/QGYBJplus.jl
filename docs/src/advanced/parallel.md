@@ -70,7 +70,7 @@ MPI.Init()
 mpi_config = QGYBJ.setup_mpi_environment()
 
 # Create parameters
-params = default_params(nx=256, ny=256, nz=128)
+params = default_params(Lx=1000e3, Ly=1000e3, Lz=5000.0, nx=256, ny=256, nz=128)
 
 # Initialize distributed grid and state
 grid = QGYBJ.init_mpi_grid(params, mpi_config)
@@ -354,10 +354,10 @@ function main()
         println("Topology: $(mpi_config.topology)")
     end
 
-    # Parameters
+    # Parameters (domain size REQUIRED)
     params = default_params(
+        Lx = 1000e3, Ly = 1000e3, Lz = 5000.0,  # Domain size in meters
         nx = 256, ny = 256, nz = 128,
-        Lx = 2π, Ly = 2π,
         f₀ = 1.0,
         stratification = :constant_N,
         ybj_plus = true
