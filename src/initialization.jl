@@ -45,8 +45,8 @@ function initialize_from_config(config, G::Grid, S::State, plans; params=nothing
     elseif config.initial_conditions.psi_type == :from_file
         S.psi .= read_initial_psi(config.initial_conditions.psi_filename, G, plans)
     else
-        # Zero initialization
-        S.psi .= 0.0
+        # Zero initialization (type-safe)
+        fill!(S.psi, zero(eltype(S.psi)))
     end
 
     # Initialize wave field
@@ -57,8 +57,8 @@ function initialize_from_config(config, G::Grid, S::State, plans; params=nothing
     elseif config.initial_conditions.wave_type == :from_file
         S.B .= read_initial_waves(config.initial_conditions.wave_filename, G, plans)
     else
-        # Zero initialization
-        S.B .= 0.0
+        # Zero initialization (type-safe)
+        fill!(S.B, zero(eltype(S.B)))
     end
 
     # Compute q from ψ to ensure consistency
@@ -750,14 +750,18 @@ function check_initial_conditions(S::State, G::Grid, plans)
     end
     
     # Compute energy diagnostics
-    psir = similar(S.psi, Float64)
-    fft_backward!(psir, S.psi, plans)
+    # Note: fft_backward! returns complex arrays, extract real part for diagnostics
+    psir_complex = similar(S.psi)
+    fft_backward!(psir_complex, S.psi, plans)
+    psir = real.(psir_complex)
     psi_energy = 0.5 * sum(abs2, psir) / (G.nx * G.ny * G.nz)
-    
-    Br = similar(S.B, Float64)
-    fft_backward!(Br, real.(S.B), plans)
+
+    # For wave field: do full complex IFFT on S.B, then extract real part
+    Br_complex = similar(S.B)
+    fft_backward!(Br_complex, S.B, plans)
+    Br = real.(Br_complex)
     wave_energy = 0.5 * sum(abs2, Br) / (G.nx * G.ny * G.nz)
-    
+
     @info "Initial conditions summary:"
     @info "  Psi energy: $psi_energy"
     @info "  Wave energy: $wave_energy"

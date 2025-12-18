@@ -78,9 +78,9 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
     # Print parallel info
     if parallel_config.use_mpi
         try
-            M = Base.require(:MPI)
-            rank = M.Comm_rank(parallel_config.comm)
-            nprocs = M.Comm_size(parallel_config.comm)
+            MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+            rank = MPI.Comm_rank(parallel_config.comm)
+            nprocs = MPI.Comm_size(parallel_config.comm)
             if rank == 0; @info "Running with MPI: $nprocs processes"; end
         catch
             @info "Running with MPI (rank unknown)"
@@ -88,11 +88,12 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
     else
         @info "Running in serial mode"
     end
-    
+
     # Validate configuration (only on rank 0 to avoid spam)
     should_print = !parallel_config.use_mpi || begin
         try
-            M = Base.require(:MPI); M.Comm_rank(parallel_config.comm) == 0
+            MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+            MPI.Comm_rank(parallel_config.comm) == 0
         catch
             true
         end
@@ -1091,6 +1092,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     copyto!(parent(S.q), parent(Sn.q))
     copyto!(parent(S.B), parent(Sn.B))
     copyto!(parent(S.A), parent(Sn.A))
+    copyto!(parent(S.C), parent(Sn.C))
     copyto!(parent(S.u), parent(Sn.u))
     copyto!(parent(S.v), parent(Sn.v))
     copyto!(parent(S.w), parent(Sn.w))
