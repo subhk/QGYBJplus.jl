@@ -26,7 +26,9 @@ VERTICAL DISCRETIZATION:
 ------------------------
 The vertical coordinate uses an unstaggered grid with second-order
 finite differences, matching the Fortran implementation:
-- z[k] = k × dz for k = 0, 1, ..., nz-1
+- z ranges from 0 to Lz with nz equally-spaced points
+- z[k] = (k-1) × Lz/(nz-1) for k = 1, ..., nz (Julia 1-indexing)
+- Grid spacing: dz = Lz/(nz-1) (NOT Lz/nz)
 - Staggered values (for derivatives) at z[k] + dz/2
 
 STATE VARIABLES:
@@ -138,7 +140,7 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 
 # Grid Setup
 - Horizontal: Uniform grid with spacing dx = Lx/nx, dy = Ly/ny
-- Vertical: Uniform grid from 0 to Lz with spacing dz ≈ Lz/nz
+- Vertical: Uniform grid from 0 to Lz with spacing dz = Lz/(nz-1)
 - Domain size (Lx, Ly, Lz) is REQUIRED - specify in meters (e.g., 500e3 for 500 km)
 
 # Wavenumber Arrays
