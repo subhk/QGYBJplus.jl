@@ -231,7 +231,7 @@ This is a 3D elliptic problem solved via tridiagonal systems.
 =#
 
 """
-    compute_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing)
+    compute_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Solve the QG omega equation for ageostrophic vertical velocity.
 
@@ -275,6 +275,7 @@ w = 0 at z = 0 and z = Lz (rigid lid and bottom).
 - `params`: Model parameters (f₀)
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS (quadratic term)
 
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
@@ -936,7 +937,7 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing)
+    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Compute the TOTAL velocity field for Lagrangian particle advection.
 
