@@ -101,7 +101,7 @@ k[i] = (2π/L) × m  where m = i-1        for i ≤ n/2
 
 # Example
 ```julia
-par = default_params(nx=64, ny=64, nz=32)
+par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
 G = init_grid(par)
 # G.kx[1] = 0 (mean mode)
 # G.kx[33] = -32 × (2π/Lx) (most negative wavenumber)
@@ -508,12 +508,10 @@ function allocate_field(::Type{T}, G::Grid; complex::Bool=false) where {T}
         # Serial mode: use standard Arrays
         return complex ? Array{Complex{T}}(undef, sz) : Array{T}(undef, sz)
     else
-        # Parallel mode: use PencilArrays
-        if complex
-            return PencilArrays.PencilArray{Complex{T}}(G.decomp, sz)
-        else
-            return PencilArrays.PencilArray{T}(G.decomp, sz)
-        end
+        # Parallel mode: use PencilArrays via the MPI extension
+        # The extension overloads this function; if we reach here, extension isn't loaded
+        error("Parallel mode requires the MPI extension. " *
+              "Load with: using MPI; MPI.Init(); using PencilArrays, PencilFFTs")
     end
 end
 
