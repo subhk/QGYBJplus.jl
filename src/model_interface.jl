@@ -18,8 +18,6 @@ using ..QGYBJ: OutputManager, write_state_file, OutputConfig, ParallelConfig
 using ..QGYBJ.EnergyDiagnostics: EnergyDiagnosticsManager, should_output, record_energies!
 using ..QGYBJ.EnergyDiagnostics: write_all_energy_files!, finalize!
 
-# Note: config.jl, netcdf_io.jl, initialization.jl, stratification.jl, parallel_interface.jl
-# are included in QGYBJ.jl before this file to avoid duplicate includes
 
 """
     QGYBJSimulation{T}
@@ -157,7 +155,7 @@ function setup_simulation(config::ModelConfig{T}; use_mpi::Bool=false) where T
         no_feedback = config.no_wave_feedback || config.no_feedback,  # Handle both flags
         fixed_flow = config.fixed_mean_flow,
         no_wave_feedback = config.no_wave_feedback,
-        
+
         # Skewed Gaussian parameters (from config)
         N₀²_sg = config.stratification.N02_sg,
         N₁²_sg = config.stratification.N12_sg,
@@ -492,6 +490,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     # Reduce across MPI processes if running in parallel
     mean_flow_KE = reduce_if_mpi(mean_flow_KE_local, sim.parallel_config)
     mean_flow_PE = reduce_if_mpi(mean_flow_PE_local, sim.parallel_config)
+
     wave_KE = reduce_if_mpi(wave_KE_local, sim.parallel_config)
     wave_PE = reduce_if_mpi(wave_PE_local, sim.parallel_config)
     wave_CE = reduce_if_mpi(wave_CE_local, sim.parallel_config)
@@ -510,9 +509,11 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     # Store in diagnostics dict for backward compatibility
     diagnostics["mean_flow_kinetic_energy"] = mean_flow_KE
     diagnostics["mean_flow_potential_energy"] = mean_flow_PE
+
     diagnostics["wave_kinetic_energy"] = wave_KE
     diagnostics["wave_potential_energy"] = wave_PE
     diagnostics["wave_correction_energy"] = wave_CE
+
     diagnostics["total_wave_energy"] = wave_KE + wave_PE + wave_CE
     diagnostics["total_mean_flow_energy"] = mean_flow_KE + mean_flow_PE
     diagnostics["total_energy"] = mean_flow_KE + mean_flow_PE + wave_KE + wave_PE + wave_CE
@@ -535,7 +536,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     diagnostics["psi_max"] = reduce_max_if_mpi(maximum(psir), sim.parallel_config)
 
     # RMS needs sum reduction, then divide by global size
-    psi_sum_sq = reduce_sum_if_mpi(sum(abs2, psir), sim.parallel_config)
+    psi_sum_sq  = reduce_sum_if_mpi(sum(abs2, psir), sim.parallel_config)
     global_size = reduce_sum_if_mpi(length(psir), sim.parallel_config)
     diagnostics["psi_rms"] = sqrt(psi_sum_sq / global_size)
 
@@ -548,7 +549,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     diagnostics["wave_max"] = reduce_max_if_mpi(maximum(Br), sim.parallel_config)
 
     # Wave RMS with global reduction
-    wave_sum_sq = reduce_sum_if_mpi(sum(abs2, Br), sim.parallel_config)
+    wave_sum_sq      = reduce_sum_if_mpi(sum(abs2, Br), sim.parallel_config)
     wave_global_size = reduce_sum_if_mpi(length(Br), sim.parallel_config)
     diagnostics["wave_rms"] = sqrt(wave_sum_sq / wave_global_size)
 
@@ -598,10 +599,12 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(i_local, 1, grid) : i_local
+
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(j_local, 2, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
+
             ky_val = grid.ky[min(j_global, length(grid.ky))]
             kh2 = kx_val^2 + ky_val^2
 
@@ -693,10 +696,12 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(i_local, 1, grid) : i_local
+
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(j_local, 2, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
+
             ky_val = grid.ky[min(j_global, length(grid.ky))]
 
             psi_k = psi_arr[i_local, j_local, k]
@@ -801,9 +806,12 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
             # Track zero mode
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(i_local, 1, grid) : i_local
+
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(j_local, 2, grid) : j_local
+
             kx_val = grid.kx[min(i_global, length(grid.kx))]
+
             ky_val = grid.ky[min(j_global, length(grid.ky))]
 
             if kx_val == 0 && ky_val == 0
@@ -861,9 +869,12 @@ function compute_wave_energy(state::State, grid::Grid, plans)
             # Track zero mode
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(i_local, 1, grid) : i_local
+
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(j_local, 2, grid) : j_local
+
             kx_val = grid.kx[min(i_global, length(grid.kx))]
+
             ky_val = grid.ky[min(j_global, length(grid.ky))]
 
             if kx_val == 0 && ky_val == 0
@@ -917,11 +928,13 @@ function compute_enstrophy(state::State, grid::Grid, plans)
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(i_local, 1, grid) : i_local
+
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
                        local_to_global(j_local, 2, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
             ky_val = grid.ky[min(j_global, length(grid.ky))]
+
             kh2 = kx_val^2 + ky_val^2
 
             psi_k = psi_arr[i_local, j_local, k]
@@ -1132,10 +1145,13 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
     # Copy final state back to S
     copyto!(parent(S.psi), parent(Sn.psi))
+
     copyto!(parent(S.q), parent(Sn.q))
+
     copyto!(parent(S.B), parent(Sn.B))
     copyto!(parent(S.A), parent(Sn.A))
     copyto!(parent(S.C), parent(Sn.C))
+
     copyto!(parent(S.u), parent(Sn.u))
     copyto!(parent(S.v), parent(Sn.v))
     copyto!(parent(S.w), parent(Sn.w))
@@ -1296,6 +1312,7 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         nx = config.domain.nx,
         ny = config.domain.ny,
         nz = config.domain.nz,
+
         Lx = config.domain.Lx,
         Ly = config.domain.Ly,
         Lz = config.domain.Lz,
@@ -1317,12 +1334,14 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         # Hyperdiffusion for mean flow (from config)
         νₕ₁ = T(config.nu_h1),
         νₕ₂ = T(config.nu_h2),
+
         ilap1 = config.ilap1,
         ilap2 = config.ilap2,
 
         # Hyperdiffusion for waves (from config)
         νₕ₁ʷ = T(config.nu_h1_wave),
         νₕ₂ʷ = T(config.nu_h2_wave),
+
         ilap1w = config.ilap1_wave,
         ilap2w = config.ilap2_wave,
 
@@ -1334,9 +1353,11 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         stratification = strat_type,
         inviscid = config.inviscid,
         linear = config.linear,
+
         no_dispersion = config.no_dispersion,
         passive_scalar = config.passive_scalar,
         ybj_plus = config.ybj_plus,
+
         no_feedback = config.no_feedback,
         fixed_flow = config.fixed_mean_flow,
         no_wave_feedback = config.no_wave_feedback,

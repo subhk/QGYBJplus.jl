@@ -72,12 +72,6 @@ All derivatives are computed in spectral space:
 
 Vertical derivatives use second-order finite differences.
 
-FORTRAN CORRESPONDENCE:
------------------------
-- compute_velocities! → compute_velo in derivatives.f90
-- compute_vertical_velocity! → solve_omega_eqn
-- compute_wave_velocities! → wave velocity terms in compute_velo
-
 ================================================================================
 =#
 module Operators
@@ -210,7 +204,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
         else
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
-            compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace, dealias_mask=dealias_mask)
+            compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, 
+                                workspace=workspace, dealias_mask=dealias_mask)
         end
     else
         # Set w to zero (leading-order QG approximation)
@@ -282,7 +277,8 @@ w = 0 at z = 0 and z = Lz (rigid lid and bottom).
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
 """
-function compute_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_vertical_velocity!(S::State, G::Grid, plans, params; 
+                            N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     # Compute default dealiasing mask if not provided
     # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
     if dealias_mask === nothing
@@ -501,13 +497,16 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     # Pre-allocate work arrays outside loop to reduce GC pressure
     n_interior = nz - 2  # Interior points (constant for all wavenumbers)
     if n_interior > 0
-        d = zeros(Float64, n_interior)
+        d  = zeros(Float64, n_interior)
         dₗ = zeros(Float64, n_interior-1)
         dᵤ = zeros(Float64, n_interior-1)
+
         rhs = zeros(ComplexF64, n_interior)
+
         dₗ_work = zeros(Float64, n_interior-1)
-        d_work = zeros(Float64, n_interior)
+        d_work  = zeros(Float64, n_interior)
         dᵤ_work = zeros(Float64, n_interior-1)
+
         rhsᵣ = zeros(Float64, n_interior)
         rhsᵢ = zeros(Float64, n_interior)
         solᵣ = zeros(Float64, n_interior)
@@ -517,6 +516,7 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     @inbounds for j_local in 1:ny_local_z, i_local in 1:nx_local_z
         i_global = local_to_global_z(i_local, 1, G)
         j_global = local_to_global_z(j_local, 2, G)
+        
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
