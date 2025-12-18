@@ -46,10 +46,10 @@ FFTW.set_num_threads(8)
 
 ```julia
 # Double precision (default, most accurate)
-state = create_state(grid; T=Float64)
+state = init_state(grid)
 
 # Single precision (2x memory savings, faster)
-state = create_state(grid; T=Float32)
+# Note: Requires initializing parameters and grid with Float32
 ```
 
 !!! warning
@@ -351,24 +351,23 @@ end
 
 ```julia
 function benchmark_simulation(nx, ny, nz; nsteps=100, Lx=500e3, Ly=500e3, Lz=4000.0)
-    grid = Grid(nx=nx, ny=ny, nz=nz)
-    params = default_params(Lx=Lx, Ly=Ly, Lz=Lz)  # Domain size is REQUIRED
-    state = create_state(grid)
-    initialize_random!(state, grid)
+    params = default_params(Lx=Lx, Ly=Ly, Lz=Lz, nx=nx, ny=ny, nz=nz)
+    G, S, plans, a_ell = setup_model(params)
 
-    work = create_work_arrays(grid)
-    plans = plan_transforms!(grid)
-    a_ell = setup_elliptic_matrices(grid, params)
+    # Initialize
+    init_random_psi!(S, G; amplitude=0.1)
+    compute_q_from_psi!(S, G, plans, a_ell)
 
     # Warm-up
-    for _ in 1:10
-        timestep!(state, grid, params, work, plans, a_ell, 0.001)
+    first_projection_step!(S, G, params, plans, a_ell)
+    for _ in 1:9
+        leapfrog_step!(S, G, params, plans, a_ell)
     end
 
     # Timed run
     t_start = time()
     for _ in 1:nsteps
-        timestep!(state, grid, params, work, plans, a_ell, 0.001)
+        leapfrog_step!(S, G, params, plans, a_ell)
     end
     t_end = time()
 
