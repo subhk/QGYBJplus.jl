@@ -715,6 +715,16 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
             continue
         end
 
+        # Special case: nz == 1 (single-layer / 2D mode)
+        # With only one vertical level, vertical derivative terms vanish.
+        # The YBJ+ equation reduces to: -(kₕ²/4) A = B  →  A = -4B/kₕ²
+        # C = ∂A/∂z = 0 (no vertical structure)
+        if nz == 1
+            @inbounds A_arr[i_local, j_local, 1] = -4 * B_arr[i_local, j_local, 1] / kₕ²
+            @inbounds C_arr[i_local, j_local, 1] = 0
+            continue
+        end
+
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
         d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + (kₕ²*Δz²)/4 )
