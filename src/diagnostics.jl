@@ -477,11 +477,21 @@ Matches the potential energy computation in `diag_zentrum` (ps term).
 function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-    a_ell_coeff = par.f₀^2 / par.N²  # Elliptic coefficient f²/N²
+
+    # Get z-dependent elliptic coefficient a(z) = f²/N²(z)
+    # This handles both constant_N and skewed_gaussian stratification correctly
+    a_ell = if isdefined(PARENT, :a_ell_ut) && par !== nothing
+        PARENT.a_ell_ut(par, G)
+    else
+        fill(par.f₀^2 / par.N², nz)  # Fallback to constant
+    end
 
     # Get local dimensions
     bk_arr = parent(bk)
     nx_local, ny_local, nz_local = size(bk_arr)
+
+    # Check if 2D decomposition is active (z may be distributed in xy-pencil)
+    need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     # Get density profiles
     ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
@@ -505,7 +515,9 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     PE_total = 0.0
 
     @inbounds for k in 1:nz_local
-        k_global = k
+        # Use global z-index for correct profile lookup in 2D decomposition
+        k_global = need_z_global ? local_to_global_z(k, 3, G) : k
+        a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
         ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
@@ -517,14 +529,14 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
             j_global = local_to_global(j, 2, G)
 
             if L[i_global, j_global]
-                # PE contribution: (a_ell × ρ₁/ρ₂) × |b|²
-                pe_k += (a_ell_coeff * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[i,j,k])
+                # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
+                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[i,j,k])
             end
         end
 
         # Dealiasing correction
         if local_to_global(1, 1, G) == 1 && local_to_global(1, 2, G) == 1
-            pe_k -= 0.5 * (a_ell_coeff * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[1,1,k])
+            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[1,1,k])
         end
 
         # Weight by density and accumulate
