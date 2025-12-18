@@ -154,6 +154,55 @@ function a_ell_ut(par::QGParams, G::Grid)
     return a
 end
 
+"""
+    a_ell_from_N2(N2_profile::AbstractVector, par::QGParams) -> Vector
+
+Compute the vertical elliptic coefficient a(z) = f²/N²(z) from a given N² profile.
+
+This function allows custom N² profiles (from files, tanh profiles, etc.) to be
+used in the core elliptic operators (q→ψ and B→A inversions), ensuring consistency
+between the stratification used in vertical velocity calculations and the main
+dynamics.
+
+# Arguments
+- `N2_profile::AbstractVector`: N²(z) values at each vertical level (length nz)
+- `par::QGParams`: Parameters (used for f₀)
+
+# Returns
+Vector of length nz with a(z) = f²/N²(z) values.
+
+# Example
+```julia
+# Use custom N² profile for elliptic operators
+N2_profile = [compute_N2(z) for z in G.z]
+a_ell = a_ell_from_N2(N2_profile, par)
+invert_q_to_psi!(S, G; a=a_ell)
+```
+
+# Note
+If `N2_profile` is `nothing` or empty, falls back to `a_ell_ut(par, G)`.
+This function ensures that custom stratification profiles provided by the user
+are actually used in the main dynamics, not just in vertical velocity calculations.
+"""
+function a_ell_from_N2(N2_profile::AbstractVector, par::QGParams)
+    nz = length(N2_profile)
+    T = eltype(N2_profile)
+    a = similar(N2_profile)
+    f₀_sq = par.f₀^2
+
+    division_guard_warned = false
+    @inbounds for k in 1:nz
+        N2_z = N2_profile[k]
+        # Warn once if division guard activates (N² ≈ 0)
+        if N2_z < sqrt(eps(T)) && !division_guard_warned
+            @warn "N²(z) ≈ 0 at level k=$k in custom N² profile, using eps for numerical stability" maxlog=1
+            division_guard_warned = true
+        end
+        a[k] = f₀_sq / max(N2_z, eps(T))  # a = f²/N²(z), protected against N²≈0
+    end
+    return a
+end
+
 #=
 ================================================================================
                         DENSITY WEIGHTS FOR VERTICAL OPERATORS
