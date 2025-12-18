@@ -992,11 +992,36 @@ end
 """
     write_mpi_field(filename, varname, arr::PencilArray, grid::Grid, mpi_config)
 
-Write a distributed field to file using parallel I/O or gather.
+Gather a distributed PencilArray to root for writing.
+
+This function gathers the distributed array to the root process and returns it.
+The actual file writing should be performed by the caller using the returned array.
+
+# Arguments
+- `filename`: (unused) Reserved for future parallel I/O implementation
+- `varname`: (unused) Reserved for future parallel I/O implementation
+- `arr`: Distributed PencilArray to gather
+- `grid`: Grid with decomposition info
+- `mpi_config`: MPI configuration
+
+# Returns
+- On root: The gathered full array
+- On other ranks: `nothing`
+
+# Example
+```julia
+gathered = QGYBJ.write_mpi_field("output.nc", "psi", state.psi, grid, mpi_config)
+if mpi_config.is_root && gathered !== nothing
+    # Write gathered array to file
+    NCDatasets.Dataset("output.nc", "c") do ds
+        defVar(ds, "psi", gathered, ("x", "y", "z"))
+    end
+end
+```
 """
 function QGYBJ.write_mpi_field(filename::String, varname::String,
                                arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
-    # Gather to root and write serially
+    # Gather to root for writing
     gathered = gather(arr)
 
     if mpi_config.is_root && gathered !== nothing
