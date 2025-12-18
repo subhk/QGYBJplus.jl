@@ -87,9 +87,20 @@ struct FileProfile{T} <: StratificationProfile{T}
 end
 
 """
-    create_stratification_profile(config::StratificationConfig)
+    create_stratification_profile(config)
 
 Create stratification profile from configuration.
+
+# Arguments
+- `config`: Configuration object with fields:
+  - `type::Symbol`: One of `:constant_N`, `:skewed_gaussian`, `:tanh_profile`, `:from_file`
+  - For `:constant_N`: `N0` (buoyancy frequency)
+  - For `:skewed_gaussian`: `N02_sg`, `N12_sg`, `sigma_sg`, `z0_sg`, `alpha_sg`
+  - For `:tanh_profile`: `N_upper`, `N_lower`, `z_pycno`, `width`
+  - For `:from_file`: `filename` (path to NetCDF file)
+
+# Returns
+A `StratificationProfile` subtype appropriate for the configuration.
 """
 function create_stratification_profile(config)
     T = Float64
