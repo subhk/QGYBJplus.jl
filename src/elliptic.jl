@@ -261,17 +261,15 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
         d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
-        # Solve for real and imaginary parts separately (reusing pre-allocated arrays)
+        # Solve for real and imaginary parts separately
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_arr[i_local, j_local, k])
         end
-        solᵣ .= rhs
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_arr[i_local, j_local, k])
         end
-        solᵢ .= rhsᵢ
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         # Combine into complex solution
@@ -360,17 +358,15 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
         dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
         d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
-        # Solve for real and imaginary parts (reusing pre-allocated arrays)
+        # Solve for real and imaginary parts
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_z_arr[i_local, j_local, k])
         end
-        solᵣ .= rhs
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_z_arr[i_local, j_local, k])
         end
-        solᵢ .= rhsᵢ
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
@@ -546,8 +542,6 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        solᵣ .= rhsᵣ
-        solᵢ .= rhsᵢ
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
