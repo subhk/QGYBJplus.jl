@@ -322,7 +322,7 @@ See also: [`QGParams`](@ref)
 function default_params(; nx=64, ny=64, nz=64,
                            Lx::Real, Ly::Real, Lz::Real,  # REQUIRED - no defaults
                            dt=1e-3, nt=10_000, f₀=1.0, N²=1.0,
-                           W2F=0.01, γ=1e-3,
+                           W2F=nothing, γ=1e-3,  # W2F is deprecated
                            νₕ=0.0, νᵥ=0.0,
                            νₕ₁=0.01, νₕ₂=10.0, ilap1=2, ilap2=6,
                            νₕ₁ʷ=0.0, νₕ₂ʷ=10.0, ilap1w=2, ilap2w=6,
@@ -335,6 +335,12 @@ function default_params(; nx=64, ny=64, nz=64,
                            fixed_flow=false, no_wave_feedback=true)
 
     #= ============== PARAMETER VALIDATION ============== =#
+
+    # W2F deprecation warning
+    if W2F !== nothing
+        @warn "W2F parameter is deprecated and no longer used. It will be ignored." maxlog=1
+    end
+    W2F_val = 0.01  # Default value for struct (unused)
 
     # Grid dimensions must be positive
     nx > 0 || throw(ArgumentError("nx must be positive (got nx=$nx)"))
@@ -399,7 +405,7 @@ function default_params(; nx=64, ny=64, nz=64,
     return QGParams{T}(; nx, ny, nz, Lx=T(Lx), Ly=T(Ly), Lz=T(Lz), dt=T(dt), nt,
                          f₀=T(f₀), νₕ=T(νₕ), νᵥ=T(νᵥ),
                          linear_vert_structure, stratification,
-                         N²=T(N²), W2F=T(W2F), γ=T(γ),
+                         N²=T(N²), W2F=T(W2F_val), γ=T(γ),
                          νₕ₁=T(νₕ₁), νₕ₂=T(νₕ₂), ilap1, ilap2,
                          νₕ₁ʷ=T(νₕ₁ʷ), νₕ₂ʷ=T(νₕ₂ʷ), ilap1w, ilap2w,
                          νz=T(νz), inviscid, linear, no_dispersion, passive_scalar,
