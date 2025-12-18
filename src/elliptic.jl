@@ -359,18 +359,17 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
         dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
         d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
-        rhs = zeros(eltype(a), nz)
+        # Solve for real and imaginary parts (reusing pre-allocated arrays)
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_z_arr[i_local, j_local, k])
         end
-        solᵣ = copy(rhs)
+        solᵣ .= rhs
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
-        rhsᵢ = zeros(eltype(a), nz)
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_z_arr[i_local, j_local, k])
         end
-        solᵢ = copy(rhsᵢ)
+        solᵢ .= rhsᵢ
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
