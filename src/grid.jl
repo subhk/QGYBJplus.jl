@@ -95,8 +95,8 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 # Wavenumber Convention
 For a domain of size L with n points:
 ```
-k[i] = (2π/L) × m  where m = i-1        for i ≤ n/2
-                          m = i-1-n      for i > n/2
+k[i] = (2π/L) × m  where m = i-1        for i ≤ (n+1)÷2
+                          m = i-1-n      for i > (n+1)÷2
 ```
 
 # Example
@@ -146,8 +146,8 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 # Wavenumber Arrays
 Computes kx, ky following FFTW conventions for periodic domain:
 ```
-kx[i] = (i-1)           for i = 1, ..., (nx+1)/2
-        (i-1-nx)        for i = (nx+1)/2+1, ..., nx
+kx[i] = (i-1)           for i = 1, ..., (nx+1)÷2
+        (i-1-nx)        for i = (nx+1)÷2+1, ..., nx
 ```
 multiplied by 2π/Lx.
 

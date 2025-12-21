@@ -327,7 +327,11 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig)
     dy = params.Ly / ny
 
     # Vertical grid (same on all processes)
-    z = T.(collect(range(0, params.Lz; length=nz)))
+    z = if nz == 1
+        T[params.Lz / 2]
+    else
+        T.(collect(range(0, params.Lz; length=nz)))
+    end
     dz = nz > 1 ? diff(z) : T[params.Lz]
 
     # Wavenumbers (global arrays, same on all processes)
