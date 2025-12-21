@@ -8,7 +8,7 @@ This page documents the time integration functions.
 
 ## Main Time Stepping Scheme
 
-QGYBJplus.jl uses a **Leapfrog scheme with Robert-Asselin filter** for time integration. This provides second-order accuracy while maintaining stability through computational mode damping.
+QGYBJ+.jl uses a **Leapfrog scheme with Robert-Asselin filter** for time integration. This provides second-order accuracy while maintaining stability through computational mode damping.
 
 ### Overview
 

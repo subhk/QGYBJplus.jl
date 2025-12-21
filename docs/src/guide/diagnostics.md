@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes diagnostic quantities and analysis tools in QGYBJplus.jl.
+This page describes diagnostic quantities and analysis tools in QGYBJ+.jl.
 
 ## Energy Diagnostics
 
@@ -55,7 +55,7 @@ E_B, E_A = wave_energy(state.B, state.A, grid)
 
 ## Energy Diagnostics Output Files
 
-QGYBJplus.jl automatically saves energy diagnostics to separate files in a dedicated `diagnostic/` folder, following the structure used in the Fortran QG_YBJp code.
+QGYBJ+.jl automatically saves energy diagnostics to separate files in a dedicated `diagnostic/` folder, following the structure used in the Fortran QG_YBJp code.
 
 ### Output Folder Structure
 

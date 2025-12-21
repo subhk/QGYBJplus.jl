@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page documents the physics functions in QGYBJplus.jl.
+This page documents the physics functions in QGYBJ+.jl.
 
 ## Elliptic Inversions
 

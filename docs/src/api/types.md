@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page documents the core data types in QGYBJplus.jl.
+This page documents the core data types in QGYBJ+.jl.
 
 ## QGParams
 

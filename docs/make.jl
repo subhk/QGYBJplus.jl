@@ -8,7 +8,7 @@ using Documenter
 using QGYBJplus
 
 makedocs(
-    sitename = "QGYBJplus.jl",
+    sitename = "QGYBJ+.jl",
     modules = [QGYBJplus],
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", "") == "true",

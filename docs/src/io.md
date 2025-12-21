@@ -1,6 +1,6 @@
 ## I/O
 
-QGYBJplus.jl supports optional NetCDF I/O (via NCDatasets.jl). If NCDatasets
+QGYBJ+.jl supports optional NetCDF I/O (via NCDatasets.jl). If NCDatasets
 is not installed, NetCDF I/O is disabled to keep the core functionality
 working in restricted environments.
 

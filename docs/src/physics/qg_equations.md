@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page details the quasi-geostrophic (QG) equations implemented in QGYBJplus.jl.
+This page details the quasi-geostrophic (QG) equations implemented in QGYBJ+.jl.
 
 ## Potential Vorticity Evolution
 

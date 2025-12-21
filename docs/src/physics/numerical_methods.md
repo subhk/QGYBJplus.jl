@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes the numerical algorithms used in QGYBJplus.jl, including the 2D pencil decomposition strategy for parallel execution.
+This page describes the numerical algorithms used in QGYBJ+.jl, including the 2D pencil decomposition strategy for parallel execution.
 
 ## Spatial Discretization
 
@@ -222,7 +222,7 @@ With 2D decomposition, no single configuration has all data local.
 
 ### Solution: Dual Pencil Configurations
 
-QGYBJplus.jl uses two pencil configurations:
+QGYBJ+.jl uses two pencil configurations:
 
 | Configuration | Local Dimension | Distributed Dimensions | Use |
 |:--------------|:----------------|:-----------------------|:----|

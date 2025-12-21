@@ -4,11 +4,11 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to configure QGYBJplus.jl simulations.
+This page explains how to configure QGYBJ+.jl simulations.
 
 ## Configuration Approaches
 
-QGYBJplus.jl offers two ways to configure simulations:
+QGYBJ+.jl offers two ways to configure simulations:
 
 1. **Simple API**: Use `create_simple_config()` for quick setup
 2. **Full Control**: Create `QGParams` directly via `default_params()`

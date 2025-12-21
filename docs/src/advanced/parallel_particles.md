@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page provides detailed technical documentation of the parallel particle advection algorithm in QGYBJplus.jl.
+This page provides detailed technical documentation of the parallel particle advection algorithm in QGYBJ+.jl.
 
 ## Overview
 

@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This section provides comprehensive API documentation for QGYBJplus.jl.
+This section provides comprehensive API documentation for QGYBJ+.jl.
 
 ### Quick Navigation
 

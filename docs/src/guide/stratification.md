@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to configure ocean stratification profiles in QGYBJplus.jl.
+This page explains how to configure ocean stratification profiles in QGYBJ+.jl.
 
 ## Why Stratification Matters
 
@@ -17,7 +17,7 @@ The buoyancy frequency ``N(z)`` affects:
 
 ## Built-in Stratification Types
 
-QGYBJplus.jl supports two stratification modes through the `default_params()` function:
+QGYBJ+.jl supports two stratification modes through the `default_params()` function:
 
 ### Constant N
 
@@ -134,7 +134,7 @@ sim = setup_simulation(domain, strat, model=model)
 
 ### StratificationProfile Types
 
-QGYBJplus.jl provides several stratification profile types:
+QGYBJ+.jl provides several stratification profile types:
 
 ```julia
 # Constant N²

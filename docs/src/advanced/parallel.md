@@ -4,11 +4,11 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes how to run QGYBJplus.jl on distributed memory systems using MPI with **2D pencil decomposition** via PencilArrays and PencilFFTs.
+This page describes how to run QGYBJ+.jl on distributed memory systems using MPI with **2D pencil decomposition** via PencilArrays and PencilFFTs.
 
 ## Overview
 
-QGYBJplus.jl uses **2D pencil decomposition** for optimal parallel scalability:
+QGYBJ+.jl uses **2D pencil decomposition** for optimal parallel scalability:
 
 ```
            Serial (Full Domain)                2D Pencil Decomposition
@@ -445,7 +445,7 @@ In serial mode, all three functions return standard `Array{T,3}` of size `(nx, n
 | Strong scaling | Fixed problem size, increase processes |
 | Weak scaling | Fixed work per process, increase total size |
 
-QGYBJplus.jl with 2D decomposition scales to O(N²) processes for N³ grid.
+QGYBJ+.jl with 2D decomposition scales to O(N²) processes for N³ grid.
 
 ### Communication Costs
 

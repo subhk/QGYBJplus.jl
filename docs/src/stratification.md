@@ -1,7 +1,7 @@
 ## Stratification
 
 Stratification enters via N²(z) and the vertical operator coefficient
-`a_ell_ut = 1/N²`. QGYBJplus.jl offers several profiles.
+`a_ell_ut = 1/N²`. QGYBJ+.jl offers several profiles.
 
 ### Built‑in Profiles
 

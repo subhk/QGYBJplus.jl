@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to run and monitor QGYBJplus.jl simulations.
+This page explains how to run and monitor QGYBJ+.jl simulations.
 
 ## Quick Start
 

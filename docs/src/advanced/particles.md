@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes Lagrangian particle tracking in QGYBJplus.jl, including the physics, numerical algorithms, and parallel implementation.
+This page describes Lagrangian particle tracking in QGYBJ+.jl, including the physics, numerical algorithms, and parallel implementation.
 
 ## Overview
 
@@ -197,7 +197,7 @@ config = particles_in_box(π/2; interpolation_method=ADAPTIVE)
 
 ## Particle Initialization
 
-QGYBJplus.jl provides simple, intuitive constructors for initializing particles:
+QGYBJ+.jl provides simple, intuitive constructors for initializing particles:
 
 | Constructor | Description |
 |:------------|:------------|

@@ -4,11 +4,11 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to save and load simulation data in QGYBJplus.jl.
+This page explains how to save and load simulation data in QGYBJ+.jl.
 
 ## Output Formats
 
-QGYBJplus.jl supports multiple output formats:
+QGYBJ+.jl supports multiple output formats:
 
 | Format | Extension | Use Case | Parallel Support |
 |:-------|:----------|:---------|:-----------------|
@@ -244,7 +244,7 @@ step,time,KE,PE,WE
 
 ## MPI Parallel I/O with 2D Decomposition
 
-QGYBJplus.jl provides seamless I/O support for 2D pencil decomposition. The I/O functions automatically handle distributed arrays.
+QGYBJ+.jl provides seamless I/O support for 2D pencil decomposition. The I/O functions automatically handle distributed arrays.
 
 ### Writing State Files
 
@@ -288,7 +288,7 @@ ncread_la!(state, grid, plans; path="la.nc", parallel_config=mpi_config)
 
 ### I/O Strategy for 2D Decomposition
 
-QGYBJplus.jl uses a **gather-to-root** strategy for parallel I/O:
+QGYBJ+.jl uses a **gather-to-root** strategy for parallel I/O:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -405,7 +405,7 @@ defVar(ds, "psi", Float64, ("x", "y", "z", "time");
 
 ```julia
 # Add attributes
-ds.attrib["title"] = "QGYBJplus.jl simulation output"
+ds.attrib["title"] = "QGYBJ+.jl simulation output"
 ds.attrib["history"] = "Created $(now())"
 ds.attrib["Conventions"] = "CF-1.8"
 

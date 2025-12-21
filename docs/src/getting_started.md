@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page walks you through installing QGYBJplus.jl, running a quick example, and understanding the core concepts.
+This page walks you through installing QGYBJ+.jl, running a quick example, and understanding the core concepts.
 
 ## Installation
 
@@ -19,7 +19,7 @@ Or clone and develop locally:
 
 ```bash
 git clone https://github.com/subhk/QGYBJplus.jl
-cd QGYBJplus.jl
+cd QGYBJ+.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
 

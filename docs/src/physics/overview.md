@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page provides an overview of the physics implemented in QGYBJplus.jl. For detailed equations, see the individual sections on [QG dynamics](@ref qg-equations) and [YBJ+ waves](@ref ybj-plus).
+This page provides an overview of the physics implemented in QGYBJ+.jl. For detailed equations, see the individual sections on [QG dynamics](@ref qg-equations) and [YBJ+ waves](@ref ybj-plus).
 
 ## Physical Setting
 

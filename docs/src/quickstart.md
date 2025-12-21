@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This tutorial will guide you through your first QGYBJplus.jl simulation in about 5 minutes.
+This tutorial will guide you through your first QGYBJ+.jl simulation in about 5 minutes.
 
 ## What We'll Build
 
