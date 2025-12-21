@@ -11,8 +11,8 @@ MPI-parallel version of the barotropic dipole simulation from:
 
 USAGE:
 ------
-    mpirun -n 4 julia --project examples/asselin_jpo2020_dipole_mpi.jl
-    mpirun -n 16 julia --project examples/asselin_jpo2020_dipole_mpi.jl
+    mpirun -n 4 julia --project examples/asselin_jpo2020.jl
+    mpirun -n 16 julia --project examples/asselin_jpo2020.jl
 
 ================================================================================
 =#
@@ -35,10 +35,10 @@ const nz = 64
 const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
 const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
 
-# Domain size [m] - typical mesoscale eddy domain
-const Lx = 500e3             # 500 km horizontal domain
-const Ly = 500e3             # 500 km horizontal domain
-const Lz = 4000.0            # 4 km depth, surface at z = Lz
+# Domain size [m] (Asselin et al. 2020)
+const Lx = 70e3              # 70 km horizontal domain
+const Ly = 70e3              # 70 km horizontal domain
+const Lz = 3000.0            # 3 km depth, surface at z = Lz
 
 # Time stepping
 const n_inertial_periods = 15
@@ -47,12 +47,13 @@ const dt = 100.0             # Time step [s]
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
 # Wave parameters
-const u0_wave = 0.05         # Wave velocity amplitude [m/s]
-const sigma_z = 0.01 * Lz    # Vertical decay scale [m] (surface-confined, ~40m e-folding)
+const u0_wave = 0.10         # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
+const surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
-const U0_flow = 0.5          # Flow velocity scale [m/s]
-const psi0 = U0_flow * Lx / (2π)  # Streamfunction amplitude [m²/s]
+const U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
+const k_dipole = 2π / Lx
+const psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
 
 # Output settings
 const output_dir = "output_asselin"
@@ -64,7 +65,7 @@ const save_interval_IP = 1.0  # Save every 1 inertial period
 
 function main()
     MPI.Init()
-    mpi_config = QGYBJ.setup_mpi_environment()
+    mpi_config = QGYBJ.setup_mpi_environment(parallel_io=false)
     is_root = mpi_config.is_root
 
     # Create output directory
@@ -78,13 +79,6 @@ function main()
         println("Output directory: $output_dir")
     end
     MPI.Barrier(mpi_config.comm)
-
-    # Create parallel config for I/O
-    parallel_config = QGYBJ.ParallelConfig(
-        use_mpi = true,
-        comm = mpi_config.comm,
-        parallel_io = false  # Use gather-to-root approach
-    )
 
     # Parameters matching Asselin et al. (2020)
     # Fully dimensional simulation with physical domain size
@@ -107,24 +101,24 @@ function main()
 
     local_range = QGYBJ.get_local_range_xy(G)
 
-    # Set up dipole: ψ = ψ₀ × sin(2πx/Lx - π/2) × cos(2πy/Ly)
+    # Set up dipole: ψ = (U/k) sin(kx) cos(ky), k = 2π/Lx
     # This creates a barotropic dipole eddy with velocity scale U0_flow
     if is_root; println("\nSetting up dipole..."); end
-    psi_local = parent(S.psi)
-    for k_local in axes(psi_local, 3)
-        k_global = local_range[3][k_local]
-        for j_local in axes(psi_local, 2)
+    psi_phys = similar(S.psi)
+    psi_phys_arr = parent(psi_phys)
+    for k_local in axes(psi_phys_arr, 3)
+        for j_local in axes(psi_phys_arr, 2)
             j_global = local_range[2][j_local]
             y = (j_global - 1) * G.dy  # Physical y coordinate [m]
-            for i_local in axes(psi_local, 1)
+            for i_local in axes(psi_phys_arr, 1)
                 i_global = local_range[1][i_local]
                 x = (i_global - 1) * G.dx  # Physical x coordinate [m]
                 # Dimensional streamfunction [m²/s]
-                psi_local[i_local, j_local, k_local] = complex(psi0 * sin(2π*x/Lx - π/2) * cos(2π*y/Ly))
+                psi_phys_arr[i_local, j_local, k_local] = complex(psi0 * sin(k_dipole * x) * cos(k_dipole * y))
             end
         end
     end
-    QGYBJ.fft_forward!(S.psi, S.psi, plans)
+    QGYBJ.fft_forward!(S.psi, psi_phys, plans)
 
     # Compute q = -kh² × ψ
     q_local = parent(S.q)
@@ -147,7 +141,7 @@ function main()
     for k_local in axes(B_local, 3)
         k_global = local_range[3][k_local]
         depth = G.Lz - G.z[k_global]  # Distance from surface [m]
-        wave_profile = exp(-(depth^2) / (sigma_z^2))
+        wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         for j_local in axes(B_local, 2)
             j_global = local_range[2][j_local]
             for i_local in axes(B_local, 1)
@@ -182,7 +176,6 @@ function main()
     QGYBJ.run_simulation!(S, G, par, plans;
         output_config = output_config,
         mpi_config = mpi_config,
-        parallel_config = parallel_config,
         workspace = workspace,
         print_progress = is_root
     )
