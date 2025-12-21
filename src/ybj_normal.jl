@@ -355,7 +355,7 @@ integration (as opposed to YBJ+ which uses tridiagonal inversion).
 =#
 
 """
-    compute_A!(A, C, BRk, BIk, sigma, par, G; Lmask=nothing, workspace=nothing)
+    compute_A!(A, C, BRk, BIk, sigma, par, G; Lmask=nothing, workspace=nothing, N2_profile=nothing)
 
 Recover wave amplitude A from envelope B using normal YBJ vertical integration.
 
@@ -403,6 +403,8 @@ C[nz] = 0                      # Neumann BC at top
 - `G::Grid`: Grid structure
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `N2_profile`: Optional N²(z) profile for variable stratification. If not provided,
+  uses `N2_ut(par, G)`.
 
 # Returns
 Tuple (A, C) with recovered amplitude and its vertical derivative.
@@ -417,23 +419,23 @@ which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
                     BRk::AbstractArray{<:Complex,3}, BIk::AbstractArray{<:Complex,3},
                     sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid;
-                    Lmask=nothing, workspace=nothing)
+                    Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace)
+        _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace, N2_profile)
     else
-        _compute_A_direct!(A, C, BRk, BIk, sigma, par, G, Lmask)
+        _compute_A_direct!(A, C, BRk, BIk, sigma, par, G, Lmask, N2_profile)
     end
     return A, C
 end
 
 # Direct computation when z is fully local
-function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask)
+function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    N² = N2_ut(par, G)
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
 
     A_arr = parent(A)
@@ -484,10 +486,10 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask)
 end
 
 # 2D decomposition version with transposes
-function _compute_A_2d!(A, C, BRk, BIk, σ, par, G, Lmask, workspace)
+function _compute_A_2d!(A, C, BRk, BIk, σ, par, G, Lmask, workspace, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    N² = N2_ut(par, G)
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
 
     # Transpose inputs to z-pencil

@@ -262,7 +262,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         rBRk_zero = similar(S.B); fill!(rBRk_zero, 0)
         rBIk_zero = similar(S.B); fill!(rBIk_zero, 0)
         sigma_init = compute_sigma(par, G, nBRk_zero, nBIk_zero, rBRk_zero, rBIk_zero; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma_init, par, G; Lmask=L)
+        compute_A!(S.A, S.C, BRk, BIk, sigma_init, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     #= Step 2: Compute nonlinear tendencies =#
@@ -430,7 +430,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         sumB!(S.B, G; Lmask=L)  # Remove vertical mean
         split_B_to_real_imag!(BRk, BIk, S.B)
         sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma, par, G; Lmask=L)
+        compute_A!(S.A, S.C, BRk, BIk, sigma, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     # Compute velocities from ψ (with dealiasing for omega equation RHS)
@@ -745,7 +745,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         BRk3 = similar(Snp1.B); BIk3 = similar(Snp1.B)
         split_B_to_real_imag!(BRk3, BIk3, Snp1.B)
         sigma2 = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L)
+        compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     # Compute velocities
