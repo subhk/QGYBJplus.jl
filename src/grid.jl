@@ -19,8 +19,8 @@ SPECTRAL REPRESENTATION:
 ------------------------
 Horizontal fields are represented in spectral space using 2D FFTs.
 The wavenumber arrays follow FFTW conventions:
-- kx = [0, 1, 2, ..., nx/2-1, -nx/2, ..., -2, -1] × (2π/Lx)
-- ky = [0, 1, 2, ..., ny/2-1, -ny/2, ..., -2, -1] × (2π/Ly)
+- even n: [0, 1, ..., n/2-1, -n/2, ..., -1] × (2π/L)
+- odd n:  [0, 1, ..., (n-1)/2, -(n-1)/2, ..., -1] × (2π/L)
 
 VERTICAL DISCRETIZATION:
 ------------------------
@@ -146,8 +146,8 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 # Wavenumber Arrays
 Computes kx, ky following FFTW conventions for periodic domain:
 ```
-kx[i] = (i-1)           for i = 1, ..., nx/2
-        (i-1-nx)        for i = nx/2+1, ..., nx
+kx[i] = (i-1)           for i = 1, ..., (nx+1)/2
+        (i-1-nx)        for i = (nx+1)/2+1, ..., nx
 ```
 multiplied by 2π/Lx.
 
@@ -193,8 +193,8 @@ function init_grid(par::QGParams)
     - Then negative: -n/2, -n/2+1, ..., -1
 
     k_physical = k_index × (2π/L) =#
-    kx = T.([i <= nx÷2 ? (2π/par.Lx)*(i-1) : (2π/par.Lx)*(i-1-nx) for i in 1:nx])
-    ky = T.([j <= ny÷2 ? (2π/par.Ly)*(j-1) : (2π/par.Ly)*(j-1-ny) for j in 1:ny])
+    kx = T.([i <= (nx+1)÷2 ? (2π/par.Lx)*(i-1) : (2π/par.Lx)*(i-1-nx) for i in 1:nx])
+    ky = T.([j <= (ny+1)÷2 ? (2π/par.Ly)*(j-1) : (2π/par.Ly)*(j-1-ny) for j in 1:ny])
 
     # Horizontal wavenumber squared: kh² = kx² + ky²
     kh2 = Array{T}(undef, nx, ny)
@@ -225,8 +225,8 @@ function compute_wavenumbers!(G::Grid)
     nx, ny = G.nx, G.ny
 
     # Recompute wavenumbers
-    G.kx .= [i <= nx÷2 ? (2π/G.Lx)*(i-1) : (2π/G.Lx)*(i-1-nx) for i in 1:nx]
-    G.ky .= [j <= ny÷2 ? (2π/G.Ly)*(j-1) : (2π/G.Ly)*(j-1-ny) for j in 1:ny]
+    G.kx .= [i <= (nx+1)÷2 ? (2π/G.Lx)*(i-1) : (2π/G.Lx)*(i-1-nx) for i in 1:nx]
+    G.ky .= [j <= (ny+1)÷2 ? (2π/G.Ly)*(j-1) : (2π/G.Ly)*(j-1-ny) for j in 1:ny]
 
     # Recompute kh²
     @inbounds for j in 1:ny, i in 1:nx

@@ -331,8 +331,8 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig)
     dz = nz > 1 ? diff(z) : T[params.Lz]
 
     # Wavenumbers (global arrays, same on all processes)
-    kx = T.([i <= nx÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
-    ky = T.([j <= ny÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny])
+    kx = T.([i <= (nx+1)÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
+    ky = T.([j <= (ny+1)÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny])
 
     # Create distributed kh2 array in xy-pencil configuration
     kh2_pencil = PencilArray{T}(undef, decomp.pencil_xy)
