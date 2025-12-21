@@ -203,14 +203,14 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     px, py = topo
 
     # Validate topology against grid dimensions
-    if ny < py
-        error("Grid dimension ny=$ny is smaller than process topology py=$py.")
-    end
-    if nz < px
-        error("Grid dimension nz=$nz is smaller than process topology px=$px.")
-    end
     if nx < px
         error("Grid dimension nx=$nx is smaller than process topology px=$px.")
+    end
+    if ny < px
+        error("Grid dimension ny=$ny is smaller than process topology px=$px.")
+    end
+    if ny < py
+        error("Grid dimension ny=$ny is smaller than process topology py=$py.")
     end
     if nz < py
         error("Grid dimension nz=$nz is smaller than process topology py=$py.")
@@ -251,10 +251,10 @@ end
 =#
 
 # Thread-local buffer cache for intermediate transpose arrays
-const _transpose_buffer_cache = Dict{UInt, Any}()
+const _transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
 
 function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
-    key = objectid(decomp)
+    key = (objectid(decomp), T)
     if !haskey(_transpose_buffer_cache, key)
         _transpose_buffer_cache[key] = PencilArray{T}(undef, decomp.pencil_xz)
     end
