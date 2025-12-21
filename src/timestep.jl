@@ -230,6 +230,11 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     rBIk = similar(S.B)    # BI × ζ refraction imaginary part
     dqk  = similar(S.B)    # Vertical diffusion of q
 
+    # For normal YBJ, remove vertical mean of B before any diagnostics/tendencies.
+    if !par.ybj_plus
+        sumB!(S.B, G; Lmask=L)
+    end
+
     #= Split B into real and imaginary parts for computation
     The wave field B is complex; we work with BR = Re(B), BI = Im(B) =#
     BRk = similar(S.B); BIk = similar(S.B)
@@ -251,21 +256,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         invert_B_to_A!(S, G, par, a; workspace=workspace)
     else
         # Normal YBJ: Use sumB!/compute_sigma/compute_A! path
-        # First compute tendencies needed for sigma (will be recomputed below but needed here)
-        BRk_init = similar(S.B); BIk_init = similar(S.B)
-        BRk_init_arr = parent(BRk_init); BIk_init_arr = parent(BIk_init)
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_init_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-            BIk_init_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
-        end
         # For initial step, use zero tendencies for sigma computation
         nBRk_zero = similar(S.B); fill!(nBRk_zero, 0)
         nBIk_zero = similar(S.B); fill!(nBIk_zero, 0)
         rBRk_zero = similar(S.B); fill!(rBRk_zero, 0)
         rBIk_zero = similar(S.B); fill!(rBIk_zero, 0)
-        sumB!(S.B, G; Lmask=L)
         sigma_init = compute_sigma(par, G, nBRk_zero, nBIk_zero, rBRk_zero, rBIk_zero; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk_init, BIk_init, sigma_init, par, G; Lmask=L)
+        compute_A!(S.A, S.C, BRk, BIk, sigma_init, par, G; Lmask=L)
     end
 
     #= Step 2: Compute nonlinear tendencies =#
@@ -388,7 +385,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
     #= Step 5: Wave feedback on mean flow =#
     # q* = q - qʷ where qʷ is the wave feedback term
-    wave_feedback_enabled = !par.no_feedback && !par.no_wave_feedback
+    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     if wave_feedback_enabled
         qwk = similar(S.q)
         qwk_arr = parent(qwk)
@@ -422,20 +419,18 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     end
 
     # Recover A from B
-    if par.ybj_plus
+    if par.passive_scalar
+        fill!(A_arr, zero(eltype(A_arr)))
+        fill!(C_arr, zero(eltype(C_arr)))
+    elseif par.ybj_plus
         # YBJ+: Solve elliptic problem B → A, C (handles 2D decomposition internally)
         invert_B_to_A!(S, G, par, a; workspace=workspace)
     else
         # Normal YBJ: Different procedure
-        BRk2 = similar(S.B); BIk2 = similar(S.B)
-        BRk2_arr = parent(BRk2); BIk2_arr = parent(BIk2)
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk2_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-            BIk2_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
-        end
         sumB!(S.B, G; Lmask=L)  # Remove vertical mean
+        split_B_to_real_imag!(BRk, BIk, S.B)
         sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk2, BIk2, sigma, par, G; Lmask=L)
+        compute_A!(S.A, S.C, BRk, BIk, sigma, par, G; Lmask=L)
     end
 
     # Compute velocities from ψ (with dealiasing for omega equation RHS)
@@ -704,7 +699,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     end
 
     #= Step 7: Wave feedback on mean flow =#
-    wave_feedback_enabled = !par.no_feedback && !par.no_wave_feedback
+    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     if wave_feedback_enabled
         qwk = similar(Snp1.q)
         qwk_arr = parent(qwk)
@@ -738,18 +733,17 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     end
 
     # Recover A from B
-    if par.ybj_plus
+    if par.passive_scalar
+        fill!(parent(Snp1.A), zero(eltype(parent(Snp1.A))))
+        fill!(parent(Snp1.C), zero(eltype(parent(Snp1.C))))
+    elseif par.ybj_plus
         # YBJ+: handles 2D decomposition transposes internally
         invert_B_to_A!(Snp1, G, par, a; workspace=workspace)
     else
         # Normal YBJ path
-        BRk3 = similar(Snp1.B); BIk3 = similar(Snp1.B)
-        BRk3_arr = parent(BRk3); BIk3_arr = parent(BIk3)
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk3_arr[i,j,k] = Complex(real(Bnp1_arr[i,j,k]), 0)
-            BIk3_arr[i,j,k] = Complex(imag(Bnp1_arr[i,j,k]), 0)
-        end
         sumB!(Snp1.B, G; Lmask=L)
+        BRk3 = similar(Snp1.B); BIk3 = similar(Snp1.B)
+        split_B_to_real_imag!(BRk3, BIk3, Snp1.B)
         sigma2 = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
         compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L)
     end
@@ -759,4 +753,3 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     return Snp1
 end
-
