@@ -11,6 +11,7 @@ using ..QGYBJ: plan_transforms!, init_grid, init_state
 using ..QGYBJ: first_projection_step!, leapfrog_step!
 using ..QGYBJ: invert_q_to_psi!, compute_velocities!
 using ..QGYBJ: local_to_global
+using ..QGYBJ: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJ: a_ell_ut, dealias_mask
 using ..QGYBJ: OutputManager, write_state_file, OutputConfig, MPIConfig
 
@@ -403,7 +404,9 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     mean_flow_PE_local = compute_potential_energy(sim.state, sim.grid, sim.plans, sim.N2_profile; a_ell=f_squared)
 
     # Wave energy diagnostics (local, detailed: WKE, WPE, WCE)
-    wave_KE_local, wave_PE_local, wave_CE_local = compute_detailed_wave_energy(sim.state, sim.grid, sim.params)
+    wave_KE_local, wave_PE_local, wave_CE_local = compute_detailed_wave_energy(
+        sim.state, sim.grid, sim.params; N2_profile=sim.N2_profile
+    )
 
     # Reduce across MPI processes if running in parallel
     mean_flow_KE = reduce_if_mpi(mean_flow_KE_local, sim.parallel_config)
@@ -479,7 +482,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
 end
 
 """
-    compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams) -> (WKE, WPE, WCE)
+    compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams; N2_profile=nothing) -> (WKE, WPE, WCE)
 
 Compute detailed wave energy components following the Fortran wave_energy routine:
 - WKE: Wave kinetic energy from |B|²
@@ -488,13 +491,14 @@ Compute detailed wave energy components following the Fortran wave_energy routin
 
 Matches the Fortran `wave_energy` subroutine in QG_YBJp/diagnostics.f90.
 """
-function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams{T}) where T
+function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams{T}; N2_profile=nothing) where T
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
     # Guard against N² ≈ 0 to avoid division by zero
     N2_safe = max(params.N², eps(T))
-    a_ell = params.f₀^2 / N2_safe  # Elliptic coefficient
+    a_ell_const = params.f₀^2 / N2_safe  # Elliptic coefficient (constant stratification)
+    use_profile = N2_profile !== nothing && length(N2_profile) == nz
 
     # Get arrays
     B_arr = parent(state.B)
@@ -512,6 +516,12 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
         WPE_level = T(0)
         WCE_level = T(0)
         WKE_zero = T(0)
+        k_global = use_profile ? local_to_global(k, 3, grid) : k
+        a_ell = a_ell_const
+        if use_profile
+            N2_k = N2_profile[min(k_global, length(N2_profile))]
+            a_ell = params.f₀^2 / max(N2_k, eps(T))
+        end
 
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
@@ -548,7 +558,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             # WCE: (1/8) × (1/a_ell²) × kh⁴ × |A|² (wave correction energy, YBJ+)
             AR = real(A_k)
             AI = imag(A_k)
-            wce_contrib = (T(1)/T(8)) * (T(1)/(a_ell^2 + eps(T))) * kh2^2 * (AR^2 + AI^2)
+            wce_contrib = (T(1)/T(8)) * (T(1) / max(a_ell^2, eps(T))) * kh2^2 * (AR^2 + AI^2)
             WCE_level += wce_contrib
 
             # Track zero mode for dealiasing correction
@@ -649,7 +659,7 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
 end
 
 """
-    compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector; a_ell::Real=1.0)
+    compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector; a_ell::Real=1.0, workspace=nothing)
 
 Compute domain-integrated potential energy following the Fortran diag_zentrum routine.
 
@@ -680,27 +690,34 @@ PE_nondim = compute_potential_energy(state, grid, plans, N2_profile)
 PE_phys = compute_potential_energy(state, grid, plans, N2_profile; a_ell=params.f₀^2)
 ```
 """
-function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0)) where T
+function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0), workspace=nothing) where T
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
     dz = nz > 1 ? (grid.z[2] - grid.z[1]) : T(1.0)
 
-    psi_arr = parent(state.psi)
+    use_transpose = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing &&
+                    hasfield(typeof(grid.decomp), :pencil_z)
+
+    psi_field = state.psi
+    if use_transpose
+        psi_z = workspace !== nothing && hasfield(typeof(workspace), :psi_z) ?
+                workspace.psi_z : allocate_z_pencil(grid, eltype(state.psi))
+        transpose_to_z_pencil!(psi_z, state.psi, grid)
+        psi_field = psi_z
+    end
+
+    psi_arr = parent(psi_field)
     nx_local, ny_local, nz_local = size(psi_arr)
 
     PE = T(0)
-
-    # Check if we need global z-index for 2D decomposition
-    need_z_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing &&
-                    hasfield(typeof(grid.decomp), :pencil_z)
 
     for k in 1:nz_local
         PE_level = T(0)
         PE_zero_mode = T(0)
 
         # Use global z-index for N2_profile lookup in 2D decomposition
-        k_global = need_z_global ? local_to_global(k, 3, grid) : k
+        k_global = use_transpose ? local_to_global_z(k, 3, grid) : local_to_global(k, 3, grid)
 
         # r_1 = 1.0 (Boussinesq), r_2 = N²
         r_1 = T(1.0)
@@ -722,11 +739,13 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
             PE_level += energy_mode
 
             # Track zero mode
-            i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 1, grid) : i_local
+            i_global = use_transpose ?
+                       local_to_global_z(i_local, 1, grid) :
+                       local_to_global(i_local, 1, grid)
 
-            j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 2, grid) : j_local
+            j_global = use_transpose ?
+                       local_to_global_z(j_local, 2, grid) :
+                       local_to_global(j_local, 2, grid)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
