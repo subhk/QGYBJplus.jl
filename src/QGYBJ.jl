@@ -76,7 +76,7 @@ CODE STRUCTURE:
 - netcdf_io.jl        : NetCDF input/output
 - initialization.jl   : Field initialization helpers
 - stratification.jl   : Stratification profiles
-- parallel_interface.jl : Parallel configuration types
+- parallel_mpi.jl      : MPI parallel configuration types
 - model_interface.jl  : High-level simulation API
 - particles/          : Lagrangian particle advection
 - pretty_printing.jl  : Display formatting for structs
@@ -140,7 +140,7 @@ The exports are organized by functionality:
 
 # Public API - Core functionality
 export QGParams, Grid, State,
-       init_grid, init_state, init_pencil_decomposition!,
+       init_grid, init_state,
        plan_transforms!, setup_parallel_transforms, fft_forward!, fft_backward!,
        compute_wavenumbers!,
        # Local-to-global index mapping for PencilArrays compatibility
