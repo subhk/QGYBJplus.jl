@@ -41,8 +41,6 @@ Configuration for background stratification.
 # Supported stratification types
 - `:constant_N` - Uniform buoyancy frequency N throughout the domain (default)
 - `:skewed_gaussian` - Realistic pycnocline with skewed Gaussian N² profile
-
-# Not yet implemented (will error at runtime)
 - `:tanh_profile` - Tanh transition between upper and lower N values
 - `:from_file` - Load N² profile from NetCDF file
 """
@@ -62,8 +60,8 @@ Base.@kwdef struct StratificationConfig{T}
     # For tanh profile
     N_upper::T = 0.01   # Upper ocean N
     N_lower::T = 0.02  # Deep ocean N
-    z_pycno::T = 0.5    # Pycnocline depth (fraction of domain)
-    width::T = 0.1     # Transition width
+    z_pycno::T = 0.5    # Pycnocline depth (same units as domain z)
+    width::T = 0.1     # Transition width (same units as z)
     
     # From file
     filename::Union{String,Nothing} = nothing
@@ -211,11 +209,11 @@ strat = create_stratification_config(:constant_N, N0=2.0)
 # Skewed Gaussian (SUPPORTED - uses default parameters from Fortran code)
 strat = create_stratification_config(:skewed_gaussian)
 
-# Tanh profile (NOT YET IMPLEMENTED - will error at runtime)
+# Tanh profile
 # strat = create_stratification_config(:tanh_profile,
 #     N_upper=0.01, N_lower=0.025, z_pycno=0.6, width=0.05)
 
-# From file (NOT YET IMPLEMENTED - will error at runtime)
+# From file
 # strat = create_stratification_config(:from_file, filename="N2_profile.nc")
 ```
 
@@ -224,6 +222,10 @@ See [`StratificationConfig`](@ref) for details on supported types.
 function create_stratification_config(type::Symbol; kwargs...)
     T = Float64
     return StratificationConfig{T}(; type=type, kwargs...)
+end
+
+function create_stratification_config(; type::Symbol=:constant_N, kwargs...)
+    return create_stratification_config(type; kwargs...)
 end
 
 """
@@ -346,15 +348,10 @@ function validate_config(config::ModelConfig)
     end
 
     # Stratification validation
-    supported_stratifications = (:constant_N, :skewed_gaussian)
+    supported_stratifications = (:constant_N, :skewed_gaussian, :tanh_profile, :from_file)
     if config.stratification.type ∉ supported_stratifications
-        if config.stratification.type in (:tanh_profile, :from_file)
-            push!(errors, "Stratification type :$(config.stratification.type) is not yet implemented in the solver. " *
-                         "Supported types: $(supported_stratifications)")
-        else
-            push!(errors, "Unknown stratification type :$(config.stratification.type). " *
-                         "Supported types: $(supported_stratifications)")
-        end
+        push!(errors, "Unknown stratification type :$(config.stratification.type). " *
+                     "Supported types: $(supported_stratifications)")
     end
 
     # N0 validation for constant_N
