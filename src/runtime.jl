@@ -2,8 +2,6 @@
 Convenience setup helpers to bootstrap a simulation.
 """
 
-using SpecialFunctions: erf
-
 """
     setup_model(par::QGParams) -> (G, S, plans, a)
 
@@ -46,9 +44,10 @@ end
 
 Initialize grid, state, FFT plans, elliptic coefficient, and N² profile.
 
-This function properly handles both constant and non-constant stratification,
-returning the N² profile needed for consistent physics in wave dispersion
-and vertical velocity calculations.
+This function uses `N2_ut` to build the N² profile from `par.stratification`.
+For profile-based stratification types (e.g., `:tanh_profile`, `:from_file`),
+it falls back to constant N² with a warning. Use the high-level stratification
+API or provide an explicit N² profile for those cases.
 
 # Returns
 Tuple of (Grid, State, Plans, a_ell, N2_profile)
@@ -66,49 +65,11 @@ function setup_model_with_profile(par::QGParams)
     plans = plan_transforms!(G)
 
     # Compute N² profile based on stratification type
-    if hasfield(typeof(par), :stratification) && par.stratification == :skewed_gaussian
-        N2_profile = compute_N2_skewed_gaussian(G.z, par)
-        a = a_ell_from_N2(N2_profile, par)
-    else
-        # Constant stratification
-        N2_profile = fill(par.N², G.nz)
-        a = a_ell_ut(par, G)
-    end
+    # Uses the same logic as physics.N2_ut (including warnings for profile-based types).
+    N2_profile = N2_ut(par, G)
+    a = a_ell_from_N2(N2_profile, par)
 
     return G, S, plans, a, N2_profile
 end
 
 """
-    compute_N2_skewed_gaussian(z::Vector, par::QGParams) -> Vector
-
-Compute N² profile using skewed Gaussian parameters from par.
-
-The skewed Gaussian formula is (matching physics.jl):
-    N²(z) = N₁² × exp(-(z-z₀)²/σ²) × [1 + erf(α(z-z₀)/(σ√2))] + N₀²
-
-Note: The parameters z₀_sg, σ_sg are in the SAME units as z (not normalized).
-This matches the physics.jl implementation and Fortran reference.
-Typical values assume z is in meters or nondimensional coordinates where
-z₀ ≈ 6 corresponds to pycnocline depth in a domain of height ~2π.
-"""
-function compute_N2_skewed_gaussian(z::Vector{T}, par::QGParams) where T
-    nz = length(z)
-    N2_profile = Vector{T}(undef, nz)
-
-    # Get skewed Gaussian parameters (Unicode field names from QGParams)
-    N02 = par.N₀²_sg
-    N12 = par.N₁²_sg
-    σ = par.σ_sg
-    z0 = par.z₀_sg
-    α = par.α_sg
-
-    # Compute N² at each level using the SAME formula as physics.jl:
-    # N²(z) = N₁² × exp(-(z-z₀)²/σ²) × [1 + erf(α(z-z₀)/(σ√2))] + N₀²
-    # Note: z is NOT normalized - use raw z values like physics.jl
-    @inbounds for k in 1:nz
-        zk = z[k]
-        N2_profile[k] = N12 * exp(-((zk - z0)^2) / (σ^2)) * (1 + erf(α * (zk - z0) / (σ * sqrt(2.0)))) + N02
-    end
-
-    return N2_profile
-end
