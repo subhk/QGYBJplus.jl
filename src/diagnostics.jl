@@ -53,9 +53,9 @@ module Diagnostics
 
 using ..QGYBJ: Grid
 using ..QGYBJ: plan_transforms!, fft_forward!, fft_backward!
-using ..QGYBJ: local_to_global, get_local_dims
+using ..QGYBJ: local_to_global
 using ..QGYBJ: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJ: local_to_global_z, allocate_z_pencil
+using ..QGYBJ: allocate_z_pencil
 
 # Reference to parent module for physics functions
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -407,9 +407,6 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     vk_arr = parent(vk)
     nx_local, ny_local, nz_local = size(uk_arr)
 
-    # Check if 2D decomposition is active (z may be distributed in xy-pencil)
-    need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
-
     # Get density profile for weighting (ρₛ at staggered points)
     ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
         PARENT.rho_st(par, G)
@@ -421,7 +418,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = need_z_global ? local_to_global_z(k, 3, G) : k
+        k_global = local_to_global(k, 3, G)
         ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         ke_k = 0.0
@@ -496,9 +493,6 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     bk_arr = parent(bk)
     nx_local, ny_local, nz_local = size(bk_arr)
 
-    # Check if 2D decomposition is active (z may be distributed in xy-pencil)
-    need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
-
     # Get density profiles
     ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
         PARENT.rho_ut(par, G)
@@ -522,7 +516,7 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = need_z_global ? local_to_global_z(k, 3, G) : k
+        k_global = local_to_global(k, 3, G)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
@@ -575,10 +569,9 @@ This function returns the vertical average:
 - Monitor wave-mean flow interaction regions
 
 # Algorithm
-1. Separate B into real/imaginary parts
-2. Transform each to physical space
-3. Compute 0.5(BR² + BI²) at each point
-4. Average over vertical levels
+1. Transform B to physical space
+2. Compute 0.5|B|² at each point
+3. Average over vertical levels
 
 # Returns
 2D array (nx_local, ny_local) of vertically-averaged wave energy density.
@@ -588,33 +581,23 @@ In MPI mode with 2D decomposition, this returns LOCAL data only.
 For full domain visualization, gather data to root first.
 """
 function wave_energy_vavg(B, G::Grid, plans)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    nz = G.nz
 
     # Get local dimensions
     B_arr = parent(B)
     nx_local, ny_local, nz_local = size(B_arr)
 
-    # Build BRk, BIk and invert to real
-    BRk = similar(B); BIk = similar(B)
-    BRk_arr = parent(BRk); BIk_arr = parent(BIk)
-
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        BRk_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-        BIk_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
-    end
-
-    BRr = similar(BRk); BIr = similar(BIk)
-    fft_backward!(BRr, BRk, plans)
-    fft_backward!(BIr, BIk, plans)
-
-    BRr_arr = parent(BRr); BIr_arr = parent(BIr)
+    # Invert full complex field to physical space
+    Br = similar(B)
+    fft_backward!(Br, B, plans)
+    Br_arr = parent(Br)
 
     # Accumulate 0.5|B|^2 and average over nz
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
     WE = zeros(Float64, nx_local, ny_local)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        WE[i,j] += 0.5*(real(BRr_arr[i,j,k])^2 + real(BIr_arr[i,j,k])^2)
+        WE[i,j] += 0.5 * abs2(Br_arr[i,j,k])
     end
     WE ./= nz
     return WE
@@ -839,9 +822,6 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     nx_local, ny_local, nz_local = size(BR_arr)
 
-    # Check if 2D decomposition is active (z may be distributed in xy-pencil)
-    need_z_global = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
-
     # Get density profile if available (for variable stratification)
     # r_2 corresponds to rho at staggered points for potential energy
     ρ₂ = if isdefined(PARENT, :rho_st)
@@ -857,7 +837,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = need_z_global ? local_to_global_z(k, 3, G) : k
+        k_global = local_to_global(k, 3, G)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
