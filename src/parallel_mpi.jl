@@ -43,7 +43,7 @@ using PencilFFTs
 
 # Explicit imports from PencilArrays for clarity
 import PencilArrays: Pencil, PencilArray, MPITopology
-import PencilArrays: range_local, range_remote, transpose!, gather
+import PencilArrays: range_local, range_remote, transpose!, gather, pencil
 import PencilFFTs: PencilFFTPlan, allocate_input, allocate_output
 
 # Note: Grid, State, QGParams, Plans are already in scope since we're included in QGYBJplus
