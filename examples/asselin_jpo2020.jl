@@ -52,7 +52,7 @@ const surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
 const U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
-const k_dipole = 2π / Lx
+const k_dipole = sqrt(2) * π / Lx  # κ = √2 π/L per Eq. (2) in Asselin et al. (2020)
 const psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
 
 # Output settings
@@ -101,8 +101,8 @@ function main()
 
     local_range = QGYBJplus.get_local_range_xy(G)
 
-    # Set up dipole: ψ = (U/k) sin(kx) cos(ky), k = 2π/Lx
-    # This creates a barotropic dipole eddy with velocity scale U0_flow
+    # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy), κ = √2 π/L
+    # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
     if is_root; println("\nSetting up dipole..."); end
     psi_phys = similar(S.psi)
     psi_phys_arr = parent(psi_phys)
