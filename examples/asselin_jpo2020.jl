@@ -175,7 +175,7 @@ function main()
         mpi_config = mpi_config,
         workspace = workspace,
         print_progress = is_root,
-        diagnostics_interval = diag_steps
+        diagnostics_interval = 10 #diag_steps
     )
 
     if is_root
