@@ -503,7 +503,9 @@ function plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
         PencilFFTs.Transforms.NoTransform()
     )
 
-    plan = PencilFFTPlan(pencil_xy, transform)
+    # Use permute_dims=Val(false) to keep output dimensions matching input
+    # This ensures pencil_xy arrays can be used directly with the plan
+    plan = PencilFFTPlan(pencil_xy, transform; permute_dims=Val(false))
 
     # Allocate work arrays and get their pencil configurations
     work_in = allocate_input(plan)
