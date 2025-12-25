@@ -245,239 +245,41 @@ end
 ================================================================================
 =#
 
-#=
-================================================================================
-                    MPI-BASED TRANSPOSE OPERATIONS
-================================================================================
-PencilArrays' transpose! requires pencils from the same internal plan.
-We implement our own transposes using MPI.Alltoallv for efficiency.
+# Two-step transpose using PencilArrays' built-in MPI transpose.
+# We keep a cached xz-pencil buffer to satisfy the "one-dimension-at-a-time" rule.
+const _transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
 
-For xy-pencil (x local, y,z distributed) <-> z-pencil (z local, x,y distributed):
-- Uses MPI.Alltoallv for O(N³/P) memory per process
-- Properly handles 2D process topology
-================================================================================
-=#
-
-# Cache for transpose metadata to avoid recomputation
-const _transpose_meta_cache = Dict{UInt, Any}()
-
-"""
-    _compute_transpose_metadata(decomp::PencilDecomp)
-
-Precompute send/recv counts and ranges for Alltoallv transpose operations.
-"""
-function _compute_transpose_metadata(decomp::PencilDecomp)
-    key = objectid(decomp)
-    if haskey(_transpose_meta_cache, key)
-        return _transpose_meta_cache[key]
+function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
+    key = (objectid(decomp), T)
+    if !haskey(_transpose_buffer_cache, key)
+        _transpose_buffer_cache[key] = PencilArray{T}(undef, decomp.pencil_xz)
     end
-
-    pencil_xy = decomp.pencil_xy
-    pencil_z = decomp.pencil_z
-    comm = PencilArrays.get_comm(pencil_xy)
-    nprocs = MPI.Comm_size(comm)
-    nx, ny, nz = decomp.global_dims
-
-    # Get all process ranges for both configurations
-    # For xy-pencil: use range_remote to get each process's portion
-    # For z-pencil: use range_remote to get each process's portion
-    xy_ranges = [range_remote(pencil_xy, p) for p in 1:nprocs]
-    z_ranges = [range_remote(pencil_z, p) for p in 1:nprocs]
-
-    _transpose_meta_cache[key] = (
-        xy_ranges = xy_ranges,
-        z_ranges = z_ranges,
-        nprocs = nprocs,
-        comm = comm
-    )
-    return _transpose_meta_cache[key]
+    return _transpose_buffer_cache[key]::PencilArray{T}
 end
 
 """
     transpose_to_z_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from xy-pencil to z-pencil configuration using MPI.Alltoallv.
-After transpose, z dimension is fully local for vertical operations.
+Transpose data from xy-pencil to z-pencil configuration using two-step transpose.
 """
 function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    meta = _compute_transpose_metadata(decomp)
-    comm = meta.comm
-    nprocs = meta.nprocs
-    myrank = MPI.Comm_rank(comm)
-
-    nx, ny, nz = decomp.global_dims
     T = eltype(src)
-
-    src_range = decomp.local_range_xy  # What I have (xy-pencil)
-    dst_range = decomp.local_range_z   # What I need (z-pencil)
-
-    src_arr = parent(src)
-    dst_arr = parent(dst)
-
-    # Compute send counts: for each destination process, how much of my data do they need?
-    # Process p needs the intersection of my xy-range with their z-range
-    send_counts = zeros(Int, nprocs)
-    send_data = Vector{Vector{T}}(undef, nprocs)
-
-    for p in 1:nprocs
-        z_range_p = meta.z_ranges[p]  # What process p needs (in z-pencil config)
-
-        # Intersection of my src_range with their z_range
-        ix = intersect(src_range[1], z_range_p[1])
-        iy = intersect(src_range[2], z_range_p[2])
-        iz = intersect(src_range[3], z_range_p[3])
-
-        if !isempty(ix) && !isempty(iy) && !isempty(iz)
-            # Convert to local indices in src_arr
-            ix_local = ix .- first(src_range[1]) .+ 1
-            iy_local = iy .- first(src_range[2]) .+ 1
-            iz_local = iz .- first(src_range[3]) .+ 1
-
-            data = src_arr[ix_local, iy_local, iz_local]
-            send_data[p] = vec(data)
-            send_counts[p] = length(send_data[p])
-        else
-            send_data[p] = T[]
-            send_counts[p] = 0
-        end
-    end
-
-    # Exchange counts
-    recv_counts = zeros(Int, nprocs)
-    MPI.Alltoall!(UBuffer(send_counts, 1), UBuffer(recv_counts, 1), comm)
-
-    # Prepare send/recv buffers
-    send_buf = vcat(send_data...)
-    recv_buf = zeros(T, sum(recv_counts))
-
-    # Compute displacements
-    send_displs = cumsum([0; send_counts[1:end-1]])
-    recv_displs = cumsum([0; recv_counts[1:end-1]])
-
-    # Alltoallv
-    MPI.Alltoallv!(VBuffer(send_buf, send_counts, send_displs),
-                   VBuffer(recv_buf, recv_counts, recv_displs), comm)
-
-    # Unpack received data into dst_arr
-    fill!(dst_arr, zero(T))
-    offset = 0
-    for p in 1:nprocs
-        if recv_counts[p] > 0
-            xy_range_p = meta.xy_ranges[p]  # What process p sent (their xy-pencil range)
-
-            # Intersection of their xy-range with my dst_range
-            ix = intersect(xy_range_p[1], dst_range[1])
-            iy = intersect(xy_range_p[2], dst_range[2])
-            iz = intersect(xy_range_p[3], dst_range[3])
-
-            if !isempty(ix) && !isempty(iy) && !isempty(iz)
-                # Convert to local indices in dst_arr
-                ix_local = ix .- first(dst_range[1]) .+ 1
-                iy_local = iy .- first(dst_range[2]) .+ 1
-                iz_local = iz .- first(dst_range[3]) .+ 1
-
-                # Reshape and assign
-                chunk = recv_buf[offset+1 : offset+recv_counts[p]]
-                dst_arr[ix_local, iy_local, iz_local] .= reshape(chunk, length(ix_local), length(iy_local), length(iz_local))
-            end
-        end
-        offset += recv_counts[p]
-    end
-
+    buffer_xz = _get_transpose_buffer(decomp, T)
+    transpose!(buffer_xz, src)
+    transpose!(dst, buffer_xz)
     return dst
 end
 
 """
     transpose_to_xy_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from z-pencil to xy-pencil configuration using MPI.Alltoallv.
-After transpose, x dimension is fully local for horizontal FFT operations.
+Transpose data from z-pencil to xy-pencil configuration using two-step transpose.
 """
 function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    meta = _compute_transpose_metadata(decomp)
-    comm = meta.comm
-    nprocs = meta.nprocs
-    myrank = MPI.Comm_rank(comm)
-
-    nx, ny, nz = decomp.global_dims
     T = eltype(src)
-
-    src_range = decomp.local_range_z   # What I have (z-pencil)
-    dst_range = decomp.local_range_xy  # What I need (xy-pencil)
-
-    src_arr = parent(src)
-    dst_arr = parent(dst)
-
-    # Compute send counts: for each destination process, how much of my data do they need?
-    # Process p needs the intersection of my z-range with their xy-range
-    send_counts = zeros(Int, nprocs)
-    send_data = Vector{Vector{T}}(undef, nprocs)
-
-    for p in 1:nprocs
-        xy_range_p = meta.xy_ranges[p]  # What process p needs (in xy-pencil config)
-
-        # Intersection of my src_range with their xy_range
-        ix = intersect(src_range[1], xy_range_p[1])
-        iy = intersect(src_range[2], xy_range_p[2])
-        iz = intersect(src_range[3], xy_range_p[3])
-
-        if !isempty(ix) && !isempty(iy) && !isempty(iz)
-            # Convert to local indices in src_arr
-            ix_local = ix .- first(src_range[1]) .+ 1
-            iy_local = iy .- first(src_range[2]) .+ 1
-            iz_local = iz .- first(src_range[3]) .+ 1
-
-            data = src_arr[ix_local, iy_local, iz_local]
-            send_data[p] = vec(data)
-            send_counts[p] = length(send_data[p])
-        else
-            send_data[p] = T[]
-            send_counts[p] = 0
-        end
-    end
-
-    # Exchange counts
-    recv_counts = zeros(Int, nprocs)
-    MPI.Alltoall!(UBuffer(send_counts, 1), UBuffer(recv_counts, 1), comm)
-
-    # Prepare send/recv buffers
-    send_buf = vcat(send_data...)
-    recv_buf = zeros(T, sum(recv_counts))
-
-    # Compute displacements
-    send_displs = cumsum([0; send_counts[1:end-1]])
-    recv_displs = cumsum([0; recv_counts[1:end-1]])
-
-    # Alltoallv
-    MPI.Alltoallv!(VBuffer(send_buf, send_counts, send_displs),
-                   VBuffer(recv_buf, recv_counts, recv_displs), comm)
-
-    # Unpack received data into dst_arr
-    fill!(dst_arr, zero(T))
-    offset = 0
-    for p in 1:nprocs
-        if recv_counts[p] > 0
-            z_range_p = meta.z_ranges[p]  # What process p sent (their z-pencil range)
-
-            # Intersection of their z-range with my dst_range
-            ix = intersect(z_range_p[1], dst_range[1])
-            iy = intersect(z_range_p[2], dst_range[2])
-            iz = intersect(z_range_p[3], dst_range[3])
-
-            if !isempty(ix) && !isempty(iy) && !isempty(iz)
-                # Convert to local indices in dst_arr
-                ix_local = ix .- first(dst_range[1]) .+ 1
-                iy_local = iy .- first(dst_range[2]) .+ 1
-                iz_local = iz .- first(dst_range[3]) .+ 1
-
-                # Reshape and assign
-                chunk = recv_buf[offset+1 : offset+recv_counts[p]]
-                dst_arr[ix_local, iy_local, iz_local] .= reshape(chunk, length(ix_local), length(iy_local), length(iz_local))
-            end
-        end
-        offset += recv_counts[p]
-    end
-
+    buffer_xz = _get_transpose_buffer(decomp, T)
+    transpose!(buffer_xz, src)
+    transpose!(dst, buffer_xz)
     return dst
 end
 
