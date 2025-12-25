@@ -548,14 +548,20 @@ function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         # Direct transform - pencils are compatible, zero-copy
         mul!(dst, plans.forward, src)
     else
-        # Pencils have different MPI decompositions
-        # PencilFFTs outputs a z-pencil; transpose back to xy-pencil for model consistency.
-        decomp = plans.decomp
-        decomp === nothing && error("MPIPlans missing decomposition for transposes.")
-
+        # Pencils have different MPI decompositions (FFT plan vs model pencils)
+        # Cannot use transpose! between different pencil chains.
+        # Use work arrays as intermediates and copy raw data.
+        work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
-        mul!(work_out, plans.forward, src)
-        transpose_to_xy_pencil!(dst, work_out, decomp)
+
+        # Copy src data to FFT input work array
+        copyto!(parent(work_in), parent(src))
+
+        # Execute FFT
+        mul!(work_out, plans.forward, work_in)
+
+        # Copy result back to dst (same local size with permute_dims=false)
+        copyto!(parent(dst), parent(work_out))
     end
     return dst
 end
@@ -565,15 +571,20 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         # Direct transform - pencils are compatible, zero-copy
         ldiv!(dst, plans.forward, src)
     else
-        # Pencils have different MPI decompositions
-        # Transpose spectral data to z-pencil before inverse FFT.
-        decomp = plans.decomp
-        decomp === nothing && error("MPIPlans missing decomposition for transposes.")
+        # Pencils have different MPI decompositions (FFT plan vs model pencils)
+        # Cannot use transpose! between different pencil chains.
+        # Use work arrays as intermediates and copy raw data.
+        work_in = plans.work_arrays.input
+        work_out = plans.work_arrays.output
 
-        work_out = plans.work_arrays.output # z-pencil
+        # Copy src data to FFT output work array
+        copyto!(parent(work_out), parent(src))
 
-        transpose_to_z_pencil!(work_out, src, decomp)
-        ldiv!(dst, plans.forward, work_out)
+        # Execute inverse FFT
+        ldiv!(work_in, plans.forward, work_out)
+
+        # Copy result back to dst
+        copyto!(parent(dst), parent(work_in))
     end
     return dst
 end
