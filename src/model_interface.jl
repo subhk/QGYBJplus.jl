@@ -284,7 +284,8 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     # We allocate working states for the time integration
 
     # Save initial state as Snm1 (time 0)
-    Snm1 = deepcopy(sim.state)
+    # Use copy_state instead of deepcopy to preserve PencilArray topology
+    Snm1 = copy_state(sim.state)
 
     # First projection step (Forward Euler to initialize leapfrog)
     # Advances sim.state from time 0 to time dt
@@ -296,9 +297,9 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     sim.current_time = sim.params.dt
 
     # Sn = state at time dt (after first projection step)
-    Sn = deepcopy(sim.state)
+    Sn = copy_state(sim.state)
     # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
-    Snp1 = deepcopy(sim.state)
+    Snp1 = copy_state(sim.state)
 
     # Output after first step if needed
     check_and_output!(sim)
@@ -1032,16 +1033,17 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
     # Setup leapfrog states - save initial state BEFORE advancing
     # Snm1 = state at time 0 (initial condition)
-    Snm1 = deepcopy(S)
+    # Use copy_state instead of deepcopy to preserve PencilArray topology
+    Snm1 = copy_state(S)
 
     # First projection step (Forward Euler to initialize leapfrog)
     # Advances S from time 0 to time dt
     first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
     # Sn = state at time dt (after first projection step)
-    Sn = deepcopy(S)
+    Sn = copy_state(S)
     # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
-    Snp1 = deepcopy(S)
+    Snp1 = copy_state(S)
 
     # Determine progress interval
     nt = par.nt
