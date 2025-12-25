@@ -220,8 +220,8 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     # Create pencil configurations as a LINKED CHAIN for transpose compatibility
     # PencilArrays requires pencils to be linked (parent-child) for transpose! to work
     pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (2, 3))  # x local (base pencil)
-    pencil_xz = Pencil(pencil_xy, (1, 3))  # y local (linked to xy for transpose)
-    pencil_z = Pencil(pencil_xz, (1, 2))   # z local (linked to xz for transpose)
+    pencil_xz = Pencil(pencil_xy; decomp_dims=(1, 3))   # y local (linked to xy for transpose)
+    pencil_z = Pencil(pencil_xz; decomp_dims=(1, 2))    # z local (linked to xz for transpose)
 
     # Get local index ranges
     local_range_xy = range_local(pencil_xy)
