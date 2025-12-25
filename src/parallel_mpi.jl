@@ -250,53 +250,139 @@ end
                     MPI-BASED TRANSPOSE OPERATIONS
 ================================================================================
 PencilArrays' transpose! requires pencils from the same internal plan.
-We implement our own transposes using MPI collective operations.
+We implement our own transposes using MPI.Alltoallv for efficiency.
 
 For xy-pencil (x local, y,z distributed) <-> z-pencil (z local, x,y distributed):
-- We use MPI_Alltoallv to redistribute data across processes
+- Uses MPI.Alltoallv for O(N³/P) memory per process
+- Properly handles 2D process topology
 ================================================================================
 =#
+
+# Cache for transpose metadata to avoid recomputation
+const _transpose_meta_cache = Dict{UInt, Any}()
+
+"""
+    _compute_transpose_metadata(decomp::PencilDecomp)
+
+Precompute send/recv counts and ranges for Alltoallv transpose operations.
+"""
+function _compute_transpose_metadata(decomp::PencilDecomp)
+    key = objectid(decomp)
+    if haskey(_transpose_meta_cache, key)
+        return _transpose_meta_cache[key]
+    end
+
+    pencil_xy = decomp.pencil_xy
+    pencil_z = decomp.pencil_z
+    comm = PencilArrays.get_comm(pencil_xy)
+    nprocs = MPI.Comm_size(comm)
+    nx, ny, nz = decomp.global_dims
+
+    # Get all process ranges for both configurations
+    # For xy-pencil: use range_remote to get each process's portion
+    # For z-pencil: use range_remote to get each process's portion
+    xy_ranges = [range_remote(pencil_xy, p) for p in 1:nprocs]
+    z_ranges = [range_remote(pencil_z, p) for p in 1:nprocs]
+
+    _transpose_meta_cache[key] = (
+        xy_ranges = xy_ranges,
+        z_ranges = z_ranges,
+        nprocs = nprocs,
+        comm = comm
+    )
+    return _transpose_meta_cache[key]
+end
 
 """
     transpose_to_z_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from xy-pencil to z-pencil configuration using MPI_Alltoallv.
+Transpose data from xy-pencil to z-pencil configuration using MPI.Alltoallv.
 After transpose, z dimension is fully local for vertical operations.
 """
 function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    # Get pencil configurations
-    pencil_xy = decomp.pencil_xy
-    pencil_z = decomp.pencil_z
-
-    # Get MPI communicator and topology info
-    comm = PencilArrays.get_comm(pencil_xy)
-    nprocs = MPI.Comm_size(comm)
+    meta = _compute_transpose_metadata(decomp)
+    comm = meta.comm
+    nprocs = meta.nprocs
     myrank = MPI.Comm_rank(comm)
 
     nx, ny, nz = decomp.global_dims
     T = eltype(src)
 
-    # Source: xy-pencil (x local, y,z distributed)
-    src_range = decomp.local_range_xy
-    src_arr = parent(src)
+    src_range = decomp.local_range_xy  # What I have (xy-pencil)
+    dst_range = decomp.local_range_z   # What I need (z-pencil)
 
-    # Destination: z-pencil (z local, x,y distributed)
-    dst_range = decomp.local_range_z
+    src_arr = parent(src)
     dst_arr = parent(dst)
 
-    # For small problems, use gather-scatter approach (simple and robust)
-    # Gather full array to all processes, then extract local z-portion
-    global_arr = zeros(T, nx, ny, nz)
+    # Compute send counts: for each destination process, how much of my data do they need?
+    # Process p needs the intersection of my xy-range with their z-range
+    send_counts = zeros(Int, nprocs)
+    send_data = Vector{Vector{T}}(undef, nprocs)
 
-    # Each process contributes its local portion
-    local_arr = zeros(T, nx, ny, nz)
-    local_arr[src_range[1], src_range[2], src_range[3]] .= src_arr
+    for p in 1:nprocs
+        z_range_p = meta.z_ranges[p]  # What process p needs (in z-pencil config)
 
-    # Reduce to get full array on all processes
-    MPI.Allreduce!(local_arr, global_arr, MPI.SUM, comm)
+        # Intersection of my src_range with their z_range
+        ix = intersect(src_range[1], z_range_p[1])
+        iy = intersect(src_range[2], z_range_p[2])
+        iz = intersect(src_range[3], z_range_p[3])
 
-    # Extract z-local portion for this process
-    dst_arr .= global_arr[dst_range[1], dst_range[2], dst_range[3]]
+        if !isempty(ix) && !isempty(iy) && !isempty(iz)
+            # Convert to local indices in src_arr
+            ix_local = ix .- first(src_range[1]) .+ 1
+            iy_local = iy .- first(src_range[2]) .+ 1
+            iz_local = iz .- first(src_range[3]) .+ 1
+
+            data = src_arr[ix_local, iy_local, iz_local]
+            send_data[p] = vec(data)
+            send_counts[p] = length(send_data[p])
+        else
+            send_data[p] = T[]
+            send_counts[p] = 0
+        end
+    end
+
+    # Exchange counts
+    recv_counts = zeros(Int, nprocs)
+    MPI.Alltoall!(UBuffer(send_counts, 1), UBuffer(recv_counts, 1), comm)
+
+    # Prepare send/recv buffers
+    send_buf = vcat(send_data...)
+    recv_buf = zeros(T, sum(recv_counts))
+
+    # Compute displacements
+    send_displs = cumsum([0; send_counts[1:end-1]])
+    recv_displs = cumsum([0; recv_counts[1:end-1]])
+
+    # Alltoallv
+    MPI.Alltoallv!(VBuffer(send_buf, send_counts, send_displs),
+                   VBuffer(recv_buf, recv_counts, recv_displs), comm)
+
+    # Unpack received data into dst_arr
+    fill!(dst_arr, zero(T))
+    offset = 0
+    for p in 1:nprocs
+        if recv_counts[p] > 0
+            xy_range_p = meta.xy_ranges[p]  # What process p sent (their xy-pencil range)
+
+            # Intersection of their xy-range with my dst_range
+            ix = intersect(xy_range_p[1], dst_range[1])
+            iy = intersect(xy_range_p[2], dst_range[2])
+            iz = intersect(xy_range_p[3], dst_range[3])
+
+            if !isempty(ix) && !isempty(iy) && !isempty(iz)
+                # Convert to local indices in dst_arr
+                ix_local = ix .- first(dst_range[1]) .+ 1
+                iy_local = iy .- first(dst_range[2]) .+ 1
+                iz_local = iz .- first(dst_range[3]) .+ 1
+
+                # Reshape and assign
+                chunk = recv_buf[offset+1 : offset+recv_counts[p]]
+                dst_arr[ix_local, iy_local, iz_local] .= reshape(chunk, length(ix_local), length(iy_local), length(iz_local))
+            end
+        end
+        offset += recv_counts[p]
+    end
 
     return dst
 end
@@ -304,43 +390,93 @@ end
 """
     transpose_to_xy_pencil!(dst, src, decomp::PencilDecomp)
 
-Transpose data from z-pencil to xy-pencil configuration using MPI_Alltoallv.
+Transpose data from z-pencil to xy-pencil configuration using MPI.Alltoallv.
 After transpose, x dimension is fully local for horizontal FFT operations.
 """
 function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
-    # Get pencil configurations
-    pencil_xy = decomp.pencil_xy
-    pencil_z = decomp.pencil_z
-
-    # Get MPI communicator and topology info
-    comm = PencilArrays.get_comm(pencil_xy)
-    nprocs = MPI.Comm_size(comm)
+    meta = _compute_transpose_metadata(decomp)
+    comm = meta.comm
+    nprocs = meta.nprocs
     myrank = MPI.Comm_rank(comm)
 
     nx, ny, nz = decomp.global_dims
     T = eltype(src)
 
-    # Source: z-pencil (z local, x,y distributed)
-    src_range = decomp.local_range_z
-    src_arr = parent(src)
+    src_range = decomp.local_range_z   # What I have (z-pencil)
+    dst_range = decomp.local_range_xy  # What I need (xy-pencil)
 
-    # Destination: xy-pencil (x local, y,z distributed)
-    dst_range = decomp.local_range_xy
+    src_arr = parent(src)
     dst_arr = parent(dst)
 
-    # For small problems, use gather-scatter approach (simple and robust)
-    # Gather full array to all processes, then extract local xy-portion
-    global_arr = zeros(T, nx, ny, nz)
+    # Compute send counts: for each destination process, how much of my data do they need?
+    # Process p needs the intersection of my z-range with their xy-range
+    send_counts = zeros(Int, nprocs)
+    send_data = Vector{Vector{T}}(undef, nprocs)
 
-    # Each process contributes its local z-portion
-    local_arr = zeros(T, nx, ny, nz)
-    local_arr[src_range[1], src_range[2], src_range[3]] .= src_arr
+    for p in 1:nprocs
+        xy_range_p = meta.xy_ranges[p]  # What process p needs (in xy-pencil config)
 
-    # Reduce to get full array on all processes
-    MPI.Allreduce!(local_arr, global_arr, MPI.SUM, comm)
+        # Intersection of my src_range with their xy_range
+        ix = intersect(src_range[1], xy_range_p[1])
+        iy = intersect(src_range[2], xy_range_p[2])
+        iz = intersect(src_range[3], xy_range_p[3])
 
-    # Extract xy-local portion for this process
-    dst_arr .= global_arr[dst_range[1], dst_range[2], dst_range[3]]
+        if !isempty(ix) && !isempty(iy) && !isempty(iz)
+            # Convert to local indices in src_arr
+            ix_local = ix .- first(src_range[1]) .+ 1
+            iy_local = iy .- first(src_range[2]) .+ 1
+            iz_local = iz .- first(src_range[3]) .+ 1
+
+            data = src_arr[ix_local, iy_local, iz_local]
+            send_data[p] = vec(data)
+            send_counts[p] = length(send_data[p])
+        else
+            send_data[p] = T[]
+            send_counts[p] = 0
+        end
+    end
+
+    # Exchange counts
+    recv_counts = zeros(Int, nprocs)
+    MPI.Alltoall!(UBuffer(send_counts, 1), UBuffer(recv_counts, 1), comm)
+
+    # Prepare send/recv buffers
+    send_buf = vcat(send_data...)
+    recv_buf = zeros(T, sum(recv_counts))
+
+    # Compute displacements
+    send_displs = cumsum([0; send_counts[1:end-1]])
+    recv_displs = cumsum([0; recv_counts[1:end-1]])
+
+    # Alltoallv
+    MPI.Alltoallv!(VBuffer(send_buf, send_counts, send_displs),
+                   VBuffer(recv_buf, recv_counts, recv_displs), comm)
+
+    # Unpack received data into dst_arr
+    fill!(dst_arr, zero(T))
+    offset = 0
+    for p in 1:nprocs
+        if recv_counts[p] > 0
+            z_range_p = meta.z_ranges[p]  # What process p sent (their z-pencil range)
+
+            # Intersection of their z-range with my dst_range
+            ix = intersect(z_range_p[1], dst_range[1])
+            iy = intersect(z_range_p[2], dst_range[2])
+            iz = intersect(z_range_p[3], dst_range[3])
+
+            if !isempty(ix) && !isempty(iy) && !isempty(iz)
+                # Convert to local indices in dst_arr
+                ix_local = ix .- first(dst_range[1]) .+ 1
+                iy_local = iy .- first(dst_range[2]) .+ 1
+                iz_local = iz .- first(dst_range[3]) .+ 1
+
+                # Reshape and assign
+                chunk = recv_buf[offset+1 : offset+recv_counts[p]]
+                dst_arr[ix_local, iy_local, iz_local] .= reshape(chunk, length(ix_local), length(iy_local), length(iz_local))
+            end
+        end
+        offset += recv_counts[p]
+    end
 
     return dst
 end
