@@ -52,7 +52,7 @@ const surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
 const U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
-const k_dipole = sqrt(2) * π / Lx  # κ = 2π/(√2 L): rotated (x,y) coords for 70 km periodic domain
+const k_dipole = 2π / Lx  # κ = 2π/(70 km) per Asselin et al. (2020)
 const psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
 
 # Output settings
