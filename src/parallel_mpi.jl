@@ -259,6 +259,10 @@ function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
 end
 
 function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
+    if PencilArrays.topology(plans.input_pencil) !== PencilArrays.topology(plans.output_pencil)
+        error("PencilFFTs plan input/output topologies differ. " *
+              "Ensure plans and arrays are created from the same MPI grid/topology.")
+    end
     key = (objectid(plans), T)
     if !haskey(_plan_transpose_buffer_cache, key)
         pencil_xz = Pencil(plans.input_pencil; decomp_dims=(1, 3))
