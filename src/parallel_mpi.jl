@@ -203,14 +203,8 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     px, py = topo
 
     # Validate topology against grid dimensions
-    if nx < px
-        error("Grid dimension nx=$nx is smaller than process topology px=$px.")
-    end
     if ny < px
         error("Grid dimension ny=$ny is smaller than process topology px=$px.")
-    end
-    if ny < py
-        error("Grid dimension ny=$ny is smaller than process topology py=$py.")
     end
     if nz < py
         error("Grid dimension nz=$nz is smaller than process topology py=$py.")
@@ -223,10 +217,11 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     # Create 2D MPI topology
     mpi_topo = MPITopology(mpi_config.comm, topo)
 
-    # Create pencil configurations
-    pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (2, 3))  # x local
-    pencil_xz = Pencil(mpi_topo, (nx, ny, nz), (1, 3))  # y local (intermediate)
-    pencil_z = Pencil(mpi_topo, (nx, ny, nz), (1, 2))   # z local
+    # Create pencil configurations as a LINKED CHAIN for transpose compatibility
+    # PencilArrays requires pencils to be linked (parent-child) for transpose! to work
+    pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (2, 3))  # x local (base pencil)
+    pencil_xz = Pencil(pencil_xy, (1, 3))  # y local (linked to xy for transpose)
+    pencil_z = Pencil(pencil_xz, (1, 2))   # z local (linked to xz for transpose)
 
     # Get local index ranges
     local_range_xy = range_local(pencil_xy)
@@ -404,6 +399,7 @@ struct MPIPlans{P, PI, PO}
     output_pencil::PO
     work_arrays::NamedTuple
     pencils_match::Bool
+    decomp::Union{PencilDecomp, Nothing}
 end
 
 """
@@ -517,13 +513,15 @@ function plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
     pencils_match = _check_pencil_compatibility(input_pencil, output_pencil, pencil_xy)
 
     if !pencils_match && mpi_config.is_root
-        @warn "PencilFFTs input/output pencils have different decompositions."
+        @warn "PencilFFTs input/output pencils have different decompositions. " *
+              "FFT wrappers will transpose back to xy-pencil for consistency."
     end
 
     return MPIPlans(
         plan, input_pencil, output_pencil,
         (input=work_in, output=work_out),
-        pencils_match
+        pencils_match,
+        decomp
     )
 end
 
@@ -551,19 +549,13 @@ function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         mul!(dst, plans.forward, src)
     else
         # Pencils have different MPI decompositions
-        # Use work arrays as intermediates
-        work_in = plans.work_arrays.input
+        # PencilFFTs outputs a z-pencil; transpose back to xy-pencil for model consistency.
+        decomp = plans.decomp
+        decomp === nothing && error("MPIPlans missing decomposition for transposes.")
+
         work_out = plans.work_arrays.output
-
-        # Copy src to input work array (should have compatible pencil)
-        copyto!(parent(work_in), parent(src))
-
-        # Execute FFT
-        mul!(work_out, plans.forward, work_in)
-
-        # Copy result - this works if dst has the same local size as work_out
-        # With permute_dims=false and same global size, local sizes should match
-        copyto!(parent(dst), parent(work_out))
+        mul!(work_out, plans.forward, src)
+        transpose_to_xy_pencil!(dst, work_out, decomp)
     end
     return dst
 end
@@ -574,17 +566,14 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         ldiv!(dst, plans.forward, src)
     else
         # Pencils have different MPI decompositions
-        work_in = plans.work_arrays.input
-        work_out = plans.work_arrays.output
+        # Transpose spectral data to z-pencil before inverse FFT.
+        decomp = plans.decomp
+        decomp === nothing && error("MPIPlans missing decomposition for transposes.")
 
-        # Copy src to output work array
-        copyto!(parent(work_out), parent(src))
+        work_out = plans.work_arrays.output # z-pencil
 
-        # Execute inverse FFT
-        ldiv!(work_in, plans.forward, work_out)
-
-        # Copy result to dst
-        copyto!(parent(dst), parent(work_in))
+        transpose_to_z_pencil!(work_out, src, decomp)
+        ldiv!(dst, plans.forward, work_out)
     end
     return dst
 end
@@ -686,7 +675,6 @@ function scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     decomp = grid.decomp
     pencil_xy = decomp.pencil_xy
     local_range = decomp.local_range_xy
-    topo = mpi_config.topology
 
     T = mpi_config.is_root ? eltype(arr) : ComplexF64
     T = MPI.bcast(T, 0, mpi_config.comm)
@@ -695,14 +683,16 @@ function scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     parent_arr = parent(distributed)
 
     if mpi_config.is_root
-        for rank in 0:(mpi_config.nprocs - 1)
-            coord_x = rank % topo[1]
-            coord_y = rank ÷ topo[1]
-            linear_idx = coord_x + coord_y * topo[1] + 1
-            rank_range = range_remote(pencil_xy, linear_idx)
+        cart_comm = PencilArrays.get_comm(pencil_xy)
+        topo = PencilArrays.topology(pencil_xy)
+        for coords in CartesianIndices(topo)
+            coords_tuple = Tuple(coords)
+            coords_zero = collect(coords_tuple .- 1)
+            rank = MPI.Cart_rank(cart_comm, coords_zero)
+            rank_range = range_remote(pencil_xy, coords_tuple)
             portion = arr[rank_range[1], rank_range[2], rank_range[3]]
 
-            if rank == 0
+            if rank == mpi_config.rank
                 parent_arr .= portion
             else
                 MPI.Send(Array(portion), rank, 0, mpi_config.comm)
