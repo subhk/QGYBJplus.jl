@@ -93,25 +93,29 @@ function main()
         no_wave_feedback = true
     )
 
-    # Initialize distributed grid and state
+    # Initialize distributed grid, plans, and state
+    # IMPORTANT: Create plans BEFORE state for efficient FFT pencil allocation
     G = QGYBJplus.init_mpi_grid(par, mpi_config)
-    S = QGYBJplus.init_mpi_state(G, mpi_config)
-    workspace = QGYBJplus.init_mpi_workspace(G, mpi_config)
     plans = QGYBJplus.plan_mpi_transforms(G, mpi_config)
+    S = QGYBJplus.init_mpi_state(G, plans, mpi_config)  # Uses FFT pencils for zero-copy transforms
+    workspace = QGYBJplus.init_mpi_workspace(G, mpi_config)
 
-    local_range = QGYBJplus.get_local_range_xy(G)
+    # Get local ranges for physical and spectral space
+    local_range_phys = QGYBJplus.get_local_range_physical(plans)
+    local_range_spec = QGYBJplus.get_local_range_spectral(plans)
 
     # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy), κ = √2 π/L
     # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
     if is_root; println("\nSetting up dipole..."); end
-    psi_phys = similar(S.psi)
+    # Use plans.work_arrays.input for physical space (correct pencil for FFT input)
+    psi_phys = plans.work_arrays.input
     psi_phys_arr = parent(psi_phys)
     for k_local in axes(psi_phys_arr, 3)
         for j_local in axes(psi_phys_arr, 2)
-            j_global = local_range[2][j_local]
+            j_global = local_range_phys[2][j_local]
             y = (j_global - 1) * G.dy  # Physical y coordinate [m]
             for i_local in axes(psi_phys_arr, 1)
-                i_global = local_range[1][i_local]
+                i_global = local_range_phys[1][i_local]
                 x = (i_global - 1) * G.dx  # Physical x coordinate [m]
                 # Dimensional streamfunction [m²/s]
                 psi_phys_arr[i_local, j_local, k_local] = complex(psi0 * sin(k_dipole * x) * cos(k_dipole * y))
@@ -120,14 +124,14 @@ function main()
     end
     QGYBJplus.fft_forward!(S.psi, psi_phys, plans)
 
-    # Compute q = -kh² × ψ
+    # Compute q = -kh² × ψ (spectral space operation)
     q_local = parent(S.q)
     psi_local = parent(S.psi)
     for k_local in axes(q_local, 3)
         for j_local in axes(q_local, 2)
-            j_global = local_range[2][j_local]
+            j_global = local_range_spec[2][j_local]
             for i_local in axes(q_local, 1)
-                i_global = local_range[1][i_local]
+                i_global = local_range_spec[1][i_local]
                 kh2 = G.kx[i_global]^2 + G.ky[j_global]^2
                 q_local[i_local, j_local, k_local] = -kh2 * psi_local[i_local, j_local, k_local]
             end
@@ -139,13 +143,13 @@ function main()
     if is_root; println("Setting up waves..."); end
     B_local = parent(S.B)
     for k_local in axes(B_local, 3)
-        k_global = local_range[3][k_local]
+        k_global = local_range_spec[3][k_local]
         depth = G.Lz - G.z[k_global]  # Distance from surface [m]
         wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         for j_local in axes(B_local, 2)
-            j_global = local_range[2][j_local]
+            j_global = local_range_spec[2][j_local]
             for i_local in axes(B_local, 1)
-                i_global = local_range[1][i_local]
+                i_global = local_range_spec[1][i_local]
                 if i_global == 1 && j_global == 1
                     # B in spectral space: k=0 mode scaled by (nx*ny) for FFT normalization
                     B_local[i_local, j_local, k_local] = u0_wave * wave_profile * (nx * ny)

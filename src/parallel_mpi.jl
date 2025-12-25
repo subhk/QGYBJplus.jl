@@ -391,9 +391,66 @@ struct MPIWorkspace{T, PA}
 end
 
 """
+    MPIPlans
+
+FFT plans for MPI-parallel execution using PencilFFTs.
+
+This struct is defined here (before init_mpi_state) so it can be used as a type annotation.
+The plan creation function `plan_mpi_transforms` is defined later in this file.
+"""
+struct MPIPlans{P, PI, PO}
+    forward::P
+    input_pencil::PI
+    output_pencil::PO
+    work_arrays::NamedTuple
+    pencils_match::Bool
+end
+
+"""
+    init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64) -> State
+
+Initialize a State with MPI-distributed PencilArrays using FFT-compatible pencils.
+
+This is the **recommended** initialization for MPI simulations. It allocates:
+- Spectral arrays (q, psi, B, A, C) using the FFT output pencil
+- Physical arrays (u, v, w) using the FFT input pencil
+
+This ensures zero-copy FFT operations for maximum efficiency.
+
+# Initialization Order
+The correct order for MPI initialization is:
+1. `grid = init_mpi_grid(par, mpi_config)`
+2. `plans = plan_mpi_transforms(grid, mpi_config)`
+3. `state = init_mpi_state(grid, plans, mpi_config)`  # Uses plans for correct pencils
+"""
+function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64)
+    # Use FFT plan pencils for efficient transforms (no extra copies)
+    input_pencil = plans.input_pencil    # For physical space arrays
+    output_pencil = plans.output_pencil  # For spectral space arrays
+
+    # Allocate spectral (complex) fields using output pencil
+    q   = PencilArray{Complex{T}}(undef, output_pencil); fill!(q, 0)
+    psi = PencilArray{Complex{T}}(undef, output_pencil); fill!(psi, 0)
+    A   = PencilArray{Complex{T}}(undef, output_pencil); fill!(A, 0)
+    B   = PencilArray{Complex{T}}(undef, output_pencil); fill!(B, 0)
+    C   = PencilArray{Complex{T}}(undef, output_pencil); fill!(C, 0)
+
+    # Allocate real-space (real) fields using input pencil
+    u = PencilArray{T}(undef, input_pencil); fill!(u, 0)
+    v = PencilArray{T}(undef, input_pencil); fill!(v, 0)
+    w = PencilArray{T}(undef, input_pencil); fill!(w, 0)
+
+    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+end
+
+"""
     init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64) -> State
 
 Initialize a State with MPI-distributed PencilArrays in xy-pencil configuration.
+
+**Note**: This method uses the grid's pencil_xy for all arrays. If FFT plan pencils
+differ, this may require extra memory copies during transforms. For optimal performance,
+use `init_mpi_state(grid, plans, mpi_config)` instead.
 """
 function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
     decomp = grid.decomp
@@ -450,18 +507,7 @@ end
 ================================================================================
 =#
 
-"""
-    MPIPlans
-
-FFT plans for MPI-parallel execution using PencilFFTs.
-"""
-struct MPIPlans{P, PI, PO}
-    forward::P
-    input_pencil::PI
-    output_pencil::PO
-    work_arrays::NamedTuple
-    pencils_match::Bool
-end
+# Note: MPIPlans struct is defined earlier in this file (before init_mpi_state)
 
 """
     plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig) -> MPIPlans
@@ -518,20 +564,66 @@ function _check_pencil_compatibility(input_pencil, output_pencil, pencil_xy)
 end
 
 # FFT operations for MPIPlans
+# Check if a PencilArray's pencil matches the expected pencil
+function _pencil_matches(arr::PencilArray, expected_pencil)
+    arr_pencil = PencilArrays.pencil(arr)
+    return range_local(arr_pencil) == range_local(expected_pencil)
+end
+
 function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    if plans.pencils_match
+    # Check if arrays have correct pencils for direct transform
+    src_ok = _pencil_matches(src, plans.input_pencil)
+    dst_ok = _pencil_matches(dst, plans.output_pencil)
+
+    if src_ok && dst_ok
+        # Direct transform - most efficient (zero-copy)
         mul!(dst, plans.forward, src)
+    elseif src_ok
+        # Source OK, destination wrong pencil - transform to work array, then copy
+        work_out = plans.work_arrays.output
+        mul!(work_out, plans.forward, src)
+        parent(dst) .= parent(work_out)
+    elseif dst_ok
+        # Destination OK, source wrong pencil - copy to work array, then transform
+        work_in = plans.work_arrays.input
+        parent(work_in) .= parent(src)
+        mul!(dst, plans.forward, work_in)
     else
-        error("PencilFFTs pencil configurations do not match")
+        # Both wrong pencils - use work arrays for both
+        work_in = plans.work_arrays.input
+        work_out = plans.work_arrays.output
+        parent(work_in) .= parent(src)
+        mul!(work_out, plans.forward, work_in)
+        parent(dst) .= parent(work_out)
     end
     return dst
 end
 
 function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    if plans.pencils_match
+    # For inverse: src should be output_pencil (spectral), dst should be input_pencil (physical)
+    src_ok = _pencil_matches(src, plans.output_pencil)
+    dst_ok = _pencil_matches(dst, plans.input_pencil)
+
+    if src_ok && dst_ok
+        # Direct transform - most efficient (zero-copy)
         ldiv!(dst, plans.forward, src)
+    elseif src_ok
+        # Source OK, destination wrong pencil - transform to work array, then copy
+        work_in = plans.work_arrays.input
+        ldiv!(work_in, plans.forward, src)
+        parent(dst) .= parent(work_in)
+    elseif dst_ok
+        # Destination OK, source wrong pencil - copy to work array, then transform
+        work_out = plans.work_arrays.output
+        parent(work_out) .= parent(src)
+        ldiv!(dst, plans.forward, work_out)
     else
-        error("PencilFFTs pencil configurations do not match")
+        # Both wrong pencils - use work arrays for both
+        work_in = plans.work_arrays.input
+        work_out = plans.work_arrays.output
+        parent(work_out) .= parent(src)
+        ldiv!(work_in, plans.forward, work_out)
+        parent(dst) .= parent(work_in)
     end
     return dst
 end
@@ -548,6 +640,26 @@ function get_local_range_xy(grid::Grid)
         error("Grid does not have MPI decomposition")
     end
     return decomp.local_range_xy
+end
+
+"""
+    get_local_range_physical(plans::MPIPlans)
+
+Get local index ranges for physical space arrays (FFT input pencil).
+Use this when indexing arrays allocated with the FFT input pencil.
+"""
+function get_local_range_physical(plans::MPIPlans)
+    return range_local(plans.input_pencil)
+end
+
+"""
+    get_local_range_spectral(plans::MPIPlans)
+
+Get local index ranges for spectral space arrays (FFT output pencil).
+Use this when indexing arrays allocated with the FFT output pencil.
+"""
+function get_local_range_spectral(plans::MPIPlans)
+    return range_local(plans.output_pencil)
 end
 
 function get_local_range_z(grid::Grid)
