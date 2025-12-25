@@ -248,6 +248,7 @@ end
 # Two-step transpose using PencilArrays' built-in MPI transpose.
 # We keep a cached xz-pencil buffer to satisfy the "one-dimension-at-a-time" rule.
 const _transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
+const _plan_transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
 
 function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
     key = (objectid(decomp), T)
@@ -255,6 +256,24 @@ function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
         _transpose_buffer_cache[key] = PencilArray{T}(undef, decomp.pencil_xz)
     end
     return _transpose_buffer_cache[key]::PencilArray{T}
+end
+
+function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
+    key = (objectid(plans), T)
+    if !haskey(_plan_transpose_buffer_cache, key)
+        pencil_xz = Pencil(plans.input_pencil; decomp_dims=(1, 3))
+        _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
+    end
+    return _plan_transpose_buffer_cache[key]::PencilArray{T}
+end
+
+function _copy_if_ranges_match!(dst::PencilArray, src::PencilArray, context::AbstractString)
+    if range_local(pencil(dst)) != range_local(pencil(src))
+        error("Local ranges do not match for $context. " *
+              "Ensure plans and arrays are created from the same MPI grid/topology.")
+    end
+    copyto!(parent(dst), parent(src))
+    return dst
 end
 
 """
