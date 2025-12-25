@@ -551,7 +551,7 @@ function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     else
         # Pencils have different MPI decompositions (FFT plan vs model pencils)
         # input_pencil matches model's pencil_xy, but output_pencil differs.
-        # Use work arrays as intermediates with proper MPI redistribution.
+        # Use work arrays as intermediates and transpose between pencils.
         work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
 
@@ -574,7 +574,7 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     else
         # Pencils have different MPI decompositions (FFT plan vs model pencils)
         # input_pencil matches model's pencil_xy, but output_pencil differs.
-        # Use work arrays as intermediates with proper MPI redistribution.
+        # Use work arrays as intermediates and transpose between pencils.
         work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
 

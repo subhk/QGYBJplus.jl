@@ -555,3 +555,43 @@ function init_state(G::Grid; T=Float64)
 
     return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
+
+"""
+    copy_state(src::State) -> State
+
+Create a copy of a State struct, preserving array properties (including PencilArray topology).
+
+Unlike `deepcopy`, this function uses `similar` to create destination arrays that maintain
+the same pencil decomposition as the source. This is essential for MPI parallel runs where
+PencilArrays must have matching topologies for transpose operations.
+
+# Arguments
+- `src::State`: Source state to copy
+
+# Returns
+New State struct with copied data but compatible array structure.
+
+# Example
+```julia
+Snm1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
+# vs.
+Snm1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
+```
+
+See also: [`State`](@ref), [`init_state`](@ref)
+"""
+function copy_state(src::State{T, RT, CT}) where {T, RT, CT}
+    # Use similar to preserve array structure (including PencilArray topology)
+    # For regular Arrays, similar creates a new array with same type/size
+    # For PencilArrays, similar preserves the pencil decomposition
+    q   = similar(src.q);   q   .= src.q
+    B   = similar(src.B);   B   .= src.B
+    psi = similar(src.psi); psi .= src.psi
+    A   = similar(src.A);   A   .= src.A
+    C   = similar(src.C);   C   .= src.C
+    u   = similar(src.u);   u   .= src.u
+    v   = similar(src.v);   v   .= src.v
+    w   = similar(src.w);   w   .= src.w
+
+    return State{T, RT, CT}(q, B, psi, A, C, u, v, w)
+end

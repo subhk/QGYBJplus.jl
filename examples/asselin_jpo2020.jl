@@ -43,7 +43,9 @@ const Lz = 3000.0            # 3 km depth, surface at z = Lz
 # Time stepping
 const n_inertial_periods = 15
 const T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
-const dt = 100.0             # Time step [s]
+# NOTE: Wave dispersion CFL requires dt ≤ 2f/N² ≈ 25s for stability.
+# Using dt = 10s provides good stability margin.
+const dt = 10.0              # Time step [s] (reduced for wave dispersion CFL)
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
 # Wave parameters
