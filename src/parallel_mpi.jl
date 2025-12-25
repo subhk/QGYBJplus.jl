@@ -674,7 +674,6 @@ Scatter an array from root to all processes as PencilArrays.
 function scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig)
     decomp = grid.decomp
     pencil_xy = decomp.pencil_xy
-    local_range = decomp.local_range_xy
 
     T = mpi_config.is_root ? eltype(arr) : ComplexF64
     T = MPI.bcast(T, 0, mpi_config.comm)
