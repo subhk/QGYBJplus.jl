@@ -515,7 +515,7 @@ function plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
 
     if !pencils_match && mpi_config.is_root
         @warn "PencilFFTs input/output pencils have different decompositions. " *
-              "FFT wrappers will use work arrays with data copying."
+              "FFT wrappers will use transposes between pencils."
     end
 
     return MPIPlans(
@@ -561,8 +561,8 @@ function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         # Execute FFT (output goes to work_out with output_pencil decomposition)
         mul!(work_out, plans.forward, work_in)
 
-        # Redistribute from output_pencil to pencil_xy using MPI
-        _redistribute_pencils!(dst, work_out, plans)
+        # Transpose from output_pencil (z-pencil) back to pencil_xy
+        transpose_to_xy_pencil!(dst, work_out, plans.decomp)
     end
     return dst
 end
@@ -578,8 +578,8 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
         work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
 
-        # Redistribute from pencil_xy to output_pencil using MPI
-        _redistribute_pencils!(work_out, src, plans; reverse=true)
+        # Transpose from pencil_xy to output_pencil (z-pencil)
+        transpose_to_z_pencil!(work_out, src, plans.decomp)
 
         # Execute inverse FFT
         ldiv!(work_in, plans.forward, work_out)
@@ -590,118 +590,6 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     return dst
 end
 
-"""
-    _redistribute_pencils!(dst, src, plans; reverse=false)
-
-Redistribute data between different pencil decompositions using MPI.Alltoallv.
-- Forward (reverse=false): output_pencil → pencil_xy
-- Reverse (reverse=true): pencil_xy → output_pencil
-"""
-function _redistribute_pencils!(dst::PencilArray, src::PencilArray, plans::MPIPlans; reverse::Bool=false)
-    decomp = plans.decomp
-    # Get MPI comm from the pencil's topology
-    pencil_topo = topology(decomp.pencil_xy)
-    comm = pencil_topo.comm  # Access comm field of MPITopology
-    nprocs = MPI.Comm_size(comm)
-    myrank = MPI.Comm_rank(comm)
-    T = eltype(src)
-
-    # Get global dimensions
-    nx, ny, nz = decomp.global_dims
-
-    # Get local ranges for each pencil type on each process
-    # We need to gather all processes' local ranges
-    output_range = range_local(plans.output_pencil)
-    xy_range = decomp.local_range_xy
-
-    if reverse
-        # pencil_xy → output_pencil
-        src_range = xy_range
-        dst_range = output_range
-    else
-        # output_pencil → pencil_xy
-        src_range = output_range
-        dst_range = xy_range
-    end
-
-    # Gather all local ranges from all processes
-    all_src_ranges = MPI.Allgather(src_range, comm)
-    all_dst_ranges = MPI.Allgather(dst_range, comm)
-
-    src_arr = parent(src)
-    dst_arr = parent(dst)
-
-    # Compute send data for each destination process
-    send_counts = zeros(Int, nprocs)
-    send_data = Vector{Vector{T}}(undef, nprocs)
-
-    for p in 1:nprocs
-        dst_range_p = all_dst_ranges[p]
-
-        # Intersection of my src_range with their dst_range
-        ix = intersect(src_range[1], dst_range_p[1])
-        iy = intersect(src_range[2], dst_range_p[2])
-        iz = intersect(src_range[3], dst_range_p[3])
-
-        if !isempty(ix) && !isempty(iy) && !isempty(iz)
-            # Convert to local indices in src_arr
-            ix_local = ix .- first(src_range[1]) .+ 1
-            iy_local = iy .- first(src_range[2]) .+ 1
-            iz_local = iz .- first(src_range[3]) .+ 1
-
-            data = src_arr[ix_local, iy_local, iz_local]
-            send_data[p] = vec(data)
-            send_counts[p] = length(send_data[p])
-        else
-            send_data[p] = T[]
-            send_counts[p] = 0
-        end
-    end
-
-    # Exchange counts
-    recv_counts = zeros(Int, nprocs)
-    MPI.Alltoall!(UBuffer(send_counts, 1), UBuffer(recv_counts, 1), comm)
-
-    # Prepare send/recv buffers
-    send_buf = vcat(send_data...)
-    recv_buf = zeros(T, sum(recv_counts))
-
-    # Compute displacements
-    send_displs = cumsum([0; send_counts[1:end-1]])
-    recv_displs = cumsum([0; recv_counts[1:end-1]])
-
-    # Alltoallv
-    MPI.Alltoallv!(VBuffer(send_buf, send_counts, send_displs),
-                   VBuffer(recv_buf, recv_counts, recv_displs), comm)
-
-    # Unpack received data into dst_arr
-    fill!(dst_arr, zero(T))
-    offset = 0
-    for p in 1:nprocs
-        if recv_counts[p] > 0
-            src_range_p = all_src_ranges[p]
-
-            # Intersection of their src_range with my dst_range
-            ix = intersect(src_range_p[1], dst_range[1])
-            iy = intersect(src_range_p[2], dst_range[2])
-            iz = intersect(src_range_p[3], dst_range[3])
-
-            if !isempty(ix) && !isempty(iy) && !isempty(iz)
-                # Convert to local indices in dst_arr
-                ix_local = ix .- first(dst_range[1]) .+ 1
-                iy_local = iy .- first(dst_range[2]) .+ 1
-                iz_local = iz .- first(dst_range[3]) .+ 1
-
-                # Reshape and assign
-                chunk = recv_buf[offset+1 : offset+recv_counts[p]]
-                dst_arr[ix_local, iy_local, iz_local] .= reshape(chunk, length(ix_local), length(iy_local), length(iz_local))
-            end
-        end
-        offset += recv_counts[p]
-    end
-
-    return dst
-end
 
 #=
 ================================================================================
