@@ -398,12 +398,17 @@ end
 """
     apply_dealiasing_mask!(field, G::Grid)
 
-Apply 2/3 dealiasing mask to spectral field.
+Apply 2/3 dealiasing mask to spectral field using radial cutoff.
 Handles both serial (Array) and parallel (PencilArray) cases.
+
+Uses the same radial 2/3 rule as `dealias_mask()`:
+- Keep wavenumbers with |k| ≤ (2/3) × k_Nyquist = N/3
+- Radial cutoff ensures isotropic dealiasing
 """
 function apply_dealiasing_mask!(field, G::Grid)
-    kx_max = G.nx ÷ 3  # 2/3 rule
-    ky_max = G.ny ÷ 3
+    # Radial 2/3 cutoff: k_max = min(nx, ny) / 3
+    kmax = floor(Int, min(G.nx, G.ny) / 3)
+    kmax_sq = kmax^2
 
     # Get local array and its dimensions
     field_arr = parent(field)
@@ -422,7 +427,8 @@ function apply_dealiasing_mask!(field, G::Grid)
                            local_to_global(i_local, 1, G) : i_local
                 kx = i_global <= G.nx÷2 ? i_global-1 : i_global-1-G.nx
 
-                if abs(kx) > kx_max || abs(ky) > ky_max
+                # Radial check: zero modes outside dealiasing circle
+                if kx^2 + ky^2 > kmax_sq
                     field_arr[i_local, j_local, k] = zero(eltype(field_arr))
                 end
             end
