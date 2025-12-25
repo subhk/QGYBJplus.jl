@@ -1073,18 +1073,22 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         println("  Diagnostics every $diagnostics_interval steps")
         println("="^60)
         # Print diagnostics header
-        @printf("\n%8s  %10s  %12s  %12s  %12s\n", "Step", "Time", "Flow KE", "Wave |B|²", "Wave |A|²")
+        @printf("\n%8s  %10s  %12s  %12s  %12s\n", "Step", "Time", "max|u|", "max|B|", "max|A|")
         println("-"^60)
     end
 
     # Print initial diagnostics (step 0)
     # Note: All processes must participate in MPI reductions, so compute on all
     if is_mpi || print_progress
-        flow_KE_init = flow_kinetic_energy_global(S.u, S.v, mpi_config)
-        wave_EB_init, wave_EA_init = wave_energy_global(S.B, S.A, mpi_config)
+        # Use max values for cleaner diagnostics (MPI-reduced)
+        max_u = reduce_max_if_mpi(maximum(abs, parent(S.u)), mpi_config)
+        max_v = reduce_max_if_mpi(maximum(abs, parent(S.v)), mpi_config)
+        max_vel = max(max_u, max_v)
+        max_B = reduce_max_if_mpi(maximum(abs, parent(S.B)), mpi_config)
+        max_A = reduce_max_if_mpi(maximum(abs, parent(S.A)), mpi_config)
         if is_root && print_progress
             @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
-                    0, 0.0, flow_KE_init, wave_EB_init, wave_EA_init)
+                    0, 0.0, max_vel, max_B, max_A)
         end
     end
 
@@ -1101,15 +1105,18 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
         # Diagnostics output
         # Note: All processes must participate in MPI reductions
-        if step % diagnostics_interval == 0
-            # Compute global energies (MPI-reduced) - all processes participate
-            flow_KE = flow_kinetic_energy_global(Sn.u, Sn.v, mpi_config)
-            wave_EB, wave_EA = wave_energy_global(Sn.B, Sn.A, mpi_config)
+        if diagnostics_interval > 0 && step % diagnostics_interval == 0
+            # Compute max values (MPI-reduced) - all processes participate
+            max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
+            max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
+            max_vel = max(max_u, max_v)
+            max_B = reduce_max_if_mpi(maximum(abs, parent(Sn.B)), mpi_config)
+            max_A = reduce_max_if_mpi(maximum(abs, parent(Sn.A)), mpi_config)
 
             # Print diagnostics (only on root)
             if is_root && print_progress
                 @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
-                        step, current_time, flow_KE, wave_EB, wave_EA)
+                        step, current_time, max_vel, max_B, max_A)
             end
         end
 
