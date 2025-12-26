@@ -317,7 +317,7 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params;
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.psi, G)
 
     if need_transpose
         _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, dealias_mask)
@@ -697,7 +697,7 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
 
     if need_transpose
         _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)

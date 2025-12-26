@@ -887,7 +887,7 @@ function dissipation_q_nv!(dqk, qok, par, G::Grid; workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(qok, G)
 
     if need_transpose
         _dissipation_q_nv_2d!(dqk, qok, par, G, workspace)

@@ -193,7 +193,7 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing, wor
     @assert length(a) == nz "a must have length nz=$nz"
 
     # Check if we need to do transpose (2D decomposition)
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.q, G)
 
     if need_transpose
         # 2D decomposition: transpose to z-pencil, solve, transpose back
@@ -496,7 +496,7 @@ function invert_helmholtz!(dstk, rhs, G::Grid, par;
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(rhs, G)
 
     if need_transpose
         _invert_helmholtz_2d!(dstk, rhs, G, par, a, b, scale_kh2, bot_bc, top_bc, workspace)
@@ -828,7 +828,7 @@ function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=not
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.B, G)
 
     if need_transpose
         _invert_B_to_A_2d!(S, G, par, a, workspace)

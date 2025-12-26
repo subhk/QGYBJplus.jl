@@ -729,7 +729,7 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
         PE_zero_mode = T(0)
 
         # Use global z-index for N2_profile lookup in 2D decomposition
-        k_global = use_transpose ? local_to_global_z(k, 1, grid) : local_to_global(k, 1, grid)
+        k_global = use_transpose ? local_to_global_z(k, 1, grid) : local_to_global(k, 1, psi_field)
 
         # r_1 = 1.0 (Boussinesq), r_2 = N²
         r_1 = T(1.0)
@@ -753,11 +753,11 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
             # Track zero mode
             i_global = use_transpose ?
                        local_to_global_z(i_local, 2, grid) :
-                       local_to_global(i_local, 2, grid)
+                       local_to_global(i_local, 2, psi_field)
 
             j_global = use_transpose ?
                        local_to_global_z(j_local, 3, grid) :
-                       local_to_global(j_local, 3, grid)
+                       local_to_global(j_local, 3, psi_field)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
@@ -816,11 +816,8 @@ function compute_wave_energy(state::State, grid::Grid, plans)
             WE_level += energy_mode
 
             # Track zero mode
-            i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 2, grid) : i_local
-
-            j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 3, grid) : j_local
+            i_global = local_to_global(i_local, 2, state.B)
+            j_global = local_to_global(j_local, 3, state.B)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
@@ -875,11 +872,8 @@ function compute_enstrophy(state::State, grid::Grid, plans)
 
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
-            i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 2, grid) : i_local
-
-            j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 3, grid) : j_local
+            i_global = local_to_global(i_local, 2, state.psi)
+            j_global = local_to_global(j_local, 3, state.psi)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
             ky_val = grid.ky[min(j_global, length(grid.ky))]

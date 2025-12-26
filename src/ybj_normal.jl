@@ -106,7 +106,7 @@ Matches `sumB` in derivatives.f90.
 """
 function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(B, G)
 
     if need_transpose
         _sumB_2d!(B, G, Lmask, workspace)
@@ -127,8 +127,8 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, B)
+        j_global = local_to_global(j, 3, B)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
@@ -242,7 +242,7 @@ Transpose operations are handled internally if needed.
 function compute_sigma(par::QGParams, G::Grid,
                        nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(nBRk, G)
 
     if need_transpose
         return _compute_sigma_2d(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
@@ -268,8 +268,8 @@ function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, L
     rBIk_arr = parent(rBIk)
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, nBRk)
+        j_global = local_to_global(j, 3, nBRk)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
@@ -421,7 +421,7 @@ function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3}
                     sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid;
                     Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(BRk, G)
 
     if need_transpose
         _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace, N2_profile)
@@ -447,8 +447,8 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, BRk)
+        j_global = local_to_global(j, 3, BRk)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 

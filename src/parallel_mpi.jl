@@ -801,6 +801,14 @@ function z_is_local(grid::Grid)
     return decomp.local_range_xy[1] == 1:grid.nz
 end
 
+function z_is_local(arr::AbstractArray, grid::Grid)
+    if arr isa PencilArray
+        ranges = range_local(pencil(arr))
+        return ranges[1] == 1:grid.nz
+    end
+    return true
+end
+
 function get_local_range_z(grid::Grid)
     decomp = grid.decomp
     if decomp === nothing

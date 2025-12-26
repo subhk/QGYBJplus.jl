@@ -132,7 +132,7 @@ Matches `omega_eqn_rhs` computation in the Fortran implementation.
 """
 function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(psi, G)
 
     if need_transpose
         _omega_eqn_rhs_2d!(rhs, psi, G, plans, Lmask, workspace)
