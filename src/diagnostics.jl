@@ -521,7 +521,7 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, G)
+        k_global = local_to_global(k, 1, bk)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
@@ -530,8 +530,8 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
         pe_k = 0.0
 
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, G)
-            j_global = local_to_global(j, 3, G)
+            i_global = local_to_global(i, 2, bk)
+            j_global = local_to_global(j, 3, bk)
 
             if L[i_global, j_global]
                 # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
@@ -540,7 +540,7 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
         end
 
         # Dealiasing correction
-        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
+        if local_to_global(1, 2, bk) == 1 && local_to_global(1, 3, bk) == 1
             pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, 1, 1])
         end
 
@@ -842,7 +842,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, G)
+        k_global = local_to_global(k, 1, BR)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
@@ -851,8 +851,8 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         wce_k = 0.0
 
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, G)
-            j_global = local_to_global(j, 3, G)
+            i_global = local_to_global(i, 2, BR)
+            j_global = local_to_global(j, 3, BR)
 
             if L[i_global, j_global]
                 kₓ = G.kx[i_global]
@@ -872,7 +872,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
         # Dealiasing correction for WKE: subtract half the kh=0 mode
         # The kh=0 mode is at global index (1,1)
-        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
+        if local_to_global(1, 2, BR) == 1 && local_to_global(1, 3, BR) == 1
             # This process owns the (1,1) mode
             wke_k -= 0.5 * (abs2(BR_arr[k, 1, 1]) + abs2(BI_arr[k, 1, 1]))
         end
