@@ -258,18 +258,7 @@ function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
     return _transpose_buffer_cache[key]::PencilArray{T}
 end
 
-function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
-    if PencilArrays.topology(plans.input_pencil) !== PencilArrays.topology(plans.output_pencil)
-        error("PencilFFTs plan input/output topologies differ. " *
-              "Ensure plans and arrays are created from the same MPI grid/topology.")
-    end
-    key = (objectid(plans), T)
-    if !haskey(_plan_transpose_buffer_cache, key)
-        pencil_xz = Pencil(plans.input_pencil; decomp_dims=(1, 3))
-        _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
-    end
-    return _plan_transpose_buffer_cache[key]::PencilArray{T}
-end
+# Note: _get_plan_transpose_buffer is defined after MPIPlans struct (see below)
 
 function _copy_if_ranges_match!(dst::PencilArray, src::PencilArray, context::AbstractString)
     if range_local(pencil(dst)) != range_local(pencil(src))
@@ -440,6 +429,20 @@ struct MPIPlans{P, PI, PO}
     work_arrays::NamedTuple
     pencils_match::Bool
     decomp::Union{PencilDecomp, Nothing}
+end
+
+# Buffer cache for plan transpose operations (defined here since MPIPlans is now available)
+function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
+    if PencilArrays.topology(plans.input_pencil) !== PencilArrays.topology(plans.output_pencil)
+        error("PencilFFTs plan input/output topologies differ. " *
+              "Ensure plans and arrays are created from the same MPI grid/topology.")
+    end
+    key = (objectid(plans), T)
+    if !haskey(_plan_transpose_buffer_cache, key)
+        pencil_xz = Pencil(plans.input_pencil; decomp_dims=(1, 3))
+        _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
+    end
+    return _plan_transpose_buffer_cache[key]::PencilArray{T}
 end
 
 """
