@@ -1124,7 +1124,7 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
     @info "Writing psi to: $path"
 
     # Convert spectral psi to real space
-    psir = similar(S.psi)
+    psir = _allocate_fft_dst(S.psi, plans)
     fft_backward!(psir, S.psi, plans)
 
     NCDatasets.Dataset(path, "c") do ds
@@ -1176,7 +1176,7 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
     @info "Writing L+A to: $path"
 
     # Convert spectral B to real space (full complex IFFT)
-    Br = similar(S.B)
+    Br = _allocate_fft_dst(S.B, plans)
     fft_backward!(Br, S.B, plans)
 
     NCDatasets.Dataset(path, "c") do ds
