@@ -533,7 +533,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
         WPE_level = T(0)
         WCE_level = T(0)
         WKE_zero = T(0)
-        k_global = use_profile ? local_to_global(k, 1, grid) : k
+        k_global = use_profile ? local_to_global(k, 1, state.B) : k
         a_ell = a_ell_const
         if use_profile
             N2_k = N2_profile[min(k_global, length(N2_profile))]
@@ -542,11 +542,8 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
 
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
-            i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 2, grid) : i_local
-
-            j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 3, grid) : j_local
+            i_global = local_to_global(i_local, 2, state.B)
+            j_global = local_to_global(j_local, 3, state.B)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
@@ -639,11 +636,8 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
 
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
-            i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 2, grid) : i_local
-
-            j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 3, grid) : j_local
+            i_global = local_to_global(i_local, 2, state.psi)
+            j_global = local_to_global(j_local, 3, state.psi)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
