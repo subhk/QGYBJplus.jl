@@ -607,25 +607,35 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     compute_velocities!(Sn, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
 
     #= Step 2: Allocate and compute tendencies =#
-    nqk  = similar(Sn.q)    # Advection of q
-    nBRk = similar(Sn.B)    # Advection of BR
-    nBIk = similar(Sn.B)    # Advection of BI
-    rBRk = similar(Sn.B)    # Refraction of BR
-    rBIk = similar(Sn.B)    # Refraction of BI
-    dqk  = similar(Sn.B)    # Vertical diffusion
+    nqk = similar(Sn.q)   # Advection of q
+    dqk = similar(Sn.B)   # Vertical diffusion
+    if par.ybj_plus
+        nBk = similar(Sn.B)  # Advection of B
+        rBk = similar(Sn.B)  # Refraction of B
 
-    # Split B into real/imaginary
-    BRk = similar(Sn.B); BIk = similar(Sn.B)
-    BRk_arr = parent(BRk); BIk_arr = parent(BIk)
+        # Compute tendencies
+        convol_waqg_q!(nqk, Sn.u, Sn.v, Sn.q, G, plans; Lmask=L)
+        convol_waqg_B!(nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
+        refraction_waqg_B!(rBk, Sn.B, Sn.psi, G, plans; Lmask=L)
+    else
+        nBRk = similar(Sn.B)  # Advection of BR
+        nBIk = similar(Sn.B)  # Advection of BI
+        rBRk = similar(Sn.B)  # Refraction of BR
+        rBIk = similar(Sn.B)  # Refraction of BI
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        BRk_arr[i,j,k] = Complex(real(Bn_arr[i,j,k]), 0)
-        BIk_arr[i,j,k] = Complex(imag(Bn_arr[i,j,k]), 0)
+        # Split B into real/imaginary
+        BRk = similar(Sn.B); BIk = similar(Sn.B)
+        BRk_arr = parent(BRk); BIk_arr = parent(BIk)
+
+        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+            BRk_arr[i,j,k] = Complex(real(Bn_arr[i,j,k]), 0)
+            BIk_arr[i,j,k] = Complex(imag(Bn_arr[i,j,k]), 0)
+        end
+
+        # Compute tendencies
+        convol_waqg!(nqk, nBRk, nBIk, Sn.u, Sn.v, Sn.q, BRk, BIk, G, plans; Lmask=L)
+        refraction_waqg!(rBRk, rBIk, BRk, BIk, Sn.psi, G, plans; Lmask=L)
     end
-
-    # Compute tendencies
-    convol_waqg!(nqk, nBRk, nBIk, Sn.u, Sn.v, Sn.q, BRk, BIk, G, plans; Lmask=L)
-    refraction_waqg!(rBRk, rBIk, BRk, BIk, Sn.psi, G, plans; Lmask=L)
 
     # Vertical diffusion at time n (NOT n-1!)
     # Previous code used Snm1.q which lagged the operator and broke second-order accuracy.
