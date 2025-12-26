@@ -7,13 +7,29 @@ with the configuration system, including time stepping with output management.
 
 using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
-using ..QGYBJplus: plan_transforms!, init_grid, init_state
+using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
 using ..QGYBJplus: first_projection_step!, leapfrog_step!
 using ..QGYBJplus: invert_q_to_psi!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
 using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig
+
+"""
+    _allocate_fft_dst(spectral_arr, plans)
+
+Allocate a destination array for fft_backward! that is on the correct pencil.
+
+For MPI plans with input_pencil, allocates on input_pencil (physical space).
+For serial plans, uses similar() which works correctly.
+"""
+function _allocate_fft_dst(spectral_arr, plans)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+    else
+        return similar(spectral_arr)
+    end
+end
 
 # Energy diagnostics module for separate file output
 using ..QGYBJplus.EnergyDiagnostics: EnergyDiagnosticsManager, should_output, record_energies!
