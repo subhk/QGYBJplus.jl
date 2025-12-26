@@ -197,8 +197,17 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
         # Use unified transform planning (handles both serial and parallel)
         plans = plan_transforms!(G)
     end
-    tmpu = similar(ψk)
-    tmpv = similar(ψk)
+
+    # For MPI plans, allocate destination on input_pencil (physical space)
+    # Source (uk, vk) is on output_pencil (spectral space)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        tmpu = PencilArray{eltype(ψk)}(undef, plans.input_pencil)
+        tmpv = PencilArray{eltype(ψk)}(undef, plans.input_pencil)
+    else
+        # Serial case: same dimensions work
+        tmpu = similar(ψk)
+        tmpv = similar(ψk)
+    end
     fft_backward!(tmpu, uk, plans)
     fft_backward!(tmpv, vk, plans)
 
