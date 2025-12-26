@@ -812,15 +812,15 @@ function check_initial_conditions(S::State, G::Grid, plans)
     
     # Compute energy diagnostics
     # Note: fft_backward! returns complex arrays, extract real part for diagnostics
-    psir_complex = similar(S.psi)
+    psir_complex = _allocate_fft_dst(S.psi, plans)
     fft_backward!(psir_complex, S.psi, plans)
-    psir = real.(psir_complex)
+    psir = real.(parent(psir_complex))
     psi_energy = 0.5 * sum(abs2, psir) / (G.nx * G.ny * G.nz)
 
     # For wave field: do full complex IFFT on S.B, then extract real part
-    Br_complex = similar(S.B)
+    Br_complex = _allocate_fft_dst(S.B, plans)
     fft_backward!(Br_complex, S.B, plans)
-    Br = real.(Br_complex)
+    Br = real.(parent(Br_complex))
     wave_energy = 0.5 * sum(abs2, Br) / (G.nx * G.ny * G.nz)
 
     @info "Initial conditions summary:"
