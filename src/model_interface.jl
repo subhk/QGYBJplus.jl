@@ -14,22 +14,11 @@ using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
 using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig
+using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+import PencilArrays: PencilArray
 
-"""
-    _allocate_fft_dst(spectral_arr, plans)
-
-Allocate a destination array for fft_backward! that is on the correct pencil.
-
-For MPI plans with input_pencil, allocates on input_pencil (physical space).
-For serial plans, uses similar() which works correctly.
-"""
-function _allocate_fft_dst(spectral_arr, plans)
-    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
-        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
-    else
-        return similar(spectral_arr)
-    end
-end
+# Alias for internal use
+const _allocate_fft_dst = allocate_fft_backward_dst
 
 # Energy diagnostics module for separate file output
 using ..QGYBJplus.EnergyDiagnostics: EnergyDiagnosticsManager, should_output, record_energies!

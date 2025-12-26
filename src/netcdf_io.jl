@@ -13,25 +13,14 @@ using Printf
 using Dates
 using ..QGYBJplus: Grid, State, QGParams
 using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
+using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+import PencilArrays: PencilArray
 
 # NCDatasets is always available since it's a required dependency (using NCDatasets above)
 const HAS_NCDS = true
 
-"""
-    _allocate_fft_dst(spectral_arr, plans)
-
-Allocate a destination array for fft_backward! that is on the correct pencil.
-
-For MPI plans with input_pencil, allocates on input_pencil (physical space).
-For serial plans, uses similar() which works correctly.
-"""
-function _allocate_fft_dst(spectral_arr, plans)
-    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
-        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
-    else
-        return similar(spectral_arr)
-    end
-end
+# Alias for internal use
+const _allocate_fft_dst = allocate_fft_backward_dst
 
 """
     OutputManager

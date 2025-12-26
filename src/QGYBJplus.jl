@@ -184,7 +184,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        transpose_to_z_pencil!, transpose_to_xy_pencil!,
        get_local_range_xy, get_local_range_z, local_to_global_xy, local_to_global_z,
        get_local_range_physical, get_local_range_spectral,
-       allocate_z_pencil, allocate_xy_pencil, allocate_xz_pencil,
+       allocate_z_pencil, allocate_xy_pencil, allocate_xz_pencil, allocate_fft_backward_dst,
        # Unified particle advection system (handles both serial and parallel automatically)
        ParticleConfig, ParticleState, ParticleTracker, create_particle_config,
        initialize_particles!, advect_particles!, interpolate_velocity_at_position,

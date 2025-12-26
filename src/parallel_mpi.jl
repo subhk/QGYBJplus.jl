@@ -683,6 +683,32 @@ function allocate_spectral(physical_arr::PencilArray, plans::MPIPlans)
     return PencilArray{eltype(physical_arr)}(undef, plans.output_pencil)
 end
 
+"""
+    allocate_fft_backward_dst(spectral_arr, plans)
+
+Allocate a destination array for fft_backward! that is on the correct pencil.
+
+For MPI plans with input_pencil, allocates on input_pencil (physical space).
+For serial plans, uses similar() which works correctly.
+
+This is the centralized helper function for all modules to use when allocating
+arrays as destinations for fft_backward!.
+
+# Arguments
+- `spectral_arr`: A spectral-space array to use as template for element type
+- `plans`: FFT plans (MPIPlans or serial)
+
+# Returns
+An array allocated on the correct pencil for fft_backward! destination.
+"""
+function allocate_fft_backward_dst(spectral_arr, plans)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+    else
+        return similar(spectral_arr)
+    end
+end
+
 
 #=
 ================================================================================
