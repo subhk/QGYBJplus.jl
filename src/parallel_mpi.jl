@@ -43,7 +43,7 @@ using PencilFFTs
 
 # Explicit imports from PencilArrays for clarity
 import PencilArrays: Pencil, PencilArray, MPITopology
-import PencilArrays: range_local, range_remote, transpose!, gather, pencil
+import PencilArrays: range_local, range_remote, transpose!, gather, pencil, decomposition, permutation
 import PencilFFTs: PencilFFTPlan, allocate_input, allocate_output
 
 # Note: Grid, State, QGParams, Plans are already in scope since we're included in QGYBJplus
@@ -267,13 +267,39 @@ end
 
 # Two-step transpose using PencilArrays' built-in MPI transpose.
 # We keep a cached xz-pencil buffer to satisfy the "one-dimension-at-a-time" rule.
-const _transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
+const _transpose_buffer_cache = Dict{Tuple{UInt, UInt, DataType}, Any}()
 const _plan_transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
 
-function _get_transpose_buffer(decomp::PencilDecomp, ::Type{T}) where T
-    key = (objectid(decomp), T)
+@inline function _decomp_diff_count(a::NTuple{2, Int}, b::NTuple{2, Int})
+    return (a[1] != b[1]) + (a[2] != b[2])
+end
+
+function _intermediate_decomp(src::NTuple{2, Int}, dst::NTuple{2, Int})
+    candidates = ((src[1], dst[2]), (dst[1], src[2]))
+    for cand in candidates
+        if cand[1] != cand[2] &&
+           _decomp_diff_count(src, cand) <= 1 &&
+           _decomp_diff_count(cand, dst) <= 1
+            return cand
+        end
+    end
+    return nothing
+end
+
+function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) where T
+    src_p = pencil(src)
+    dst_p = pencil(dst)
+    key = (objectid(src_p), objectid(dst_p), T)
     if !haskey(_transpose_buffer_cache, key)
-        _transpose_buffer_cache[key] = PencilArray{T}(undef, decomp.pencil_xz)
+        src_decomp = decomposition(src_p)
+        dst_decomp = decomposition(dst_p)
+        mid_decomp = _intermediate_decomp(src_decomp, dst_decomp)
+        if mid_decomp === nothing
+            error("Cannot construct intermediate pencil between decompositions " *
+                  "$src_decomp and $dst_decomp.")
+        end
+        mid_pencil = Pencil(src_p, decomp_dims=mid_decomp, permute=permutation(src_p))
+        _transpose_buffer_cache[key] = PencilArray{T}(undef, mid_pencil)
     end
     return _transpose_buffer_cache[key]::PencilArray{T}
 end
@@ -302,8 +328,13 @@ function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::Penc
     if range_local(pencil(dst)) == range_local(pencil(src))
         return _copy_if_ranges_match!(dst, src, "transpose_to_z_pencil! (no-op)")
     end
-    T = eltype(src)
-    buffer_xz = _get_transpose_buffer(decomp, T)
+    src_decomp = decomposition(pencil(src))
+    dst_decomp = decomposition(pencil(dst))
+    if _decomp_diff_count(src_decomp, dst_decomp) <= 1
+        transpose!(dst, src)
+        return dst
+    end
+    buffer_xz = _get_transpose_buffer(src, dst, eltype(src))
     transpose!(buffer_xz, src)
     transpose!(dst, buffer_xz)
     return dst
@@ -318,8 +349,13 @@ function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::Pen
     if range_local(pencil(dst)) == range_local(pencil(src))
         return _copy_if_ranges_match!(dst, src, "transpose_to_xy_pencil! (no-op)")
     end
-    T = eltype(src)
-    buffer_xz = _get_transpose_buffer(decomp, T)
+    src_decomp = decomposition(pencil(src))
+    dst_decomp = decomposition(pencil(dst))
+    if _decomp_diff_count(src_decomp, dst_decomp) <= 1
+        transpose!(dst, src)
+        return dst
+    end
+    buffer_xz = _get_transpose_buffer(src, dst, eltype(src))
     transpose!(buffer_xz, src)
     transpose!(dst, buffer_xz)
     return dst
