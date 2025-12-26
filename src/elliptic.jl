@@ -813,14 +813,13 @@ For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
     a(z) ∂²A/∂z² = B
 
 With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
-is **singular** - the constant function is in its null space. This implementation
-sets A=0 and C=0 for kₕ=0 because:
-- Horizontally uniform waves (kₕ=0) have no horizontal gradients
-- The YBJ vertical velocity formula involves ∂A/∂x, ∂A/∂y which vanish for kₕ=0
-- Standard NIW codes assume waves have horizontal structure
+is **singular** - the constant function is in its null space. To select a unique
+solution, we:
+1. Fix a gauge (A[1]=0) to obtain a particular solution.
+2. Remove the vertical mean of A (adds a constant null-space mode).
 
-If your application requires horizontally uniform wave modes, you would need
-to solve the singular ODE with an additional constraint (e.g., ∫A dz = 0).
+This yields a well-defined, mean-zero A for kₕ=0 while preserving the original
+equation.
 
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90.
@@ -881,14 +880,60 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
 
         # Special case: kₕ² = 0 (horizontal mean mode)
         # The operator a(z)∂²/∂z² with Neumann BCs is singular (constant null space).
-        # We set A=C=0 because: (1) kₕ=0 waves have no horizontal gradients for velocities,
-        # (2) YBJ vertical velocity involves ∂A/∂x, ∂A/∂y which vanish anyway.
-        # See docstring for details on this design choice.
+        # We resolve this by fixing one point (A[1]=0), solving the tridiagonal
+        # system, then removing the vertical mean (adds a constant null-space mode).
         if kₕ² == 0
-            @inbounds for k in 1:nz
-                A_arr[k, i_local, j_local] = 0
-                C_arr[k, i_local, j_local] = 0
+            if nz == 1
+                @inbounds begin
+                    A_arr[1, i_local, j_local] = 0
+                    C_arr[1, i_local, j_local] = 0
+                end
+                continue
             end
+
+            fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
+
+            d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] )
+            dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
+
+            @inbounds for k in 2:nz-1
+                dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+                d[k]  = -((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k])
+                dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
+            end
+
+            dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+            d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] )
+
+            @inbounds for k in 1:nz
+                rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
+                rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
+            end
+
+            # Fix gauge: A[1] = 0 for a nonsingular solve
+            d[1] = 1
+            dᵤ[1] = 0
+            rhsᵣ[1] = 0
+            rhsᵢ[1] = 0
+
+            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+
+            # Remove vertical mean to select a unique null-space representative
+            mean_val = zero(Complex{eltype(a)})
+            @inbounds for k in 1:nz
+                mean_val += solᵣ[k] + im*solᵢ[k]
+            end
+            mean_val /= nz
+
+            @inbounds for k in 1:nz
+                A_arr[k, i_local, j_local] = (solᵣ[k] + im*solᵢ[k]) - mean_val
+            end
+
+            @inbounds for k in 1:nz-1
+                C_arr[k, i_local, j_local] = (A_arr[k+1, i_local, j_local] - A_arr[k, i_local, j_local]) / Δz
+            end
+            C_arr[nz, i_local, j_local] = 0
             continue
         end
 
@@ -982,12 +1027,58 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         ky_val = G.ky[j_global]
         kh2 = kx_val^2 + ky_val^2
 
-        # Special case: kₕ² = 0 (horizontal mean mode) - see docstring for rationale
+        # Special case: kₕ² = 0 (horizontal mean mode)
         if kh2 == 0
-            @inbounds for k in 1:nz
-                A_z_arr[k, i_local, j_local] = 0
-                C_z_arr[k, i_local, j_local] = 0
+            if nz == 1
+                @inbounds begin
+                    A_z_arr[1, i_local, j_local] = 0
+                    C_z_arr[1, i_local, j_local] = 0
+                end
+                continue
             end
+
+            fill!(dl, 0); fill!(d, 0); fill!(du, 0)
+
+            d[1]  = -( (r_ut[1]*a[1]) / r_st[1] )
+            du[1] =   (r_ut[1]*a[1]) / r_st[1]
+
+            @inbounds for k in 2:nz-1
+                dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
+                d[k]  = -((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k])
+                du[k] = (r_ut[k]*a[k]) / r_st[k]
+            end
+
+            dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
+            d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] )
+
+            @inbounds for k in 1:nz
+                rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
+                rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
+            end
+
+            # Fix gauge: A[1] = 0 for a nonsingular solve
+            d[1] = 1
+            du[1] = 0
+            rhs_r[1] = 0
+            rhs_i[1] = 0
+
+            thomas_solve!(solr, dl, d, du, rhs_r)
+            thomas_solve!(soli, dl, d, du, rhs_i)
+
+            mean_val = zero(Complex{eltype(a)})
+            @inbounds for k in 1:nz
+                mean_val += solr[k] + im*soli[k]
+            end
+            mean_val /= nz
+
+            @inbounds for k in 1:nz
+                A_z_arr[k, i_local, j_local] = (solr[k] + im*soli[k]) - mean_val
+            end
+
+            @inbounds for k in 1:nz-1
+                C_z_arr[k, i_local, j_local] = (A_z_arr[k+1, i_local, j_local] - A_z_arr[k, i_local, j_local]) / Δ
+            end
+            C_z_arr[nz, i_local, j_local] = 0
             continue
         end
 

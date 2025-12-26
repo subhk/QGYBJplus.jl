@@ -505,7 +505,7 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     wk_z_arr = parent(wk_z)
     fill!(wk_z_arr, 0.0)
 
-    nx_local_z, ny_local_z, nz_local = size(rhsk_z_arr)
+    nz_local, nx_local_z, ny_local_z = size(rhsk_z_arr)
     @assert nz_local == nz "Z must be fully local in z-pencil"
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
@@ -783,8 +783,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
     # Without this, the uninitialized data can inject NaNs/noise into the transform.
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        dAz_dxₖ_arr[i_local, j_local, nz] = 0
-        dAz_dyₖ_arr[i_local, j_local, nz] = 0
+        dAz_dxₖ_arr[nz, i_local, j_local] = 0
+        dAz_dyₖ_arr[nz, i_local, j_local] = 0
     end
 
     # Step 4: Compute YBJ vertical velocity in PHYSICAL space
@@ -822,9 +822,9 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Apply boundary conditions: w = 0 at top and bottom
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, 1] = 0.0
+        w_arr[1, i_local, j_local] = 0.0
         if nz > 1
-            w_arr[i_local, j_local, nz] = 0.0
+            w_arr[nz, i_local, j_local] = 0.0
         end
     end
 end
@@ -899,8 +899,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        dAz_dxₖ_arr[i_local, j_local, nz] = 0
-        dAz_dyₖ_arr[i_local, j_local, nz] = 0
+        dAz_dxₖ_arr[nz, i_local, j_local] = 0
+        dAz_dyₖ_arr[nz, i_local, j_local] = 0
     end
 
     # Compute YBJ vertical velocity in PHYSICAL space (2D decomposition version)
@@ -933,9 +933,9 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     # Apply boundary conditions
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, 1] = 0.0
+        w_arr[1, i_local, j_local] = 0.0
         if nz > 1
-            w_arr[i_local, j_local, nz] = 0.0
+            w_arr[nz, i_local, j_local] = 0.0
         end
     end
 end
