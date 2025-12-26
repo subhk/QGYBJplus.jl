@@ -60,6 +60,22 @@ using ..QGYBJplus: allocate_z_pencil
 # Reference to parent module for physics functions
 const PARENT = Base.parentmodule(@__MODULE__)
 
+"""
+    _allocate_fft_dst(spectral_arr, plans)
+
+Allocate a destination array for fft_backward! that is on the correct pencil.
+
+For MPI plans with input_pencil, allocates on input_pencil (physical space).
+For serial plans, uses similar() which works correctly.
+"""
+function _allocate_fft_dst(spectral_arr, plans)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+    else
+        return similar(spectral_arr)
+    end
+end
+
 #=
 ================================================================================
                     OMEGA EQUATION RHS COMPUTATION
@@ -183,9 +199,9 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
         xyₖ_arr[i,j,k] = -im*kᵧ*kₕ²*ψavg
     end
 
-    # To real space
-    bxᵣ = similar(psi); byᵣ = similar(psi)
-    xxᵣ = similar(psi); xyᵣ = similar(psi)
+    # To real space - use helper for correct pencil allocation
+    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
+    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
     fft_backward!(bxᵣ, bxₖ, plans)
     fft_backward!(byᵣ, byₖ, plans)
     fft_backward!(xxᵣ, xxₖ, plans)
@@ -195,7 +211,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
     # Real-space RHS
-    rhsᵣ = similar(psi)
+    rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         rhsᵣ_arr[i,j,k] = 2.0 * ( real(bxᵣ_arr[i,j,k])*real(xyᵣ_arr[i,j,k]) - real(byᵣ_arr[i,j,k])*real(xxᵣ_arr[i,j,k]) )
@@ -280,9 +296,9 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
         xyₖ_arr[i,j,k] = -im*kᵧ*kₕ²*ψavgₖ_arr[i,j,k]
     end
 
-    # To real space (FFTs in xy-pencil)
-    bxᵣ = similar(psi); byᵣ = similar(psi)
-    xxᵣ = similar(psi); xyᵣ = similar(psi)
+    # To real space (FFTs in xy-pencil) - use helper for correct pencil allocation
+    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
+    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
     fft_backward!(bxᵣ, bxₖ, plans)
     fft_backward!(byᵣ, byₖ, plans)
     fft_backward!(xxᵣ, xxₖ, plans)
@@ -292,7 +308,7 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
     # Real-space RHS
-    rhsᵣ = similar(psi)
+    rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
         rhsᵣ_arr[i,j,k] = 2.0 * ( real(bxᵣ_arr[i,j,k])*real(xyᵣ_arr[i,j,k]) - real(byᵣ_arr[i,j,k])*real(xxᵣ_arr[i,j,k]) )
@@ -588,7 +604,7 @@ function wave_energy_vavg(B, G::Grid, plans)
     nx_local, ny_local, nz_local = size(B_arr)
 
     # Invert full complex field to physical space
-    Br = similar(B)
+    Br = _allocate_fft_dst(B, plans)
     fft_backward!(Br, B, plans)
     Br_arr = parent(Br)
 
@@ -648,7 +664,7 @@ function slice_horizontal(field, G::Grid, plans; k::Int)
     @assert 1 <= k <= nz_local "k=$k must be within local range 1:$nz_local"
 
     # Inverse FFT entire field to get real slice
-    Xr = similar(field)
+    Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 
@@ -697,7 +713,7 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
 
     @assert 1 <= j <= ny_local "j=$j must be within local range 1:$ny_local"
 
-    Xr = similar(field)
+    Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 

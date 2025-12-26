@@ -53,6 +53,22 @@ using ..QGYBJplus: allocate_z_pencil
 # Reference to parent module for accessing is_dealiased
 const PARENT = Base.parentmodule(@__MODULE__)
 
+"""
+    _allocate_fft_dst(spectral_arr, plans)
+
+Allocate a destination array for fft_backward! that is on the correct pencil.
+
+For MPI plans with input_pencil, allocates on input_pencil (physical space).
+For serial plans, uses similar() which works correctly.
+"""
+function _allocate_fft_dst(spectral_arr, plans)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+    else
+        return similar(spectral_arr)
+    end
+end
+
 #=
 ================================================================================
                         JACOBIAN OPERATOR
@@ -146,9 +162,9 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     end
 
     #= Step 2: Transform derivatives to real space =#
-    φₓ = similar(φₖ); φᵧ = similar(φₖ)
-    χₓ = similar(χₖ); χᵧ = similar(χₖ)
-  
+    φₓ = _allocate_fft_dst(φₓₖ, plans); φᵧ = _allocate_fft_dst(φᵧₖ, plans)
+    χₓ = _allocate_fft_dst(χₓₖ, plans); χᵧ = _allocate_fft_dst(χᵧₖ, plans)
+
     fft_backward!(φₓ, φₓₖ, plans)
     fft_backward!(φᵧ, φᵧₖ, plans)
     fft_backward!(χₓ, χₓₖ, plans)
@@ -264,10 +280,10 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Transform input fields to real space =#
-    qᵣ  = similar(qk)
-    BRᵣ = similar(BRk)
-    BIᵣ = similar(BIk)
-  
+    qᵣ  = _allocate_fft_dst(qk, plans)
+    BRᵣ = _allocate_fft_dst(BRk, plans)
+    BIᵣ = _allocate_fft_dst(BIk, plans)
+
     fft_backward!(qᵣ,  qk,  plans)
     fft_backward!(BRᵣ, BRk, plans)
     fft_backward!(BIᵣ, BIk, plans)
@@ -436,9 +452,9 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     end
 
     #= Transform to real space =#
-    ζᵣ = similar(ζₖ)
-    BRᵣ = similar(BRk); BIᵣ = similar(BIk)
-  
+    ζᵣ = _allocate_fft_dst(ζₖ, plans)
+    BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
+
     fft_backward!(ζᵣ, ζₖ, plans)
     fft_backward!(BRᵣ, BRk, plans)
     fft_backward!(BIᵣ, BIk, plans)
@@ -571,8 +587,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     end
 
     #= Transform derivatives to real space =#
-    BRₓᵣ = similar(BRk); BRᵧᵣ = similar(BRk)
-    BIₓᵣ = similar(BIk); BIᵧᵣ = similar(BIk)
+    BRₓᵣ = _allocate_fft_dst(BRₓₖ, plans); BRᵧᵣ = _allocate_fft_dst(BRᵧₖ, plans)
+    BIₓᵣ = _allocate_fft_dst(BIₓₖ, plans); BIᵧᵣ = _allocate_fft_dst(BIᵧₖ, plans)
     fft_backward!(BRₓᵣ, BRₓₖ, plans)
     fft_backward!(BRᵧᵣ, BRᵧₖ, plans)
     fft_backward!(BIₓᵣ, BIₓₖ, plans)
@@ -592,7 +608,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     end
 
     #= Compute |B|² = BR² + BI² for the ∇²|B|² term =#
-    BRᵣ = similar(BRk); BIᵣ = similar(BIk)
+    BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
     fft_backward!(BRᵣ, BRk, plans)
     fft_backward!(BIᵣ, BIk, plans)
 

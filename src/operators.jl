@@ -1099,10 +1099,10 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
     # The Stokes drift formula u_wave = 2*Re[A* ∂A/∂x] is a product of fields
     # and MUST be computed in physical space, not spectral space
-    Aᵣ = similar(S.A)
-    dA_dxᵣ = similar(S.A)
-    dA_dyᵣ = similar(S.A)
-    dA_dzᵣ = similar(S.A)
+    Aᵣ = _allocate_fft_dst(S.A, plans)
+    dA_dxᵣ = _allocate_fft_dst(dA_dxₖ, plans)
+    dA_dyᵣ = _allocate_fft_dst(dA_dyₖ, plans)
+    dA_dzᵣ = _allocate_fft_dst(S.C, plans)
 
     fft_backward!(Aᵣ, S.A, plans)
     fft_backward!(dA_dxᵣ, dA_dxₖ, plans)
