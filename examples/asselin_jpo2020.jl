@@ -85,10 +85,11 @@ function main()
 
     # Parameters matching Asselin et al. (2020)
     # Fully dimensional simulation with physical domain size
-    # Weak biharmonic (4th order) hyperdiffusion for waves
-    # E-folding time at grid scale ≈ 10 inertial periods
-    # νₕ₁ʷ ≈ 1/(k_max⁴ × 10×T_inertial) where k_max = π×nx/Lx
-    νₕ₁ʷ_wave = 2000.0  # [m⁴/s] - weak biharmonic diffusion
+    # Biharmonic (4th order) hyperdiffusion for waves
+    # For meaningful damping at grid scale: λʷ = dt × ν × k_max⁴ ≈ 0.1
+    # k_max = π×nx/Lx ≈ 5.7e-3 m⁻¹, k_max⁴ ≈ 1.1e-9 m⁻⁴
+    # νₕ₁ʷ ≈ 0.1 / (dt × k_max⁴) ≈ 1e7 m⁴/s
+    νₕ₁ʷ_wave = 1.0e7  # [m⁴/s] - grid-scale damping ~10% per timestep
 
     par = QGYBJplus.default_params(
         nx = nx, ny = ny, nz = nz,
