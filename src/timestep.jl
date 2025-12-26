@@ -60,7 +60,8 @@ STABILITY:
 
 PENCILARRAY COMPATIBILITY:
 --------------------------
-All loops use local indexing with local_to_global() for wavenumber access.
+All loops use local indexing with local_to_global() for wavenumber access
+based on the array pencil (important for MPI input/output pencil mismatch).
 The vertical dimension (z) must be fully local for proper operation.
 
 ================================================================================
@@ -368,8 +369,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, S.q)
+        j_global = local_to_global(j, 3, S.q)
 
         if L[i_global, j_global]
             kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
@@ -392,7 +393,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             if par.ybj_plus
                 #= Update B (wave envelope)
                 ∂B/∂t + J(ψ,B) = i(kₕ²·N²/(2f))A - (i/2)ζ·B =#
-                k_global = local_to_global(k, 1, G)
+                k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
                 B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
                                    + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
@@ -401,7 +402,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 In terms of real/imaginary parts (with αdisp = N²/(2f)):
                     ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
                     ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
-                k_global = local_to_global(k, 1, G)
+                k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
                 BRnew = ( BRok_arr[k, i, j] - par.dt*nBRk_arr[k, i, j]
                           - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
@@ -442,8 +443,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
         # Subtract from q
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, G)
-            j_global = local_to_global(j, 3, G)
+            i_global = local_to_global(i, 2, S.q)
+            j_global = local_to_global(j, 3, S.q)
             if L[i_global, j_global]
                 q_arr[k, i, j] -= qwk_arr[k, i, j]
             else
@@ -700,8 +701,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, Sn.q)
+        j_global = local_to_global(j, 3, Sn.q)
 
         if L[i_global, j_global]
             kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
@@ -724,7 +725,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             if par.ybj_plus
                 #= Update B (complex)
                 ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A - (i/2)ζ·B =#
-                k_global = local_to_global(k, 1, G)
+                k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
                 Btemp_arr[k, i, j] = Bnm1_arr[k, i, j]*exp(-2λʷ) +
                                2*par.dt*( -nBk_arr[k, i, j] +
@@ -734,7 +735,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
                 #= Update B (real and imaginary parts)
                 BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
                 BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
-                k_global = local_to_global(k, 1, G)
+                k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
                 BRtemp_arr[k, i, j] = Complex(real(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
                                2*par.dt*( nBRk_arr[k, i, j] +
@@ -765,8 +766,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     γ = par.γ
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for dealias mask lookup
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, Sn.q)
+        j_global = local_to_global(j, 3, Sn.q)
 
         if L[i_global, j_global]
             # Filter q - store in Sn so it becomes new Snm1 after rotation
@@ -815,8 +816,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         end
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, G)
-            j_global = local_to_global(j, 3, G)
+            i_global = local_to_global(i, 2, Snp1.q)
+            j_global = local_to_global(j, 3, Snp1.q)
             if L[i_global, j_global]
                 qnp1_arr[k, i, j] -= qwk_arr[k, i, j]
             else

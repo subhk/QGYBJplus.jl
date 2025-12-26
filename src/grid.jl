@@ -319,25 +319,30 @@ end
 
 """
     local_to_global(local_idx::Int, dim::Int, G::Grid) -> Int
+    local_to_global(local_idx::Int, dim::Int, arr::AbstractArray) -> Int
 
-Convert a local array index to a global index (xy-pencil configuration).
+Convert a local array index to a global index.
 
-For 2D decomposition, this uses the base pencil ranges. Dimensions are
-ordered `(z, x, y)` so `dim=1` is z, `dim=2` is x, `dim=3` is y.
+For MPI PencilArrays, use `local_to_global(local_idx, dim, arr)` so the mapping
+follows the array's pencil decomposition (input/output pencils can differ).
+For serial arrays, this returns `local_idx`.
+
+Dimensions are ordered `(z, x, y)` so `dim=1` is z, `dim=2` is x, `dim=3` is y.
 
 # Arguments
 - `local_idx`: Local index in the array
 - `dim`: Dimension (1, 2, or 3 for z, x, y)
-- `G::Grid`: Grid with optional decomposition
+- `G::Grid`: Grid with optional decomposition (xy-pencil mapping)
+- `arr`: Array to infer the local→global mapping (preferred for MPI)
 
 # Returns
 Global index for wavenumber lookup.
 
 # Example
 ```julia
-for j_local in axes(arr, 3), i_local in axes(arr, 2)
-    i_global = local_to_global(i_local, 2, grid)
-    j_global = local_to_global(j_local, 3, grid)
+for j_local in axes(ψk, 3), i_local in axes(ψk, 2)
+    i_global = local_to_global(i_local, 2, ψk)
+    j_global = local_to_global(j_local, 3, ψk)
     kx = grid.kx[i_global]
     ky = grid.ky[j_global]
 end
@@ -350,6 +355,15 @@ function local_to_global(local_idx::Int, dim::Int, G::Grid)
         # For 2D decomposition, use base pencil ranges
         return G.decomp.local_range_xy[dim][local_idx]
     end
+end
+
+@inline function local_to_global(local_idx::Int, dim::Int, arr::AbstractArray)
+    return local_idx
+end
+
+@inline function local_to_global(local_idx::Int, dim::Int, arr::PencilArray)
+    ranges = PencilArrays.range_local(PencilArrays.pencil(arr))
+    return ranges[dim][local_idx]
 end
 
 """

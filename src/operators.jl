@@ -189,8 +189,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     vk_arr = parent(vk)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, ψk)
+        j_global = local_to_global(j_local, 3, ψk)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
         uk_arr[k, i_local, j_local] = -ikᵧ * ψk_arr[k, i_local, j_local]
@@ -387,8 +387,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # For each LOCAL horizontal wavenumber (kₓ, kᵧ), solve tridiagonal system
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, wk)
+        j_global = local_to_global(j_local, 3, wk)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
@@ -772,8 +772,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Compute derivatives for k = 1:(nz-1) where A_z is defined
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, dAz_dxₖ)
+        j_global = local_to_global(j_local, 3, dAz_dxₖ)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
         dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
@@ -889,8 +889,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     # Compute derivatives for k = 1:(nz-1) where A_z is defined
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, dAz_dxₖ)
+        j_global = local_to_global(j_local, 3, dAz_dxₖ)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
         dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
@@ -1077,8 +1077,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     dA_dyₖ_arr = parent(dA_dyₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, dA_dxₖ)
+        j_global = local_to_global(j_local, 3, dA_dxₖ)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
         dA_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_arr[k, i_local, j_local]
