@@ -150,7 +150,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
 
     # Get local dimensions
     ψ_arr = parent(psi)
-    nx_local, ny_local, nz_local = size(ψ_arr)
+    nz_local, nx_local, ny_local = size(ψ_arr)
 
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local for omega RHS"
@@ -160,9 +160,9 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     ψzₖ_arr = parent(ψzₖ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         if k == nz
-            ψzₖ_arr[i,j,k] = 0  # Neumann top
+            ψzₖ_arr[k, i, j] = 0  # Neumann top
         else
-            ψzₖ_arr[i,j,k] = (ψ_arr[i,j,k+1] - ψ_arr[i,j,k]) / Δz
+            ψzₖ_arr[k, i, j] = (ψ_arr[k+1, i, j] - ψ_arr[k, i, j]) / Δz
         end
     end
 
@@ -173,19 +173,19 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = kₓ^2 + kᵧ^2
 
-        bxₖ_arr[i,j,k] = im*kₓ*ψzₖ_arr[i,j,k]
-        byₖ_arr[i,j,k] = im*kᵧ*ψzₖ_arr[i,j,k]
+        bxₖ_arr[k, i, j] = im*kₓ*ψzₖ_arr[k, i, j]
+        byₖ_arr[k, i, j] = im*kᵧ*ψzₖ_arr[k, i, j]
         # average psi between k and k+1; at top use psi at top
-        ψavg = k < nz ? 0.5*(ψ_arr[i,j,k+1] + ψ_arr[i,j,k]) : ψ_arr[i,j,k]
-        xxₖ_arr[i,j,k] = -im*kₓ*kₕ²*ψavg
-        xyₖ_arr[i,j,k] = -im*kᵧ*kₕ²*ψavg
+        ψavg = k < nz ? 0.5*(ψ_arr[k+1, i, j] + ψ_arr[k, i, j]) : ψ_arr[k, i, j]
+        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavg
+        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavg
     end
 
     # To real space - use helper for correct pencil allocation
@@ -203,7 +203,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        rhsᵣ_arr[i,j,k] = 2.0 * ( real(bxᵣ_arr[i,j,k])*real(xyᵣ_arr[i,j,k]) - real(byᵣ_arr[i,j,k])*real(xxᵣ_arr[i,j,k]) )
+        rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
     end
 
     # Back to spectral
@@ -214,10 +214,10 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     # Previous code incorrectly divided by nx*ny, weakening omega forcing.
     rhs_arr = parent(rhs)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         if !L[i_global, j_global]
-            rhs_arr[i,j,k] = 0  # Dealias
+            rhs_arr[k, i, j] = 0  # Dealias
         end
     end
 end
@@ -241,16 +241,16 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     ψz_z_arr = parent(ψz_z)
     ψavg_z_arr = parent(ψavg_z)
 
-    nx_local_z, ny_local_z, nz_local = size(ψ_z_arr)
+    nz_local, nx_local_z, ny_local_z = size(ψ_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     @inbounds for k in 1:nz, j in 1:ny_local_z, i in 1:nx_local_z
         if k == nz
-            ψz_z_arr[i,j,k] = 0  # Neumann top
-            ψavg_z_arr[i,j,k] = ψ_z_arr[i,j,k]
+            ψz_z_arr[k, i, j] = 0  # Neumann top
+            ψavg_z_arr[k, i, j] = ψ_z_arr[k, i, j]
         else
-            ψz_z_arr[i,j,k] = (ψ_z_arr[i,j,k+1] - ψ_z_arr[i,j,k]) / Δz
-            ψavg_z_arr[i,j,k] = 0.5*(ψ_z_arr[i,j,k+1] + ψ_z_arr[i,j,k])
+            ψz_z_arr[k, i, j] = (ψ_z_arr[k+1, i, j] - ψ_z_arr[k, i, j]) / Δz
+            ψavg_z_arr[k, i, j] = 0.5*(ψ_z_arr[k+1, i, j] + ψ_z_arr[k, i, j])
         end
     end
 
@@ -263,7 +263,7 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     # Get local dimensions for xy-pencil
     ψzₖ_arr = parent(ψzₖ)
     ψavgₖ_arr = parent(ψavgₖ)
-    nx_local, ny_local, nz_local_xy = size(ψzₖ_arr)
+    nz_local_xy, nx_local, ny_local = size(ψzₖ_arr)
 
     # Build needed spectral derivatives in xy-pencil
     bxₖ = similar(psi); byₖ = similar(psi)
@@ -272,17 +272,17 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = kₓ^2 + kᵧ^2
 
-        bxₖ_arr[i,j,k] = im*kₓ*ψzₖ_arr[i,j,k]
-        byₖ_arr[i,j,k] = im*kᵧ*ψzₖ_arr[i,j,k]
-        xxₖ_arr[i,j,k] = -im*kₓ*kₕ²*ψavgₖ_arr[i,j,k]
-        xyₖ_arr[i,j,k] = -im*kᵧ*kₕ²*ψavgₖ_arr[i,j,k]
+        bxₖ_arr[k, i, j] = im*kₓ*ψzₖ_arr[k, i, j]
+        byₖ_arr[k, i, j] = im*kᵧ*ψzₖ_arr[k, i, j]
+        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavgₖ_arr[k, i, j]
+        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavgₖ_arr[k, i, j]
     end
 
     # To real space (FFTs in xy-pencil) - use helper for correct pencil allocation
@@ -300,7 +300,7 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        rhsᵣ_arr[i,j,k] = 2.0 * ( real(bxᵣ_arr[i,j,k])*real(xyᵣ_arr[i,j,k]) - real(byᵣ_arr[i,j,k])*real(xxᵣ_arr[i,j,k]) )
+        rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
     end
 
     # Back to spectral
@@ -311,10 +311,10 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     # Previous code incorrectly divided by nx*ny, weakening omega forcing.
     rhs_arr = parent(rhs)
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         if !L[i_global, j_global]
-            rhs_arr[i,j,k] = 0  # Dealias
+            rhs_arr[k, i, j] = 0  # Dealias
         end
     end
 end
@@ -410,7 +410,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     # Get local dimensions
     uk_arr = parent(uk)
     vk_arr = parent(vk)
-    nx_local, ny_local, nz_local = size(uk_arr)
+    nz_local, nx_local, ny_local = size(uk_arr)
 
     # Get density profile for weighting (ρₛ at staggered points)
     ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
@@ -423,27 +423,27 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 3, G)
+        k_global = local_to_global(k, 1, G)
         ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         ke_k = 0.0
 
         # Sum over horizontal wavenumbers with dealiasing
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 1, G)
-            j_global = local_to_global(j, 2, G)
+            i_global = local_to_global(i, 2, G)
+            j_global = local_to_global(j, 3, G)
 
             if L[i_global, j_global]
                 # KE contribution: |u|² + |v|²
-                ke_k += abs2(uk_arr[i,j,k]) + abs2(vk_arr[i,j,k])
+                ke_k += abs2(uk_arr[k, i, j]) + abs2(vk_arr[k, i, j])
             end
         end
 
         # Dealiasing correction: subtract half the kh=0 mode
         # The kh=0 mode is at global index (1,1)
-        if local_to_global(1, 1, G) == 1 && local_to_global(1, 2, G) == 1
+        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
             # This process owns the (1,1) mode
-            ke_k -= 0.5 * (abs2(uk_arr[1,1,k]) + abs2(vk_arr[1,1,k]))
+            ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         end
 
         # Weight by density and accumulate
@@ -496,7 +496,7 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 
     # Get local dimensions
     bk_arr = parent(bk)
-    nx_local, ny_local, nz_local = size(bk_arr)
+    nz_local, nx_local, ny_local = size(bk_arr)
 
     # Get density profiles
     ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
@@ -521,7 +521,7 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 3, G)
+        k_global = local_to_global(k, 1, G)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
@@ -530,18 +530,18 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
         pe_k = 0.0
 
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 1, G)
-            j_global = local_to_global(j, 2, G)
+            i_global = local_to_global(i, 2, G)
+            j_global = local_to_global(j, 3, G)
 
             if L[i_global, j_global]
                 # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
-                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[i,j,k])
+                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, i, j])
             end
         end
 
         # Dealiasing correction
-        if local_to_global(1, 1, G) == 1 && local_to_global(1, 2, G) == 1
-            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[1,1,k])
+        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
+            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, 1, 1])
         end
 
         # Weight by density and accumulate
@@ -590,7 +590,7 @@ function wave_energy_vavg(B, G::Grid, plans)
 
     # Get local dimensions
     B_arr = parent(B)
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     # Invert full complex field to physical space
     Br = _allocate_fft_dst(B, plans)
@@ -602,7 +602,7 @@ function wave_energy_vavg(B, G::Grid, plans)
     # so no additional normalization is needed
     WE = zeros(Float64, nx_local, ny_local)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        WE[i,j] += 0.5 * abs2(Br_arr[i,j,k])
+        WE[i,j] += 0.5 * abs2(Br_arr[k, i, j])
     end
     WE ./= nz
     return WE
@@ -631,7 +631,7 @@ slice at LOCAL vertical index k.
 - Vertical structure analysis at specific depths
 
 # Arguments
-- `field::Array{Complex,3}`: Spectral field (nx, ny, nz)
+- `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `k::Int`: LOCAL vertical index for slice (1 ≤ k ≤ nz_local)
@@ -648,7 +648,7 @@ function slice_horizontal(field, G::Grid, plans; k::Int)
 
     # Get local dimensions
     field_arr = parent(field)
-    nx_local, ny_local, nz_local = size(field_arr)
+    nz_local, nx_local, ny_local = size(field_arr)
 
     @assert 1 <= k <= nz_local "k=$k must be within local range 1:$nz_local"
 
@@ -661,7 +661,7 @@ function slice_horizontal(field, G::Grid, plans; k::Int)
     # so no additional normalization is needed
     sl = Array{Float64}(undef, nx_local, ny_local)
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        sl[i,j] = real(Xr_arr[i,j,k])
+        sl[i,j] = real(Xr_arr[k, i, j])
     end
     return sl
 end
@@ -681,7 +681,7 @@ slice at LOCAL y-index j.
 - Thermocline/pycnocline interaction studies
 
 # Arguments
-- `field::Array{Complex,3}`: Spectral field (nx, ny, nz)
+- `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `j::Int`: LOCAL Y-index for slice (1 ≤ j ≤ ny_local)
@@ -698,7 +698,7 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
 
     # Get local dimensions
     field_arr = parent(field)
-    nx_local, ny_local, nz_local = size(field_arr)
+    nz_local, nx_local, ny_local = size(field_arr)
 
     @assert 1 <= j <= ny_local "j=$j must be within local range 1:$ny_local"
 
@@ -710,7 +710,7 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
     # so no additional normalization is needed
     sl = Array{Float64}(undef, nx_local, nz_local)
     @inbounds for k in 1:nz_local, i in 1:nx_local
-        sl[i,k] = real(Xr_arr[i,j,k])
+        sl[i,k] = real(Xr_arr[k, i, j])
     end
     return sl
 end
@@ -825,7 +825,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
     CR_arr = parent(CR)
     CI_arr = parent(CI)
 
-    nx_local, ny_local, nz_local = size(BR_arr)
+    nz_local, nx_local, ny_local = size(BR_arr)
 
     # Get density profile if available (for variable stratification)
     # r_2 corresponds to rho at staggered points for potential energy
@@ -842,7 +842,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 3, G)
+        k_global = local_to_global(k, 1, G)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
         ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
@@ -851,8 +851,8 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         wce_k = 0.0
 
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 1, G)
-            j_global = local_to_global(j, 2, G)
+            i_global = local_to_global(i, 2, G)
+            j_global = local_to_global(j, 3, G)
 
             if L[i_global, j_global]
                 kₓ = G.kx[i_global]
@@ -860,21 +860,21 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
                 kₕ² = kₓ^2 + kᵧ^2
 
                 # WKE: |BR|² + |BI|²
-                wke_k += abs2(BR_arr[i,j,k]) + abs2(BI_arr[i,j,k])
+                wke_k += abs2(BR_arr[k, i, j]) + abs2(BI_arr[k, i, j])
 
                 # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
-                wpe_k += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[i,j,k]) + abs2(CI_arr[i,j,k]))
+                wpe_k += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
 
                 # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
-                wce_k += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[i,j,k]) + abs2(AI_arr[i,j,k]))
+                wce_k += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
             end
         end
 
         # Dealiasing correction for WKE: subtract half the kh=0 mode
         # The kh=0 mode is at global index (1,1)
-        if local_to_global(1, 1, G) == 1 && local_to_global(1, 2, G) == 1
+        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
             # This process owns the (1,1) mode
-            wke_k -= 0.5 * (abs2(BR_arr[1,1,k]) + abs2(BI_arr[1,1,k]))
+            wke_k -= 0.5 * (abs2(BR_arr[k, 1, 1]) + abs2(BI_arr[k, 1, 1]))
         end
 
         WKE_local += wke_k

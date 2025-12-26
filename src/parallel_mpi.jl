@@ -173,13 +173,13 @@ Wrapper for PencilArrays decomposition supporting 2D decomposition with
 multiple pencil configurations for different operations.
 
 # Fields
-- `pencil_xy`: Pencil configuration for horizontal operations (decomp_dims=(2,3), x local)
-- `pencil_xz`: Intermediate pencil for two-step transpose (decomp_dims=(1,3), y local)
-- `pencil_z`: Pencil configuration for vertical operations (decomp_dims=(1,2), z local)
+- `pencil_xy`: Pencil configuration for horizontal operations (decomp_dims=(2,3), z local)
+- `pencil_xz`: Same layout as `pencil_xy` (kept for compatibility)
+- `pencil_z`: Same layout as `pencil_xy` (kept for compatibility)
 - `local_range_xy`: Local index ranges in xy-pencil configuration
 - `local_range_xz`: Local index ranges in xz-pencil configuration
 - `local_range_z`: Local index ranges in z-pencil configuration
-- `global_dims`: Global array dimensions (nx, ny, nz)
+- `global_dims`: Global array dimensions (nz, nx, ny)
 - `topology`: 2D process topology (px, py)
 """
 struct PencilDecomp{P1, P2, P3}
@@ -199,9 +199,9 @@ end
 Create a 2D pencil decomposition for 3D data.
 
 `decomp_dims` selects which dimensions are distributed across the 2D MPI
-topology. For example:
-- `(2, 3)` distributes y and z (x local)
-- `(1, 2)` distributes x and y (z local)
+topology. For the internal `(z, x, y)` storage:
+- `(2, 3)` distributes x and y (z local)
+Note: `(2, 3)` is required by the current PencilFFTs backend.
 
 Note: `decomp_dims=(1,2)` is not compatible with the current PencilFFTs
 backend, which requires decomposition on the last two dimensions.
@@ -209,7 +209,8 @@ backend, which requires decomposition on the last two dimensions.
 function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIConfig; decomp_dims=(2,3))
     topo = mpi_config.topology
     px, py = topo
-    dims = (nx, ny, nz)
+    # Internal storage order is (z, x, y)
+    dims = (nz, nx, ny)
 
     length(decomp_dims) == 2 || error("decomp_dims must have length 2 (got $decomp_dims)")
     all(1 .<= decomp_dims .<= 3) || error("decomp_dims entries must be in 1:3 (got $decomp_dims)")
@@ -231,18 +232,12 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     mpi_topo = MPITopology(mpi_config.comm, topo)
 
     if decomp_dims == (2, 3)
-        # Create pencil configurations as a LINKED CHAIN for transpose compatibility
-        # PencilArrays requires pencils to be linked (parent-child) for transpose! to work
-        pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (2, 3))  # x local (base pencil)
-        pencil_xz = Pencil(pencil_xy; decomp_dims=(1, 3))   # y local (linked to xy for transpose)
-        pencil_z = Pencil(pencil_xz; decomp_dims=(1, 2))    # z local (linked to xz for transpose)
-    elseif decomp_dims == (1, 2)
-        # z-local decomposition: distribute x and y only
-        pencil_xy = Pencil(mpi_topo, (nx, ny, nz), (1, 2))
+        # z local, x/y distributed. Vertical operations are local so no z-pencil needed.
+        pencil_xy = Pencil(mpi_topo, (nz, nx, ny), (2, 3))
         pencil_xz = pencil_xy
         pencil_z = pencil_xy
     else
-        error("Unsupported decomp_dims=$decomp_dims. Supported: (2,3) or (1,2).")
+        error("Unsupported decomp_dims=$decomp_dims. Supported: (2,3).")
     end
 
     # Get local index ranges
@@ -251,17 +246,13 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     local_range_z = range_local(pencil_z)
 
     if mpi_config.is_root
-        if decomp_dims == (2, 3)
-            @info "Pencil decompositions created" xy_decomp=(2,3) xz_decomp=(1,3) z_decomp=(1,2)
-        else
-            @info "Pencil decompositions created" xy_decomp=decomp_dims xz_decomp=decomp_dims z_decomp=decomp_dims
-        end
+        @info "Pencil decompositions created" xy_decomp=decomp_dims xz_decomp=decomp_dims z_decomp=decomp_dims
     end
 
     return PencilDecomp(
         pencil_xy, pencil_xz, pencil_z,
         local_range_xy, local_range_xz, local_range_z,
-        (nx, ny, nz), topo
+        (nz, nx, ny), topo
     )
 end
 
@@ -375,20 +366,19 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
     kx = T.([i <= (nx+1)÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
     ky = T.([j <= (ny+1)÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny])
 
-    # Create distributed kh2 array in xy-pencil configuration
+    # Create distributed kh2 array in xy-pencil configuration (stored as z,x,y)
     kh2_pencil = PencilArray{T}(undef, decomp.pencil_xy)
 
     # Fill local portion of kh2
     local_range = decomp.local_range_xy
     parent_arr = parent(kh2_pencil)
 
-    for k_local in axes(parent_arr, 3)
-        k_global = local_range[3][k_local]
-        for j_local in axes(parent_arr, 2)
-            j_global = local_range[2][j_local]
-            for i_local in axes(parent_arr, 1)
-                i_global = local_range[1][i_local]
-                parent_arr[i_local, j_local, k_local] = kx[i_global]^2 + ky[j_global]^2
+    for k_local in axes(parent_arr, 1)
+        for i_local in axes(parent_arr, 2)
+            i_global = local_range[2][i_local]
+            for j_local in axes(parent_arr, 3)
+                j_global = local_range[3][j_local]
+                parent_arr[k_local, i_local, j_local] = kx[i_global]^2 + ky[j_global]^2
             end
         end
     end
@@ -570,10 +560,11 @@ function plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
               "Use decomp_dims=(2,3) or switch FFT backend.")
     end
 
+    # Storage order is (z, x, y): transform x and y, keep z untouched.
     transform = (
+        PencilFFTs.Transforms.NoTransform(),
         PencilFFTs.Transforms.FFT(),
-        PencilFFTs.Transforms.FFT(),
-        PencilFFTs.Transforms.NoTransform()
+        PencilFFTs.Transforms.FFT()
     )
 
     # Use permute_dims=Val(false) to keep logical dimension order unchanged.
@@ -785,7 +776,7 @@ function z_is_local(grid::Grid)
     if decomp === nothing
         return true
     end
-    return decomp.local_range_xy[3] == 1:grid.nz
+    return decomp.local_range_xy[1] == 1:grid.nz
 end
 
 function get_local_range_z(grid::Grid)
@@ -968,14 +959,14 @@ function init_mpi_random_field!(arr::PencilArray, grid::Grid,
     local_range = decomp.local_range_xy
     parent_arr = parent(arr)
 
-    for k_local in axes(parent_arr, 3)
-        k_global = local_range[3][k_local]
-        for j_local in axes(parent_arr, 2)
-            j_global = local_range[2][j_local]
-            for i_local in axes(parent_arr, 1)
-                i_global = local_range[1][i_local]
+    for k_local in axes(parent_arr, 1)
+        k_global = local_range[1][k_local]
+        for i_local in axes(parent_arr, 2)
+            i_global = local_range[2][i_local]
+            for j_local in axes(parent_arr, 3)
+                j_global = local_range[3][j_local]
                 φ = 2π * ((hash((i_global, j_global, k_global, seed_offset)) % 1_000_000) / 1_000_000)
-                parent_arr[i_local, j_local, k_local] = amplitude * cis(φ)
+                parent_arr[k_local, i_local, j_local] = amplitude * cis(φ)
             end
         end
     end

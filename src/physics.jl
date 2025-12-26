@@ -616,8 +616,8 @@ for distributed computing.
 ```julia
 # In a distributed loop:
 for j_local in 1:ny_local, i_local in 1:nx_local
-    i_global = local_to_global(i_local, 1, G)
-    j_global = local_to_global(j_local, 2, G)
+    i_global = local_to_global(i_local, 2, G)
+    j_global = local_to_global(j_local, 3, G)
     if is_dealiased(i_global, j_global, G.nx, G.ny)
         # Process this mode
     else

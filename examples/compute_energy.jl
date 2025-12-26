@@ -29,10 +29,10 @@ Compute horizontal gradient using spectral derivatives.
 Returns (∂f/∂x, ∂f/∂y) in physical space.
 """
 function compute_gradient_spectral(field::Array{T,3}, kx::Vector, ky::Vector) where T
-    nx, ny, nz = size(field)
+    nz, nx, ny = size(field)
 
     # FFT to spectral space (2D horizontal)
-    field_hat = fft(field, (1,2))
+    field_hat = fft(field, (2,3))
 
     # Compute spectral derivatives
     dfdx_hat = similar(field_hat)
@@ -41,15 +41,15 @@ function compute_gradient_spectral(field::Array{T,3}, kx::Vector, ky::Vector) wh
     for k in 1:nz
         for j in 1:ny
             for i in 1:nx
-                dfdx_hat[i,j,k] = im * kx[i] * field_hat[i,j,k]
-                dfdy_hat[i,j,k] = im * ky[j] * field_hat[i,j,k]
+                dfdx_hat[k, i, j] = im * kx[i] * field_hat[k, i, j]
+                dfdy_hat[k, i, j] = im * ky[j] * field_hat[k, i, j]
             end
         end
     end
 
     # Back to physical space
-    dfdx = real.(ifft(dfdx_hat, (1,2)))
-    dfdy = real.(ifft(dfdy_hat, (1,2)))
+    dfdx = real.(ifft(dfdx_hat, (2,3)))
+    dfdy = real.(ifft(dfdy_hat, (2,3)))
 
     return dfdx, dfdy
 end
@@ -132,21 +132,33 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
     x = Array(ds_in["x"][:])
     y = Array(ds_in["y"][:])
     z = Array(ds_in["z"][:])
-    psi = Array(ds_in["psi"][:,:,:])
-    LAr = Array(ds_in["LAr"][:,:,:])
-    LAi = Array(ds_in["LAi"][:,:,:])
+    psi_xyz = Array(ds_in["psi"][:,:,:])
+    LAr_xyz = Array(ds_in["LAr"][:,:,:])
+    LAi_xyz = Array(ds_in["LAi"][:,:,:])
 
     close(ds_in)
+
+    # Convert to internal (z, x, y) order for spectral derivatives
+    psi = permutedims(psi_xyz, (3, 1, 2))
+    LAr = permutedims(LAr_xyz, (3, 1, 2))
+    LAi = permutedims(LAi_xyz, (3, 1, 2))
 
     # Compute spatial KE fields
     flow_ke, u, v = compute_flow_ke(psi, kx, ky)
     wave_ke = compute_wave_ke(LAr, LAi)
     total_ke = flow_ke .+ wave_ke
 
+    # Convert back to file order (x, y, z)
+    flow_ke_xyz = permutedims(flow_ke, (2, 3, 1))
+    wave_ke_xyz = permutedims(wave_ke, (2, 3, 1))
+    total_ke_xyz = permutedims(total_ke, (2, 3, 1))
+    u_xyz = permutedims(u, (2, 3, 1))
+    v_xyz = permutedims(v, (2, 3, 1))
+
     # Write output
     NCDataset(output_file, "c") do ds
         # Dimensions
-        nx, ny, nz = size(psi)
+        nx, ny, nz = size(psi_xyz)
         ds.dim["x"] = nx
         ds.dim["y"] = ny
         ds.dim["z"] = nz
@@ -169,29 +181,29 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
 
         # Flow KE field
         flow_ke_var = defVar(ds, "flow_KE", Float64, ("x", "y", "z"))
-        flow_ke_var[:,:,:] = flow_ke
+        flow_ke_var[:,:,:] = flow_ke_xyz
         flow_ke_var.attrib["units"] = "m²/s²"
         flow_ke_var.attrib["long_name"] = "flow kinetic energy"
         flow_ke_var.attrib["formula"] = "KE = (1/2)(u² + v²)"
 
         # Wave KE field
         wave_ke_var = defVar(ds, "wave_KE", Float64, ("x", "y", "z"))
-        wave_ke_var[:,:,:] = wave_ke
+        wave_ke_var[:,:,:] = wave_ke_xyz
         wave_ke_var.attrib["units"] = "m²/s²"
         wave_ke_var.attrib["long_name"] = "wave kinetic energy"
         wave_ke_var.attrib["formula"] = "KE = (1/2)(LAr² + LAi²)"
 
         # Total KE field
         total_ke_var = defVar(ds, "total_KE", Float64, ("x", "y", "z"))
-        total_ke_var[:,:,:] = total_ke
+        total_ke_var[:,:,:] = total_ke_xyz
         total_ke_var.attrib["units"] = "m²/s²"
         total_ke_var.attrib["long_name"] = "total kinetic energy"
 
         # Velocity fields
         u_var = defVar(ds, "u", Float64, ("x", "y", "z"))
         v_var = defVar(ds, "v", Float64, ("x", "y", "z"))
-        u_var[:,:,:] = u
-        v_var[:,:,:] = v
+        u_var[:,:,:] = u_xyz
+        v_var[:,:,:] = v_xyz
         u_var.attrib["units"] = "m/s"
         u_var.attrib["long_name"] = "zonal velocity (u = -∂ψ/∂y)"
         v_var.attrib["units"] = "m/s"

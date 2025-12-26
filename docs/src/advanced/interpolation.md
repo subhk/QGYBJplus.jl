@@ -216,7 +216,7 @@ function regrid_fine(field_coarse, grid_coarse, grid_fine)
                 x = grid_fine.x[i]
                 y = grid_fine.y[j]
                 z = grid_fine.z[k]
-                field_fine[i,j,k] = interpolate(field_coarse, x, y, z,
+                field_fine[k,i,j] = interpolate(field_coarse, x, y, z,
                                                  grid_coarse)
             end
         end

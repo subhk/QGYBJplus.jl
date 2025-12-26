@@ -141,57 +141,27 @@ The decomposition is stored in `grid.decomp`:
 decomp = grid.decomp
 
 # Three pencil configurations
-decomp.pencil_xy  # decomp_dims=(2,3): y,z distributed, x local - for FFTs
-decomp.pencil_xz  # decomp_dims=(1,3): x,z distributed, y local - INTERMEDIATE
-decomp.pencil_z   # decomp_dims=(1,2): x,y distributed, z local - for vertical ops
+decomp.pencil_xy  # decomp_dims=(2,3): x,y distributed, z local - for FFTs
+decomp.pencil_xz  # same layout as pencil_xy (z local)
+decomp.pencil_z   # same layout as pencil_xy (z local)
 
 # Local index ranges for each configuration
-decomp.local_range_xy  # (1:nx, y_start:y_end, z_start:z_end)
-decomp.local_range_xz  # (x_start:x_end, 1:ny, z_start:z_end)
-decomp.local_range_z   # (x_start:x_end, y_start:y_end, 1:nz)
+decomp.local_range_xy  # (z_start:z_end, x_start:x_end, y_start:y_end)
+decomp.local_range_xz  # (z_start:z_end, x_start:x_end, y_start:y_end)
+decomp.local_range_z   # (z_start:z_end, x_start:x_end, y_start:y_end)
 
 # Global dimensions and topology
-decomp.global_dims  # (nx, ny, nz)
+decomp.global_dims  # (nz, nx, ny)
 decomp.topology     # (px, py) process grid
 ```
 
 ### How Transposes Work
 
-QGYBJplus uses **two-step transpose** because PencilArrays requires that pencil decompositions differ by at most one dimension. Since xy-pencil (2,3) and z-pencil (1,2) differ in both dimensions, we use an intermediate xz-pencil (1,3):
+With the `(z, x, y)` storage order and `decomp_dims=(2,3)`, z is fully local.
+FFT and vertical operations therefore use the same pencil layout, and the
+transpose helpers are effectively no-ops in the current configuration.
 
-```
-                         QGYBJplus Two-Step Transpose Architecture
-
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │                         xy-pencil (2,3)                                     │
-    │                    y,z distributed; x local                                 │
-    │                  Used for: FFTs, horizontal operations                      │
-    └─────────────────────────────┬───────────────────────────────────────────────┘
-                                  │
-                    transpose!(buffer, src)  [changes 2→1]
-                                  ▼
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │                         xz-pencil (1,3)                                     │
-    │                    x,z distributed; y local                                 │
-    │                       INTERMEDIATE for transposes                           │
-    └─────────────────────────────┬───────────────────────────────────────────────┘
-                                  │
-                    transpose!(dst, buffer)  [changes 3→2]
-                                  ▼
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │                          z-pencil (1,2)                                     │
-    │                    x,y distributed; z local                                 │
-    │               Used for: Tridiagonal solves, vertical ops                    │
-    └─────────────────────────────────────────────────────────────────────────────┘
-
-    Transpose path satisfies PencilArrays constraint (max 1 dim change per step):
-    • xy→z: (2,3) → (1,3) → (1,2)  ✓
-    • z→xy: (1,2) → (1,3) → (2,3)  ✓
-```
-
-The two-step transpose is handled automatically by `transpose_to_z_pencil!` and `transpose_to_xy_pencil!`.
-
-**Example:** Inverting q to ψ requires a vertical tridiagonal solve:
+**Example:** Inverting q to ψ still uses the same API (transposes are skipped):
 
 ```julia
 function invert_q_to_psi!(S, G; a, workspace)
@@ -199,13 +169,13 @@ function invert_q_to_psi!(S, G; a, workspace)
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z)
 
     if need_transpose
-        # 1. Two-step transpose: xy(2,3) → xz(1,3) → z(1,2)
+        # 1. Transpose (no-op when z is local)
         transpose_to_z_pencil!(workspace.q_z, S.q, G)
 
         # 2. Solve tridiagonal system (z now fully local!)
         # ... Thomas algorithm for each (i,j) column ...
 
-        # 3. Two-step transpose back: z(1,2) → xz(1,3) → xy(2,3)
+        # 3. Transpose back (no-op when z is local)
         transpose_to_xy_pencil!(S.psi, workspace.psi_z, G)
     else
         # Serial: direct solve
@@ -243,25 +213,25 @@ When iterating over distributed arrays, use local indices but map to global for 
 
 ```julia
 # For xy-pencil arrays (default)
-for k_local in axes(arr, 3)
-    for j_local in axes(arr, 2)
-        for i_local in axes(arr, 1)
+for k_local in axes(arr, 1)
+    for j_local in axes(arr, 3)
+        for i_local in axes(arr, 2)
             # Map to global indices for wavenumber lookup
-            i_global = local_to_global(i_local, 1, grid)
-            j_global = local_to_global(j_local, 2, grid)
+            i_global = local_to_global(i_local, 2, grid)
+            j_global = local_to_global(j_local, 3, grid)
 
             kx = grid.kx[i_global]
             ky = grid.ky[j_global]
 
             # Use local indices for array access
-            arr[i_local, j_local, k_local] = ...
+            arr[k_local, i_local, j_local] = ...
         end
     end
 end
 
 # For z-pencil arrays (after transpose)
-i_global = local_to_global_z(i_local, 1, grid)
-j_global = local_to_global_z(j_local, 2, grid)
+i_global = local_to_global_z(i_local, 2, grid)
+j_global = local_to_global_z(j_local, 3, grid)
 ```
 
 ### Helper Functions
@@ -272,7 +242,7 @@ local_range = get_local_range(grid)       # xy-pencil
 local_range_z = get_local_range_z(grid)   # z-pencil
 
 # Get local dimensions of an array
-nx_local, ny_local, nz_local = get_local_dims(arr)
+nz_local, nx_local, ny_local = get_local_dims(arr)
 
 # Check if array is distributed
 is_distributed = is_parallel_array(arr)
@@ -422,19 +392,17 @@ main()
 
 ```julia
 # Allocate array in xy-pencil configuration (for FFTs)
-# decomp_dims=(2,3): y,z distributed; x local
+# decomp_dims=(2,3): x,y distributed; z local
 arr_xy = QGYBJplus.allocate_xy_pencil(grid, ComplexF64)
 
-# Allocate array in xz-pencil configuration (intermediate for transposes)
-# decomp_dims=(1,3): x,z distributed; y local
+# Allocate array in xz-pencil configuration (same layout as xy)
 arr_xz = QGYBJplus.allocate_xz_pencil(grid, ComplexF64)
 
-# Allocate array in z-pencil configuration (for vertical ops)
-# decomp_dims=(1,2): x,y distributed; z local
+# Allocate array in z-pencil configuration (same layout as xy)
 arr_z = QGYBJplus.allocate_z_pencil(grid, ComplexF64)
 ```
 
-In serial mode, all three functions return standard `Array{T,3}` of size `(nx, ny, nz)`.
+In serial mode, all three functions return standard `Array{T,3}` of size `(nz, nx, ny)`.
 
 ## Performance Considerations
 
@@ -451,11 +419,11 @@ QGYBJ+.jl with 2D decomposition scales to O(N²) processes for N³ grid.
 
 | Operation | Communication Pattern | Cost |
 |:----------|:---------------------|:-----|
-| Transpose xy↔z | **Two-step** all-to-all via xz-pencil | 2 × O(N³/P) data moved |
+| Transpose xy↔z | **No-op** (z local) | 0 |
 | FFT | Internal transposes | Handled by PencilFFTs |
 | Reduction | Global sum | O(log P) |
 
-**Note:** The two-step transpose (xy↔xz↔z) doubles the communication compared to a single transpose, but is required by PencilArrays' constraint that decomp_dims can only differ by one dimension per transpose.
+**Note:** With z local, explicit xy↔z transposes are avoided; vertical operations stay local.
 
 ### Optimization Tips
 

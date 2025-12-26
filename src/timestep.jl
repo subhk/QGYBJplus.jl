@@ -90,11 +90,11 @@ function split_B_to_real_imag!(BRk, BIk, B)
     B_arr = parent(B)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        BRk_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-        BIk_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+        BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
+        BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
     end
     return BRk, BIk
 end
@@ -116,10 +116,10 @@ function combine_real_imag_to_B!(B, BRk, BIk)
     B_arr = parent(B)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        B_arr[i,j,k] = Complex(real(BRk_arr[i,j,k]), 0) + im*Complex(real(BIk_arr[i,j,k]), 0)
+        B_arr[k, i, j] = Complex(real(BRk_arr[k, i, j]), 0) + im*Complex(real(BIk_arr[k, i, j]), 0)
     end
     return B
 end
@@ -211,7 +211,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     A_arr = parent(S.A)
     C_arr = parent(S.C)
 
-    nx_local, ny_local, nz_local = size(q_arr)
+    nz_local, nx_local, ny_local = size(q_arr)
     nz = G.nz
 
     # Note: In xy-pencil format, z is fully local (nz_local = nz).
@@ -244,8 +244,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         BRk_arr = parent(BRk); BIk_arr = parent(BIk)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-            BIk_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+            BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
+            BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
         end
     end
 
@@ -333,8 +333,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         BRok_arr = parent(BRok); BIok_arr = parent(BIok)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRok_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-            BIok_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+            BRok_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
+            BIok_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
         end
     end
 
@@ -368,8 +368,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
 
         if L[i_global, j_global]
             kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
@@ -383,40 +383,40 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             #= Update q (QGPV) =#
             if par.fixed_flow
                 # Keep q unchanged when mean flow is fixed
-                q_arr[i,j,k] = qok_arr[i,j,k]
+                q_arr[k, i, j] = qok_arr[k, i, j]
             else
                 # q^(n+1) = [q^n - dt×J(ψ,q) + dt×diffusion] × exp(-λ×dt)
-                q_arr[i,j,k] = ( qok_arr[i,j,k] - par.dt*nqk_arr[i,j,k] + par.dt*dqk_arr[i,j,k] ) * exp(-λₑ)
+                q_arr[k, i, j] = ( qok_arr[k, i, j] - par.dt*nqk_arr[k, i, j] + par.dt*dqk_arr[k, i, j] ) * exp(-λₑ)
             end
 
             if par.ybj_plus
                 #= Update B (wave envelope)
                 ∂B/∂t + J(ψ,B) = i(kₕ²·N²/(2f))A - (i/2)ζ·B =#
-                k_global = local_to_global(k, 3, G)
+                k_global = local_to_global(k, 1, G)
                 αdisp = αdisp_profile[k_global]
-                B_arr[i,j,k] = ( Bok_arr[i,j,k] - par.dt*nBk_arr[i,j,k]
-                                 + par.dt*(im*αdisp*kₕ²*A_arr[i,j,k] - 0.5im*rBk_arr[i,j,k]) ) * exp(-λʷ)
+                B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
+                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
             else
                 #= Update B (wave envelope)
                 In terms of real/imaginary parts (with αdisp = N²/(2f)):
                     ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
                     ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
-                k_global = local_to_global(k, 3, G)
+                k_global = local_to_global(k, 1, G)
                 αdisp = αdisp_profile[k_global]
-                BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
-                          - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
-                          + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
-                BInew = ( BIok_arr[i,j,k] - par.dt*nBIk_arr[i,j,k]
-                          + par.dt*αdisp*kₕ²*Complex(real(A_arr[i,j,k]),0)
-                          - par.dt*0.5*rBRk_arr[i,j,k] ) * exp(-λʷ)
+                BRnew = ( BRok_arr[k, i, j] - par.dt*nBRk_arr[k, i, j]
+                          - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
+                          + par.dt*0.5*rBIk_arr[k, i, j] ) * exp(-λʷ)
+                BInew = ( BIok_arr[k, i, j] - par.dt*nBIk_arr[k, i, j]
+                          + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
+                          - par.dt*0.5*rBRk_arr[k, i, j] ) * exp(-λʷ)
 
                 # Recombine into complex B
-                B_arr[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
+                B_arr[k, i, j] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
             end
         else
             # Zero out dealiased modes
-            q_arr[i,j,k] = 0
-            B_arr[i,j,k] = 0
+            q_arr[k, i, j] = 0
+            B_arr[k, i, j] = 0
         end
     end
 
@@ -432,8 +432,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         else
             # Rebuild BR/BI from updated B
             @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-                BIk_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+                BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
+                BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
             end
 
             # Compute qʷ from B
@@ -442,12 +442,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
         # Subtract from q
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 1, G)
-            j_global = local_to_global(j, 2, G)
+            i_global = local_to_global(i, 2, G)
+            j_global = local_to_global(j, 3, G)
             if L[i_global, j_global]
-                q_arr[i,j,k] -= qwk_arr[i,j,k]
+                q_arr[k, i, j] -= qwk_arr[k, i, j]
             else
-                q_arr[i,j,k] = 0
+                q_arr[k, i, j] = 0
             end
         end
     end
@@ -589,7 +589,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     qnp1_arr = parent(Snp1.q)
     Bnp1_arr = parent(Snp1.B)
 
-    nx_local, ny_local, nz_local = size(qn_arr)
+    nz_local, nx_local, ny_local = size(qn_arr)
     nz = G.nz
 
     # Note: In xy-pencil format, z is fully local (nz_local = nz).
@@ -628,8 +628,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         BRk_arr = parent(BRk); BIk_arr = parent(BIk)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_arr[i,j,k] = Complex(real(Bn_arr[i,j,k]), 0)
-            BIk_arr[i,j,k] = Complex(imag(Bn_arr[i,j,k]), 0)
+            BRk_arr[k, i, j] = Complex(real(Bn_arr[k, i, j]), 0)
+            BIk_arr[k, i, j] = Complex(imag(Bn_arr[k, i, j]), 0)
         end
 
         # Compute tendencies
@@ -700,8 +700,8 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
 
         if L[i_global, j_global]
             kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
@@ -715,42 +715,42 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             All tendencies (advection, diffusion) evaluated at time n, scaled by e^(-λdt).
             Previous code incorrectly used diff at n-1 with e^(-2λdt), breaking second-order accuracy. =#
             if par.fixed_flow
-                qtemp_arr[i,j,k] = qn_arr[i,j,k]  # Keep unchanged
+                qtemp_arr[k, i, j] = qn_arr[k, i, j]  # Keep unchanged
             else
-                qtemp_arr[i,j,k] = qnm1_arr[i,j,k]*exp(-2λₑ) +
-                               2*par.dt*(-nqk_arr[i,j,k] + dqk_arr[i,j,k])*exp(-λₑ)
+                qtemp_arr[k, i, j] = qnm1_arr[k, i, j]*exp(-2λₑ) +
+                               2*par.dt*(-nqk_arr[k, i, j] + dqk_arr[k, i, j])*exp(-λₑ)
             end
 
             if par.ybj_plus
                 #= Update B (complex)
                 ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A - (i/2)ζ·B =#
-                k_global = local_to_global(k, 3, G)
+                k_global = local_to_global(k, 1, G)
                 αdisp = αdisp_profile[k_global]
-                Btemp_arr[i,j,k] = Bnm1_arr[i,j,k]*exp(-2λʷ) +
-                               2*par.dt*( -nBk_arr[i,j,k] +
-                                          im*αdisp*kₕ²*An_arr[i,j,k] -
-                                          0.5im*rBk_arr[i,j,k] )*exp(-λʷ)
+                Btemp_arr[k, i, j] = Bnm1_arr[k, i, j]*exp(-2λʷ) +
+                               2*par.dt*( -nBk_arr[k, i, j] +
+                                          im*αdisp*kₕ²*An_arr[k, i, j] -
+                                          0.5im*rBk_arr[k, i, j] )*exp(-λʷ)
             else
                 #= Update B (real and imaginary parts)
                 BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
                 BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
-                k_global = local_to_global(k, 3, G)
+                k_global = local_to_global(k, 1, G)
                 αdisp = αdisp_profile[k_global]
-                BRtemp_arr[i,j,k] = Complex(real(Bnm1_arr[i,j,k]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBRk_arr[i,j,k] +
-                                          αdisp*kₕ²*Complex(imag(An_arr[i,j,k]),0) -
-                                          0.5*rBIk_arr[i,j,k] )*exp(-λʷ)
-                BItemp_arr[i,j,k] = Complex(imag(Bnm1_arr[i,j,k]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBIk_arr[i,j,k] -
-                                          αdisp*kₕ²*Complex(real(An_arr[i,j,k]),0) +
-                                          0.5*rBRk_arr[i,j,k] )*exp(-λʷ)
+                BRtemp_arr[k, i, j] = Complex(real(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                               2*par.dt*( nBRk_arr[k, i, j] +
+                                          αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) -
+                                          0.5*rBIk_arr[k, i, j] )*exp(-λʷ)
+                BItemp_arr[k, i, j] = Complex(imag(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                               2*par.dt*( nBIk_arr[k, i, j] -
+                                          αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) +
+                                          0.5*rBRk_arr[k, i, j] )*exp(-λʷ)
             end
         else
-            qtemp_arr[i,j,k] = 0
+            qtemp_arr[k, i, j] = 0
             if par.ybj_plus
-                Btemp_arr[i,j,k] = 0
+                Btemp_arr[k, i, j] = 0
             else
-                BRtemp_arr[i,j,k] = 0; BItemp_arr[i,j,k] = 0
+                BRtemp_arr[k, i, j] = 0; BItemp_arr[k, i, j] = 0
             end
         end
     end
@@ -765,32 +765,32 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     γ = par.γ
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for dealias mask lookup
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
 
         if L[i_global, j_global]
             # Filter q - store in Sn so it becomes new Snm1 after rotation
-            qn_arr[i,j,k] = qn_arr[i,j,k] + γ*( qnm1_arr[i,j,k] - 2qn_arr[i,j,k] + qtemp_arr[i,j,k] )
+            qn_arr[k, i, j] = qn_arr[k, i, j] + γ*( qnm1_arr[k, i, j] - 2qn_arr[k, i, j] + qtemp_arr[k, i, j] )
 
             # Filter B - store in Sn so it becomes new Snm1 after rotation
             if par.ybj_plus
-                Bn_arr[i,j,k] = Bn_arr[i,j,k] + γ*( Bnm1_arr[i,j,k] - 2Bn_arr[i,j,k] + Btemp_arr[i,j,k] )
+                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Btemp_arr[k, i, j] )
             else
-                Bnp1 = Complex(real(BRtemp_arr[i,j,k]),0) + im*Complex(real(BItemp_arr[i,j,k]),0)
-                Bn_arr[i,j,k] = Bn_arr[i,j,k] + γ*( Bnm1_arr[i,j,k] - 2Bn_arr[i,j,k] + Bnp1 )
+                Bnp1 = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
+                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Bnp1 )
             end
         else
-            qn_arr[i,j,k] = 0; Bn_arr[i,j,k] = 0
+            qn_arr[k, i, j] = 0; Bn_arr[k, i, j] = 0
         end
     end
 
     #= Step 6: Accept the new solution =#
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        qnp1_arr[i,j,k] = qtemp_arr[i,j,k]
+        qnp1_arr[k, i, j] = qtemp_arr[k, i, j]
         if par.ybj_plus
-            Bnp1_arr[i,j,k] = Btemp_arr[i,j,k]
+            Bnp1_arr[k, i, j] = Btemp_arr[k, i, j]
         else
-            Bnp1_arr[i,j,k] = Complex(real(BRtemp_arr[i,j,k]),0) + im*Complex(real(BItemp_arr[i,j,k]),0)
+            Bnp1_arr[k, i, j] = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
         end
     end
 
@@ -807,20 +807,20 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             BRk2 = similar(Snp1.B); BIk2 = similar(Snp1.B)
             BRk2_arr = parent(BRk2); BIk2_arr = parent(BIk2)
             @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk2_arr[i,j,k] = Complex(real(Bnp1_arr[i,j,k]),0)
-                BIk2_arr[i,j,k] = Complex(imag(Bnp1_arr[i,j,k]),0)
+                BRk2_arr[k, i, j] = Complex(real(Bnp1_arr[k, i, j]),0)
+                BIk2_arr[k, i, j] = Complex(imag(Bnp1_arr[k, i, j]),0)
             end
 
             compute_qw!(qwk, BRk2, BIk2, par, G, plans; Lmask=L)
         end
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 1, G)
-            j_global = local_to_global(j, 2, G)
+            i_global = local_to_global(i, 2, G)
+            j_global = local_to_global(j, 3, G)
             if L[i_global, j_global]
-                qnp1_arr[i,j,k] -= qwk_arr[i,j,k]
+                qnp1_arr[k, i, j] -= qwk_arr[k, i, j]
             else
-                qnp1_arr[i,j,k] = 0
+                qnp1_arr[k, i, j] = 0
             end
         end
     end

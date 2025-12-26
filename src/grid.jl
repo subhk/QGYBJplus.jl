@@ -33,6 +33,9 @@ finite differences, matching the Fortran implementation:
 
 STATE VARIABLES:
 ----------------
+All 3D arrays are stored in `(z, x, y)` order so that the FFT dimensions
+are the last two (x, y) and the vertical dimension is fully local.
+
 Prognostic (evolved in time):
 - q: Quasi-geostrophic potential vorticity (spectral)
 - B: YBJ+ wave envelope L⁺A (spectral)
@@ -87,7 +90,8 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 ## Spectral Wavenumbers
 - `kx::Vector{T}`: x-wavenumbers following FFTW convention, length nx
 - `ky::Vector{T}`: y-wavenumbers following FFTW convention, length ny
-- `kh2::AT`: Horizontal wavenumber squared kx² + ky², size (nx, ny)
+- `kh2::AT`: Horizontal wavenumber squared kx² + ky², size (nx, ny) in serial,
+  or a 3D PencilArray with shape (nz, nx, ny) in parallel.
 
 ## Parallel Decomposition
 - `decomp::Any`: PencilArrays decomposition (nothing for serial)
@@ -127,7 +131,7 @@ Base.@kwdef mutable struct Grid{T, AT}
     #= Spectral wavenumbers =#
     kx::Vector{T}          # x-wavenumbers, size nx
     ky::Vector{T}          # y-wavenumbers, size ny
-    kh2::AT                # kx² + ky² on spectral grid, size (nx, ny)
+    kh2::AT                # kx² + ky² on spectral grid (serial: (nx, ny); parallel: (nz, nx, ny))
 
     #= MPI decomposition (PencilArrays) =#
     decomp::Any            # PencilDecomposition or nothing for serial
@@ -289,24 +293,24 @@ we need to map local indices to global indices for wavenumber lookups.
 
 Get the local index range for the current process (xy-pencil configuration).
 
-For 2D decomposition, this returns the xy-pencil ranges where x is local
-and y,z are distributed. Use `get_local_range_z` for z-pencil configuration.
+For 2D decomposition, this returns the xy-pencil ranges where z is local
+and x,y are distributed. Use `get_local_range_z` for z-pencil configuration.
 
 # Returns
-- Serial mode: `(1:nx, 1:ny, 1:nz)`
+- Serial mode: `(1:nz, 1:nx, 1:ny)`
 - Parallel mode: The local range from the xy-pencil decomposition
 
 # Example
 ```julia
 local_range = get_local_range(grid)
-for k in local_range[3], j in local_range[2], i in local_range[1]
+for k in local_range[1], i in local_range[2], j in local_range[3]
     # Access data at local indices
 end
 ```
 """
 function get_local_range(G::Grid)
     if G.decomp === nothing
-        return (1:G.nx, 1:G.ny, 1:G.nz)
+        return (1:G.nz, 1:G.nx, 1:G.ny)
     else
         # For 2D decomposition, use xy-pencil ranges (default)
         return G.decomp.local_range_xy
@@ -318,12 +322,12 @@ end
 
 Convert a local array index to a global index (xy-pencil configuration).
 
-For 2D decomposition, this uses xy-pencil ranges. Use `local_to_global_z`
-for operations on z-pencil arrays.
+For 2D decomposition, this uses the base pencil ranges. Dimensions are
+ordered `(z, x, y)` so `dim=1` is z, `dim=2` is x, `dim=3` is y.
 
 # Arguments
 - `local_idx`: Local index in the array
-- `dim`: Dimension (1, 2, or 3 for x, y, z)
+- `dim`: Dimension (1, 2, or 3 for z, x, y)
 - `G::Grid`: Grid with optional decomposition
 
 # Returns
@@ -331,9 +335,9 @@ Global index for wavenumber lookup.
 
 # Example
 ```julia
-for j_local in axes(arr, 2), i_local in axes(arr, 1)
-    i_global = local_to_global(i_local, 1, grid)
-    j_global = local_to_global(j_local, 2, grid)
+for j_local in axes(arr, 3), i_local in axes(arr, 2)
+    i_global = local_to_global(i_local, 2, grid)
+    j_global = local_to_global(j_local, 3, grid)
     kx = grid.kx[i_global]
     ky = grid.ky[j_global]
 end
@@ -343,7 +347,7 @@ function local_to_global(local_idx::Int, dim::Int, G::Grid)
     if G.decomp === nothing
         return local_idx
     else
-        # For 2D decomposition, use xy-pencil ranges (default)
+        # For 2D decomposition, use base pencil ranges
         return G.decomp.local_range_xy[dim][local_idx]
     end
 end
@@ -354,7 +358,7 @@ end
 Get the x-wavenumber for a local index, handling both serial and parallel cases.
 """
 @inline function get_kx(i_local::Int, G::Grid)
-    i_global = local_to_global(i_local, 1, G)
+    i_global = local_to_global(i_local, 2, G)
     return G.kx[i_global]
 end
 
@@ -364,7 +368,7 @@ end
 Get the y-wavenumber for a local index, handling both serial and parallel cases.
 """
 @inline function get_ky(j_local::Int, G::Grid)
-    j_global = local_to_global(j_local, 2, G)
+    j_global = local_to_global(j_local, 3, G)
     return G.ky[j_global]
 end
 
@@ -378,12 +382,11 @@ For parallel mode, accesses the local PencilArray element.
 """
 @inline function get_kh2(i_local::Int, j_local::Int, k_local::Int, arr, G::Grid)
     if G.decomp === nothing
-        # Serial: kh2 is a 2D array
+        # Serial: kh2 is a 2D array indexed by (x, y)
         return G.kh2[i_local, j_local]
     else
-        # Parallel: kh2 is a 3D PencilArray, same value for all k
-        # Access via parent to get local data
-        return real(parent(G.kh2)[i_local, j_local, k_local])
+        # Parallel: kh2 is a 3D PencilArray (z, x, y), same value for all z
+        return real(parent(G.kh2)[k_local, i_local, j_local])
     end
 end
 
@@ -435,7 +438,7 @@ Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
 - `w::RT`: Vertical velocity (from omega equation or YBJ)
 
 # Array Dimensions
-All arrays have shape (nx, ny, nz).
+All arrays have shape (nz, nx, ny).
 - Spectral fields (q, psi, A, B, C): Complex arrays
 - Real-space fields (u, v, w): Real arrays
 
@@ -454,8 +457,8 @@ G = init_grid(par)
 S = init_state(G)
 
 # Access fields
-q_spectral = S.q          # Complex (nx, ny, nz)
-u_realspace = S.u         # Real (nx, ny, nz)
+q_spectral = S.q          # Complex (nz, nx, ny)
+u_realspace = S.u         # Real (nz, nx, ny)
 ```
 
 See also: [`init_state`](@ref), [`Grid`](@ref)
@@ -482,7 +485,7 @@ end
 """
     allocate_field(T, G; complex=false) -> Array
 
-Allocate a 3D field array of size (nx, ny, nz).
+Allocate a 3D field array of size (nz, nx, ny).
 
 Uses PencilArrays when parallel decomposition is available,
 otherwise standard Julia Arrays.
@@ -503,7 +506,7 @@ u = allocate_field(Float64, G; complex=false)  # Real velocity field
 ```
 """
 function allocate_field(::Type{T}, G::Grid; complex::Bool=false) where {T}
-    sz = (G.nx, G.ny, G.nz)
+    sz = (G.nz, G.nx, G.ny)
     if G.decomp === nothing
         # Serial mode: use standard Arrays
         return complex ? Array{Complex{T}}(undef, sz) : Array{T}(undef, sz)

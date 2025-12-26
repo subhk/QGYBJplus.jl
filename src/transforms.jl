@@ -163,9 +163,9 @@ provides a separate `fft_forward!(dst::PencilArray, src::PencilArray, plans::MPI
 method that handles distributed transforms automatically.
 """
 function fft_forward!(dst, src, P::Plans)
-    # Serial FFTW path: transform each z-slice independently
-    @inbounds for k in axes(src, 3)
-        dst[:,:,k] .= FFTW.fft(src[:,:,k])
+    # Serial FFTW path: transform each (x,y) plane independently for each z
+    @inbounds for k in axes(src, 1)
+        dst[k, :, :] .= FFTW.fft(src[k, :, :])
     end
     return dst
 end
@@ -193,10 +193,10 @@ provides a separate `fft_backward!(dst::PencilArray, src::PencilArray, plans::MP
 method that uses `ldiv!` for normalized inverse transforms.
 """
 function fft_backward!(dst, src, P::Plans)
-    # Serial FFTW path: transform each z-slice independently
+    # Serial FFTW path: transform each (x,y) plane independently for each z
     # FFTW.ifft is normalized (divides by nx*ny)
-    @inbounds for k in axes(src, 3)
-        dst[:,:,k] .= FFTW.ifft(src[:,:,k])
+    @inbounds for k in axes(src, 1)
+        dst[k, :, :] .= FFTW.ifft(src[k, :, :])
     end
     return dst
 end

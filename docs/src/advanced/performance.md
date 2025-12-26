@@ -221,7 +221,7 @@ Julia is column-major (like Fortran):
 for k in 1:nz
     for j in 1:ny
         for i in 1:nx
-            a[i, j, k] = ...
+            a[k, i, j] = ...
         end
     end
 end
@@ -230,7 +230,7 @@ end
 for i in 1:nx
     for j in 1:ny
         for k in 1:nz
-            a[i, j, k] = ...
+            a[k, i, j] = ...
         end
     end
 end

@@ -405,7 +405,7 @@ Julia uses **column-major** ordering (Fortran-style):
 for k = 1:nz
     for j = 1:ny
         for i = 1:nx
-            field[i, j, k] = ...
+            field[k, i, j] = ...
         end
     end
 end

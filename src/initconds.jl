@@ -23,7 +23,7 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
     # Build ψ in real space then FFT to spectral
     # Use element type from State for type consistency
     T = real(eltype(S.psi))
-    ψᵣ = zeros(T, nx, ny, nz)
+    ψᵣ = zeros(T, nz, nx, ny)
     # Deterministic pseudo-random phases based on integer hash (no Random dependency)
     phase_for(ikₓ::Int, ikᵧ::Int) = T(2π) * ((hash((ikₓ, ikᵧ)) % 1_000_000) / 1_000_000)
     for ikₓ in -2*initial_k:2*initial_k, ikᵧ in -2*initial_k:2*initial_k
@@ -39,15 +39,15 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
             if linear_vert_structure == 1
                 # Linear in z around center of domain
                 z₀ = G.Lz / 2
-                ψᵣ[i,j,k] += (z - z₀) * amp * cos(horiz_phase)
+                ψᵣ[k, i, j] += (z - z₀) * amp * cos(horiz_phase)
             elseif linear_vert_structure == 2
                 # Single vertical mode
                 kz = 2π / G.Lz
-                ψᵣ[i,j,k] += amp * cos(horiz_phase + kz*z)
+                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*z)
             else
                 # QG-consistent: kz ~ kh (scaled to domain)
                 kz = kₕ * 2π / G.Lz
-                ψᵣ[i,j,k] += amp * cos(horiz_phase + kz*z)
+                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*z)
             end
         end
     end

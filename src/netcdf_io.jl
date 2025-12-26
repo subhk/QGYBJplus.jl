@@ -22,6 +22,14 @@ const HAS_NCDS = true
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
+@inline function _to_xyz(arr::AbstractArray)
+    return permutedims(arr, (2, 3, 1))
+end
+
+@inline function _from_xyz(arr::AbstractArray)
+    return permutedims(arr, (3, 1, 2))
+end
+
 """
     OutputManager
 
@@ -220,7 +228,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         zeta_k_arr = parent(zeta_k)
         psi_k_arr = parent(S.psi)
         @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
-            zeta_k_arr[i, j, k] = -G.kh2[i, j] * psi_k_arr[i, j, k]
+            zeta_k_arr[k, i, j] = -G.kh2[i, j] * psi_k_arr[k, i, j]
         end
         zeta_r = _allocate_fft_dst(zeta_k, plans)
         fft_backward!(zeta_r, zeta_k, plans)
@@ -262,7 +270,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Note: psir is already normalized by fft_backward!, no additional division needed
         if write_psi
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            psi_var[:,:,:] = real.(psir)
+            psir_arr = parent(psir)
+            psi_var[:,:,:] = _to_xyz(real.(psir_arr))
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "stream function"
         end
@@ -273,8 +282,9 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
-            LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
+            Br_arr = parent(Br)
+            LAr_var[:,:,:] = _to_xyz(real.(Br_arr))  # Real part of physical wave field
+            LAi_var[:,:,:] = _to_xyz(imag.(Br_arr))  # Imaginary part of physical wave field
 
             LAr_var.attrib["units"] = "wave amplitude"
             LAr_var.attrib["long_name"] = "L+A real part"
@@ -289,8 +299,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
             # u, v are already in physical space - write directly
-            u_var[:,:,:] = S.u
-            v_var[:,:,:] = S.v
+            u_var[:,:,:] = _to_xyz(parent(S.u))
+            v_var[:,:,:] = _to_xyz(parent(S.v))
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -301,7 +311,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Vertical velocity (if requested)
         if write_vertical_velocity && hasfield(typeof(S), :w)
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = S.w  # w is already in real space
+            w_var[:,:,:] = _to_xyz(parent(S.w))  # w is already in real space
             
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
@@ -311,7 +321,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Relative vorticity (if requested)
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = real.(zeta_r)
+            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -508,8 +518,8 @@ end
 Write gathered state from rank 0.
 
 The gathered_state should be a named tuple with fields:
-- `psi`: Gathered streamfunction array (spectral, nx×ny×nz)
-- `B`: Gathered wave envelope array (spectral, nx×ny×nz)
+- `psi`: Gathered streamfunction array (spectral, nz×nx×ny)
+- `B`: Gathered wave envelope array (spectral, nz×nx×ny)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
                                    params=nothing, write_psi=true, write_waves=true,
@@ -534,23 +544,23 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
     psir = nothing
     if write_psi && gathered_psi !== nothing
-        psir = zeros(complex_type, G.nx, G.ny, G.nz)
+        psir = zeros(complex_type, G.nz, G.nx, G.ny)
         fft_backward!(psir, gathered_psi, temp_plans)
     end
 
     Br = nothing
     if write_waves && gathered_B !== nothing
-        Br = zeros(complex_type, G.nx, G.ny, G.nz)
+        Br = zeros(complex_type, G.nz, G.nx, G.ny)
         fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT
     end
 
     zeta_r = nothing
     if write_vorticity && gathered_psi !== nothing
-        zeta_k = zeros(complex_type, G.nx, G.ny, G.nz)
+        zeta_k = zeros(complex_type, G.nz, G.nx, G.ny)
         @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
-            zeta_k[i, j, k] = -G.kh2[i, j] * gathered_psi[i, j, k]
+            zeta_k[k, i, j] = -G.kh2[i, j] * gathered_psi[k, i, j]
         end
-        zeta_r = zeros(complex_type, G.nx, G.ny, G.nz)
+        zeta_r = zeros(complex_type, G.nz, G.nx, G.ny)
         fft_backward!(zeta_r, zeta_k, temp_plans)
     end
 
@@ -589,7 +599,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         # Write streamfunction (already normalized by fft_backward!)
         if write_psi && gathered_psi !== nothing
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            psi_var[:,:,:] = real.(psir)
+            psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "stream function"
         end
@@ -600,8 +610,8 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
-            LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
+            LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of physical wave field
+            LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of physical wave field
 
             LAr_var.attrib["units"] = "wave amplitude"
             LAr_var.attrib["long_name"] = "L+A real part"
@@ -613,8 +623,8 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             u_var = NCDatasets.defVar(ds, "u", Float64, ("x", "y", "z"))
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
-            u_var[:,:,:] = gathered_u
-            v_var[:,:,:] = gathered_v
+            u_var[:,:,:] = _to_xyz(parent(gathered_u))
+            v_var[:,:,:] = _to_xyz(parent(gathered_v))
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -624,7 +634,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vertical_velocity && gathered_w !== nothing
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = gathered_w
+            w_var[:,:,:] = _to_xyz(parent(gathered_w))
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
             w_var.attrib["description"] = "Diagnostic vertical velocity from omega equation"
@@ -632,7 +642,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = real.(zeta_r)
+            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -724,7 +734,7 @@ Serial implementation of psi reading.
 function _read_initial_psi_serial(filename::String, G::Grid, plans)
     @info "Reading initial psi from: $filename (serial)"
 
-    psir = zeros(Float64, G.nx, G.ny, G.nz)
+    psir = zeros(Float64, G.nz, G.nx, G.ny)
 
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
@@ -740,7 +750,7 @@ function _read_initial_psi_serial(filename::String, G::Grid, plans)
 
         # Read psi variable
         if haskey(ds, "psi")
-            psir[:,:,:] = ds["psi"][:,:,:]
+            psir .= _from_xyz(ds["psi"][:,:,:])
         else
             error("Variable 'psi' not found in $filename")
         end
@@ -818,8 +828,8 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
     @info "Reading initial wave field from: $filename (serial)"
 
     # Read real and imaginary parts of the physical wave field
-    LAr = zeros(Float64, G.nx, G.ny, G.nz)
-    LAi = zeros(Float64, G.nx, G.ny, G.nz)
+    LAr = zeros(Float64, G.nz, G.nx, G.ny)
+    LAi = zeros(Float64, G.nz, G.nx, G.ny)
 
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
@@ -835,8 +845,8 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
 
         # Read L+A real and imaginary parts (real fields in physical space)
         if haskey(ds, "LAr") && haskey(ds, "LAi")
-            LAr[:,:,:] = ds["LAr"][:,:,:]
-            LAi[:,:,:] = ds["LAi"][:,:,:]
+            LAr .= _from_xyz(ds["LAr"][:,:,:])
+            LAi .= _from_xyz(ds["LAi"][:,:,:])
         else
             error("Variables 'LAr' and 'LAi' not found in $filename")
         end
@@ -1144,7 +1154,7 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
 
         # Write psi (already normalized by fft_backward!)
         psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-        psi_var[:,:,:] = real.(psir)
+        psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
         psi_var.attrib["units"] = "m²/s"
         psi_var.attrib["long_name"] = "stream function"
 
@@ -1198,8 +1208,8 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
         LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-        LAr_var[:,:,:] = real.(Br)  # Real part of physical wave field
-        LAi_var[:,:,:] = imag.(Br)  # Imaginary part of physical wave field
+        LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of physical wave field
+        LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of physical wave field
 
         LAr_var.attrib["units"] = "wave amplitude"
         LAr_var.attrib["long_name"] = "L+A real part"

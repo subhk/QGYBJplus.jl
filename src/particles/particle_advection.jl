@@ -275,13 +275,13 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         # Velocity field workspace - use LOCAL size in parallel mode
         if is_parallel && local_domain !== nothing
             nx_local = local_domain.nx_local
-            u_field = zeros(T, nx_local, grid.ny, grid.nz)
-            v_field = zeros(T, nx_local, grid.ny, grid.nz)
-            w_field = zeros(T, nx_local, grid.ny, grid.nz)
+            u_field = zeros(T, grid.nz, nx_local, grid.ny)
+            v_field = zeros(T, grid.nz, nx_local, grid.ny)
+            w_field = zeros(T, grid.nz, nx_local, grid.ny)
         else
-            u_field = zeros(T, grid.nx, grid.ny, grid.nz)
-            v_field = zeros(T, grid.nx, grid.ny, grid.nz)
-            w_field = zeros(T, grid.nx, grid.ny, grid.nz)
+            u_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            v_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            w_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
         # Set up transform plans (using unified interface)
@@ -316,7 +316,7 @@ ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) 
 Helper function to set up halo exchange system.
 
 # Arguments
-- `local_dims`: Tuple (nx_local, ny_local, nz_local) for 2D pencil decomposition.
+- `local_dims`: Tuple (nz_local, nx_local, ny_local) for 2D pencil decomposition.
                 If nothing, assumes 1D decomposition in x.
 """
 function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
@@ -640,13 +640,13 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     v_data = parent(state.v)
     w_data = parent(state.w)
     local_dims = size(u_data)
-    nx_local, ny_local, nz_local = local_dims
+    nz_local, nx_local, ny_local = local_dims
 
     # Resize tracker velocity fields if needed (first call or dimension change)
     if size(tracker.u_field) != local_dims
-        tracker.u_field = zeros(T, nx_local, ny_local, nz_local)
-        tracker.v_field = zeros(T, nx_local, ny_local, nz_local)
-        tracker.w_field = zeros(T, nx_local, ny_local, nz_local)
+        tracker.u_field = zeros(T, nz_local, nx_local, ny_local)
+        tracker.v_field = zeros(T, nz_local, nx_local, ny_local)
+        tracker.w_field = zeros(T, nz_local, nx_local, ny_local)
     end
 
     # Copy velocity data
@@ -746,7 +746,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         # Adjust grid_info for extended arrays (includes halo regions)
         # The extended array is larger by 2*halo_width in x
         hw = halo_info.halo_width
-        nx_ext, ny_ext, nz_ext = size(halo_info.u_extended)
+        nz_ext, nx_ext, ny_ext = size(halo_info.u_extended)
         Lx_ext = nx_ext * tracker.dx  # Extended domain length
 
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
@@ -830,29 +830,29 @@ function interpolate_velocity_local(x::T, y::T, z::T,
     
     # Trilinear interpolation
     # Bottom face (z1)
-    u_z1_y1 = (1-rx) * tracker.u_field[ix1,iy1,iz1] + rx * tracker.u_field[ix2,iy1,iz1]
-    u_z1_y2 = (1-rx) * tracker.u_field[ix1,iy2,iz1] + rx * tracker.u_field[ix2,iy2,iz1]
+    u_z1_y1 = (1-rx) * tracker.u_field[iz1, ix1, iy1] + rx * tracker.u_field[iz1, ix2, iy1]
+    u_z1_y2 = (1-rx) * tracker.u_field[iz1, ix1, iy2] + rx * tracker.u_field[iz1, ix2, iy2]
     u_z1 = (1-ry) * u_z1_y1 + ry * u_z1_y2
     
-    v_z1_y1 = (1-rx) * tracker.v_field[ix1,iy1,iz1] + rx * tracker.v_field[ix2,iy1,iz1]
-    v_z1_y2 = (1-rx) * tracker.v_field[ix1,iy2,iz1] + rx * tracker.v_field[ix2,iy2,iz1]
+    v_z1_y1 = (1-rx) * tracker.v_field[iz1, ix1, iy1] + rx * tracker.v_field[iz1, ix2, iy1]
+    v_z1_y2 = (1-rx) * tracker.v_field[iz1, ix1, iy2] + rx * tracker.v_field[iz1, ix2, iy2]
     v_z1 = (1-ry) * v_z1_y1 + ry * v_z1_y2
     
-    w_z1_y1 = (1-rx) * tracker.w_field[ix1,iy1,iz1] + rx * tracker.w_field[ix2,iy1,iz1]
-    w_z1_y2 = (1-rx) * tracker.w_field[ix1,iy2,iz1] + rx * tracker.w_field[ix2,iy2,iz1]
+    w_z1_y1 = (1-rx) * tracker.w_field[iz1, ix1, iy1] + rx * tracker.w_field[iz1, ix2, iy1]
+    w_z1_y2 = (1-rx) * tracker.w_field[iz1, ix1, iy2] + rx * tracker.w_field[iz1, ix2, iy2]
     w_z1 = (1-ry) * w_z1_y1 + ry * w_z1_y2
     
     # Top face (z2)
-    u_z2_y1 = (1-rx) * tracker.u_field[ix1,iy1,iz2] + rx * tracker.u_field[ix2,iy1,iz2]
-    u_z2_y2 = (1-rx) * tracker.u_field[ix1,iy2,iz2] + rx * tracker.u_field[ix2,iy2,iz2]
+    u_z2_y1 = (1-rx) * tracker.u_field[iz2, ix1, iy1] + rx * tracker.u_field[iz2, ix2, iy1]
+    u_z2_y2 = (1-rx) * tracker.u_field[iz2, ix1, iy2] + rx * tracker.u_field[iz2, ix2, iy2]
     u_z2 = (1-ry) * u_z2_y1 + ry * u_z2_y2
     
-    v_z2_y1 = (1-rx) * tracker.v_field[ix1,iy1,iz2] + rx * tracker.v_field[ix2,iy1,iz2]
-    v_z2_y2 = (1-rx) * tracker.v_field[ix1,iy2,iz2] + rx * tracker.v_field[ix2,iy2,iz2]
+    v_z2_y1 = (1-rx) * tracker.v_field[iz2, ix1, iy1] + rx * tracker.v_field[iz2, ix2, iy1]
+    v_z2_y2 = (1-rx) * tracker.v_field[iz2, ix1, iy2] + rx * tracker.v_field[iz2, ix2, iy2]
     v_z2 = (1-ry) * v_z2_y1 + ry * v_z2_y2
     
-    w_z2_y1 = (1-rx) * tracker.w_field[ix1,iy1,iz2] + rx * tracker.w_field[ix2,iy1,iz2]
-    w_z2_y2 = (1-rx) * tracker.w_field[ix1,iy2,iz2] + rx * tracker.w_field[ix2,iy2,iz2]
+    w_z2_y1 = (1-rx) * tracker.w_field[iz2, ix1, iy1] + rx * tracker.w_field[iz2, ix2, iy1]
+    w_z2_y2 = (1-rx) * tracker.w_field[iz2, ix1, iy2] + rx * tracker.w_field[iz2, ix2, iy2]
     w_z2 = (1-ry) * w_z2_y1 + ry * w_z2_y2
     
     # Final interpolation in z

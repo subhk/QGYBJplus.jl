@@ -123,7 +123,7 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     φ_arr = parent(φₖ)
     χ_arr = parent(χₖ)
     dst_arr = parent(dstk)
-    nx_local, ny_local, nz_local = size(φ_arr)
+    nz_local, nx_local, ny_local = size(φ_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     use_inline_dealias = isnothing(Lmask)
@@ -138,16 +138,16 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     χₓ_arr = parent(χₓₖ); χᵧ_arr = parent(χᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
 
-        φₓ_arr[i_local, j_local, k] = im*kₓ*φ_arr[i_local, j_local, k]   # φ̂ₓ = ikₓ φ̂
-        φᵧ_arr[i_local, j_local, k] = im*kᵧ*φ_arr[i_local, j_local, k]   # φ̂ᵧ = ikᵧ φ̂
-        χₓ_arr[i_local, j_local, k] = im*kₓ*χ_arr[i_local, j_local, k]   # χ̂ₓ = ikₓ χ̂
-        χᵧ_arr[i_local, j_local, k] = im*kᵧ*χ_arr[i_local, j_local, k]   # χ̂ᵧ = ikᵧ χ̂
+        φₓ_arr[k, i_local, j_local] = im*kₓ*φ_arr[k, i_local, j_local]   # φ̂ₓ = ikₓ φ̂
+        φᵧ_arr[k, i_local, j_local] = im*kᵧ*φ_arr[k, i_local, j_local]   # φ̂ᵧ = ikᵧ φ̂
+        χₓ_arr[k, i_local, j_local] = im*kₓ*χ_arr[k, i_local, j_local]   # χ̂ₓ = ikₓ χ̂
+        χᵧ_arr[k, i_local, j_local] = im*kᵧ*χ_arr[k, i_local, j_local]   # χ̂ᵧ = ikᵧ χ̂
     end
 
     #= Step 2: Transform derivatives to real space =#
@@ -171,8 +171,8 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     J_arr = parent(J)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        J_arr[i_local, j_local, k] = (real(φₓᵣ[i_local, j_local, k])*real(χᵧᵣ[i_local, j_local, k]) -
-                                      real(φᵧᵣ[i_local, j_local, k])*real(χₓᵣ[i_local, j_local, k]))
+        J_arr[k, i_local, j_local] = (real(φₓᵣ[k, i_local, j_local])*real(χᵧᵣ[k, i_local, j_local]) -
+                                      real(φᵧᵣ[k, i_local, j_local])*real(χₓᵣ[k, i_local, j_local]))
     end
 
     #= Step 4: Transform back to spectral space and apply dealiasing =#
@@ -180,10 +180,10 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
 
     # Apply 2/3 dealiasing mask to remove aliased modes from quadratic nonlinearity
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         if !should_keep(i_global, j_global)
-            dst_arr[i_local, j_local, k] = 0  # Zero aliased modes
+            dst_arr[k, i_local, j_local] = 0  # Zero aliased modes
         end
     end
 
@@ -260,7 +260,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Get underlying arrays (works for both Array and PencilArray)
     u_arr = parent(u); v_arr = parent(v)
     nqk_arr = parent(nqk); nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-    nx_local, ny_local, nz_local = size(u_arr)
+    nz_local, nx_local, ny_local = size(u_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     # This avoids allocating a full (nx, ny) mask on each process
@@ -285,8 +285,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
   
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(qᵣ_arr[i_local, j_local, k])
+        uterm_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
+        vterm_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
     end
 
     # Transform to spectral and compute divergence
@@ -296,22 +296,22 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
             # J(ψ,q) = ∂(uq)/∂x + ∂(vq)/∂y = ikₓ(ûq) + ikᵧ(v̂q)
-            nqk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
+            nqk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
         else
-            nqk_arr[i_local, j_local, k] = 0  # Dealiased
+            nqk_arr[k, i_local, j_local] = 0  # Dealiased
         end
     end
 
     #= ---- J(ψ, BR): Advection of wave real part ---- =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BRᵣ_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BRᵣ_arr[i_local, j_local, k])
+        uterm_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
+        vterm_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
@@ -319,22 +319,22 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
-            nBRk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
+            nBRk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
         else
-            nBRk_arr[i_local, j_local, k] = 0
+            nBRk_arr[k, i_local, j_local] = 0
         end
     end
 
     #= ---- J(ψ, BI): Advection of wave imaginary part ---- =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k]*real(BIᵣ_arr[i_local, j_local, k])
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k]*real(BIᵣ_arr[i_local, j_local, k])
+        uterm_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
+        vterm_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
     end
     fft_forward!(uterm, uterm, plans)
     fft_forward!(vterm, vterm, plans)
@@ -342,16 +342,16 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
     
         if should_keep(i_global, j_global)
-            nBIk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
+            nBIk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
         else
-            nBIk_arr[i_local, j_local, k] = 0
+            nBIk_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -368,7 +368,7 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     u_arr = parent(u); v_arr = parent(v)
     nχk_arr = parent(nχk)
-    nx_local, ny_local, nz_local = size(u_arr)
+    nz_local, nx_local, ny_local = size(u_arr)
 
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
@@ -381,9 +381,9 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        χval = use_real ? real(χᵣ_arr[i_local, j_local, k]) : χᵣ_arr[i_local, j_local, k]
-        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k] * χval
-        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k] * χval
+        χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
+        uterm_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
+        vterm_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
     end
 
     fft_forward!(uterm, uterm, plans)
@@ -391,14 +391,14 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         if should_keep(i_global, j_global)
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
-            nχk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
+            nχk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
         else
-            nχk_arr[i_local, j_local, k] = 0
+            nχk_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -482,7 +482,7 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     # Get underlying arrays
     ψ_arr = parent(ψₖ)
     rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-    nx_local, ny_local, nz_local = size(ψ_arr)
+    nz_local, nx_local, ny_local = size(ψ_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     use_inline_dealias = isnothing(Lmask)
@@ -493,12 +493,12 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     ζₖ_arr = parent(ζₖ)
   
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
-        ζₖ_arr[i_local, j_local, k] = -kₕ²*ψ_arr[i_local, j_local, k]
+        ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
     end
 
     #= Transform to real space =#
@@ -517,8 +517,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ)
   
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        rBRᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k])*real(BRᵣ_arr[i_local, j_local, k])
-        rBIᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k])*real(BIᵣ_arr[i_local, j_local, k])
+        rBRᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BRᵣ_arr[k, i_local, j_local])
+        rBIᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BIᵣ_arr[k, i_local, j_local])
     end
 
     #= Transform back to spectral and apply dealiasing =#
@@ -532,11 +532,11 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     Just apply dealiasing mask. =#
     
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         if !should_keep(i_global, j_global)
-            rBRk_arr[i_local, j_local, k] = 0  # Dealiased
-            rBIk_arr[i_local, j_local, k] = 0
+            rBRk_arr[k, i_local, j_local] = 0  # Dealiased
+            rBIk_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -553,7 +553,7 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
 
     ψ_arr = parent(ψₖ)
     rBk_arr = parent(rBk)
-    nx_local, ny_local, nz_local = size(ψ_arr)
+    nz_local, nx_local, ny_local = size(ψ_arr)
 
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
@@ -562,12 +562,12 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
     ζₖ_arr = parent(ζₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
-        ζₖ_arr[i_local, j_local, k] = -kₕ²*ψ_arr[i_local, j_local, k]
+        ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
     end
 
     ζᵣ = _allocate_fft_dst(ζₖ, plans)
@@ -582,17 +582,17 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
     rBᵣ_arr = parent(rBᵣ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        rBᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k]) * Bᵣ_arr[i_local, j_local, k]
+        rBᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local]) * Bᵣ_arr[k, i_local, j_local]
     end
 
     fft_forward!(rBk, rBᵣ, plans)
     rBk_arr = parent(rBk)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         if !should_keep(i_global, j_global)
-            rBk_arr[i_local, j_local, k] = 0
+            rBk_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -667,7 +667,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     # Get underlying arrays
     BRk_arr = parent(BRk); BIk_arr = parent(BIk)
     qʷₖ_arr = parent(qʷₖ)
-    nx_local, ny_local, nz_local = size(BRk_arr)
+    nz_local, nx_local, ny_local = size(BRk_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     use_inline_dealias = isnothing(Lmask)
@@ -680,16 +680,16 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BIₓₖ_arr = parent(BIₓₖ); BIᵧₖ_arr = parent(BIᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
       
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
       
-        BRₓₖ_arr[i_local, j_local, k] = im*kₓ*BRk_arr[i_local, j_local, k]  # ∂BR/∂x
-        BRᵧₖ_arr[i_local, j_local, k] = im*kᵧ*BRk_arr[i_local, j_local, k]  # ∂BR/∂y
-        BIₓₖ_arr[i_local, j_local, k] = im*kₓ*BIk_arr[i_local, j_local, k]  # ∂BI/∂x
-        BIᵧₖ_arr[i_local, j_local, k] = im*kᵧ*BIk_arr[i_local, j_local, k]  # ∂BI/∂y
+        BRₓₖ_arr[k, i_local, j_local] = im*kₓ*BRk_arr[k, i_local, j_local]  # ∂BR/∂x
+        BRᵧₖ_arr[k, i_local, j_local] = im*kᵧ*BRk_arr[k, i_local, j_local]  # ∂BR/∂y
+        BIₓₖ_arr[k, i_local, j_local] = im*kₓ*BIk_arr[k, i_local, j_local]  # ∂BI/∂x
+        BIᵧₖ_arr[k, i_local, j_local] = im*kᵧ*BIk_arr[k, i_local, j_local]  # ∂BI/∂y
     end
 
     #= Transform derivatives to real space =#
@@ -709,8 +709,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     qʷᵣ = similar(qʷₖ)
     qʷᵣ_arr = parent(qʷᵣ)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        qʷᵣ_arr[i_local, j_local, k] = real(BRᵧᵣ_arr[i_local, j_local, k])*real(BIₓᵣ_arr[i_local, j_local, k]) -
-                                        real(BRₓᵣ_arr[i_local, j_local, k])*real(BIᵧᵣ_arr[i_local, j_local, k])
+        qʷᵣ_arr[k, i_local, j_local] = real(BRᵧᵣ_arr[k, i_local, j_local])*real(BIₓᵣ_arr[k, i_local, j_local]) -
+                                        real(BRₓᵣ_arr[k, i_local, j_local])*real(BIᵧᵣ_arr[k, i_local, j_local])
     end
 
     #= Compute |B|² = BR² + BI² for the ∇²|B|² term =#
@@ -723,7 +723,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     mag²_arr = parent(mag²)
     
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        mag²_arr[i_local, j_local, k] = real(BRᵣ_arr[i_local, j_local, k])^2 + real(BIᵣ_arr[i_local, j_local, k])^2
+        mag²_arr[k, i_local, j_local] = real(BRᵣ_arr[k, i_local, j_local])^2 + real(BIᵣ_arr[k, i_local, j_local])^2
     end
 
     #= Transform |B|² to spectral for ∇² operation =#
@@ -742,8 +742,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     Previous code incorrectly divided by nx*ny, weakening wave feedback.
     Just combine terms and apply dealiasing. =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
@@ -751,9 +751,9 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         if should_keep(i_global, j_global)
             # qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
             # For dimensional equations, B has actual amplitude - no W2F scaling needed
-            qʷₖ_arr[i_local, j_local, k] = qʷₖ_arr[i_local, j_local, k] - 0.25*kₕ²*tempₖ_arr[i_local, j_local, k]
+            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
         else
-            qʷₖ_arr[i_local, j_local, k] = 0
+            qʷₖ_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -770,7 +770,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
 
     Bk_arr = parent(Bk)
     qʷₖ_arr = parent(qʷₖ)
-    nx_local, ny_local, nz_local = size(Bk_arr)
+    nz_local, nx_local, ny_local = size(Bk_arr)
 
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
@@ -780,12 +780,12 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
-        Bₓₖ_arr[i_local, j_local, k] = im*kₓ*Bk_arr[i_local, j_local, k]
-        Bᵧₖ_arr[i_local, j_local, k] = im*kᵧ*Bk_arr[i_local, j_local, k]
+        Bₓₖ_arr[k, i_local, j_local] = im*kₓ*Bk_arr[k, i_local, j_local]
+        Bᵧₖ_arr[k, i_local, j_local] = im*kᵧ*Bk_arr[k, i_local, j_local]
     end
 
     # Transform to physical space
@@ -804,16 +804,16 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     qʷᵣ = similar(Bᵣ)
     qʷᵣ_arr = parent(qʷᵣ)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        Jval = conj(Bₓᵣ_arr[i_local, j_local, k]) * Bᵧᵣ_arr[i_local, j_local, k] -
-               conj(Bᵧᵣ_arr[i_local, j_local, k]) * Bₓᵣ_arr[i_local, j_local, k]
-        qʷᵣ_arr[i_local, j_local, k] = real(0.5im * Jval)
+        Jval = conj(Bₓᵣ_arr[k, i_local, j_local]) * Bᵧᵣ_arr[k, i_local, j_local] -
+               conj(Bᵧᵣ_arr[k, i_local, j_local]) * Bₓᵣ_arr[k, i_local, j_local]
+        qʷᵣ_arr[k, i_local, j_local] = real(0.5im * Jval)
     end
 
     # |B|^2 term
     mag² = similar(Bk)
     mag²_arr = parent(mag²)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        mag²_arr[i_local, j_local, k] = real(conj(Bᵣ_arr[i_local, j_local, k]) * Bᵣ_arr[i_local, j_local, k])
+        mag²_arr[k, i_local, j_local] = real(conj(Bᵣ_arr[k, i_local, j_local]) * Bᵣ_arr[k, i_local, j_local])
     end
 
     # Transform to spectral
@@ -823,15 +823,15 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     tempₖ_arr = parent(tempₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
         if should_keep(i_global, j_global)
-            qʷₖ_arr[i_local, j_local, k] = qʷₖ_arr[i_local, j_local, k] - 0.25*kₕ²*tempₖ_arr[i_local, j_local, k]
+            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
         else
-            qʷₖ_arr[i_local, j_local, k] = 0
+            qʷₖ_arr[k, i_local, j_local] = 0
         end
     end
 
@@ -907,7 +907,7 @@ function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     # Get underlying arrays
     dqk_arr = parent(dqk)
     qok_arr = parent(qok)
-    nx_local, ny_local, nz_local = size(dqk_arr)
+    nz_local, nx_local, ny_local = size(dqk_arr)
 
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local"
@@ -926,13 +926,13 @@ function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
             # Bottom boundary: Neumann (q_z = 0)
-            dqk_arr[i_local, j_local, k] = νz * ( qok_arr[i_local, j_local, k+1] - qok_arr[i_local, j_local, k] ) * Δz⁻²
+            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k+1, i_local, j_local] - qok_arr[k, i_local, j_local] ) * Δz⁻²
         elseif k == nz
             # Top boundary: Neumann (q_z = 0)
-            dqk_arr[i_local, j_local, k] = νz * ( qok_arr[i_local, j_local, k-1] - qok_arr[i_local, j_local, k] ) * Δz⁻²
+            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k-1, i_local, j_local] - qok_arr[k, i_local, j_local] ) * Δz⁻²
         else
             # Interior: standard central difference
-            dqk_arr[i_local, j_local, k] = νz * ( qok_arr[i_local, j_local, k+1] - 2qok_arr[i_local, j_local, k] + qok_arr[i_local, j_local, k-1] ) * Δz⁻²
+            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k+1, i_local, j_local] - 2qok_arr[k, i_local, j_local] + qok_arr[k-1, i_local, j_local] ) * Δz⁻²
         end
     end
 end
@@ -960,7 +960,7 @@ function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
     # Get underlying arrays in z-pencil format
     qok_z_arr = parent(qok_z)
     dqk_z_arr = parent(dqk_z)
-    nx_local, ny_local, nz_local = size(qok_z_arr)
+    nz_local, nx_local, ny_local = size(qok_z_arr)
 
     @assert nz_local == nz "After transpose, z must be fully local"
 
@@ -971,11 +971,11 @@ function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
 
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
-            dqk_z_arr[i_local, j_local, k] = νz * ( qok_z_arr[i_local, j_local, k+1] - qok_z_arr[i_local, j_local, k] ) * Δz⁻²
+            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k+1, i_local, j_local] - qok_z_arr[k, i_local, j_local] ) * Δz⁻²
         elseif k == nz
-            dqk_z_arr[i_local, j_local, k] = νz * ( qok_z_arr[i_local, j_local, k-1] - qok_z_arr[i_local, j_local, k] ) * Δz⁻²
+            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k-1, i_local, j_local] - qok_z_arr[k, i_local, j_local] ) * Δz⁻²
         else
-            dqk_z_arr[i_local, j_local, k] = νz * ( qok_z_arr[i_local, j_local, k+1] - 2qok_z_arr[i_local, j_local, k] + qok_z_arr[i_local, j_local, k-1] ) * Δz⁻²
+            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k+1, i_local, j_local] - 2qok_z_arr[k, i_local, j_local] + qok_z_arr[k-1, i_local, j_local] ) * Δz⁻²
         end
     end
 

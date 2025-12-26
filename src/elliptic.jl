@@ -217,7 +217,7 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     q_arr = parent(S.q)     # Input: QGPV
 
     # Get local dimensions
-    nx_local, ny_local, nz_local = size(ψ_arr)
+    nz_local, nx_local, ny_local = size(ψ_arr)
 
     # Verify z is fully local (required for vertical tridiagonal solve)
     @assert nz_local == nz "Vertical dimension must be fully local (nz_local=$nz_local, nz=$nz)"
@@ -252,8 +252,8 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -268,7 +268,7 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         # total PV may be misrepresented in diagnostics.
         if kₕ² == 0
             # Check if mean mode has significant energy (warn once per run)
-            q_mean_mag = maximum(abs, @view q_arr[i_local, j_local, :])
+            q_mean_mag = maximum(abs, @view q_arr[:, i_local, j_local])
             if q_mean_mag > 1e-10  # Threshold for "significant"
                 @warn "invert_q_to_psi!: Non-zero horizontal mean in q (max |q(k=0)|=$(q_mean_mag)). " *
                       "This barotropic component is discarded (ψ=0 for kₕ²=0) and will not " *
@@ -276,7 +276,7 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
                       "velocities but may affect PV conservation diagnostics." maxlog=1
             end
             @inbounds for k in 1:nz
-                ψ_arr[i_local, j_local, k] = 0
+                ψ_arr[k, i_local, j_local] = 0
             end
             continue
         end
@@ -285,7 +285,7 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         # With only one vertical level and Neumann BCs, vertical derivative terms vanish.
         # The equation reduces to: -kₕ² ψ = q  →  ψ = -q/kₕ²
         if nz == 1
-            @inbounds ψ_arr[i_local, j_local, 1] = -q_arr[i_local, j_local, 1] / kₕ²
+            @inbounds ψ_arr[1, i_local, j_local] = -q_arr[1, i_local, j_local] / kₕ²
             continue
         end
 
@@ -309,18 +309,18 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
 
         # Solve for real and imaginary parts separately
         @inbounds for k in 1:nz
-            rhs[k] = Δz² * real(q_arr[i_local, j_local, k])
+            rhs[k] = Δz² * real(q_arr[k, i_local, j_local])
         end
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
-            rhsᵢ[k] = Δz² * imag(q_arr[i_local, j_local, k])
+            rhsᵢ[k] = Δz² * imag(q_arr[k, i_local, j_local])
         end
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         # Combine into complex solution
         @inbounds for k in 1:nz
-            ψ_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
+            ψ_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
 end
@@ -343,7 +343,7 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
     ψ_z_arr = parent(ψ_z)
 
     # Get local dimensions in z-pencil (z is now fully local)
-    nx_local, ny_local, nz_local = size(q_z_arr)
+    nz_local, nx_local, ny_local = size(q_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     # Tridiagonal matrix diagonals
@@ -369,8 +369,8 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
     # Loop over LOCAL wavenumbers in z-pencil configuration
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global indices for wavenumber lookup (z-pencil ranges)
-        i_global = local_to_global_z(i_local, 1, G)
-        j_global = local_to_global_z(j_local, 2, G)
+        i_global = local_to_global_z(i_local, 2, G)
+        j_global = local_to_global_z(j_local, 3, G)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -381,7 +381,7 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
         # compatibility condition ∫q dz = 0.
         if kₕ² == 0
             # Check if mean mode has significant energy (warn once per run)
-            q_mean_mag = maximum(abs, @view q_z_arr[i_local, j_local, :])
+            q_mean_mag = maximum(abs, @view q_z_arr[:, i_local, j_local])
             if q_mean_mag > 1e-10  # Threshold for "significant"
                 @warn "invert_q_to_psi!: Non-zero horizontal mean in q (max |q(k=0)|=$(q_mean_mag)). " *
                       "This barotropic component is discarded (ψ=0 for kₕ²=0) and will not " *
@@ -389,14 +389,14 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
                       "velocities but may affect PV conservation diagnostics." maxlog=1
             end
             @inbounds for k in 1:nz
-                ψ_z_arr[i_local, j_local, k] = 0
+                ψ_z_arr[k, i_local, j_local] = 0
             end
             continue
         end
 
         # Special case: nz == 1 (single-layer / 2D mode)
         if nz == 1
-            @inbounds ψ_z_arr[i_local, j_local, 1] = -q_z_arr[i_local, j_local, 1] / kₕ²
+            @inbounds ψ_z_arr[1, i_local, j_local] = -q_z_arr[1, i_local, j_local] / kₕ²
             continue
         end
 
@@ -416,17 +416,17 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
 
         # Solve for real and imaginary parts
         @inbounds for k in 1:nz
-            rhs[k] = Δz² * real(q_z_arr[i_local, j_local, k])
+            rhs[k] = Δz² * real(q_z_arr[k, i_local, j_local])
         end
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
-            rhsᵢ[k] = Δz² * imag(q_z_arr[i_local, j_local, k])
+            rhsᵢ[k] = Δz² * imag(q_z_arr[k, i_local, j_local])
         end
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            ψ_z_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
+            ψ_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
 
@@ -470,8 +470,8 @@ Boundary flux terms are added to RHS:
 - Top:    rhs[nz] -= (a[nz] + 0.5b[nz]Δz) × Δz × top_bc
 
 # Arguments
-- `dstk`: Output array (nx, ny, nz) for solution φ
-- `rhs`: Right-hand side array (nx, ny, nz)
+- `dstk`: Output array (nz, nx, ny) for solution φ
+- `rhs`: Right-hand side array (nz, nx, ny)
 - `G::Grid`: Grid struct
 - `par`: QGParams (currently unused, kept for API consistency)
 - `a::AbstractVector`: Second derivative coefficient a(z), length nz
@@ -522,7 +522,7 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     dst_arr = parent(dstk)
     rhs_arr = parent(rhs)
 
-    nx_local, ny_local, nz_local = size(dst_arr)
+    nz_local, nx_local, ny_local = size(dst_arr)
 
     @assert nz_local == nz "Vertical dimension must be fully local"
     @assert length(a) == nz "a must have length nz=$nz"
@@ -539,23 +539,23 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         tol = sqrt(eps(real(one(eltype(rhs_arr)))))
         singular_warned = false
         for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global(i_local, 1, G)
-            j_global = local_to_global(j_local, 2, G)
+            i_global = local_to_global(i_local, 2, G)
+            j_global = local_to_global(j_local, 3, G)
 
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
             kₕ² = kₓ^2 + kᵧ^2
             denom = scale_kh2 * kₕ²
 
-            rhs_val = rhs_arr[i_local, j_local, 1]
+            rhs_val = rhs_arr[1, i_local, j_local]
             if abs(denom) < tol
                 if !singular_warned && abs(rhs_val) > tol
                     @warn "Helmholtz solve with nz=1 has kₕ²≈0 and nonzero RHS; setting φ=0 for the mean mode." maxlog=1
                     singular_warned = true
                 end
-                dst_arr[i_local, j_local, 1] = 0
+                dst_arr[1, i_local, j_local] = 0
             else
-                dst_arr[i_local, j_local, 1] = -rhs_val / denom
+                dst_arr[1, i_local, j_local] = -rhs_val / denom
             end
         end
         return dstk
@@ -575,8 +575,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -611,8 +611,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
 
         # Build RHS (reusing pre-allocated arrays)
         @inbounds for k in 1:nz
-            rhsᵣ[k] = Δz² * real(rhs_arr[i_local, j_local, k])
-            rhsᵢ[k] = Δz² * imag(rhs_arr[i_local, j_local, k])
+            rhsᵣ[k] = Δz² * real(rhs_arr[k, i_local, j_local])
+            rhsᵢ[k] = Δz² * imag(rhs_arr[k, i_local, j_local])
         end
 
         # Add boundary condition contributions to RHS
@@ -632,7 +632,7 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            dst_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
+            dst_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
 end
@@ -670,7 +670,7 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     rhs_z_arr = parent(rhs_z)
     dst_z_arr = parent(dst_z)
 
-    nx_local, ny_local, nz_local = size(rhs_z_arr)
+    nz_local, nx_local, ny_local = size(rhs_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     if nz == 1
@@ -678,23 +678,23 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         singular_warned = false
 
         for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global_z(i_local, 1, G)
-            j_global = local_to_global_z(j_local, 2, G)
+            i_global = local_to_global_z(i_local, 2, G)
+            j_global = local_to_global_z(j_local, 3, G)
 
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
             kₕ² = kₓ^2 + kᵧ^2
             denom = scale_kh2 * kₕ²
 
-            rhs_val = rhs_z_arr[i_local, j_local, 1]
+            rhs_val = rhs_z_arr[1, i_local, j_local]
             if abs(denom) < tol
                 if !singular_warned && abs(rhs_val) > tol
                     @warn "Helmholtz solve with nz=1 has kₕ²≈0 and nonzero RHS; setting φ=0 for the mean mode." maxlog=1
                     singular_warned = true
                 end
-                dst_z_arr[i_local, j_local, 1] = 0
+                dst_z_arr[1, i_local, j_local] = 0
             else
-                dst_z_arr[i_local, j_local, 1] = -rhs_val / denom
+                dst_z_arr[1, i_local, j_local] = -rhs_val / denom
             end
         end
 
@@ -716,8 +716,8 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global_z(i_local, 1, G)
-        j_global = local_to_global_z(j_local, 2, G)
+        i_global = local_to_global_z(i_local, 2, G)
+        j_global = local_to_global_z(j_local, 3, G)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -752,8 +752,8 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
 
         # Build RHS (reusing pre-allocated arrays)
         @inbounds for k in 1:nz
-            rhsᵣ[k] = Δz² * real(rhs_z_arr[i_local, j_local, k])
-            rhsᵢ[k] = Δz² * imag(rhs_z_arr[i_local, j_local, k])
+            rhsᵣ[k] = Δz² * real(rhs_z_arr[k, i_local, j_local])
+            rhsᵢ[k] = Δz² * imag(rhs_z_arr[k, i_local, j_local])
         end
 
         # Solve tridiagonal systems for real and imaginary parts
@@ -761,7 +761,7 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            dst_z_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
+            dst_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
 
@@ -850,7 +850,7 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     B_arr = parent(S.B)
     C_arr = parent(S.C)
 
-    nx_local, ny_local, nz_local = size(A_arr)
+    nz_local, nx_local, ny_local = size(A_arr)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     dₗ = zeros(eltype(a), nz)
@@ -872,8 +872,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -886,8 +886,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         # See docstring for details on this design choice.
         if kₕ² == 0
             @inbounds for k in 1:nz
-                A_arr[i_local, j_local, k] = 0
-                C_arr[i_local, j_local, k] = 0
+                A_arr[k, i_local, j_local] = 0
+                C_arr[k, i_local, j_local] = 0
             end
             continue
         end
@@ -897,8 +897,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         # The YBJ+ equation reduces to: -(kₕ²/4) A = B  →  A = -4B/kₕ²
         # C = ∂A/∂z = 0 (no vertical structure)
         if nz == 1
-            @inbounds A_arr[i_local, j_local, 1] = -4 * B_arr[i_local, j_local, 1] / kₕ²
-            @inbounds C_arr[i_local, j_local, 1] = 0
+            @inbounds A_arr[1, i_local, j_local] = -4 * B_arr[1, i_local, j_local] / kₕ²
+            @inbounds C_arr[1, i_local, j_local] = 0
             continue
         end
 
@@ -919,21 +919,21 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         # Build RHS
         @inbounds for k in 1:nz
             # RHS is just Δz² * B (no a_ell_coeff - that was incorrect)
-            rhsᵣ[k] = Δz² * real(B_arr[i_local, j_local, k])
-            rhsᵢ[k] = Δz² * imag(B_arr[i_local, j_local, k])
+            rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
+            rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
         end
 
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
         thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
-            A_arr[i_local, j_local, k] = solᵣ[k] + im*solᵢ[k]
+            A_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
 
         @inbounds for k in 1:nz-1
-            C_arr[i_local, j_local, k] = (A_arr[i_local, j_local, k+1] - A_arr[i_local, j_local, k])/Δz
+            C_arr[k, i_local, j_local] = (A_arr[k+1, i_local, j_local] - A_arr[k, i_local, j_local])/Δz
         end
-        C_arr[i_local, j_local, nz] = 0
+        C_arr[nz, i_local, j_local] = 0
     end
 end
 
@@ -955,7 +955,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
     A_z_arr = parent(A_z)
     C_z_arr = parent(C_z)
 
-    nx_local, ny_local, nz_local = size(B_z_arr)
+    nz_local, nx_local, ny_local = size(B_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     dl = zeros(eltype(a), nz)
@@ -975,8 +975,8 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
     soli  = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global_z(i_local, 1, G)
-        j_global = local_to_global_z(j_local, 2, G)
+        i_global = local_to_global_z(i_local, 2, G)
+        j_global = local_to_global_z(j_local, 3, G)
 
         kx_val = G.kx[i_global]
         ky_val = G.ky[j_global]
@@ -985,16 +985,16 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         # Special case: kₕ² = 0 (horizontal mean mode) - see docstring for rationale
         if kh2 == 0
             @inbounds for k in 1:nz
-                A_z_arr[i_local, j_local, k] = 0
-                C_z_arr[i_local, j_local, k] = 0
+                A_z_arr[k, i_local, j_local] = 0
+                C_z_arr[k, i_local, j_local] = 0
             end
             continue
         end
 
         # Special case: nz == 1 (single-layer / 2D mode)
         if nz == 1
-            @inbounds A_z_arr[i_local, j_local, 1] = -4 * B_z_arr[i_local, j_local, 1] / kh2
-            @inbounds C_z_arr[i_local, j_local, 1] = 0
+            @inbounds A_z_arr[1, i_local, j_local] = -4 * B_z_arr[1, i_local, j_local] / kh2
+            @inbounds C_z_arr[1, i_local, j_local] = 0
             continue
         end
 
@@ -1016,21 +1016,21 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         # RHS is just Δ² * B (no a_coeff - that was incorrect)
         # The a(z) profile is already in the LHS operator matrix
         @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * real(B_z_arr[i_local, j_local, k])
-            rhs_i[k] = Δ2 * imag(B_z_arr[i_local, j_local, k])
+            rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
+            rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
         end
 
         thomas_solve!(solr, dl, d, du, rhs_r)
         thomas_solve!(soli, dl, d, du, rhs_i)
 
         @inbounds for k in 1:nz
-            A_z_arr[i_local, j_local, k] = solr[k] + im*soli[k]
+            A_z_arr[k, i_local, j_local] = solr[k] + im*soli[k]
         end
 
         @inbounds for k in 1:nz-1
-            C_z_arr[i_local, j_local, k] = (A_z_arr[i_local, j_local, k+1] - A_z_arr[i_local, j_local, k])/Δ
+            C_z_arr[k, i_local, j_local] = (A_z_arr[k+1, i_local, j_local] - A_z_arr[k, i_local, j_local])/Δ
         end
-        C_z_arr[i_local, j_local, nz] = 0
+        C_z_arr[nz, i_local, j_local] = 0
     end
 
     # Transpose A and C back to xy-pencil

@@ -522,7 +522,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     A_arr = parent(state.A)
     C_arr = parent(state.C)
 
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     WKE = T(0)
     WPE = T(0)
@@ -533,7 +533,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
         WPE_level = T(0)
         WCE_level = T(0)
         WKE_zero = T(0)
-        k_global = use_profile ? local_to_global(k, 3, grid) : k
+        k_global = use_profile ? local_to_global(k, 1, grid) : k
         a_ell = a_ell_const
         if use_profile
             N2_k = N2_profile[min(k_global, length(N2_profile))]
@@ -543,19 +543,19 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 1, grid) : i_local
+                       local_to_global(i_local, 2, grid) : i_local
 
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 2, grid) : j_local
+                       local_to_global(j_local, 3, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
             ky_val = grid.ky[min(j_global, length(grid.ky))]
             kh2 = kx_val^2 + ky_val^2
 
-            B_k = B_arr[i_local, j_local, k]
-            A_k = A_arr[i_local, j_local, k]
-            C_k = C_arr[i_local, j_local, k]
+            B_k = B_arr[k, i_local, j_local]
+            A_k = A_arr[k, i_local, j_local]
+            C_k = C_arr[k, i_local, j_local]
 
             # Split B into real/imag parts for proper energy calculation
             BR = real(B_k)
@@ -629,7 +629,7 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
     # Compute velocities from streamfunction in spectral space
     # u = -∂ψ/∂y = -i*ky*ψ, v = ∂ψ/∂x = i*kx*ψ
     psi_arr = parent(state.psi)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     KE = T(0)
 
@@ -640,16 +640,16 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 1, grid) : i_local
+                       local_to_global(i_local, 2, grid) : i_local
 
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 2, grid) : j_local
+                       local_to_global(j_local, 3, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
             ky_val = grid.ky[min(j_global, length(grid.ky))]
 
-            psi_k = psi_arr[i_local, j_local, k]
+            psi_k = psi_arr[k, i_local, j_local]
 
             # u = -i*ky*psi, v = i*kx*psi
             u_k = -im * ky_val * psi_k
@@ -726,7 +726,7 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
     end
 
     psi_arr = parent(psi_field)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     PE = T(0)
 
@@ -735,7 +735,7 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
         PE_zero_mode = T(0)
 
         # Use global z-index for N2_profile lookup in 2D decomposition
-        k_global = use_transpose ? local_to_global_z(k, 3, grid) : local_to_global(k, 3, grid)
+        k_global = use_transpose ? local_to_global_z(k, 1, grid) : local_to_global(k, 1, grid)
 
         # r_1 = 1.0 (Boussinesq), r_2 = N²
         r_1 = T(1.0)
@@ -745,8 +745,8 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Compute buoyancy b = ∂ψ/∂z / r_1 using finite differences
             if k < nz_local
-                psi_up = psi_arr[i_local, j_local, k+1]
-                psi_curr = psi_arr[i_local, j_local, k]
+                psi_up = psi_arr[k+1, i_local, j_local]
+                psi_curr = psi_arr[k, i_local, j_local]
                 b_k = (psi_up - psi_curr) / (r_1 * dz)
             else
                 # At top boundary, use one-sided difference or set to zero (Neumann BC)
@@ -758,12 +758,12 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
 
             # Track zero mode
             i_global = use_transpose ?
-                       local_to_global_z(i_local, 1, grid) :
-                       local_to_global(i_local, 1, grid)
+                       local_to_global_z(i_local, 2, grid) :
+                       local_to_global(i_local, 2, grid)
 
             j_global = use_transpose ?
-                       local_to_global_z(j_local, 2, grid) :
-                       local_to_global(j_local, 2, grid)
+                       local_to_global_z(j_local, 3, grid) :
+                       local_to_global(j_local, 3, grid)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
@@ -808,7 +808,7 @@ function compute_wave_energy(state::State, grid::Grid, plans)
     ny = grid.ny
 
     B_arr = parent(state.B)
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     WE = T(0)
 
@@ -817,16 +817,16 @@ function compute_wave_energy(state::State, grid::Grid, plans)
         WE_zero_mode = T(0)
 
         for j_local in 1:ny_local, i_local in 1:nx_local
-            B_k = B_arr[i_local, j_local, k]
+            B_k = B_arr[k, i_local, j_local]
             energy_mode = abs2(B_k)
             WE_level += energy_mode
 
             # Track zero mode
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 1, grid) : i_local
+                       local_to_global(i_local, 2, grid) : i_local
 
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 2, grid) : j_local
+                       local_to_global(j_local, 3, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
 
@@ -871,7 +871,7 @@ function compute_enstrophy(state::State, grid::Grid, plans)
     ny = grid.ny
 
     psi_arr = parent(state.psi)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     Z = T(0)
 
@@ -882,17 +882,17 @@ function compute_enstrophy(state::State, grid::Grid, plans)
         for j_local in 1:ny_local, i_local in 1:nx_local
             # Get wavenumbers
             i_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(i_local, 1, grid) : i_local
+                       local_to_global(i_local, 2, grid) : i_local
 
             j_global = hasfield(typeof(grid), :decomp) && grid.decomp !== nothing ?
-                       local_to_global(j_local, 2, grid) : j_local
+                       local_to_global(j_local, 3, grid) : j_local
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
             ky_val = grid.ky[min(j_global, length(grid.ky))]
 
             kh2 = kx_val^2 + ky_val^2
 
-            psi_k = psi_arr[i_local, j_local, k]
+            psi_k = psi_arr[k, i_local, j_local]
 
             # Relative vorticity ζ = ∇²ψ = -kh²ψ (in spectral space)
             zeta_k = -kh2 * psi_k

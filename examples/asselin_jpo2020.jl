@@ -183,14 +183,14 @@ function main()
             nx_local, ny_local, nz_local = size(A_z_arr)
 
             for j_local in 1:ny_local, i_local in 1:nx_local
-                i_global = QGYBJplus.local_to_global_z(i_local, 1, G)
-                j_global = QGYBJplus.local_to_global_z(j_local, 2, G)
+                i_global = QGYBJplus.local_to_global_z(i_local, 2, G)
+                j_global = QGYBJplus.local_to_global_z(j_local, 3, G)
                 kₓ = G.kx[i_global]
                 kᵧ = G.ky[j_global]
                 kₕ² = kₓ^2 + kᵧ^2
 
                 if nz == 1
-                    @inbounds B_z_arr[i_local, j_local, 1] = -(kₕ²/4) * A_z_arr[i_local, j_local, 1]
+                    @inbounds B_z_arr[1, i_local, j_local] = -(kₕ²/4) * A_z_arr[1, i_local, j_local]
                     continue
                 end
 
@@ -198,24 +198,24 @@ function main()
                     # k = 1
                     d1 = -((ρ_ut[1]*a[1]) / ρ_st[1] + (kₕ²*Δz²)/4)
                     du1 = (ρ_ut[1]*a[1]) / ρ_st[1]
-                    B_z_arr[i_local, j_local, 1] = (d1*A_z_arr[i_local, j_local, 1] +
-                                                    du1*A_z_arr[i_local, j_local, 2]) / Δz²
+                    B_z_arr[1, i_local, j_local] = (d1*A_z_arr[1, i_local, j_local] +
+                                                    du1*A_z_arr[2, i_local, j_local]) / Δz²
 
                     # interior
                     for k in 2:nz-1
                         dl = (ρ_ut[k-1]*a[k-1]) / ρ_st[k]
                         d  = -(((ρ_ut[k]*a[k] + ρ_ut[k-1]*a[k-1]) / ρ_st[k]) + (kₕ²*Δz²)/4)
                         du = (ρ_ut[k]*a[k]) / ρ_st[k]
-                        B_z_arr[i_local, j_local, k] = (dl*A_z_arr[i_local, j_local, k-1] +
-                                                        d*A_z_arr[i_local, j_local, k] +
-                                                        du*A_z_arr[i_local, j_local, k+1]) / Δz²
+                        B_z_arr[k, i_local, j_local] = (dl*A_z_arr[k-1, i_local, j_local] +
+                                                        d*A_z_arr[k, i_local, j_local] +
+                                                        du*A_z_arr[k+1, i_local, j_local]) / Δz²
                     end
 
                     # k = nz
                     dl = (ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz]
                     d  = -((ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz] + (kₕ²*Δz²)/4)
-                    B_z_arr[i_local, j_local, nz] = (dl*A_z_arr[i_local, j_local, nz-1] +
-                                                     d*A_z_arr[i_local, j_local, nz]) / Δz²
+                    B_z_arr[nz, i_local, j_local] = (dl*A_z_arr[nz-1, i_local, j_local] +
+                                                     d*A_z_arr[nz, i_local, j_local]) / Δz²
                 end
             end
 
@@ -223,39 +223,39 @@ function main()
         else
             A_arr = parent(Ak)
             B_arr = parent(Bk)
-            nx_local, ny_local, nz_local = size(A_arr)
+            nz_local, nx_local, ny_local = size(A_arr)
 
             for j_local in 1:ny_local, i_local in 1:nx_local
-                i_global = QGYBJplus.local_to_global(i_local, 1, G)
-                j_global = QGYBJplus.local_to_global(j_local, 2, G)
+                i_global = QGYBJplus.local_to_global(i_local, 2, G)
+                j_global = QGYBJplus.local_to_global(j_local, 3, G)
                 kₓ = G.kx[i_global]
                 kᵧ = G.ky[j_global]
                 kₕ² = kₓ^2 + kᵧ^2
 
                 if nz == 1
-                    @inbounds B_arr[i_local, j_local, 1] = -(kₕ²/4) * A_arr[i_local, j_local, 1]
+                    @inbounds B_arr[1, i_local, j_local] = -(kₕ²/4) * A_arr[1, i_local, j_local]
                     continue
                 end
 
                 @inbounds begin
                     d1 = -((ρ_ut[1]*a[1]) / ρ_st[1] + (kₕ²*Δz²)/4)
                     du1 = (ρ_ut[1]*a[1]) / ρ_st[1]
-                    B_arr[i_local, j_local, 1] = (d1*A_arr[i_local, j_local, 1] +
-                                                  du1*A_arr[i_local, j_local, 2]) / Δz²
+                    B_arr[1, i_local, j_local] = (d1*A_arr[1, i_local, j_local] +
+                                                  du1*A_arr[2, i_local, j_local]) / Δz²
 
                     for k in 2:nz-1
                         dl = (ρ_ut[k-1]*a[k-1]) / ρ_st[k]
                         d  = -(((ρ_ut[k]*a[k] + ρ_ut[k-1]*a[k-1]) / ρ_st[k]) + (kₕ²*Δz²)/4)
                         du = (ρ_ut[k]*a[k]) / ρ_st[k]
-                        B_arr[i_local, j_local, k] = (dl*A_arr[i_local, j_local, k-1] +
-                                                      d*A_arr[i_local, j_local, k] +
-                                                      du*A_arr[i_local, j_local, k+1]) / Δz²
+                        B_arr[k, i_local, j_local] = (dl*A_arr[k-1, i_local, j_local] +
+                                                      d*A_arr[k, i_local, j_local] +
+                                                      du*A_arr[k+1, i_local, j_local]) / Δz²
                     end
 
                     dl = (ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz]
                     d  = -((ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz] + (kₕ²*Δz²)/4)
-                    B_arr[i_local, j_local, nz] = (dl*A_arr[i_local, j_local, nz-1] +
-                                                   d*A_arr[i_local, j_local, nz]) / Δz²
+                    B_arr[nz, i_local, j_local] = (dl*A_arr[nz-1, i_local, j_local] +
+                                                   d*A_arr[nz, i_local, j_local]) / Δz²
                 end
             end
         end

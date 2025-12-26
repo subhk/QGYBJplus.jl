@@ -28,8 +28,8 @@ mutable struct HaloInfo{T<:AbstractFloat}
     w_extended::Array{T,3}
     
     # Local domain indices in extended arrays
-    local_start::NTuple{3,Int}  # (i_start, j_start, k_start)
-    local_end::NTuple{3,Int}    # (i_end, j_end, k_end)
+    local_start::NTuple{3,Int}  # (k_start, i_start, j_start) = (z, x, y)
+    local_end::NTuple{3,Int}    # (k_end, i_end, j_end) = (z, x, y)
     
     # Neighbor information
     left_neighbor::Int     # Rank of left neighbor (-1 if none)
@@ -50,9 +50,9 @@ mutable struct HaloInfo{T<:AbstractFloat}
                          periodic_x::Bool=true, local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing) where T
         # Get LOCAL grid dimensions
         # For 2D pencil decomposition, all three dimensions may be < global size
-        # If local_dims provided, use them; otherwise compute from 1D decomposition in x
+        # If local_dims provided, use them (order: nz, nx, ny); otherwise compute from 1D decomposition in x
         if local_dims !== nothing
-            nx_local, ny_local, nz_local = local_dims
+            nz_local, nx_local, ny_local = local_dims
         else
             # Fallback: assume 1D decomposition in x only
             nx_global = grid.nx
@@ -72,13 +72,13 @@ mutable struct HaloInfo{T<:AbstractFloat}
         nz_ext = nz_local  # Use LOCAL nz (may be < grid.nz in 2D decomposition)
 
         # Create extended arrays (sized for LOCAL domain + halos)
-        u_extended = zeros(T, nx_ext, ny_ext, nz_ext)
-        v_extended = zeros(T, nx_ext, ny_ext, nz_ext)
-        w_extended = zeros(T, nx_ext, ny_ext, nz_ext)
+        u_extended = zeros(T, nz_ext, nx_ext, ny_ext)
+        v_extended = zeros(T, nz_ext, nx_ext, ny_ext)
+        w_extended = zeros(T, nz_ext, nx_ext, ny_ext)
 
         # Local domain indices in extended array (1-based)
-        local_start = (halo_width + 1, 1, 1)
-        local_end = (halo_width + nx_local, ny_local, nz_local)
+        local_start = (1, halo_width + 1, 1)
+        local_end = (nz_local, halo_width + nx_local, ny_local)
 
         # Determine neighbors (1D decomposition in x with periodic boundaries)
         if periodic_x
@@ -211,13 +211,13 @@ function copy_local_to_extended!(halo_info::HaloInfo{T},
                                 v_field::Array{T,3}, 
                                 w_field::Array{T,3}) where T
     
-    i_start, j_start, k_start = halo_info.local_start
-    i_end, j_end, k_end = halo_info.local_end
+    k_start, i_start, j_start = halo_info.local_start
+    k_end, i_end, j_end = halo_info.local_end
     
     # Copy local data to center of extended arrays
-    halo_info.u_extended[i_start:i_end, j_start:j_end, k_start:k_end] .= u_field
-    halo_info.v_extended[i_start:i_end, j_start:j_end, k_start:k_end] .= v_field
-    halo_info.w_extended[i_start:i_end, j_start:j_end, k_start:k_end] .= w_field
+    halo_info.u_extended[k_start:k_end, i_start:i_end, j_start:j_end] .= u_field
+    halo_info.v_extended[k_start:k_end, i_start:i_end, j_start:j_end] .= v_field
+    halo_info.w_extended[k_start:k_end, i_start:i_end, j_start:j_end] .= w_field
 end
 
 """
@@ -228,16 +228,16 @@ The right neighbor needs our RIGHT edge data (to fill their LEFT halo).
 """
 function pack_halo_data!(halo_info::HaloInfo{T}) where T
     hw = halo_info.halo_width
-    i_start, j_start, k_start = halo_info.local_start
-    i_end, j_end, k_end = halo_info.local_end
+    k_start, i_start, j_start = halo_info.local_start
+    k_end, i_end, j_end = halo_info.local_end
 
     # Pack data to send to left neighbor (our LEFT boundary, for their RIGHT halo)
     if halo_info.left_neighbor >= 0
         idx = 1
         for k in k_start:k_end, j in j_start:j_end, i in i_start:(i_start+hw-1)
-            halo_info.send_left[idx] = halo_info.u_extended[i, j, k]
-            halo_info.send_left[idx + 1] = halo_info.v_extended[i, j, k]
-            halo_info.send_left[idx + 2] = halo_info.w_extended[i, j, k]
+            halo_info.send_left[idx] = halo_info.u_extended[k, i, j]
+            halo_info.send_left[idx + 1] = halo_info.v_extended[k, i, j]
+            halo_info.send_left[idx + 2] = halo_info.w_extended[k, i, j]
             idx += 3
         end
     end
@@ -246,9 +246,9 @@ function pack_halo_data!(halo_info::HaloInfo{T}) where T
     if halo_info.right_neighbor >= 0
         idx = 1
         for k in k_start:k_end, j in j_start:j_end, i in (i_end-hw+1):i_end
-            halo_info.send_right[idx] = halo_info.u_extended[i, j, k]
-            halo_info.send_right[idx + 1] = halo_info.v_extended[i, j, k]
-            halo_info.send_right[idx + 2] = halo_info.w_extended[i, j, k]
+            halo_info.send_right[idx] = halo_info.u_extended[k, i, j]
+            halo_info.send_right[idx + 1] = halo_info.v_extended[k, i, j]
+            halo_info.send_right[idx + 2] = halo_info.w_extended[k, i, j]
             idx += 3
         end
     end
@@ -259,16 +259,16 @@ Unpack received halo data.
 """
 function unpack_halo_data!(halo_info::HaloInfo{T}) where T
     hw = halo_info.halo_width
-    i_start, j_start, k_start = halo_info.local_start
-    i_end, j_end, k_end = halo_info.local_end
+    k_start, i_start, j_start = halo_info.local_start
+    k_end, i_end, j_end = halo_info.local_end
     
     # Unpack data from left neighbor (fills left halo region)
     if halo_info.left_neighbor >= 0
         idx = 1
         for k in k_start:k_end, j in j_start:j_end, i in 1:hw
-            halo_info.u_extended[i, j, k] = halo_info.recv_left[idx]
-            halo_info.v_extended[i, j, k] = halo_info.recv_left[idx + 1]
-            halo_info.w_extended[i, j, k] = halo_info.recv_left[idx + 2]
+            halo_info.u_extended[k, i, j] = halo_info.recv_left[idx]
+            halo_info.v_extended[k, i, j] = halo_info.recv_left[idx + 1]
+            halo_info.w_extended[k, i, j] = halo_info.recv_left[idx + 2]
             idx += 3
         end
     end
@@ -277,9 +277,9 @@ function unpack_halo_data!(halo_info::HaloInfo{T}) where T
     if halo_info.right_neighbor >= 0
         idx = 1
         for k in k_start:k_end, j in j_start:j_end, i in (i_end+1):(i_end+hw)
-            halo_info.u_extended[i, j, k] = halo_info.recv_right[idx]
-            halo_info.v_extended[i, j, k] = halo_info.recv_right[idx + 1]
-            halo_info.w_extended[i, j, k] = halo_info.recv_right[idx + 2]
+            halo_info.u_extended[k, i, j] = halo_info.recv_right[idx]
+            halo_info.v_extended[k, i, j] = halo_info.recv_right[idx + 1]
+            halo_info.w_extended[k, i, j] = halo_info.recv_right[idx + 2]
             idx += 3
         end
     end
@@ -317,7 +317,7 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     rz = fz - iz
     
     # Bounds check for extended arrays
-    nx_ext, ny_ext, nz_ext = size(halo_info.u_extended)
+    nz_ext, nx_ext, ny_ext = size(halo_info.u_extended)
     
     # Handle boundary indices (now we have halo data!)
     ix1 = max(1, min(nx_ext, ix))
@@ -336,29 +336,29 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     
     # Trilinear interpolation using extended arrays
     # Bottom face (z1)
-    u_z1_y1 = (1-rx) * halo_info.u_extended[ix1,iy1,iz1] + rx * halo_info.u_extended[ix2,iy1,iz1]
-    u_z1_y2 = (1-rx) * halo_info.u_extended[ix1,iy2,iz1] + rx * halo_info.u_extended[ix2,iy2,iz1]
+    u_z1_y1 = (1-rx) * halo_info.u_extended[iz1, ix1, iy1] + rx * halo_info.u_extended[iz1, ix2, iy1]
+    u_z1_y2 = (1-rx) * halo_info.u_extended[iz1, ix1, iy2] + rx * halo_info.u_extended[iz1, ix2, iy2]
     u_z1 = (1-ry) * u_z1_y1 + ry * u_z1_y2
     
-    v_z1_y1 = (1-rx) * halo_info.v_extended[ix1,iy1,iz1] + rx * halo_info.v_extended[ix2,iy1,iz1]
-    v_z1_y2 = (1-rx) * halo_info.v_extended[ix1,iy2,iz1] + rx * halo_info.v_extended[ix2,iy2,iz1]
+    v_z1_y1 = (1-rx) * halo_info.v_extended[iz1, ix1, iy1] + rx * halo_info.v_extended[iz1, ix2, iy1]
+    v_z1_y2 = (1-rx) * halo_info.v_extended[iz1, ix1, iy2] + rx * halo_info.v_extended[iz1, ix2, iy2]
     v_z1 = (1-ry) * v_z1_y1 + ry * v_z1_y2
     
-    w_z1_y1 = (1-rx) * halo_info.w_extended[ix1,iy1,iz1] + rx * halo_info.w_extended[ix2,iy1,iz1]
-    w_z1_y2 = (1-rx) * halo_info.w_extended[ix1,iy2,iz1] + rx * halo_info.w_extended[ix2,iy2,iz1]
+    w_z1_y1 = (1-rx) * halo_info.w_extended[iz1, ix1, iy1] + rx * halo_info.w_extended[iz1, ix2, iy1]
+    w_z1_y2 = (1-rx) * halo_info.w_extended[iz1, ix1, iy2] + rx * halo_info.w_extended[iz1, ix2, iy2]
     w_z1 = (1-ry) * w_z1_y1 + ry * w_z1_y2
     
     # Top face (z2)
-    u_z2_y1 = (1-rx) * halo_info.u_extended[ix1,iy1,iz2] + rx * halo_info.u_extended[ix2,iy1,iz2]
-    u_z2_y2 = (1-rx) * halo_info.u_extended[ix1,iy2,iz2] + rx * halo_info.u_extended[ix2,iy2,iz2]
+    u_z2_y1 = (1-rx) * halo_info.u_extended[iz2, ix1, iy1] + rx * halo_info.u_extended[iz2, ix2, iy1]
+    u_z2_y2 = (1-rx) * halo_info.u_extended[iz2, ix1, iy2] + rx * halo_info.u_extended[iz2, ix2, iy2]
     u_z2 = (1-ry) * u_z2_y1 + ry * u_z2_y2
     
-    v_z2_y1 = (1-rx) * halo_info.v_extended[ix1,iy1,iz2] + rx * halo_info.v_extended[ix2,iy1,iz2]
-    v_z2_y2 = (1-rx) * halo_info.v_extended[ix1,iy2,iz2] + rx * halo_info.v_extended[ix2,iy2,iz2]
+    v_z2_y1 = (1-rx) * halo_info.v_extended[iz2, ix1, iy1] + rx * halo_info.v_extended[iz2, ix2, iy1]
+    v_z2_y2 = (1-rx) * halo_info.v_extended[iz2, ix1, iy2] + rx * halo_info.v_extended[iz2, ix2, iy2]
     v_z2 = (1-ry) * v_z2_y1 + ry * v_z2_y2
     
-    w_z2_y1 = (1-rx) * halo_info.w_extended[ix1,iy1,iz2] + rx * halo_info.w_extended[ix2,iy1,iz2]
-    w_z2_y2 = (1-rx) * halo_info.w_extended[ix1,iy2,iz2] + rx * halo_info.w_extended[ix2,iy2,iz2]
+    w_z2_y1 = (1-rx) * halo_info.w_extended[iz2, ix1, iy1] + rx * halo_info.w_extended[iz2, ix2, iy1]
+    w_z2_y2 = (1-rx) * halo_info.w_extended[iz2, ix1, iy2] + rx * halo_info.w_extended[iz2, ix2, iy2]
     w_z2 = (1-ry) * w_z2_y1 + ry * w_z2_y2
     
     # Final interpolation in z

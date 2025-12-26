@@ -172,11 +172,11 @@ Snm1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
 
 ```julia
 # Spectral fields (complex)
-psi_k = state.psi  # size (nx÷2+1, ny, nz)
+psi_k = state.psi  # size (nz, nx, ny)
 
 # Physical fields (real)
-u = state.u        # size (nx, ny, nz)
-v = state.v        # size (nx, ny, nz)
+u = state.u        # size (nz, nx, ny)
+v = state.v        # size (nz, nx, ny)
 ```
 
 ## FFT Plans

@@ -179,7 +179,7 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     ψk_arr = parent(S.psi)
     u_arr = parent(S.u)
     v_arr = parent(S.v)
-    nx_local, ny_local, nz_local = size(ψk_arr)
+    nz_local, nx_local, ny_local = size(ψk_arr)
 
     # Spectral differentiation: û = -i ky ψ̂, v̂ = i kx ψ̂
     ψk = S.psi
@@ -189,12 +189,12 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     vk_arr = parent(vk)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
-        uk_arr[i_local, j_local, k] = -ikᵧ * ψk_arr[i_local, j_local, k]
-        vk_arr[i_local, j_local, k] =  ikₓ * ψk_arr[i_local, j_local, k]
+        uk_arr[k, i_local, j_local] = -ikᵧ * ψk_arr[k, i_local, j_local]
+        vk_arr[k, i_local, j_local] =  ikₓ * ψk_arr[k, i_local, j_local]
     end
 
     # Inverse FFT to real space
@@ -223,8 +223,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     # - The division compensates for unnormalized FFT output
     # Here we're only doing IFFT, so no extra division.
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        u_arr[i_local, j_local, k] = real(tmpu_arr[i_local, j_local, k])
-        v_arr[i_local, j_local, k] = real(tmpv_arr[i_local, j_local, k])
+        u_arr[k, i_local, j_local] = real(tmpu_arr[k, i_local, j_local])
+        v_arr[k, i_local, j_local] = real(tmpv_arr[k, i_local, j_local])
     end
 
     # Compute vertical velocity if requested
@@ -333,7 +333,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # Get underlying arrays
     w_arr = parent(S.w)
-    nx_local, ny_local, nz_local = size(parent(S.psi))
+    nz_local, nx_local, ny_local = size(parent(S.psi))
 
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
@@ -387,8 +387,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # For each LOCAL horizontal wavenumber (kₓ, kᵧ), solve tridiagonal system
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
@@ -409,7 +409,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
                     if iz < n_interior
                         dᵤ[iz] = coeff_z
                     end
-                    rhs[iz] = rhsk_arr[i_local, j_local, k]
+                    rhs[iz] = rhsk_arr[k, i_local, j_local]
                 end
 
                 # Solve tridiagonal system - real and imaginary parts separately
@@ -442,7 +442,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
                 for iz in 1:n_interior
                     k = iz + 1
-                    wk_arr[i_local, j_local, k] = solᵣ[iz] + im * solᵢ[iz]
+                    wk_arr[k, i_local, j_local] = solᵣ[iz] + im * solᵢ[iz]
                 end
             end
 
@@ -451,7 +451,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
             # for nz <= 2. The only consistent solution is w=0 everywhere.
             # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
             for k in 1:nz
-                wk_arr[i_local, j_local, k] = 0.0
+                wk_arr[k, i_local, j_local] = 0.0
             end
         end
     end
@@ -464,7 +464,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
     # No additional normalization needed here
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
     end
 end
 
@@ -531,8 +531,8 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     end
 
     @inbounds for j_local in 1:ny_local_z, i_local in 1:nx_local_z
-        i_global = local_to_global_z(i_local, 1, G)
-        j_global = local_to_global_z(j_local, 2, G)
+        i_global = local_to_global_z(i_local, 2, G)
+        j_global = local_to_global_z(j_local, 3, G)
         
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -554,7 +554,7 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
                     if iz < n_interior
                         dᵤ[iz] = coeff_z
                     end
-                    rhs[iz] = rhsk_z_arr[i_local, j_local, k]
+                    rhs[iz] = rhsk_z_arr[k, i_local, j_local]
                 end
 
                 dₗ_work .= dₗ
@@ -586,7 +586,7 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
 
                 for iz in 1:n_interior
                     k = iz + 1
-                    wk_z_arr[i_local, j_local, k] = solᵣ[iz] + im * solᵢ[iz]
+                    wk_z_arr[k, i_local, j_local] = solᵣ[iz] + im * solᵢ[iz]
                 end
             end
 
@@ -595,7 +595,7 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
             # for nz <= 2. The only consistent solution is w=0 everywhere.
             # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
             for k in 1:nz
-                wk_z_arr[i_local, j_local, k] = 0.0
+                wk_z_arr[k, i_local, j_local] = 0.0
             end
         end
     end
@@ -609,13 +609,13 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
     fft_backward!(tmpw, wk, plans)
     tmpw_arr = parent(tmpw)
     w_arr = parent(S.w)
-    nx_local, ny_local, nz_local = size(tmpw_arr)
+    nz_local, nx_local, ny_local = size(tmpw_arr)
 
     # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
     # No additional normalization needed here
     # Use nz_local (not global nz) for MPI-distributed arrays
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[i_local, j_local, k] = real(tmpw_arr[i_local, j_local, k])
+        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
     end
 end
 
@@ -713,7 +713,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Get underlying arrays
     w_arr = parent(S.w)
-    nx_local, ny_local, nz_local = size(w_arr)
+    nz_local, nx_local, ny_local = size(w_arr)
 
     # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
@@ -772,12 +772,12 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Compute derivatives for k = 1:(nz-1) where A_z is defined
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_z_arr[i_local, j_local, k]
-        dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
+        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
+        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
     end
 
     # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
@@ -814,9 +814,9 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         ybj_factor = -2.0 * (f^2) / N²ₗ
         # complex_term + c.c. = 2*Re(complex_term) where complex_term = dA_dx - i*dA_dy
         # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
-        w_arr[i_local, j_local, k_out] = ybj_factor * (
-            real(dAz_dx_phys_arr[i_local, j_local, k]) +
-            imag(dAz_dy_phys_arr[i_local, j_local, k])
+        w_arr[k_out, i_local, j_local] = ybj_factor * (
+            real(dAz_dx_phys_arr[k, i_local, j_local]) +
+            imag(dAz_dy_phys_arr[k, i_local, j_local])
         )
     end
 
@@ -889,12 +889,12 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     # Compute derivatives for k = 1:(nz-1) where A_z is defined
     @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_z_arr[i_local, j_local, k]
-        dAz_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_z_arr[i_local, j_local, k]
+        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
+        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
     end
 
     # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
@@ -925,9 +925,9 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
         N²ₗ = N2_profile[k_out]
         ybj_factor = -2.0 * (f^2) / N²ₗ
         # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
-        w_arr[i_local, j_local, k_out] = ybj_factor * (
-            real(dAz_dx_phys_arr[i_local, j_local, k]) +
-            imag(dAz_dy_phys_arr[i_local, j_local, k])
+        w_arr[k_out, i_local, j_local] = ybj_factor * (
+            real(dAz_dx_phys_arr[k, i_local, j_local]) +
+            imag(dAz_dy_phys_arr[k, i_local, j_local])
         )
     end
 
@@ -1063,7 +1063,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
     # S.C = A_z = ∂A/∂z is already computed by invert_B_to_A!
-    nx_local, ny_local, nz_local = size(Aₖ_arr)
+    nz_local, nx_local, ny_local = size(Aₖ_arr)
 
     # Set up plans if needed
     if plans === nothing
@@ -1077,12 +1077,12 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     dA_dyₖ_arr = parent(dA_dyₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 1, G)
-        j_global = local_to_global(j_local, 2, G)
+        i_global = local_to_global(i_local, 2, G)
+        j_global = local_to_global(j_local, 3, G)
         ikₓ = im * G.kx[i_global]
         ikᵧ = im * G.ky[j_global]
-        dA_dxₖ_arr[i_local, j_local, k] = ikₓ * Aₖ_arr[i_local, j_local, k]
-        dA_dyₖ_arr[i_local, j_local, k] = ikᵧ * Aₖ_arr[i_local, j_local, k]
+        dA_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_arr[k, i_local, j_local]
+        dA_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_arr[k, i_local, j_local]
     end
 
     # Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
@@ -1111,22 +1111,22 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
 
     # Add wave velocities to existing QG velocities directly in physical space
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        A_phys = Aᵣ_arr[i_local, j_local, k]
-        dAdx_phys = dA_dxᵣ_arr[i_local, j_local, k]
-        dAdy_phys = dA_dyᵣ_arr[i_local, j_local, k]
+        A_phys = Aᵣ_arr[k, i_local, j_local]
+        dAdx_phys = dA_dxᵣ_arr[k, i_local, j_local]
+        dAdy_phys = dA_dyᵣ_arr[k, i_local, j_local]
 
         # Stokes drift: (u,v)_wave = 2 * Re[conj(A) * ∂A/∂(x,y)]
         u_wave = 2.0 * real(conj(A_phys) * dAdx_phys)
         v_wave = 2.0 * real(conj(A_phys) * dAdy_phys)
 
-        u_arr[i_local, j_local, k] += u_wave
-        v_arr[i_local, j_local, k] += v_wave
+        u_arr[k, i_local, j_local] += u_wave
+        v_arr[k, i_local, j_local] += v_wave
 
         # Only add vertical Stokes drift if compute_w is requested
         if compute_w
-            dAdz_phys = dA_dzᵣ_arr[i_local, j_local, k]
+            dAdz_phys = dA_dzᵣ_arr[k, i_local, j_local]
             w_wave = 2.0 * real(conj(A_phys) * dAdz_phys)
-            w_arr[i_local, j_local, k] += w_wave
+            w_arr[k, i_local, j_local] += w_wave
         end
     end
 

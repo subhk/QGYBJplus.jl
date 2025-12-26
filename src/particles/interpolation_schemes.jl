@@ -78,7 +78,7 @@ function tricubic_interpolation(x::T, y::T, z::T,
                                u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
                                grid_info, boundary_conditions) where T
     
-    nx, ny, nz = size(u_field)
+    nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
     
@@ -124,9 +124,9 @@ function tricubic_interpolation(x::T, y::T, z::T,
                     (j == 0 ? wy0 : j == 1 ? wy1 : j == 2 ? wy2 : wy3) *
                     (k == 0 ? wz0 : k == 1 ? wz1 : k == 2 ? wz2 : wz3)
             
-            u_interp += weight * u_field[gx, gy, gz]
-            v_interp += weight * v_field[gx, gy, gz]
-            w_interp += weight * w_field[gx, gy, gz]
+            u_interp += weight * u_field[gz, gx, gy]
+            v_interp += weight * v_field[gz, gx, gy]
+            w_interp += weight * w_field[gz, gx, gy]
         end
     end
     
@@ -173,7 +173,7 @@ function estimate_field_smoothness(x::T, y::T, z::T,
                                   u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
                                   grid_info) where T
     
-    nx, ny, nz = size(u_field)
+    nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     
     # Convert to grid indices
@@ -182,9 +182,9 @@ function estimate_field_smoothness(x::T, y::T, z::T,
     iz = clamp(round(Int, z / dz), 2, nz-1)
     
     # Compute second derivatives (finite differences)
-    d2u_dx2 = (u_field[ix+1,iy,iz] - 2*u_field[ix,iy,iz] + u_field[ix-1,iy,iz]) / dx^2
-    d2u_dy2 = (u_field[ix,iy+1,iz] - 2*u_field[ix,iy,iz] + u_field[ix,iy-1,iz]) / dy^2
-    d2u_dz2 = (u_field[ix,iy,iz+1] - 2*u_field[ix,iy,iz] + u_field[ix,iy,iz-1]) / dz^2
+    d2u_dx2 = (u_field[iz, ix+1, iy] - 2*u_field[iz, ix, iy] + u_field[iz, ix-1, iy]) / dx^2
+    d2u_dy2 = (u_field[iz, ix, iy+1] - 2*u_field[iz, ix, iy] + u_field[iz, ix, iy-1]) / dy^2
+    d2u_dz2 = (u_field[iz+1, ix, iy] - 2*u_field[iz, ix, iy] + u_field[iz-1, ix, iy]) / dz^2
     
     # RMS curvature as smoothness indicator
     curvature = sqrt(d2u_dx2^2 + d2u_dy2^2 + d2u_dz2^2)
@@ -222,7 +222,7 @@ function trilinear_interpolation(x::T, y::T, z::T,
                                 u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
                                 grid_info, boundary_conditions) where T
     
-    nx, ny, nz = size(u_field)
+    nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
     
@@ -254,29 +254,29 @@ function trilinear_interpolation(x::T, y::T, z::T,
     
     # Trilinear interpolation
     # Bottom face (z1)
-    u_z1_y1 = (1-rx) * u_field[ix1,iy1,iz1] + rx * u_field[ix2,iy1,iz1]
-    u_z1_y2 = (1-rx) * u_field[ix1,iy2,iz1] + rx * u_field[ix2,iy2,iz1]
+    u_z1_y1 = (1-rx) * u_field[iz1, ix1, iy1] + rx * u_field[iz1, ix2, iy1]
+    u_z1_y2 = (1-rx) * u_field[iz1, ix1, iy2] + rx * u_field[iz1, ix2, iy2]
     u_z1 = (1-ry) * u_z1_y1 + ry * u_z1_y2
     
-    v_z1_y1 = (1-rx) * v_field[ix1,iy1,iz1] + rx * v_field[ix2,iy1,iz1]
-    v_z1_y2 = (1-rx) * v_field[ix1,iy2,iz1] + rx * v_field[ix2,iy2,iz1]
+    v_z1_y1 = (1-rx) * v_field[iz1, ix1, iy1] + rx * v_field[iz1, ix2, iy1]
+    v_z1_y2 = (1-rx) * v_field[iz1, ix1, iy2] + rx * v_field[iz1, ix2, iy2]
     v_z1 = (1-ry) * v_z1_y1 + ry * v_z1_y2
     
-    w_z1_y1 = (1-rx) * w_field[ix1,iy1,iz1] + rx * w_field[ix2,iy1,iz1]
-    w_z1_y2 = (1-rx) * w_field[ix1,iy2,iz1] + rx * w_field[ix2,iy2,iz1]
+    w_z1_y1 = (1-rx) * w_field[iz1, ix1, iy1] + rx * w_field[iz1, ix2, iy1]
+    w_z1_y2 = (1-rx) * w_field[iz1, ix1, iy2] + rx * w_field[iz1, ix2, iy2]
     w_z1 = (1-ry) * w_z1_y1 + ry * w_z1_y2
     
     # Top face (z2)
-    u_z2_y1 = (1-rx) * u_field[ix1,iy1,iz2] + rx * u_field[ix2,iy1,iz2]
-    u_z2_y2 = (1-rx) * u_field[ix1,iy2,iz2] + rx * u_field[ix2,iy2,iz2]
+    u_z2_y1 = (1-rx) * u_field[iz2, ix1, iy1] + rx * u_field[iz2, ix2, iy1]
+    u_z2_y2 = (1-rx) * u_field[iz2, ix1, iy2] + rx * u_field[iz2, ix2, iy2]
     u_z2 = (1-ry) * u_z2_y1 + ry * u_z2_y2
     
-    v_z2_y1 = (1-rx) * v_field[ix1,iy1,iz2] + rx * v_field[ix2,iy1,iz2]
-    v_z2_y2 = (1-rx) * v_field[ix1,iy2,iz2] + rx * v_field[ix2,iy2,iz2]
+    v_z2_y1 = (1-rx) * v_field[iz2, ix1, iy1] + rx * v_field[iz2, ix2, iy1]
+    v_z2_y2 = (1-rx) * v_field[iz2, ix1, iy2] + rx * v_field[iz2, ix2, iy2]
     v_z2 = (1-ry) * v_z2_y1 + ry * v_z2_y2
     
-    w_z2_y1 = (1-rx) * w_field[ix1,iy1,iz2] + rx * w_field[ix2,iy1,iz2]
-    w_z2_y2 = (1-rx) * w_field[ix1,iy2,iz2] + rx * w_field[ix2,iy2,iz2]
+    w_z2_y1 = (1-rx) * w_field[iz2, ix1, iy1] + rx * w_field[iz2, ix2, iy1]
+    w_z2_y2 = (1-rx) * w_field[iz2, ix1, iy2] + rx * w_field[iz2, ix2, iy2]
     w_z2 = (1-ry) * w_z2_y1 + ry * w_z2_y2
     
     # Final interpolation in z
@@ -321,7 +321,7 @@ function quintic_interpolation(x::T, y::T, z::T,
                               u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
                               grid_info, boundary_conditions) where T
 
-    nx, ny, nz = size(u_field)
+    nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
 
@@ -366,9 +366,9 @@ function quintic_interpolation(x::T, y::T, z::T,
             # Combined weight from tensor product
             weight = wx[i+1] * wy[j+1] * wz[k+1]
 
-            u_interp += weight * u_field[gx, gy, gz]
-            v_interp += weight * v_field[gx, gy, gz]
-            w_interp += weight * w_field[gx, gy, gz]
+            u_interp += weight * u_field[gz, gx, gy]
+            v_interp += weight * v_field[gz, gx, gy]
+            w_interp += weight * w_field[gz, gx, gy]
         end
     end
 

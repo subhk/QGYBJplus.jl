@@ -99,7 +99,7 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
 
     # Get local dimensions from psik (works for both Array and PencilArray)
     psik_arr = parent(psik)
-    nx_local, ny_local, nz_local = size(psik_arr)
+    nz_local, nx_local, ny_local = size(psik_arr)
 
     # Initialize in real space with LOCAL dimensions
     # Use similar() to get correct array type (Array or PencilArray)
@@ -113,19 +113,19 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
     for k in 1:nz_local
         # Get global z-index for correct coordinate
         k_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(k, 3, G) : k
+                   local_to_global(k, 1, G) : k
         z = (k_global - 1) * dz
 
         for j_local in 1:ny_local
             # Get global y-index
             j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 2, G) : j_local
+                       local_to_global(j_local, 3, G) : j_local
             y = (j_global - 1) * dy
 
             for i_local in 1:nx_local
                 # Get global x-index
                 i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 1, G) : i_local
+                           local_to_global(i_local, 2, G) : i_local
                 x = (i_global - 1) * dx
 
                 # Example: sum of Rossby waves with different modes
@@ -135,7 +135,7 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
                 z_norm = 2π * z / G.Lz
 
                 # This mimics typical geostrophic turbulence patterns
-                psir_arr[i_local, j_local, k] = amplitude * (
+                psir_arr[k, i_local, j_local] = amplitude * (
                     sin(2*x_norm) * cos(y_norm) * cos(z_norm) +
                     0.5 * cos(x_norm) * sin(2*y_norm) * sin(z_norm) +
                     0.3 * sin(3*x_norm) * sin(y_norm) * cos(2*z_norm) +
@@ -199,17 +199,17 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
                             # Set this mode with random phase
                             amp = sqrt(2 * energy) * randn()
                             phase = 2π * rand()
-                            psik[i, j, k] = amp * cis(phase)
+                            psik[k, i, j] = amp * cis(phase)
                             # Set conjugate at -ky
                             j_conj = ny - j + 2
-                            psik[i, j_conj, k] = conj(psik[i, j, k])
+                            psik[k, i, j_conj] = conj(psik[k, i, j])
                         elseif ky == 0
                             # ky=0 mode must be real (already skipped above)
                             continue
                         elseif ky == -ky_max && iseven(ny)
                             # Nyquist mode in y must be real
                             amp = sqrt(2 * energy) * randn()
-                            psik[i, j, k] = amp
+                            psik[k, i, j] = amp
                         end
                         # ky < 0 modes (except Nyquist) are set as conjugates above
 
@@ -218,18 +218,18 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
                         if ky > 0
                             amp = sqrt(2 * energy) * randn()
                             phase = 2π * rand()
-                            psik[i, j, k] = amp * cis(phase)
+                            psik[k, i, j] = amp * cis(phase)
                             # Set conjugate at -ky
                             j_conj = ny - j + 2
-                            psik[i, j_conj, k] = conj(psik[i, j, k])
+                            psik[k, i, j_conj] = conj(psik[k, i, j])
                         elseif ky == 0
                             # (kx=nx/2, ky=0) must be real
                             amp = sqrt(2 * energy) * randn()
-                            psik[i, j, k] = amp
+                            psik[k, i, j] = amp
                         elseif ky == -ky_max && iseven(ny)
                             # (kx=nx/2, ky=ny/2) must be real
                             amp = sqrt(2 * energy) * randn()
-                            psik[i, j, k] = amp
+                            psik[k, i, j] = amp
                         end
                         # ky < 0 modes (except Nyquist) are set as conjugates above
 
@@ -237,7 +237,7 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
                         # 0 < kx < kx_max: set mode and its conjugate at (-kx, -ky)
                         amp = sqrt(2 * energy) * randn()
                         phase = 2π * rand()
-                        psik[i, j, k] = amp * cis(phase)
+                        psik[k, i, j] = amp * cis(phase)
 
                         # Set conjugate at (-kx, -ky)
                         # For wavenumber kx at index i, -kx is at index nx - i + 2
@@ -246,7 +246,7 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
                         #   - j>1: j_conj = ny - j + 2
                         i_conj = nx - i + 2
                         j_conj = j == 1 ? 1 : ny - j + 2
-                        psik[i_conj, j_conj, k] = conj(psik[i, j, k])
+                        psik[k, i_conj, j_conj] = conj(psik[k, i, j])
                     end
                 end
             end
@@ -273,7 +273,7 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
 
     # Get local dimensions from Bk (works for both Array and PencilArray)
     Bk_arr = parent(Bk)
-    nx_local, ny_local, nz_local = size(Bk_arr)
+    nz_local, nx_local, ny_local = size(Bk_arr)
 
     # Initialize in real space with LOCAL dimensions
     # Use similar() to get correct array type (Array or PencilArray)
@@ -293,19 +293,19 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
     for k in 1:nz_local
         # Get global z-index for correct coordinate
         k_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(k, 3, G) : k
+                   local_to_global(k, 1, G) : k
         z = (k_global - 1) * dz
 
         for j_local in 1:ny_local
             # Get global y-index
             j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 2, G) : j_local
+                       local_to_global(j_local, 3, G) : j_local
             y = (j_global - 1) * dy
 
             for i_local in 1:nx_local
                 # Get global x-index
                 i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 1, G) : i_local
+                           local_to_global(i_local, 2, G) : i_local
                 x = (i_global - 1) * dx
 
                 # Use normalized coordinates for wave patterns
@@ -314,12 +314,12 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
                 z_norm = 2π * z / G.Lz
 
                 # Example wave pattern with vertical decay centered at mid-depth
-                Br_arr[i_local, j_local, k] = amplitude * (
+                Br_arr[k, i_local, j_local] = amplitude * (
                     sin(4*x_norm + z_norm) * cos(2*y_norm) * exp(-((z-z_mid)^2)/(2*sigma_z^2)) +
                     0.3 * cos(2*x_norm) * sin(4*y_norm + 2*z_norm) * exp(-((z-z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
 
-                Bi_arr[i_local, j_local, k] = amplitude * 0.1 * (
+                Bi_arr[k, i_local, j_local] = amplitude * 0.1 * (
                     cos(4*x_norm + z_norm) * sin(2*y_norm) * exp(-((z-z_mid)^2)/(2*sigma_z^2)) +
                     0.3 * sin(2*x_norm) * cos(4*y_norm + 2*z_norm) * exp(-((z-z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
@@ -346,8 +346,8 @@ function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
     @info "Initializing random wave field (amplitude=$amplitude, slope=$slope)"
     
     # Generate random phases for real and imaginary parts
-    phases_r = 2π * rand(Float64, G.nx÷2+1, G.ny, G.nz)
-    phases_i = 2π * rand(Float64, G.nx÷2+1, G.ny, G.nz)
+    phases_r = 2π * rand(Float64, G.nz, G.nx÷2+1, G.ny)
+    phases_i = 2π * rand(Float64, G.nz, G.nx÷2+1, G.ny)
     
     fill!(Bk, zero(eltype(Bk)))
     
@@ -379,8 +379,8 @@ function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
                     amp_i = sqrt(energy) * randn()
                     
                     # Set complex field
-                    Bk[i, j, k] = (amp_r * cis(phases_r[i, j, k])) + 
-                                  im * (amp_i * cis(phases_i[i, j, k]))
+                    Bk[k, i, j] = (amp_r * cis(phases_r[k, i, j])) +
+                                  im * (amp_i * cis(phases_i[k, i, j]))
                 end
             end
         end
@@ -417,24 +417,24 @@ function apply_dealiasing_mask!(field, G::Grid)
 
     # Get local array and its dimensions
     field_arr = parent(field)
-    nx_local, ny_local, nz_local = size(field_arr)
+    nz_local, nx_local, ny_local = size(field_arr)
 
     for k in 1:nz_local
         for j_local in 1:ny_local
             # Get global j index for wavenumber lookup
             j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 2, G) : j_local
+                       local_to_global(j_local, 3, G) : j_local
             ky = j_global <= G.ny÷2 ? j_global-1 : j_global-1-G.ny
 
             for i_local in 1:nx_local
                 # Get global i index for wavenumber lookup
                 i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 1, G) : i_local
+                           local_to_global(i_local, 2, G) : i_local
                 kx = i_global <= G.nx÷2 ? i_global-1 : i_global-1-G.nx
 
                 # Radial check: zero modes outside dealiasing circle
                 if kx^2 + ky^2 > kmax_sq
-                    field_arr[i_local, j_local, k] = zero(eltype(field_arr))
+                    field_arr[k, i_local, j_local] = zero(eltype(field_arr))
                 end
             end
         end
@@ -454,17 +454,17 @@ function compute_energy_spectrum(field, G::Grid)
     spectrum = zeros(Float64, k_max)
     count = zeros(Int, k_max)
     
-    for k in 1:G.nz
-        for j in 1:G.ny
+    for k in 1:size(field, 1)
+        for j in 1:size(field, 3)
             ky = j <= ky_max ? j-1 : j-1-G.ny
-            
-            for i in 1:size(field, 1)
+
+            for i in 1:size(field, 2)
                 kx = i-1
                 
                 k_total = round(Int, sqrt(Float64(kx^2 + ky^2)))
                 
                 if 1 <= k_total <= k_max
-                    spectrum[k_total] += abs2(field[i, j, k])
+                    spectrum[k_total] += abs2(field[k, i, j])
                     count[k_total] += 1
                 end
             end
@@ -509,7 +509,7 @@ end
 Create a localized wave packet in spectral space.
 """
 function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real)
-    field = zeros(ComplexF64, G.nx÷2+1, G.ny, G.nz)
+    field = zeros(ComplexF64, G.nz, G.nx÷2+1, G.ny)
     
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
@@ -529,7 +529,7 @@ function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitud
                 
                 if envelope > 1e-10
                     phase = 2π * rand()
-                    field[i, j, k] = amplitude * envelope * z_envelope * cis(phase)
+                    field[k, i, j] = amplitude * envelope * z_envelope * cis(phase)
                 end
             end
         end
@@ -609,7 +609,7 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
 
     # Get underlying arrays
     psi_arr = parent(S.psi)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     # Compute potential vorticity q from ψ
     # q = -kh² ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
@@ -650,16 +650,16 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
 
     q_arr = parent(q)
     psi_arr = parent(psi)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global wavenumber indices
         i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(i_local, 1, G) : i_local
+                   local_to_global(i_local, 2, G) : i_local
         j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(j_local, 2, G) : j_local
+                   local_to_global(j_local, 3, G) : j_local
 
         kx_val = G.kx[min(i_global, length(G.kx))]
         ky_val = G.ky[min(j_global, length(G.ky))]
@@ -670,27 +670,27 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
             coeff_up = (r_ut[k] * a_ell[k]) / r_st[k]
             coeff_down = (r_ut[k-1] * a_ell[k-1]) / r_st[k]
 
-            vert_term = coeff_up * psi_arr[i_local, j_local, k+1] -
-                       (coeff_up + coeff_down) * psi_arr[i_local, j_local, k] +
-                       coeff_down * psi_arr[i_local, j_local, k-1]
+            vert_term = coeff_up * psi_arr[k+1, i_local, j_local] -
+                       (coeff_up + coeff_down) * psi_arr[k, i_local, j_local] +
+                       coeff_down * psi_arr[k-1, i_local, j_local]
 
-            q_arr[i_local, j_local, k] = -kh2 * psi_arr[i_local, j_local, k] + vert_term / dz2
+            q_arr[k, i_local, j_local] = -kh2 * psi_arr[k, i_local, j_local] + vert_term / dz2
         end
 
         # Handle boundary conditions based on nz
         if nz == 1
             # Single-layer case: No vertical derivatives, q = -kh² ψ (2D barotropic mode)
-            q_arr[i_local, j_local, 1] = -kh2 * psi_arr[i_local, j_local, 1]
+            q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local]
         else
             # Bottom boundary (k=1): Neumann BC ψ_z = 0 ⟹ ψ[0] = ψ[1]
             coeff_up = (r_ut[1] * a_ell[1]) / r_st[1]
-            vert_term = coeff_up * (psi_arr[i_local, j_local, 2] - psi_arr[i_local, j_local, 1])
-            q_arr[i_local, j_local, 1] = -kh2 * psi_arr[i_local, j_local, 1] + vert_term / dz2
+            vert_term = coeff_up * (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local])
+            q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local] + vert_term / dz2
 
             # Top boundary (k=nz): Neumann BC ψ_z = 0 ⟹ ψ[nz+1] = ψ[nz]
             coeff_down = (r_ut[nz-1] * a_ell[nz-1]) / r_st[nz]
-            vert_term = coeff_down * (psi_arr[i_local, j_local, nz-1] - psi_arr[i_local, j_local, nz])
-            q_arr[i_local, j_local, nz] = -kh2 * psi_arr[i_local, j_local, nz] + vert_term / dz2
+            vert_term = coeff_down * (psi_arr[nz-1, i_local, j_local] - psi_arr[nz, i_local, j_local])
+            q_arr[nz, i_local, j_local] = -kh2 * psi_arr[nz, i_local, j_local] + vert_term / dz2
         end
     end
 end
@@ -720,7 +720,7 @@ timestepping loop. This function is provided for initialization or diagnostics.
 """
 function compute_geostrophic_velocities!(u, v, psi, G::Grid, plans)
     psi_arr = parent(psi)
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     # Allocate temporary spectral arrays for velocity derivatives
     uk_temp = similar(psi)
@@ -731,16 +731,16 @@ function compute_geostrophic_velocities!(u, v, psi, G::Grid, plans)
     for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         # Get global wavenumber indices
         i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(i_local, 1, G) : i_local
+                   local_to_global(i_local, 2, G) : i_local
         j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(j_local, 2, G) : j_local
+                   local_to_global(j_local, 3, G) : j_local
 
         kx_val = G.kx[min(i_global, length(G.kx))]
         ky_val = G.ky[min(j_global, length(G.ky))]
 
         # Geostrophic velocities in spectral space
-        uk_arr[i_local, j_local, k] = -im * ky_val * psi_arr[i_local, j_local, k]
-        vk_arr[i_local, j_local, k] =  im * kx_val * psi_arr[i_local, j_local, k]
+        uk_arr[k, i_local, j_local] = -im * ky_val * psi_arr[k, i_local, j_local]
+        vk_arr[k, i_local, j_local] =  im * kx_val * psi_arr[k, i_local, j_local]
     end
 
     # Transform to physical space
@@ -765,19 +765,19 @@ function compute_buoyancy_from_psi!(b, psi, G::Grid, dz)
     b_arr = parent(b)
     psi_arr = parent(psi)
 
-    nx_local, ny_local, nz_local = size(psi_arr)
+    nz_local, nx_local, ny_local = size(psi_arr)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Bottom boundary: b[1] from ψ[2] - ψ[1] (or extrapolation)
         if nz_local >= 2
-            b_arr[i_local, j_local, 1] = (psi_arr[i_local, j_local, 2] - psi_arr[i_local, j_local, 1]) / dz
+            b_arr[1, i_local, j_local] = (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local]) / dz
         else
-            b_arr[i_local, j_local, 1] = 0
+            b_arr[1, i_local, j_local] = 0
         end
 
         # Interior and top points
         for k in 2:nz_local
-            b_arr[i_local, j_local, k] = (psi_arr[i_local, j_local, k] - psi_arr[i_local, j_local, k-1]) / dz
+            b_arr[k, i_local, j_local] = (psi_arr[k, i_local, j_local] - psi_arr[k-1, i_local, j_local]) / dz
         end
     end
 end

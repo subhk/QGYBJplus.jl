@@ -122,28 +122,28 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     B_arr = parent(B)
-    nx_local, ny_local, nz_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
         if L[i_global, j_global] && kₕ² > 0
             s = 0.0 + 0.0im
             for k in 1:nz
-                s += B_arr[i,j,k]
+                s += B_arr[k, i, j]
             end
             aveij = s / nz
             for k in 1:nz
-                B_arr[i,j,k] -= aveij
+                B_arr[k, i, j] -= aveij
             end
         else
             for k in 1:nz
-                B_arr[i,j,k] = 0
+                B_arr[k, i, j] = 0
             end
         end
     end
@@ -159,28 +159,28 @@ function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
     transpose_to_z_pencil!(B_z, B, G)
 
     B_z_arr = parent(B_z)
-    nx_local_z, ny_local_z, nz_local = size(B_z_arr)
+    nz_local, nx_local_z, ny_local_z = size(B_z_arr)
 
     @assert nz_local == nz "After transpose, z must be fully local"
 
     @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 1, G)
-        j_global = local_to_global_z(j, 2, G)
+        i_global = local_to_global_z(i, 2, G)
+        j_global = local_to_global_z(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
         if L[i_global, j_global] && kₕ² > 0
             s = 0.0 + 0.0im
             for k in 1:nz
-                s += B_z_arr[i,j,k]
+                s += B_z_arr[k, i, j]
             end
             aveij = s / nz
             for k in 1:nz
-                B_z_arr[i,j,k] -= aveij
+                B_z_arr[k, i, j] -= aveij
             end
         else
             for k in 1:nz
-                B_z_arr[i,j,k] = 0
+                B_z_arr[k, i, j] = 0
             end
         end
     end
@@ -257,7 +257,7 @@ function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, L
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     nBRk_arr = parent(nBRk)
-    nx_local, ny_local, nz_local = size(nBRk_arr)
+    nz_local, nx_local, ny_local = size(nBRk_arr)
 
     @assert nz_local == nz "Vertical dimension must be fully local"
 
@@ -268,15 +268,15 @@ function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, L
     rBIk_arr = parent(rBIk)
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
         if L[i_global, j_global] && kₕ² > 0
             s = 0.0 + 0.0im
             for k in 1:nz
-                s += ( rBRk_arr[i,j,k] + 2*nBIk_arr[i,j,k] + im*( rBIk_arr[i,j,k] - 2*nBRk_arr[i,j,k] ) )/kₕ²
+                s += ( rBRk_arr[k, i, j] + 2*nBIk_arr[k, i, j] + im*( rBIk_arr[k, i, j] - 2*nBRk_arr[k, i, j] ) )/kₕ²
             end
             σ[i,j] = s
         else
@@ -314,21 +314,21 @@ function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask
     rBRk_z_arr = parent(rBRk_z)
     rBIk_z_arr = parent(rBIk_z)
 
-    nx_local_z, ny_local_z, nz_local = size(nBRk_z_arr)
+    nz_local, nx_local_z, ny_local_z = size(nBRk_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     σ = zeros(ComplexF64, nx_local_z, ny_local_z)
 
     @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 1, G)
-        j_global = local_to_global_z(j, 2, G)
+        i_global = local_to_global_z(i, 2, G)
+        j_global = local_to_global_z(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
         if L[i_global, j_global] && kₕ² > 0
             s = 0.0 + 0.0im
             for k in 1:nz
-                s += ( rBRk_z_arr[i,j,k] + 2*nBIk_z_arr[i,j,k] + im*( rBIk_z_arr[i,j,k] - 2*nBRk_z_arr[i,j,k] ) )/kₕ²
+                s += ( rBRk_z_arr[k, i, j] + 2*nBIk_z_arr[k, i, j] + im*( rBIk_z_arr[k, i, j] - 2*nBRk_z_arr[k, i, j] ) )/kₕ²
             end
             σ[i,j] = s
         else
@@ -442,13 +442,13 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
     C_arr = parent(C)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
-    nx_local, ny_local, nz_local = size(A_arr)
+    nz_local, nx_local, ny_local = size(A_arr)
 
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 1, G)
-        j_global = local_to_global(j, 2, G)
+        i_global = local_to_global(i, 2, G)
+        j_global = local_to_global(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
@@ -456,30 +456,30 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
             # Stage 1: build Ã by cumulative vertical integration
             sBR = 0.0 + 0.0im
             sBI = 0.0 + 0.0im
-            A_arr[i,j,1] = 0
+            A_arr[1, i, j] = 0
             for k in 2:nz
-                sBR += BRk_arr[i,j,k-1]
-                sBI += BIk_arr[i,j,k-1]
-                A_arr[i,j,k] = A_arr[i,j,k-1] + ( sBR + im*sBI ) * N²[k-1]*Δz*Δz
+                sBR += BRk_arr[k-1, i, j]
+                sBI += BIk_arr[k-1, i, j]
+                A_arr[k, i, j] = A_arr[k-1, i, j] + ( sBR + im*sBI ) * N²[k-1]*Δz*Δz
             end
             # Stage 2: compute vertical sum
             sumA = 0.0 + 0.0im
             for k in 1:nz
-                sumA += A_arr[i,j,k]
+                sumA += A_arr[k, i, j]
             end
             # Adjust to enforce mean(A) = σ(i,j)/nz
             adj = (σ[i,j] - sumA)/nz
             for k in 1:nz
-                A_arr[i,j,k] += adj
+                A_arr[k, i, j] += adj
             end
             # C = A_z, forward diff; top C=0
             for k in 1:nz-1
-                C_arr[i,j,k] = (A_arr[i,j,k+1] - A_arr[i,j,k])/Δz
+                C_arr[k, i, j] = (A_arr[k+1, i, j] - A_arr[k, i, j])/Δz
             end
-            C_arr[i,j,nz] = 0
+            C_arr[nz, i, j] = 0
         else
             for k in 1:nz
-                A_arr[i,j,k] = 0; C_arr[i,j,k] = 0
+                A_arr[k, i, j] = 0; C_arr[k, i, j] = 0
             end
         end
     end
@@ -506,12 +506,12 @@ function _compute_A_2d!(A, C, BRk, BIk, σ, par, G, Lmask, workspace, N2_profile
     A_z_arr = parent(A_z)
     C_z_arr = parent(C_z)
 
-    nx_local_z, ny_local_z, nz_local = size(BRk_z_arr)
+    nz_local, nx_local_z, ny_local_z = size(BRk_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 1, G)
-        j_global = local_to_global_z(j, 2, G)
+        i_global = local_to_global_z(i, 2, G)
+        j_global = local_to_global_z(j, 3, G)
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
@@ -519,30 +519,30 @@ function _compute_A_2d!(A, C, BRk, BIk, σ, par, G, Lmask, workspace, N2_profile
             # Stage 1: cumulative vertical integration
             sBR = 0.0 + 0.0im
             sBI = 0.0 + 0.0im
-            A_z_arr[i,j,1] = 0
+            A_z_arr[1, i, j] = 0
             for k in 2:nz
-                sBR += BRk_z_arr[i,j,k-1]
-                sBI += BIk_z_arr[i,j,k-1]
-                A_z_arr[i,j,k] = A_z_arr[i,j,k-1] + ( sBR + im*sBI ) * N²[k-1]*Δz*Δz
+                sBR += BRk_z_arr[k-1, i, j]
+                sBI += BIk_z_arr[k-1, i, j]
+                A_z_arr[k, i, j] = A_z_arr[k-1, i, j] + ( sBR + im*sBI ) * N²[k-1]*Δz*Δz
             end
             # Stage 2: apply σ constraint
             # Note: σ is computed in z-pencil configuration, so indexing matches
             sumA = 0.0 + 0.0im
             for k in 1:nz
-                sumA += A_z_arr[i,j,k]
+                sumA += A_z_arr[k, i, j]
             end
             adj = (σ[i,j] - sumA)/nz
             for k in 1:nz
-                A_z_arr[i,j,k] += adj
+                A_z_arr[k, i, j] += adj
             end
             # Stage 3: vertical derivative
             for k in 1:nz-1
-                C_z_arr[i,j,k] = (A_z_arr[i,j,k+1] - A_z_arr[i,j,k])/Δz
+                C_z_arr[k, i, j] = (A_z_arr[k+1, i, j] - A_z_arr[k, i, j])/Δz
             end
-            C_z_arr[i,j,nz] = 0
+            C_z_arr[nz, i, j] = 0
         else
             for k in 1:nz
-                A_z_arr[i,j,k] = 0; C_z_arr[i,j,k] = 0
+                A_z_arr[k, i, j] = 0; C_z_arr[k, i, j] = 0
             end
         end
     end

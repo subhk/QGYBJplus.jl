@@ -89,7 +89,7 @@ ky = grid.ky     # Vector of length ny
 
 # Horizontal wavenumber squared
 # Serial: 2D array (nx, ny)
-# Parallel: 3D PencilArray (local_nx, local_ny, local_nz)
+# Parallel: 3D PencilArray (local_nz, local_nx, local_ny)
 kh2 = grid.kh2
 
 # Convenience functions (handle serial/parallel automatically)
@@ -104,19 +104,19 @@ When using parallel decomposition, local indices must be mapped to global indice
 
 ```julia
 # Get local index ranges
-local_range = get_local_range(grid)   # (i_range, j_range, k_range)
+local_range = get_local_range(grid)   # (k_range, i_range, j_range)
 
 # Map local to global indices (xy-pencil)
-i_global = local_to_global(i_local, 1, grid)  # x dimension
-j_global = local_to_global(j_local, 2, grid)  # y dimension
-k_global = local_to_global(k_local, 3, grid)  # z dimension
+i_global = local_to_global(i_local, 2, grid)  # x dimension
+j_global = local_to_global(j_local, 3, grid)  # y dimension
+k_global = local_to_global(k_local, 1, grid)  # z dimension
 
 # Map local to global indices (z-pencil)
-i_global = local_to_global_z(i_local, 1, grid)
-j_global = local_to_global_z(j_local, 2, grid)
+i_global = local_to_global_z(i_local, 2, grid)
+j_global = local_to_global_z(j_local, 3, grid)
 
 # Get local dimensions of any array
-nx_local, ny_local, nz_local = get_local_dims(arr)
+nz_local, nx_local, ny_local = get_local_dims(arr)
 
 # Check if array is parallel
 is_distributed = is_parallel_array(arr)
@@ -138,7 +138,7 @@ if grid.decomp !== nothing
     range_z = decomp.local_range_z
 
     # Global dimensions
-    global_dims = decomp.global_dims   # (nx, ny, nz)
+    global_dims = decomp.global_dims   # (nz, nx, ny)
 
     # Process topology
     topology = decomp.topology   # (px, py)
@@ -210,18 +210,18 @@ w = state.w      # Vertical velocity
 psi_data = parent(state.psi)
 
 # Get local dimensions
-nx_local, ny_local, nz_local = size(parent(state.psi))
+nz_local, nx_local, ny_local = size(parent(state.psi))
 
 # Access single element
-val = state.psi[i, j, k]
+val = state.psi[k, i, j]
 
 # Access slice
-surface = state.psi[:, :, end]
-profile = state.psi[i, j, :]
+surface = state.psi[end, :, :]
+profile = state.psi[:, i, j]
 
 # Set values
-state.psi[i, j, k] = complex_value
-state.psi[:, :, end] .= surface_values
+state.psi[k, i, j] = complex_value
+state.psi[end, :, :] .= surface_values
 
 # Copy all of one field
 state.psi .= initial_psi
@@ -324,8 +324,8 @@ has_nan = any(isnan, parent(state.psi))
 | Grid initialization | `init_grid(params)` | `init_mpi_grid(params, mpi_config)` |
 | State initialization | `init_state(grid)` | `init_mpi_state(grid, mpi_config)` |
 | Array type | `Array{T,3}` | `PencilArray{T,3}` |
-| Index access | Direct `arr[i,j,k]` | Via `parent(arr)[i,j,k]` |
-| Wavenumber lookup | Direct `grid.kx[i]` | `grid.kx[local_to_global(i,1,grid)]` |
+| Index access | Direct `arr[k,i,j]` | Via `parent(arr)[k,i,j]` |
+| Wavenumber lookup | Direct `grid.kx[i]` | `grid.kx[local_to_global(i,2,grid)]` |
 | `grid.decomp` | `nothing` | `PencilDecomp` struct |
 
 ## API Reference
