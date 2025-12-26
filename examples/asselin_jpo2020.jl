@@ -85,6 +85,11 @@ function main()
 
     # Parameters matching Asselin et al. (2020)
     # Fully dimensional simulation with physical domain size
+    # Weak biharmonic (4th order) hyperdiffusion for waves
+    # E-folding time at grid scale ≈ 10 inertial periods
+    # νₕ₁ʷ ≈ 1/(k_max⁴ × 10×T_inertial) where k_max = π×nx/Lx
+    νₕ₁ʷ_wave = 2000.0  # [m⁴/s] - weak biharmonic diffusion
+
     par = QGYBJplus.default_params(
         nx = nx, ny = ny, nz = nz,
         Lx = Lx, Ly = Ly, Lz = Lz,  # Domain size [m]
@@ -93,7 +98,9 @@ function main()
         N² = N²,               # Buoyancy frequency squared [s⁻²]
         ybj_plus = true,
         fixed_flow = true,
-        no_wave_feedback = true
+        no_wave_feedback = true,
+        νₕ₁ʷ = νₕ₁ʷ_wave,      # Weak ∇⁴ hyperdiffusion for waves
+        ilap1w = 2             # 4th order (biharmonic)
     )
 
     # Initialize distributed grid, plans, and state
