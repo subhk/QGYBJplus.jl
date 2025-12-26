@@ -166,9 +166,9 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
     end
 
     grid = init_mpi_grid(params, parallel_config)
-    state = init_mpi_state(grid, parallel_config)
-    state_old = init_mpi_state(grid, parallel_config)
     plans = plan_mpi_transforms(grid, parallel_config)
+    state = init_mpi_state(grid, plans, parallel_config)
+    state_old = init_mpi_state(grid, plans, parallel_config)
     
     # Set up stratification
     @info "Setting up stratification profile"

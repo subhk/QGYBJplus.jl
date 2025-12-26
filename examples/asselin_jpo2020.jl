@@ -108,7 +108,7 @@ function main()
     # Initialize distributed grid, plans, and state
     G = QGYBJplus.init_mpi_grid(par, mpi_config)
     plans = QGYBJplus.plan_mpi_transforms(G, mpi_config)
-    S = QGYBJplus.init_mpi_state(G, mpi_config)
+    S = QGYBJplus.init_mpi_state(G, plans, mpi_config)
     workspace = QGYBJplus.init_mpi_workspace(G, mpi_config)
 
     # All arrays use pencil_xy - get local index range
@@ -117,7 +117,7 @@ function main()
     # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy)
     # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
     if is_root; println("\nSetting up dipole..."); end
-    psi_phys = similar(S.psi)
+    psi_phys = QGYBJplus.allocate_fft_backward_dst(S.psi, plans)
     psi_phys_arr = parent(psi_phys)
     for k_local in axes(psi_phys_arr, 1)
         for j_local in axes(psi_phys_arr, 3)
@@ -150,7 +150,7 @@ function main()
     # Set up wave IC in terms of wave amplitude A (velocity envelope)
     # u(t=0) = u0 exp(-z^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
     if is_root; println("Setting up waves..."); end
-    A_phys = similar(S.A)
+    A_phys = QGYBJplus.allocate_fft_backward_dst(S.A, plans)
     A_phys_arr = parent(A_phys)
     for k_local in axes(A_phys_arr, 1)
         k_global = local_range[1][k_local]
