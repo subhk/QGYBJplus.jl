@@ -680,8 +680,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BIₓₖ_arr = parent(BIₓₖ); BIᵧₖ_arr = parent(BIᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, BRk)
+        j_global = local_to_global(j_local, 3, BRk)
       
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -742,8 +742,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     Previous code incorrectly divided by nx*ny, weakening wave feedback.
     Just combine terms and apply dealiasing. =#
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, qʷₖ)
+        j_global = local_to_global(j_local, 3, qʷₖ)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
@@ -780,8 +780,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, Bk)
+        j_global = local_to_global(j_local, 3, Bk)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         Bₓₖ_arr[k, i_local, j_local] = im*kₓ*Bk_arr[k, i_local, j_local]
@@ -823,8 +823,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     tempₖ_arr = parent(tempₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, qʷₖ)
+        j_global = local_to_global(j_local, 3, qʷₖ)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
