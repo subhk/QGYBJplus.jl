@@ -138,8 +138,8 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     χₓ_arr = parent(χₓₖ); χᵧ_arr = parent(χᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, φₖ)
+        j_global = local_to_global(j_local, 3, φₖ)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -180,8 +180,8 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
 
     # Apply 2/3 dealiasing mask to remove aliased modes from quadratic nonlinearity
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, dstk)
+        j_global = local_to_global(j_local, 3, dstk)
         if !should_keep(i_global, j_global)
             dst_arr[k, i_local, j_local] = 0  # Zero aliased modes
         end
@@ -296,8 +296,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, uterm)
+        j_global = local_to_global(j_local, 3, uterm)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
@@ -319,8 +319,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, uterm)
+        j_global = local_to_global(j_local, 3, uterm)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -342,8 +342,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, uterm)
+        j_global = local_to_global(j_local, 3, uterm)
     
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -391,8 +391,8 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     uterm_arr = parent(uterm); vterm_arr = parent(vterm)
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, uterm)
+        j_global = local_to_global(j_local, 3, uterm)
         if should_keep(i_global, j_global)
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
