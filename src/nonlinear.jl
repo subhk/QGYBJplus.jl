@@ -362,6 +362,67 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     return nqk, nBRk, nBIk
 end
 
+# Advection helper for complex fields (q or B) without splitting into BR/BI.
+function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_real::Bool=false)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    u_arr = parent(u); v_arr = parent(v)
+    nχk_arr = parent(nχk)
+    nx_local, ny_local, nz_local = size(u_arr)
+
+    use_inline_dealias = isnothing(Lmask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
+
+    χᵣ = _allocate_fft_dst(χk, plans)
+    fft_backward!(χᵣ, χk, plans)
+    χᵣ_arr = parent(χᵣ)
+
+    uterm = similar(χk); vterm = similar(χk)
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        χval = use_real ? real(χᵣ_arr[i_local, j_local, k]) : χᵣ_arr[i_local, j_local, k]
+        uterm_arr[i_local, j_local, k] = u_arr[i_local, j_local, k] * χval
+        vterm_arr[i_local, j_local, k] = v_arr[i_local, j_local, k] * χval
+    end
+
+    fft_forward!(uterm, uterm, plans)
+    fft_forward!(vterm, vterm, plans)
+
+    uterm_arr = parent(uterm); vterm_arr = parent(vterm)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        if should_keep(i_global, j_global)
+            kₓ = G.kx[i_global]
+            kᵧ = G.ky[j_global]
+            nχk_arr[i_local, j_local, k] = im*kₓ*uterm_arr[i_local, j_local, k] + im*kᵧ*vterm_arr[i_local, j_local, k]
+        else
+            nχk_arr[i_local, j_local, k] = 0
+        end
+    end
+
+    return nχk
+end
+
+"""
+    convol_waqg_q!(nqk, u, v, qk, G, plans; Lmask=nothing)
+
+Compute advection of q using divergence form without splitting wave fields.
+"""
+function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing)
+    return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask, use_real=true)
+end
+
+"""
+    convol_waqg_B!(nBk, u, v, Bk, G, plans; Lmask=nothing)
+
+Compute advection of complex B directly (YBJ+ path).
+"""
+function convol_waqg_B!(nBk, u, v, Bk, G::Grid, plans; Lmask=nothing)
+    return _convol_advect!(nBk, u, v, Bk, G, plans; Lmask=Lmask, use_real=false)
+end
+
 #=
 ================================================================================
                         WAVE REFRACTION
@@ -480,6 +541,62 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     end
 
     return rBRk, rBIk
+end
+
+"""
+    refraction_waqg_B!(rBk, Bk, ψₖ, G, plans; Lmask=nothing)
+
+Compute wave refraction term ζ*B directly for complex B (YBJ+ path).
+"""
+function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    ψ_arr = parent(ψₖ)
+    rBk_arr = parent(rBk)
+    nx_local, ny_local, nz_local = size(ψ_arr)
+
+    use_inline_dealias = isnothing(Lmask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
+
+    ζₖ = similar(ψₖ)
+    ζₖ_arr = parent(ζₖ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+        ζₖ_arr[i_local, j_local, k] = -kₕ²*ψ_arr[i_local, j_local, k]
+    end
+
+    ζᵣ = _allocate_fft_dst(ζₖ, plans)
+    Bᵣ = _allocate_fft_dst(Bk, plans)
+    fft_backward!(ζᵣ, ζₖ, plans)
+    fft_backward!(Bᵣ, Bk, plans)
+
+    ζᵣ_arr = parent(ζᵣ)
+    Bᵣ_arr = parent(Bᵣ)
+
+    rBᵣ = similar(Bᵣ)
+    rBᵣ_arr = parent(rBᵣ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        rBᵣ_arr[i_local, j_local, k] = real(ζᵣ_arr[i_local, j_local, k]) * Bᵣ_arr[i_local, j_local, k]
+    end
+
+    fft_forward!(rBk, rBᵣ, plans)
+    rBk_arr = parent(rBk)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        if !should_keep(i_global, j_global)
+            rBk_arr[i_local, j_local, k] = 0
+        end
+    end
+
+    return rBk
 end
 
 #=
@@ -634,6 +751,84 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         if should_keep(i_global, j_global)
             # qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
             # For dimensional equations, B has actual amplitude - no W2F scaling needed
+            qʷₖ_arr[i_local, j_local, k] = qʷₖ_arr[i_local, j_local, k] - 0.25*kₕ²*tempₖ_arr[i_local, j_local, k]
+        else
+            qʷₖ_arr[i_local, j_local, k] = 0
+        end
+    end
+
+    return qʷₖ
+end
+
+"""
+    compute_qw_complex!(qʷₖ, Bk, par, G, plans; Lmask=nothing)
+
+Compute wave feedback directly from complex B without spectral BR/BI splitting.
+"""
+function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    Bk_arr = parent(Bk)
+    qʷₖ_arr = parent(qʷₖ)
+    nx_local, ny_local, nz_local = size(Bk_arr)
+
+    use_inline_dealias = isnothing(Lmask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
+
+    # Spectral derivatives of B
+    Bₓₖ = similar(Bk); Bᵧₖ = similar(Bk)
+    Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        Bₓₖ_arr[i_local, j_local, k] = im*kₓ*Bk_arr[i_local, j_local, k]
+        Bᵧₖ_arr[i_local, j_local, k] = im*kᵧ*Bk_arr[i_local, j_local, k]
+    end
+
+    # Transform to physical space
+    Bᵣ = _allocate_fft_dst(Bk, plans)
+    Bₓᵣ = _allocate_fft_dst(Bₓₖ, plans)
+    Bᵧᵣ = _allocate_fft_dst(Bᵧₖ, plans)
+    fft_backward!(Bᵣ, Bk, plans)
+    fft_backward!(Bₓᵣ, Bₓₖ, plans)
+    fft_backward!(Bᵧᵣ, Bᵧₖ, plans)
+
+    Bᵣ_arr = parent(Bᵣ)
+    Bₓᵣ_arr = parent(Bₓᵣ)
+    Bᵧᵣ_arr = parent(Bᵧᵣ)
+
+    # (i/2)J(B*, B) term in physical space
+    qʷᵣ = similar(Bᵣ)
+    qʷᵣ_arr = parent(qʷᵣ)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        Jval = conj(Bₓᵣ_arr[i_local, j_local, k]) * Bᵧᵣ_arr[i_local, j_local, k] -
+               conj(Bᵧᵣ_arr[i_local, j_local, k]) * Bₓᵣ_arr[i_local, j_local, k]
+        qʷᵣ_arr[i_local, j_local, k] = real(0.5im * Jval)
+    end
+
+    # |B|^2 term
+    mag² = similar(Bk)
+    mag²_arr = parent(mag²)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        mag²_arr[i_local, j_local, k] = real(conj(Bᵣ_arr[i_local, j_local, k]) * Bᵣ_arr[i_local, j_local, k])
+    end
+
+    # Transform to spectral
+    tempₖ = similar(Bk)
+    fft_forward!(tempₖ, mag², plans)
+    fft_forward!(qʷₖ, qʷᵣ, plans)
+    tempₖ_arr = parent(tempₖ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 1, G)
+        j_global = local_to_global(j_local, 2, G)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+        if should_keep(i_global, j_global)
             qʷₖ_arr[i_local, j_local, k] = qʷₖ_arr[i_local, j_local, k] - 0.25*kₕ²*tempₖ_arr[i_local, j_local, k]
         else
             qʷₖ_arr[i_local, j_local, k] = 0
@@ -883,4 +1078,6 @@ end
 end # module
 
 # Export nonlinear operators to main QGYBJplus module
-using .Nonlinear: jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor
+using .Nonlinear: jacobian_spectral!, convol_waqg!, convol_waqg_q!, convol_waqg_B!,
+                  refraction_waqg!, refraction_waqg_B!, compute_qw!, compute_qw_complex!,
+                  dissipation_q_nv!, int_factor
