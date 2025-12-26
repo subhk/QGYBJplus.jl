@@ -112,20 +112,17 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
 
     for k in 1:nz_local
         # Get global z-index for correct coordinate
-        k_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(k, 1, G) : k
+        k_global = local_to_global(k, 1, psir)
         z = (k_global - 1) * dz
 
         for j_local in 1:ny_local
             # Get global y-index
-            j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 3, G) : j_local
+            j_global = local_to_global(j_local, 3, psir)
             y = (j_global - 1) * dy
 
             for i_local in 1:nx_local
                 # Get global x-index
-                i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 2, G) : i_local
+                i_global = local_to_global(i_local, 2, psir)
                 x = (i_global - 1) * dx
 
                 # Example: sum of Rossby waves with different modes
@@ -292,20 +289,17 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
 
     for k in 1:nz_local
         # Get global z-index for correct coordinate
-        k_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(k, 1, G) : k
+        k_global = local_to_global(k, 1, Br)
         z = (k_global - 1) * dz
 
         for j_local in 1:ny_local
             # Get global y-index
-            j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 3, G) : j_local
+            j_global = local_to_global(j_local, 3, Br)
             y = (j_global - 1) * dy
 
             for i_local in 1:nx_local
                 # Get global x-index
-                i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 2, G) : i_local
+                i_global = local_to_global(i_local, 2, Br)
                 x = (i_global - 1) * dx
 
                 # Use normalized coordinates for wave patterns
@@ -422,14 +416,12 @@ function apply_dealiasing_mask!(field, G::Grid)
     for k in 1:nz_local
         for j_local in 1:ny_local
             # Get global j index for wavenumber lookup
-            j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                       local_to_global(j_local, 3, G) : j_local
+            j_global = local_to_global(j_local, 3, field)
             ky = j_global <= G.ny÷2 ? j_global-1 : j_global-1-G.ny
 
             for i_local in 1:nx_local
                 # Get global i index for wavenumber lookup
-                i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                           local_to_global(i_local, 2, G) : i_local
+                i_global = local_to_global(i_local, 2, field)
                 kx = i_global <= G.nx÷2 ? i_global-1 : i_global-1-G.nx
 
                 # Radial check: zero modes outside dealiasing circle
@@ -656,10 +648,8 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global wavenumber indices
-        i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(i_local, 2, G) : i_local
-        j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(j_local, 3, G) : j_local
+        i_global = local_to_global(i_local, 2, psi)
+        j_global = local_to_global(j_local, 3, psi)
 
         kx_val = G.kx[min(i_global, length(G.kx))]
         ky_val = G.ky[min(j_global, length(G.ky))]
@@ -730,10 +720,8 @@ function compute_geostrophic_velocities!(u, v, psi, G::Grid, plans)
 
     for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         # Get global wavenumber indices
-        i_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(i_local, 2, G) : i_local
-        j_global = hasfield(typeof(G), :decomp) && G.decomp !== nothing ?
-                   local_to_global(j_local, 3, G) : j_local
+        i_global = local_to_global(i_local, 2, psi)
+        j_global = local_to_global(j_local, 3, psi)
 
         kx_val = G.kx[min(i_global, length(G.kx))]
         ky_val = G.ky[min(j_global, length(G.ky))]
