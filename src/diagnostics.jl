@@ -173,8 +173,8 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, psi)
+        j_global = local_to_global(j, 3, psi)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
@@ -214,8 +214,8 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     # Previous code incorrectly divided by nx*ny, weakening omega forcing.
     rhs_arr = parent(rhs)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, rhs)
+        j_global = local_to_global(j, 3, rhs)
         if !L[i_global, j_global]
             rhs_arr[k, i, j] = 0  # Dealias
         end
@@ -272,8 +272,8 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, psi)
+        j_global = local_to_global(j, 3, psi)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
@@ -311,8 +311,8 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     # Previous code incorrectly divided by nx*ny, weakening omega forcing.
     rhs_arr = parent(rhs)
     @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, G)
-        j_global = local_to_global(j, 3, G)
+        i_global = local_to_global(i, 2, rhs)
+        j_global = local_to_global(j, 3, rhs)
         if !L[i_global, j_global]
             rhs_arr[k, i, j] = 0  # Dealias
         end
@@ -423,15 +423,15 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, G)
+        k_global = local_to_global(k, 1, uk)
         ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         ke_k = 0.0
 
         # Sum over horizontal wavenumbers with dealiasing
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, G)
-            j_global = local_to_global(j, 3, G)
+            i_global = local_to_global(i, 2, uk)
+            j_global = local_to_global(j, 3, uk)
 
             if L[i_global, j_global]
                 # KE contribution: |u|² + |v|²
@@ -441,7 +441,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
 
         # Dealiasing correction: subtract half the kh=0 mode
         # The kh=0 mode is at global index (1,1)
-        if local_to_global(1, 2, G) == 1 && local_to_global(1, 3, G) == 1
+        if local_to_global(1, 2, uk) == 1 && local_to_global(1, 3, uk) == 1
             # This process owns the (1,1) mode
             ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         end
