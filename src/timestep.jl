@@ -325,12 +325,17 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     #= Store old fields for time stepping =#
     qok  = copy(S.q)
     qok_arr = parent(qok)
-    BRok = similar(S.B); BIok = similar(S.B)
-    BRok_arr = parent(BRok); BIok_arr = parent(BIok)
+    if par.ybj_plus
+        Bok = copy(S.B)
+        Bok_arr = parent(Bok)
+    else
+        BRok = similar(S.B); BIok = similar(S.B)
+        BRok_arr = parent(BRok); BIok_arr = parent(BIok)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        BRok_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
-        BIok_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+            BRok_arr[i,j,k] = Complex(real(B_arr[i,j,k]), 0)
+            BIok_arr[i,j,k] = Complex(imag(B_arr[i,j,k]), 0)
+        end
     end
 
     #= Step 4: Forward Euler with integrating factors =#
@@ -339,8 +344,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
     # Get parent arrays for tendency terms
     nqk_arr = parent(nqk)
-    nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-    rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
+    if par.ybj_plus
+        nBk_arr = parent(nBk)
+        rBk_arr = parent(rBk)
+    else
+        nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
+        rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
+    end
     dqk_arr = parent(dqk)
 
     # Precompute dispersion coefficients for each vertical level
@@ -379,26 +389,30 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 q_arr[i,j,k] = ( qok_arr[i,j,k] - par.dt*nqk_arr[i,j,k] + par.dt*dqk_arr[i,j,k] ) * exp(-λₑ)
             end
 
-            #= Update B (wave envelope)
-            The YBJ+ equation for B is:
-                ∂B/∂t + J(ψ,B) = i(kₕ²·N²/(2f))A - (i/2)ζ·B
+            if par.ybj_plus
+                #= Update B (wave envelope)
+                ∂B/∂t + J(ψ,B) = i(kₕ²·N²/(2f))A - (i/2)ζ·B =#
+                k_global = local_to_global(k, 3, G)
+                αdisp = αdisp_profile[k_global]
+                B_arr[i,j,k] = ( Bok_arr[i,j,k] - par.dt*nBk_arr[i,j,k]
+                                 + par.dt*(im*αdisp*kₕ²*A_arr[i,j,k] - 0.5im*rBk_arr[i,j,k]) ) * exp(-λʷ)
+            else
+                #= Update B (wave envelope)
+                In terms of real/imaginary parts (with αdisp = N²/(2f)):
+                    ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
+                    ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
+                k_global = local_to_global(k, 3, G)
+                αdisp = αdisp_profile[k_global]
+                BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
+                          - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
+                          + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
+                BInew = ( BIok_arr[i,j,k] - par.dt*nBIk_arr[i,j,k]
+                          + par.dt*αdisp*kₕ²*Complex(real(A_arr[i,j,k]),0)
+                          - par.dt*0.5*rBRk_arr[i,j,k] ) * exp(-λʷ)
 
-            In terms of real/imaginary parts (with αdisp = N²/(2f)):
-                ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
-                ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
-            # Use depth-varying N²(z) for dispersion coefficient
-            # Use global z-index for correct N² lookup in 2D decomposition
-            k_global = local_to_global(k, 3, G)
-            αdisp = αdisp_profile[k_global]
-            BRnew = ( BRok_arr[i,j,k] - par.dt*nBRk_arr[i,j,k]
-                      - par.dt*αdisp*kₕ²*Complex(imag(A_arr[i,j,k]),0)
-                      + par.dt*0.5*rBIk_arr[i,j,k] ) * exp(-λʷ)
-            BInew = ( BIok_arr[i,j,k] - par.dt*nBIk_arr[i,j,k]
-                      + par.dt*αdisp*kₕ²*Complex(real(A_arr[i,j,k]),0)
-                      - par.dt*0.5*rBRk_arr[i,j,k] ) * exp(-λʷ)
-
-            # Recombine into complex B
-            B_arr[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
+                # Recombine into complex B
+                B_arr[i,j,k] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
+            end
         else
             # Zero out dealiased modes
             q_arr[i,j,k] = 0
