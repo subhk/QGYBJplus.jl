@@ -298,6 +298,9 @@ end
 Transpose data from xy-pencil to z-pencil configuration using two-step transpose.
 """
 function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
+    if range_local(pencil(dst)) == range_local(pencil(src))
+        return _copy_if_ranges_match!(dst, src, "transpose_to_z_pencil! (no-op)")
+    end
     T = eltype(src)
     buffer_xz = _get_transpose_buffer(decomp, T)
     transpose!(buffer_xz, src)
@@ -311,6 +314,9 @@ end
 Transpose data from z-pencil to xy-pencil configuration using two-step transpose.
 """
 function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::PencilDecomp)
+    if range_local(pencil(dst)) == range_local(pencil(src))
+        return _copy_if_ranges_match!(dst, src, "transpose_to_xy_pencil! (no-op)")
+    end
     T = eltype(src)
     buffer_xz = _get_transpose_buffer(decomp, T)
     transpose!(buffer_xz, src)
