@@ -286,6 +286,10 @@ function _copy_if_ranges_match!(dst::PencilArray, src::PencilArray, context::Abs
     return dst
 end
 
+@inline function _pencil_matches(arr::PencilArray, ref_pencil)
+    return range_local(pencil(arr)) == range_local(ref_pencil)
+end
+
 """
     transpose_to_z_pencil!(dst, src, decomp::PencilDecomp)
 
@@ -634,46 +638,49 @@ end
 # If pencils_match is true, all arrays use compatible pencil configurations.
 
 function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    if plans.pencils_match
-        # Direct transform - pencils are compatible, zero-copy
+    src_is_input = _pencil_matches(src, plans.input_pencil)
+    dst_is_output = _pencil_matches(dst, plans.output_pencil)
+    dst_is_input = _pencil_matches(dst, plans.input_pencil)
+
+    if src_is_input && dst_is_output
+        # Direct transform - src on input pencil, dst on output pencil
         mul!(dst, plans.forward, src)
-    else
-        # Pencils have different MPI decompositions (FFT plan vs model pencils)
-        # input_pencil matches model's pencil_xy, but output_pencil differs.
-        # Use work arrays as intermediates and transpose between pencils.
+    elseif src_is_input && dst_is_input
+        # Legacy path: keep output on input pencil via transposes
         work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
 
         _copy_if_ranges_match!(work_in, src, "fft_forward! source -> plan input")
-
-        # Execute FFT (output goes to work_out with output_pencil decomposition)
         mul!(work_out, plans.forward, work_in)
-
-        # Transpose within the plan topology, then copy to model pencil
         _transpose_output_to_input!(work_in, work_out, plans)
         _copy_if_ranges_match!(dst, work_in, "fft_forward! plan input -> destination")
+    else
+        error("fft_forward!: source must be on input pencil and destination on output or input pencil. " *
+              "Use allocate_physical/allocate_spectral helpers for MPI plans.")
     end
     return dst
 end
 
 function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
-    if plans.pencils_match
-        # Direct transform - pencils are compatible, zero-copy
+    src_is_output = _pencil_matches(src, plans.output_pencil)
+    src_is_input = _pencil_matches(src, plans.input_pencil)
+    dst_is_input = _pencil_matches(dst, plans.input_pencil)
+
+    if src_is_output && dst_is_input
+        # Direct inverse transform - src on output pencil, dst on input pencil
         ldiv!(dst, plans.forward, src)
-    else
-        # Pencils have different MPI decompositions (FFT plan vs model pencils)
-        # input_pencil matches model's pencil_xy, but output_pencil differs.
-        # Use work arrays as intermediates and transpose between pencils.
+    elseif src_is_input && dst_is_input
+        # Legacy path: src/dst on input pencil via transposes
         work_in = plans.work_arrays.input
         work_out = plans.work_arrays.output
 
         _copy_if_ranges_match!(work_in, src, "fft_backward! source -> plan input")
         _transpose_input_to_output!(work_out, work_in, plans)
-
-        # Execute inverse FFT
         ldiv!(work_in, plans.forward, work_out)
-
         _copy_if_ranges_match!(dst, work_in, "fft_backward! plan input -> destination")
+    else
+        error("fft_backward!: source must be on output pencil and destination on input pencil. " *
+              "Use allocate_physical/allocate_spectral helpers for MPI plans.")
     end
     return dst
 end
