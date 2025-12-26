@@ -252,8 +252,8 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, S.q)
+        j_global = local_to_global(j_local, 3, S.q)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -539,8 +539,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         tol = sqrt(eps(real(one(eltype(rhs_arr)))))
         singular_warned = false
         for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global(i_local, 2, G)
-            j_global = local_to_global(j_local, 3, G)
+            i_global = local_to_global(i_local, 2, rhs)
+            j_global = local_to_global(j_local, 3, rhs)
 
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
@@ -575,8 +575,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, rhs)
+        j_global = local_to_global(j_local, 3, rhs)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -871,8 +871,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, G)
-        j_global = local_to_global(j_local, 3, G)
+        i_global = local_to_global(i_local, 2, S.B)
+        j_global = local_to_global(j_local, 3, S.B)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
