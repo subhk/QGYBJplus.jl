@@ -634,6 +634,55 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     return dst
 end
 
+"""
+    allocate_physical(spectral_arr, plans::MPIPlans)
+
+Allocate a physical-space array compatible with `fft_backward!` destination.
+
+For MPI plans, the destination of `fft_backward!` must be on `input_pencil`,
+not `output_pencil`. This helper allocates the correct array type.
+
+# Arguments
+- `spectral_arr`: A spectral-space array (on output_pencil) to use as template for element type
+- `plans`: The MPIPlans containing pencil information
+
+# Returns
+A PencilArray allocated on `input_pencil` (physical space).
+
+# Example
+```julia
+# CORRECT: destination on input_pencil
+phys = allocate_physical(spectral_arr, plans)
+fft_backward!(phys, spectral_arr, plans)
+
+# WRONG: similar() creates array on same pencil as source
+phys_wrong = similar(spectral_arr)  # on output_pencil!
+fft_backward!(phys_wrong, spectral_arr, plans)  # ERROR!
+```
+"""
+function allocate_physical(spectral_arr::PencilArray, plans::MPIPlans)
+    return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+end
+
+"""
+    allocate_spectral(physical_arr, plans::MPIPlans)
+
+Allocate a spectral-space array compatible with `fft_forward!` destination.
+
+For MPI plans, the destination of `fft_forward!` must be on `output_pencil`,
+not `input_pencil`. This helper allocates the correct array type.
+
+# Arguments
+- `physical_arr`: A physical-space array (on input_pencil) to use as template for element type
+- `plans`: The MPIPlans containing pencil information
+
+# Returns
+A PencilArray allocated on `output_pencil` (spectral space).
+"""
+function allocate_spectral(physical_arr::PencilArray, plans::MPIPlans)
+    return PencilArray{eltype(physical_arr)}(undef, plans.output_pencil)
+end
+
 
 #=
 ================================================================================
