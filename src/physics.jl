@@ -757,3 +757,80 @@ function compute_hyperdiff_params(; nx::Int, ny::Int, Lx::Real, Ly::Real, dt::Re
     ilap = order ÷ 2  # ilap = 2 for 4th order, 3 for 6th order, etc.
     return (ν=ν, ilap=ilap, order=order)
 end
+
+"""
+    dimensional_hyperdiff_params(; nx, ny, Lx, Ly, dt, order=4, efold_steps=10)
+
+Compute hyperdiffusion parameters for both flow and waves in dimensional runs.
+
+For dimensional simulations (Lx, Ly in meters), the default hyperdiffusion coefficients
+are effectively zero because wavenumbers k ~ π/(Lx/nx) are very small (~1e-3 m⁻¹).
+This function computes properly scaled coefficients for both flow and wave fields.
+
+# Arguments
+- `nx, ny`: Grid points in x and y
+- `Lx, Ly`: Domain size in x and y [m]
+- `dt`: Time step [s]
+- `order`: Order of hyperdiffusion (4 = biharmonic ∇⁴, default)
+- `efold_steps`: Grid-scale e-folding time in steps (default: 10)
+
+# Returns
+Named tuple with fields for use in `default_params`:
+- `νₕ₁, ilap1`: Flow hyperdiffusion (primary)
+- `νₕ₂, ilap2`: Flow hyperdiffusion (secondary, set to 0)
+- `νₕ₁ʷ, ilap1w`: Wave hyperdiffusion (primary)
+- `νₕ₂ʷ, ilap2w`: Wave hyperdiffusion (secondary, set to 0)
+
+# Example
+```julia
+# Dimensional run matching Asselin et al. (2020) parameters
+hd = dimensional_hyperdiff_params(
+    nx=128, ny=128, Lx=70e3, Ly=70e3, dt=10.0,
+    order=4, efold_steps=10
+)
+
+par = default_params(
+    nx=128, ny=128, nz=64,
+    Lx=70e3, Ly=70e3, Lz=3000.0,
+    dt=10.0, nt=10000,
+    f₀=1.24e-4, N²=1e-5,
+    # Use dimensional hyperdiffusion for both flow and waves
+    νₕ₁=hd.νₕ₁, ilap1=hd.ilap1, νₕ₂=hd.νₕ₂, ilap2=hd.ilap2,
+    νₕ₁ʷ=hd.νₕ₁ʷ, ilap1w=hd.ilap1w, νₕ₂ʷ=hd.νₕ₂ʷ, ilap2w=hd.ilap2w,
+    ybj_plus=true
+)
+```
+
+# Physical Interpretation
+The coefficient is computed such that the grid-scale mode (k_max = π/dx) is
+damped by a factor of e in `efold_steps` time steps. This provides:
+- Strong damping at the grid scale (prevents aliasing/instability)
+- Weak damping at large scales (preserves physical dynamics)
+- Scale-selective dissipation: 4th order damps small scales much more than large
+
+# Notes
+- For dimensional runs, always use this function instead of default coefficients
+- The default νₕ₂ʷ=10.0 with ilap2w=6 gives λ ≈ 10 × (1e-3)^12 ≈ 0 for dimensional k
+- 4th order (biharmonic) is recommended for dimensional runs
+"""
+function dimensional_hyperdiff_params(; nx::Int, ny::Int, Lx::Real, Ly::Real, dt::Real,
+                                       order::Int=4, efold_steps::Int=10)
+    hd = compute_hyperdiff_params(nx=nx, ny=ny, Lx=Lx, Ly=Ly, dt=dt,
+                                   order=order, efold_steps=efold_steps)
+
+    return (
+        # Flow hyperdiffusion
+        νₕ₁ = hd.ν,
+        ilap1 = hd.ilap,
+        νₕ₂ = 0.0,      # Disable secondary (12th order useless at dim. scales)
+        ilap2 = 2,      # Placeholder
+        # Wave hyperdiffusion (same as flow for stability)
+        νₕ₁ʷ = hd.ν,
+        ilap1w = hd.ilap,
+        νₕ₂ʷ = 0.0,     # Disable secondary
+        ilap2w = 2,     # Placeholder
+        # Metadata
+        order = order,
+        efold_steps = efold_steps
+    )
+end
