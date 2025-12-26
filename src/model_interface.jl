@@ -1199,9 +1199,9 @@ function check_termination_conditions(sim::QGYBJSimulation{T}) where T
 
     # Check for blow-up (very large values)
     # Note: fft_backward! returns complex arrays
-    psir_complex = similar(sim.state.psi)
+    psir_complex = _allocate_fft_dst(sim.state.psi, sim.plans)
     fft_backward!(psir_complex, sim.state.psi, sim.plans)
-    psir = real.(psir_complex)
+    psir = real.(parent(psir_complex))
 
     if maximum(abs, psir) > 1e10
         @error "Solution appears to be blowing up (max |psi| = $(maximum(abs, psir)))"

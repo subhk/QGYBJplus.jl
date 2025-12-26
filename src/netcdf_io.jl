@@ -18,6 +18,22 @@ using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
 const HAS_NCDS = true
 
 """
+    _allocate_fft_dst(spectral_arr, plans)
+
+Allocate a destination array for fft_backward! that is on the correct pencil.
+
+For MPI plans with input_pencil, allocates on input_pencil (physical space).
+For serial plans, uses similar() which works correctly.
+"""
+function _allocate_fft_dst(spectral_arr, plans)
+    if hasfield(typeof(plans), :input_pencil) && plans.input_pencil !== nothing
+        return PencilArray{eltype(spectral_arr)}(undef, plans.input_pencil)
+    else
+        return similar(spectral_arr)
+    end
+end
+
+"""
     OutputManager
 
 Manages NetCDF output for model state and diagnostics.
@@ -196,7 +212,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
     # Note: fft_backward! uses FFTW.ifft which is already normalized (divides by nx*ny)
     psir = nothing
     if write_psi
-        psir = similar(S.psi)
+        psir = _allocate_fft_dst(S.psi, plans)
         fft_backward!(psir, S.psi, plans)
     end
 
@@ -204,7 +220,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
     # B = BR + i*BI where BR, BI are real fields in physical space
     Br = nothing
     if write_waves
-        Br = similar(S.B)
+        Br = _allocate_fft_dst(S.B, plans)
         fft_backward!(Br, S.B, plans)  # Full complex IFFT
     end
 
@@ -217,7 +233,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
             zeta_k_arr[i, j, k] = -G.kh2[i, j] * psi_k_arr[i, j, k]
         end
-        zeta_r = similar(S.psi)
+        zeta_r = _allocate_fft_dst(zeta_k, plans)
         fft_backward!(zeta_r, zeta_k, plans)
     end
     
