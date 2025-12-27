@@ -494,7 +494,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     # Get underlying arrays
     ψ_arr = parent(ψₖ)
     rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-    nz_local, nx_local, ny_local = size(ψ_arr)
+    # Spectral array dimensions
+    nz_spec, nx_spec, ny_spec = size(ψ_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     use_inline_dealias = isnothing(Lmask)
@@ -503,8 +504,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
     ζₖ = similar(ψₖ)
     ζₖ_arr = parent(ζₖ)
-  
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, ψₖ)
         j_global = local_to_global(j_local, 3, ψₖ)
         kₓ = G.kx[i_global]
@@ -527,8 +528,10 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     #= Compute products in real space: rB = ζ × B =#
     rBRᵣ = similar(BRᵣ); rBIᵣ = similar(BIᵣ)
     rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ)
-  
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(ζᵣ_arr)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         rBRᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BRᵣ_arr[k, i_local, j_local])
         rBIᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BIᵣ_arr[k, i_local, j_local])
     end
@@ -542,8 +545,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     fft_backward! uses normalized IFFT (divides by N internally).
     Previous code incorrectly divided by nx*ny, weakening refraction terms.
     Just apply dealiasing mask. =#
-    
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, rBRk)
         j_global = local_to_global(j_local, 3, rBRk)
         if !should_keep(i_global, j_global)
