@@ -296,10 +296,11 @@ function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
     bxᵣ_arr = parent(bxᵣ); byᵣ_arr = parent(byᵣ)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
-    # Real-space RHS
+    # Real-space RHS - use physical array dimensions (may differ from spectral in 2D decomposition)
     rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
-    @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
+    nz_phys, nx_phys, ny_phys = size(bxᵣ_arr)
+    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
     end
 
