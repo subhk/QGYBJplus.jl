@@ -170,7 +170,9 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     Jᵣ = _allocate_fft_dst(φₖ, plans)
     J_arr = parent(Jᵣ)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(φₓᵣ)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         J_arr[k, i_local, j_local] = (real(φₓᵣ[k, i_local, j_local])*real(χᵧᵣ[k, i_local, j_local]) -
                                       real(φᵧᵣ[k, i_local, j_local])*real(χₓᵣ[k, i_local, j_local]))
     end
@@ -260,7 +262,10 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Get underlying arrays (works for both Array and PencilArray)
     u_arr = parent(u); v_arr = parent(v)
     nqk_arr = parent(nqk); nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-    nz_local, nx_local, ny_local = size(u_arr)
+    # Physical array dimensions (u, v are in physical space)
+    nz_phys, nx_phys, ny_phys = size(u_arr)
+    # Spectral array dimensions (may differ in 2D decomposition)
+    nz_spec, nx_spec, ny_spec = size(nqk_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     # This avoids allocating a full (nx, ny) mask on each process
@@ -285,8 +290,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     vterm_r = _allocate_fft_dst(qk, plans)
     uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
     uterm_k = similar(qk); vterm_k = similar(qk)
-  
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
         vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
     end
@@ -294,10 +299,10 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Transform to spectral and compute divergence
     fft_forward!(uterm_k, uterm_r, plans)
     fft_forward!(vterm_k, vterm_r, plans)
-  
+
     uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, uterm_k)
         j_global = local_to_global(j_local, 3, uterm_k)
         kₓ = G.kx[i_global]
@@ -311,19 +316,19 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     end
 
     #= ---- J(ψ, BR): Advection of wave real part ---- =#
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
         vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
     end
     fft_forward!(uterm_k, uterm_r, plans)
     fft_forward!(vterm_k, vterm_r, plans)
-  
+
     uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, uterm_k)
         j_global = local_to_global(j_local, 3, uterm_k)
-    
+
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         if should_keep(i_global, j_global)
@@ -334,19 +339,19 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     end
 
     #= ---- J(ψ, BI): Advection of wave imaginary part ---- =#
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
         vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
     end
     fft_forward!(uterm_k, uterm_r, plans)
     fft_forward!(vterm_k, vterm_r, plans)
-  
+
     uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, uterm_k)
         j_global = local_to_global(j_local, 3, uterm_k)
-    
+
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
     
@@ -370,7 +375,10 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     u_arr = parent(u); v_arr = parent(v)
     nχk_arr = parent(nχk)
-    nz_local, nx_local, ny_local = size(u_arr)
+    # Physical array dimensions (u, v are in physical space)
+    nz_phys, nx_phys, ny_phys = size(u_arr)
+    # Spectral array dimensions (may differ in 2D decomposition)
+    nz_spec, nx_spec, ny_spec = size(nχk_arr)
 
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
@@ -384,7 +392,7 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
     uterm_k = similar(χk); vterm_k = similar(χk)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
         uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
         vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
@@ -394,7 +402,7 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     fft_forward!(vterm_k, vterm_r, plans)
 
     uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, uterm_k)
         j_global = local_to_global(j_local, 3, uterm_k)
         if should_keep(i_global, j_global)

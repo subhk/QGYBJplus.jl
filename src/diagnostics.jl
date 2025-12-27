@@ -601,8 +601,10 @@ function wave_energy_vavg(B, G::Grid, plans)
     # Accumulate 0.5|B|^2 and average over nz
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
-    WE = zeros(Float64, nx_local, ny_local)
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(Br_arr)
+    WE = zeros(Float64, nx_phys, ny_phys)
+    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         WE[i,j] += 0.5 * abs2(Br_arr[k, i, j])
     end
     WE ./= nz
@@ -647,21 +649,20 @@ For full domain slices, gather data to root first.
 function slice_horizontal(field, G::Grid, plans; k::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
 
-    # Get local dimensions
-    field_arr = parent(field)
-    nz_local, nx_local, ny_local = size(field_arr)
-
-    @assert 1 <= k <= nz_local "k=$k must be within local range 1:$nz_local"
-
     # Inverse FFT entire field to get real slice
     Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(Xr_arr)
+
+    @assert 1 <= k <= nz_phys "k=$k must be within local range 1:$nz_phys"
+
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
-    sl = Array{Float64}(undef, nx_local, ny_local)
-    @inbounds for j in 1:ny_local, i in 1:nx_local
+    sl = Array{Float64}(undef, nx_phys, ny_phys)
+    @inbounds for j in 1:ny_phys, i in 1:nx_phys
         sl[i,j] = real(Xr_arr[k, i, j])
     end
     return sl
@@ -697,20 +698,19 @@ For full domain slices, gather data to root first.
 function slice_vertical_xz(field, G::Grid, plans; j::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
 
-    # Get local dimensions
-    field_arr = parent(field)
-    nz_local, nx_local, ny_local = size(field_arr)
-
-    @assert 1 <= j <= ny_local "j=$j must be within local range 1:$ny_local"
-
     Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
     Xr_arr = parent(Xr)
 
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(Xr_arr)
+
+    @assert 1 <= j <= ny_phys "j=$j must be within local range 1:$ny_phys"
+
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
-    sl = Array{Float64}(undef, nx_local, nz_local)
-    @inbounds for k in 1:nz_local, i in 1:nx_local
+    sl = Array{Float64}(undef, nx_phys, nz_phys)
+    @inbounds for k in 1:nz_phys, i in 1:nx_phys
         sl[i,k] = real(Xr_arr[k, i, j])
     end
     return sl
