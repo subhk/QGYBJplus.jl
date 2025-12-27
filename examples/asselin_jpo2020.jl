@@ -148,122 +148,20 @@ function main()
         end
     end
 
-    # Set up wave IC in terms of wave amplitude A (velocity envelope)
-    # u(t=0) = u0 exp(-z^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
+    # Set up wave IC: surface-confined, horizontally uniform (k=0 mode only)
+    # Initial condition: u(t=0) = u0 exp(-z^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
+    # For horizontally uniform waves, we initialize B directly with the wave profile.
     if is_root; println("Setting up waves..."); end
-    A_phys = QGYBJplus.allocate_fft_backward_dst(S.A, plans)
-    A_phys_arr = parent(A_phys)
-    for k_local in axes(A_phys_arr, 1)
+    B_phys = QGYBJplus.allocate_fft_backward_dst(S.B, plans)
+    B_phys_arr = parent(B_phys)
+    for k_local in axes(B_phys_arr, 1)
         k_global = local_range_phys[1][k_local]
         depth = G.Lz - G.z[k_global]  # Distance from surface [m]
         wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         wave_value = complex(u0_wave * wave_profile)
-        A_phys_arr[k_local, :, :] .= wave_value
+        B_phys_arr[k_local, :, :] .= wave_value
     end
-    QGYBJplus.fft_forward!(S.A, A_phys, plans)
-
-    # Apply L⁺ operator to get B = L⁺A (consistent with YBJ+ formulation)
-    a_ell = QGYBJplus.a_ell_ut(par, G)
-    function apply_Lplus!(Bk, Ak, G, par, a; workspace=nothing)
-        nz = G.nz
-        need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !QGYBJplus.z_is_local(Ak, G)
-
-        ρ_ut = isdefined(QGYBJplus, :rho_ut) ? QGYBJplus.rho_ut(par, G) : ones(eltype(a), nz)
-        ρ_st = isdefined(QGYBJplus, :rho_st) ? QGYBJplus.rho_st(par, G) : ones(eltype(a), nz)
-
-        Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-        Δz² = Δz^2
-
-        if need_transpose
-            A_z = workspace !== nothing ? workspace.A_z : QGYBJplus.allocate_z_pencil(G, ComplexF64)
-            B_z = workspace !== nothing ? workspace.B_z : QGYBJplus.allocate_z_pencil(G, ComplexF64)
-            QGYBJplus.transpose_to_z_pencil!(A_z, Ak, G)
-
-            A_z_arr = parent(A_z)
-            B_z_arr = parent(B_z)
-            nz_local, nx_local, ny_local = size(A_z_arr)
-
-            for j_local in 1:ny_local, i_local in 1:nx_local
-                i_global = QGYBJplus.local_to_global_z(i_local, 2, G)
-                j_global = QGYBJplus.local_to_global_z(j_local, 3, G)
-                kₓ = G.kx[i_global]
-                kᵧ = G.ky[j_global]
-                kₕ² = kₓ^2 + kᵧ^2
-
-                if nz == 1
-                    @inbounds B_z_arr[1, i_local, j_local] = -(kₕ²/4) * A_z_arr[1, i_local, j_local]
-                    continue
-                end
-
-                @inbounds begin
-                    # k = 1
-                    d1 = -((ρ_ut[1]*a[1]) / ρ_st[1] + (kₕ²*Δz²)/4)
-                    du1 = (ρ_ut[1]*a[1]) / ρ_st[1]
-                    B_z_arr[1, i_local, j_local] = (d1*A_z_arr[1, i_local, j_local] +
-                                                    du1*A_z_arr[2, i_local, j_local]) / Δz²
-
-                    # interior
-                    for k in 2:nz-1
-                        dl = (ρ_ut[k-1]*a[k-1]) / ρ_st[k]
-                        d  = -(((ρ_ut[k]*a[k] + ρ_ut[k-1]*a[k-1]) / ρ_st[k]) + (kₕ²*Δz²)/4)
-                        du = (ρ_ut[k]*a[k]) / ρ_st[k]
-                        B_z_arr[k, i_local, j_local] = (dl*A_z_arr[k-1, i_local, j_local] +
-                                                        d*A_z_arr[k, i_local, j_local] +
-                                                        du*A_z_arr[k+1, i_local, j_local]) / Δz²
-                    end
-
-                    # k = nz
-                    dl = (ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz]
-                    d  = -((ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz] + (kₕ²*Δz²)/4)
-                    B_z_arr[nz, i_local, j_local] = (dl*A_z_arr[nz-1, i_local, j_local] +
-                                                     d*A_z_arr[nz, i_local, j_local]) / Δz²
-                end
-            end
-
-            QGYBJplus.transpose_to_xy_pencil!(Bk, B_z, G)
-        else
-            A_arr = parent(Ak)
-            B_arr = parent(Bk)
-            nz_local, nx_local, ny_local = size(A_arr)
-
-            for j_local in 1:ny_local, i_local in 1:nx_local
-                i_global = QGYBJplus.local_to_global(i_local, 2, Ak)
-                j_global = QGYBJplus.local_to_global(j_local, 3, Ak)
-                kₓ = G.kx[i_global]
-                kᵧ = G.ky[j_global]
-                kₕ² = kₓ^2 + kᵧ^2
-
-                if nz == 1
-                    @inbounds B_arr[1, i_local, j_local] = -(kₕ²/4) * A_arr[1, i_local, j_local]
-                    continue
-                end
-
-                @inbounds begin
-                    d1 = -((ρ_ut[1]*a[1]) / ρ_st[1] + (kₕ²*Δz²)/4)
-                    du1 = (ρ_ut[1]*a[1]) / ρ_st[1]
-                    B_arr[1, i_local, j_local] = (d1*A_arr[1, i_local, j_local] +
-                                                  du1*A_arr[2, i_local, j_local]) / Δz²
-
-                    for k in 2:nz-1
-                        dl = (ρ_ut[k-1]*a[k-1]) / ρ_st[k]
-                        d  = -(((ρ_ut[k]*a[k] + ρ_ut[k-1]*a[k-1]) / ρ_st[k]) + (kₕ²*Δz²)/4)
-                        du = (ρ_ut[k]*a[k]) / ρ_st[k]
-                        B_arr[k, i_local, j_local] = (dl*A_arr[k-1, i_local, j_local] +
-                                                      d*A_arr[k, i_local, j_local] +
-                                                      du*A_arr[k+1, i_local, j_local]) / Δz²
-                    end
-
-                    dl = (ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz]
-                    d  = -((ρ_ut[nz-1]*a[nz-1]) / ρ_st[nz] + (kₕ²*Δz²)/4)
-                    B_arr[nz, i_local, j_local] = (dl*A_arr[nz-1, i_local, j_local] +
-                                                   d*A_arr[nz, i_local, j_local]) / Δz²
-                end
-            end
-        end
-        return Bk
-    end
-
-    apply_Lplus!(S.B, S.A, G, par, a_ell; workspace=workspace)
+    QGYBJplus.fft_forward!(S.B, B_phys, plans)
 
     # Configure output
     output_config = QGYBJplus.OutputConfig(
