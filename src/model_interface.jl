@@ -10,7 +10,7 @@ using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
 using ..QGYBJplus: first_projection_step!, leapfrog_step!
 using ..QGYBJplus: IMEXWorkspace, init_imex_workspace, imex_cn_step!
-using ..QGYBJplus: invert_q_to_psi!, compute_velocities!
+using ..QGYBJplus: invert_q_to_psi!, invert_B_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
