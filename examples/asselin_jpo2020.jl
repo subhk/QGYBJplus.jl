@@ -133,8 +133,9 @@ function main()
 
     # Compute N2 profile for consistent physics across all operations
     # This is passed to run_simulation! for use in elliptic inversions and vertical velocity
+    # Use constant stratification matching the N² parameter defined above
     N2_profile = QGYBJplus.compute_stratification_profile(
-        QGYBJplus.SkewedGaussian{T}(T(N02), T(N12), T(s_gauss), T(z0_gauss), T(α_sg)),
+        QGYBJplus.ConstantN{Float64}(sqrt(N²)),
         G
     )
 

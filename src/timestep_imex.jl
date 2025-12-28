@@ -65,9 +65,6 @@ struct IMEXWorkspace{CT, RT}
     A_col::Vector{ComplexF64}
     RHS_col::Vector{ComplexF64}
 
-    # Dispersion coefficient profile (pre-allocated)
-    αdisp_profile::Vector{Float64}
-
     # For q equation (same as original)
     qtemp::CT
 end
@@ -108,15 +105,11 @@ function init_imex_workspace(S, G)
     A_col = Vector{ComplexF64}(undef, nz)
     RHS_col = Vector{ComplexF64}(undef, nz)
 
-    # Dispersion coefficient profile (pre-allocated)
-    αdisp_profile = Vector{Float64}(undef, nz)
-
     return IMEXWorkspace{CT, RT}(
         nBk, rBk, nqk, dqk, RHS, Atemp,
         tri_diag, tri_upper, tri_lower, tri_rhs, tri_sol,
         tri_c_prime, tri_d_prime,
         B_col, A_col, RHS_col,
-        αdisp_profile,
         qtemp
     )
 end
@@ -148,8 +141,9 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     dz = G.dz[1]
     dz² = dz * dz
 
-    # Build tridiagonal system: (L⁺ - β - kₕ²/4)·A = B
-    # L⁺ in finite differences: a(z)·∂²A/∂z² - kₕ²/4·A
+    # Build tridiagonal system: (L⁺ - β)·A = B
+    # where L⁺ = a(z)·∂²A/∂z² - kₕ²/4·A  is the YBJ+ elliptic operator
+    # and β = (dt/2)·i·αdisp·kₕ² is the implicit dispersion coefficient
     # With Neumann BCs: ∂A/∂z = 0 at z = 0, Lz
 
     # Interior points: a[k]/dz²·(A[k+1] - 2A[k] + A[k-1]) - kₕ²/4·A[k] - β·A[k] = B[k]
@@ -367,17 +361,14 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
 
     #= Step 5: IMEX Crank-Nicolson for B equation =#
-    # Use pre-allocated dispersion coefficient profile from workspace
-    # to avoid heap corruption from repeated allocation
-    αdisp_profile = imex_ws.αdisp_profile
-    if N2_profile !== nothing && length(N2_profile) == nz
-        for k_level in 1:nz
-            αdisp_profile[k_level] = N2_profile[k_level] / (2.0 * par.f₀)
-        end
-    else
-        αdisp_const = par.N² / (2.0 * par.f₀)
-        fill!(αdisp_profile, αdisp_const)
-    end
+    # IMPORTANT: For IMEX-CN to be consistent, the implicit and explicit parts
+    # must use the SAME αdisp value. We use constant αdisp = N²/(2f₀) based on
+    # the reference stratification par.N². This is consistent with the YBJ+
+    # formulation which assumes slowly-varying stratification.
+    #
+    # The dispersion coefficient αdisp = N²/(2f₀) appears in the dispersion term:
+    #   ∂B/∂t = ... + i·αdisp·kₕ²·A
+    αdisp = par.N² / (2.0 * par.f₀)
 
     # Process each horizontal mode
     # For IMEX-CN: (I - dt/2·L)·B^{n+1} = (I + dt/2·L)·B^n + dt·N
@@ -422,14 +413,14 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # IMEX-CN for B equation with dispersion
             # Build RHS for IMEX-CN: B^n + (dt/2)·disp^n + dt·N^n
             # where disp = i·αdisp·kₕ²·A and N = -J(ψ,B) - (i/2)ζB
+            #
+            # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
             for k in 1:nz_local
-                k_global = local_to_global(k, 1, Sn.q)
-                αdisp = αdisp_profile[k_global]
-
                 # Explicit tendency: N = -J(ψ,B) - (i/2)ζB
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
 
                 # Dispersion term at time n: disp^n = i·αdisp·kₕ²·A^n
+                # Uses the SAME αdisp as the implicit solve for consistency
                 disp_n = im * αdisp * kₕ² * An_arr[k, i, j]
 
                 # RHS for IMEX-CN (without hyperdiffusion - applied later)
@@ -443,11 +434,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             #   L⁺·A^{n+1} - (dt/2)·i·αdisp·kₕ²·A^{n+1} = RHS
             #   (L⁺ - β)·A^{n+1} = RHS
             # where β = (dt/2)·i·αdisp·kₕ²
+            β = (dt/2) * im * αdisp * kₕ²
 
-            αdisp_avg = par.N² / (2.0 * par.f₀)
-            β = (dt/2) * im * αdisp_avg * kₕ²
-
-            # Solve (L⁺ - β)·A = RHS  (NO hyperdiffusion factor on β!)
+            # Solve (L⁺ - β)·A = RHS
             solve_modified_elliptic!(A_col, RHS_col, G, par, a, kₕ², β, imex_ws)
 
             # Recover B = L⁺·A (apply L⁺ operator)
@@ -455,12 +444,13 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             dz = G.dz[1]  # Uniform grid: use first element
             dz² = dz * dz
 
-            for k in 1:nz
+            # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
+            for k in 1:nz_local
                 # Second derivative with Neumann BCs: ∂A/∂z = 0 at boundaries
                 if k == 1
                     d2A = a[1] * (2*A_col[2] - 2*A_col[1]) / dz²
-                elseif k == nz
-                    d2A = a[nz] * (2*A_col[nz-1] - 2*A_col[nz]) / dz²
+                elseif k == nz_local
+                    d2A = a[nz_local] * (2*A_col[nz_local-1] - 2*A_col[nz_local]) / dz²
                 else
                     d2A = a[k] * (A_col[k+1] - 2*A_col[k] + A_col[k-1]) / dz²
                 end
