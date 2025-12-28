@@ -411,6 +411,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Each thread uses its own workspace to avoid data races
     n_modes = nx_local * ny_local
 
+    # Only use threading if there are enough modes to benefit
+    # For small grids (< 16384 modes = 128×128), threading overhead exceeds benefit
+    use_threading = Threads.nthreads() > 1 && n_modes >= 16384
+
+    @inbounds if use_threading
     Threads.@threads for mode_idx in 1:n_modes
         # Convert linear index to (i, j)
         i = ((mode_idx - 1) % nx_local) + 1
@@ -495,7 +500,63 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
-    end
+    end  # end threaded for
+    else
+    # Serial path for small grids (threading overhead exceeds benefit)
+    for mode_idx in 1:n_modes
+        i = ((mode_idx - 1) % nx_local) + 1
+        j = ((mode_idx - 1) ÷ nx_local) + 1
+
+        tid = 1  # Use first workspace
+        tl = imex_ws.thread_local[tid]
+
+        i_global = local_to_global(i, 2, Sn.q)
+        j_global = local_to_global(j, 3, Sn.q)
+
+        if !L[i_global, j_global]
+            for k in 1:nz_local
+                Bnp1_arr[k, i, j] = 0
+                Anp1_arr[k, i, j] = 0
+            end
+            continue
+        end
+
+        kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+        λʷ = int_factor(kₓ, kᵧ, par; waves=true)
+        hyperdiff_factor = exp(-λʷ)
+
+        if !dispersion_active || kₕ² < 1e-14
+            for k in 1:nz_local
+                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
+                Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * N_k) * hyperdiff_factor
+                Anp1_arr[k, i, j] = 0
+            end
+        else
+            for k in 1:nz_local
+                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
+                disp_n = im * αdisp * kₕ² * An_arr[k, i, j]
+                tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+            end
+
+            β = (dt/2) * im * αdisp * kₕ²
+            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ², β, tl)
+
+            for k in 1:nz_local
+                if k == 1
+                    d2A = a[1] * (2*tl.A_col[2] - 2*tl.A_col[1]) / dz²
+                elseif k == nz_local
+                    d2A = a[nz_local] * (2*tl.A_col[nz_local-1] - 2*tl.A_col[nz_local]) / dz²
+                else
+                    d2A = a[k] * (tl.A_col[k+1] - 2*tl.A_col[k] + tl.A_col[k-1]) / dz²
+                end
+                B_raw = d2A - (kₕ²/4) * tl.A_col[k]
+                Bnp1_arr[k, i, j] = B_raw * hyperdiff_factor
+                Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
+            end
+        end
+    end  # end serial for
+    end  # end if use_threading
 
     #= Step 6: Wave feedback on mean flow =#
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
