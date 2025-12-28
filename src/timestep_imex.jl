@@ -432,9 +432,10 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Each thread uses its own workspace to avoid data races
     n_modes = nx_local * ny_local
 
-    # Only use threading if there are enough modes to benefit
-    # For small grids (< 16384 modes = 128×128), threading overhead exceeds benefit
-    use_threading = Threads.nthreads() > 1 && n_modes >= 16384
+    # Threading disabled by default: benchmarks show serial is faster even for large grids
+    # (thread synchronization and cache contention overhead exceed benefits)
+    # This may change with different hardware or Julia versions
+    use_threading = false
 
     @inbounds if use_threading
     Threads.@threads for mode_idx in 1:n_modes
