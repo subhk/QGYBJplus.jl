@@ -40,6 +40,14 @@ USAGE:
 using MPI
 using PencilArrays
 using PencilFFTs
+import FFTW
+
+# CRITICAL: Disable FFTW threading when using MPI to prevent heap corruption
+# FFTW's internal threading can conflict with MPI, causing malloc errors like:
+#   "malloc.c:3989 (_int_malloc): assertion failed: chunk_main_arena (fwd)"
+#   "corrupted double-linked list"
+# This must be called before any FFT operations.
+FFTW.set_num_threads(1)
 
 # Explicit imports from PencilArrays for clarity
 import PencilArrays: Pencil, PencilArray, MPITopology

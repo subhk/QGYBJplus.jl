@@ -469,7 +469,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     #= Step 6: Wave feedback on mean flow =#
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     if wave_feedback_enabled
-        qwk = similar(Snp1.q)
+        # Reuse qtemp from workspace to avoid allocation every timestep
+        # (allocation inside tight loops causes heap corruption in MPI)
+        qwk = imex_ws.qtemp
         qwk_arr = parent(qwk)
         compute_qw_complex!(qwk, Snp1.B, par, G, plans; Lmask=L)
 
