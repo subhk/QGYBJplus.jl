@@ -116,9 +116,10 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     dqk = similar(S.B)
     RHS = similar(S.B)
     Atemp = similar(S.A)
-    αdisp_profile = Vector{Float64}(undef, G.nz)
-    r_ut = Vector{Float64}(undef, G.nz)
-    r_st = Vector{Float64}(undef, G.nz)
+    # Initialize with zeros to avoid garbage values
+    αdisp_profile = zeros(Float64, G.nz)
+    r_ut = ones(Float64, G.nz)  # Default to 1 for Boussinesq
+    r_st = ones(Float64, G.nz)  # Default to 1 for Boussinesq
     qtemp = similar(S.q)
 
     nz = G.nz
@@ -143,7 +144,7 @@ end
 Solve the modified elliptic problem for IMEX dispersion:
     (L⁺ - β)·A = B
 
-where L⁺ = (f²/N²)∂²/∂z² - kₕ²/4 and β = (dt/2)·i·αdisp(z)·kₕ²
+where L⁺ = (1/ρ)∂/∂z(ρ a(z) ∂/∂z) - kₕ²/4 and β = (dt/2)·i·αdisp(z)·kₕ²
 
 This is a tridiagonal system for each horizontal mode.
 
@@ -449,10 +450,6 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     # Reformulated: solve for A^{n+1} from modified elliptic problem
     # Then B^{n+1} = L⁺·A^{n+1}
-
-    # Pre-compute grid spacing for use in parallel loop
-    dz = G.dz[1]  # Uniform grid: use first element
-    dz² = dz * dz
 
     # Process horizontal modes in parallel using threads
     # Each thread uses its own workspace to avoid data races

@@ -1020,7 +1020,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     L_mask = dealias_mask(G)
 
     # Initial velocity computation
-    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile)
+    # Skip omega equation for IMEX-CN (not needed and expensive)
+    skip_w = timestepper == :imex_cn
+    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile, compute_w=!skip_w)
 
     # Initialize A from B via elliptic inversion: A = (L⁺)⁻¹·B
     # This is needed before the first diagnostics printout (step 0)
