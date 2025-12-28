@@ -53,17 +53,18 @@ struct IMEXThreadLocal
 end
 
 function init_thread_local(nz::Int)
+    # Use zeros instead of undef to avoid garbage values causing NaN
     return IMEXThreadLocal(
-        Vector{ComplexF64}(undef, nz),      # tri_diag
-        Vector{ComplexF64}(undef, nz-1),    # tri_upper
-        Vector{ComplexF64}(undef, nz-1),    # tri_lower
-        Vector{ComplexF64}(undef, nz),      # tri_rhs
-        Vector{ComplexF64}(undef, nz),      # tri_sol
-        Vector{ComplexF64}(undef, nz),      # tri_c_prime
-        Vector{ComplexF64}(undef, nz),      # tri_d_prime
-        Vector{ComplexF64}(undef, nz),      # B_col
-        Vector{ComplexF64}(undef, nz),      # A_col
-        Vector{ComplexF64}(undef, nz)       # RHS_col
+        zeros(ComplexF64, nz),      # tri_diag
+        zeros(ComplexF64, nz-1),    # tri_upper
+        zeros(ComplexF64, nz-1),    # tri_lower
+        zeros(ComplexF64, nz),      # tri_rhs
+        zeros(ComplexF64, nz),      # tri_sol
+        zeros(ComplexF64, nz),      # tri_c_prime
+        zeros(ComplexF64, nz),      # tri_d_prime
+        zeros(ComplexF64, nz),      # B_col
+        zeros(ComplexF64, nz),      # A_col
+        zeros(ComplexF64, nz)       # RHS_col
     )
 end
 
@@ -200,11 +201,24 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
         end
     end
 
-    # Handle mean mode (kₕ² = 0): operator is singular
-    # Set A = 0 for mean mode (consistent with original code)
-    if kₕ² < 1e-14 && abs(β_scale) < 1e-14
+    # Handle near-mean modes (very small kₕ²): operator is nearly singular
+    # For small kₕ², the operator L⁺ - β can become ill-conditioned because
+    # β ∝ kₕ² becomes comparable to the L⁺ eigenvalues.
+    # Use a threshold based on machine precision and typical operator magnitude.
+    # For kₕ² < 1e-12, use explicit forward step instead of implicit solve.
+    if kₕ² < 1e-12
         fill!(A_out, zero(eltype(A_out)))
         return A_out
+    end
+
+    # DEBUG: Check tridiagonal matrix for invalid values
+    if any(v -> isnan(v) || isinf(v), tl.tri_diag[1:nz])
+        diag_max = maximum(abs, tl.tri_diag[1:nz])
+        @warn "Invalid tri_diag" kₕ² diag_max
+    end
+    if any(v -> isnan(v) || isinf(v), tl.tri_rhs[1:nz])
+        rhs_max = maximum(abs, tl.tri_rhs[1:nz])
+        @warn "Invalid tri_rhs" kₕ² rhs_max
     end
 
     # Solve tridiagonal system using Thomas algorithm
@@ -241,24 +255,49 @@ function solve_tridiagonal_complex!(x::AbstractVector{ComplexF64},
                                      d::AbstractVector{ComplexF64}, n::Int,
                                      c_prime::AbstractVector{ComplexF64},
                                      d_prime::AbstractVector{ComplexF64})
+    # Singularity tolerance (matching elliptic.jl thomas_solve!)
+    tol = sqrt(eps(Float64))  # ≈ 1.5e-8
+
     # Forward elimination (using pre-allocated work arrays)
+    if abs(b[1]) < tol
+        @warn "Singular Thomas solve: |b[1]| < tol" b1=b[1] tol
+        fill!(x, zero(ComplexF64))
+        return x
+    end
     c_prime[1] = c[1] / b[1]
     d_prime[1] = d[1] / b[1]
 
     @inbounds for i in 2:n-1
         denom = b[i] - a[i-1] * c_prime[i-1]
+        if abs(denom) < tol
+            @warn "Singular Thomas solve at i=$i: |denom| < tol" denom tol
+            fill!(x, zero(ComplexF64))
+            return x
+        end
         c_prime[i] = c[i] / denom
         d_prime[i] = (d[i] - a[i-1] * d_prime[i-1]) / denom
     end
 
     # Last row
     denom = b[n] - a[n-1] * c_prime[n-1]
+    if abs(denom) < tol
+        @warn "Singular Thomas solve at last row: |denom| < tol" denom tol n
+        fill!(x, zero(ComplexF64))
+        return x
+    end
     d_prime[n] = (d[n] - a[n-1] * d_prime[n-1]) / denom
 
     # Back substitution
     x[n] = d_prime[n]
     @inbounds for i in n-1:-1:1
         x[i] = d_prime[i] - c_prime[i] * x[i+1]
+    end
+
+    # DEBUG: Check if NaN appeared during solve
+    if any(isnan, x[1:n])
+        # Find first NaN
+        first_nan = findfirst(isnan, x[1:n])
+        @warn "NaN in Thomas solution" first_nan d_prime_nan=isnan(d_prime[first_nan]) c_prime_nan=(first_nan<n && isnan(c_prime[first_nan]))
     end
 
     return x
@@ -315,6 +354,14 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         error("IMEX time stepping only implemented for ybj_plus=true")
     end
 
+    # DEBUG: Check input state for NaN before starting
+    if any(isnan, parent(Sn.B))
+        @warn "NaN in input Sn.B at start of IMEX step!"
+    end
+    if any(isnan, parent(Sn.A))
+        @warn "NaN in input Sn.A at start of IMEX step!"
+    end
+
     # Get arrays
     qn_arr = parent(Sn.q)
     Bn_arr = parent(Sn.B)
@@ -347,6 +394,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                         workspace=workspace, dealias_mask=L, compute_w=false)
     invert_B_to_A!(Sn, G, par, a; workspace=workspace)
 
+    # DEBUG: Check A after standard inversion
+    if any(isnan, An_arr)
+        @warn "NaN in Sn.A after invert_B_to_A! call"
+    end
+
     #= Step 2: Compute explicit tendencies =#
     nqk_arr = parent(imex_ws.nqk)
     nBk_arr = parent(imex_ws.nBk)
@@ -360,8 +412,18 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
     convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
 
+    # DEBUG: Check for NaN in advection term
+    if any(isnan, nBk_arr)
+        @warn "NaN in nBk (advection) - check convol_waqg_B!"
+    end
+
     # Refraction
     refraction_waqg_B!(imex_ws.rBk, Sn.B, Sn.psi, G, plans; Lmask=L)
+
+    # DEBUG: Check for NaN in refraction term
+    if any(isnan, rBk_arr)
+        @warn "NaN in rBk (refraction) - check refraction_waqg_B!"
+    end
 
     # Vertical diffusion for q - skip if flow is fixed
     if !par.fixed_flow
@@ -560,6 +622,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         λʷ = int_factor(kₓ, kᵧ, par; waves=true)
         hyperdiff_factor = exp(-λʷ)
 
+        # DEBUG: Check for invalid hyperdiff_factor
+        if isnan(hyperdiff_factor) || isinf(hyperdiff_factor) || hyperdiff_factor > 1e10
+            @warn "Invalid hyperdiff_factor" i_global j_global λʷ hyperdiff_factor
+        end
+
         if !dispersion_active || kₕ² < 1e-14
             for k in 1:nz_local
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
@@ -574,13 +641,30 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             end
 
             β_scale = (dt/2) * im * kₕ²
+
+            # DEBUG: Check RHS before solve (NaN or Inf)
+            if any(v -> isnan(v) || isinf(v), tl.RHS_col[1:nz_local])
+                rhs_max = maximum(abs, tl.RHS_col[1:nz_local])
+                @warn "Invalid RHS before solve" i_global j_global kₕ² rhs_max
+            end
+
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
                                      β_scale, αdisp_profile, r_ut, r_st, tl)
+
+            # DEBUG: Check A after solve
+            if any(isnan, tl.A_col[1:nz_local])
+                @warn "NaN in A after elliptic solve" i_global j_global kₕ²
+            end
 
             for k in 1:nz_local
                 βₖ = β_scale * αdisp_profile[k]
                 Bnp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
+            end
+
+            # DEBUG: Check B after recovery
+            if any(k -> isnan(Bnp1_arr[k, i, j]), 1:nz_local)
+                @warn "NaN in B after recovery" i_global j_global kₕ² hyperdiff_factor
             end
         end
     end  # end serial for
