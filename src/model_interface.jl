@@ -1022,6 +1022,13 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     # Initial velocity computation
     compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile)
 
+    # Initialize A from B via elliptic inversion: A = (L⁺)⁻¹·B
+    # This is needed before the first diagnostics printout (step 0)
+    # For YBJ+, A is the wave amplitude and B = L⁺·A
+    if par.ybj_plus
+        invert_B_to_A!(S, G, par, a_ell; workspace=workspace)
+    end
+
     # Create output manager if config provided
     output_manager = nothing
     if output_config !== nothing
