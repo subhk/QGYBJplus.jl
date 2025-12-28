@@ -82,6 +82,7 @@ struct IMEXWorkspace{CT, RT}
     # Temporary arrays for IMEX
     RHS::CT      # Right-hand side for elliptic solve
     Atemp::CT    # Temporary A storage
+    αdisp_profile::Vector{Float64}  # αdisp(z) cache (length nz)
 
     # Per-thread workspace for tridiagonal solves
     thread_local::Vector{IMEXThreadLocal}
@@ -113,6 +114,7 @@ function init_imex_workspace(S, G; nthreads=Threads.nthreads())
     dqk = similar(S.B)
     RHS = similar(S.B)
     Atemp = similar(S.A)
+    αdisp_profile = Vector{Float64}(undef, G.nz)
     qtemp = similar(S.q)
 
     nz = G.nz
@@ -123,7 +125,7 @@ function init_imex_workspace(S, G; nthreads=Threads.nthreads())
     thread_local = [init_thread_local(nz) for _ in 1:n_workspaces]
 
     return IMEXWorkspace{CT, RT}(
-        nBk, rBk, nqk, dqk, RHS, Atemp,
+        nBk, rBk, nqk, dqk, RHS, Atemp, αdisp_profile,
         thread_local,
         qtemp,
         nz
@@ -398,8 +400,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     #
     # The dispersion coefficient αdisp = N²/(2f₀) appears in the dispersion term:
     #   ∂B/∂t = ... + i·αdisp·kₕ²·A
-    T = eltype(a)
-    αdisp_profile = Vector{T}(undef, nz)
+    αdisp_profile = imex_ws.αdisp_profile
+    if length(αdisp_profile) != nz
+        resize!(αdisp_profile, nz)
+    end
+    T = eltype(αdisp_profile)
     if N2_profile !== nothing && length(N2_profile) == nz
         inv_two_f0 = T(1) / (T(2) * T(par.f₀))
         @inbounds for k in 1:nz
