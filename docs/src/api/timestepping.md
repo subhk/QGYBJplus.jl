@@ -362,11 +362,105 @@ for step in 1:nsteps
 end
 ```
 
+---
+
+## IMEX Crank-Nicolson Scheme
+
+The **IMEX-CN scheme** treats dispersion implicitly for unconditional stability, allowing timesteps ~10x larger than leapfrog.
+
+### Why IMEX-CN?
+
+The YBJ+ wave equation has three terms with different timescales:
+- **Advection**: J(ψ,B) - slow, O(hours)
+- **Refraction**: (i/2)ζB - moderate, O(minutes)
+- **Dispersion**: i·αdisp·kₕ²·A - fast, CFL-limited to dt ≤ 2f/N² (~2s)
+
+IMEX-CN treats dispersion implicitly, removing the stiff CFL constraint.
+
+### Algorithm: Operator Splitting + IMEX-CN
+
+The scheme uses Lie splitting for refraction plus IMEX-CN for advection/dispersion:
+
+**Stage 1 (Exact Refraction):**
+```math
+B^* = B^n \times \exp(-i \Delta t \zeta / 2)
+```
+Applied in physical space with exact integrating factor (energy-preserving).
+
+**Stage 2 (IMEX-CN for Advection + Dispersion):**
+```math
+B^{n+1} = B^* + \frac{\Delta t}{2}[D^* + D^{n+1}] + \Delta t \cdot N^*
+```
+where D = i·αdisp·kₕ²·A (dispersion) and N = -J(ψ,B) (advection).
+
+### Functions
+
+```@docs
+init_imex_workspace
+imex_cn_step!
+first_imex_step!
+```
+
+### Usage
+
+```julia
+# Initialize IMEX workspace
+imex_ws = init_imex_workspace(state, grid)
+Snp1 = copy_state(state)
+
+# Time stepping loop
+for step in 1:nsteps
+    imex_cn_step!(Snp1, Sn, grid, params, plans, imex_ws;
+                  a=a_ell, dealias_mask=L, workspace=workspace,
+                  N2_profile=N2_profile)
+
+    # Copy for next step (only need 2 time levels, not 3 like leapfrog)
+    parent(Sn.B) .= parent(Snp1.B)
+    parent(Sn.A) .= parent(Snp1.A)
+    parent(Sn.q) .= parent(Snp1.q)
+    parent(Sn.psi) .= parent(Snp1.psi)
+end
+```
+
+### Stability Properties
+
+| Term | Treatment | Stability |
+|:-----|:----------|:----------|
+| Refraction | Exact integrating factor | **Unconditionally stable** |
+| Dispersion | Implicit Crank-Nicolson | **Unconditionally stable** |
+| Advection | Explicit forward Euler | CFL: dt < dx/U_max |
+
+For U = 0.335 m/s and dx ≈ 273m (256 grid, 70km domain): **dt_max ≈ 800s**
+
+This allows dt = 20s (vs dt = 2s for leapfrog), a **10x speedup**.
+
+### Key Implementation Details
+
+1. **Operator Splitting**: Refraction is applied exactly using `exp(-i·dt·ζ/2)` in physical space before IMEX-CN
+2. **Consistent A***: After refraction, A* = (L⁺)⁻¹B* is computed to maintain IMEX-CN consistency
+3. **Modified Elliptic Solve**: Each mode solves (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
+
+### When to Use
+
+- **Use IMEX-CN** when dispersion CFL is limiting (typical oceanographic simulations)
+- **Use Leapfrog** for academic tests requiring exact 2nd-order temporal accuracy
+
+---
+
 ## API Summary
 
 All time stepping functions documented above:
+
+**Leapfrog:**
 - `first_projection_step!` - Forward Euler initialization step
 - `leapfrog_step!` - Main leapfrog integration with Robert-Asselin filter
+
+**IMEX-CN:**
+- `init_imex_workspace` - Allocate IMEX workspace arrays
+- `imex_cn_step!` - IMEX Crank-Nicolson step with operator splitting
+- `first_imex_step!` - First-order forward Euler initialization
+
+**Common:**
 - `convol_waqg_q!` / `convol_waqg_B!` - Complex-form advection for q and B
 - `refraction_waqg_B!` - Complex-form wave refraction term
 - `convol_waqg!` / `refraction_waqg!` - BR/BI-decomposed advection/refraction

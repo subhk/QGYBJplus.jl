@@ -154,6 +154,62 @@ The wave field has its own integrating factor ``\lambda_w`` with potentially dif
 - Allows much larger time steps than explicit diffusion treatment
 - Second-order accuracy preserved for advective terms
 
+### IMEX Crank-Nicolson with Operator Splitting
+
+For applications where the dispersion CFL constraint (dt ≤ 2f/N² ≈ 2s) is limiting, we provide an **IMEX Crank-Nicolson** scheme that treats dispersion implicitly.
+
+#### The Challenge: Refraction Instability
+
+The YBJ+ equation includes a refraction term ``-(i/2)\zeta B`` which, when discretized with forward Euler, is unconditionally unstable:
+
+```math
+|1 - i \Delta t \zeta/2| = \sqrt{1 + (\Delta t \zeta/2)^2} > 1
+```
+
+This amplifies energy regardless of time step size.
+
+#### Solution: Operator Splitting
+
+We use **Lie splitting** to handle refraction exactly:
+
+**Stage 1 - Exact Refraction:**
+```math
+B^* = B^n \times \exp(-i \Delta t \zeta / 2)
+```
+
+This is applied in physical space. Since ``|\exp(-i \Delta t \zeta / 2)| = 1``, it is **exactly energy-preserving**.
+
+**Stage 2 - IMEX-CN for Advection + Dispersion:**
+```math
+B^{n+1} - \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^{n+1} = B^* + \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^* + \Delta t \cdot N^*
+```
+
+where ``N^* = -J(\psi, B^n)`` is the advection tendency.
+
+#### Critical: Consistent A*
+
+After applying refraction to get ``B^*``, we must compute ``A^* = (L^+)^{-1} B^*`` (not use ``A^n``). Using ``A^n`` with ``B^*`` breaks the consistency required by IMEX-CN, causing instability.
+
+#### Modified Elliptic Problem
+
+Substituting ``B = L^+ A`` into the IMEX-CN equation:
+```math
+(L^+ - \beta) A^{n+1} = \text{RHS}
+```
+where ``\beta = (\Delta t/2) \cdot i \cdot \alpha_{\text{disp}} \cdot k_h^2``.
+
+This is a tridiagonal system for each ``(k_x, k_y)`` mode, solved with the Thomas algorithm.
+
+#### Stability Summary
+
+| Term | Treatment | Stability |
+|:-----|:----------|:----------|
+| Refraction | Exact integrating factor | Unconditionally stable |
+| Dispersion | Implicit Crank-Nicolson | Unconditionally stable |
+| Advection | Explicit forward Euler | CFL: ``\Delta t < \Delta x / U_{\max}`` |
+
+For typical oceanographic parameters (U ≈ 0.3 m/s, dx ≈ 300m), this allows **dt ≈ 20s** vs **dt ≈ 2s** for explicit leapfrog—a **10x speedup**.
+
 ## Elliptic Inversions
 
 ### Tridiagonal Systems

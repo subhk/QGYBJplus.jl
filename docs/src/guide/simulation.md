@@ -49,14 +49,26 @@ end
 
 ## Time Stepping
 
-### Available Time Stepping Functions
+### Available Schemes
 
-| Function | Description |
-|:---------|:------------|
-| `first_projection_step!` | Forward Euler for first step |
-| `leapfrog_step!` | Leapfrog with Robert-Asselin filter |
+| Scheme | Description | Best For |
+|:-------|:------------|:---------|
+| `:leapfrog` | Explicit, 2nd order, Robert-Asselin filter | dt ≤ 2f/N² (~2s), academic tests |
+| `:imex_cn` | IMEX Crank-Nicolson with operator splitting | **Large dt (~20s), production runs** |
 
-### Basic Time Loop
+### Using `run_simulation!` (Recommended)
+
+```julia
+# Leapfrog (default)
+run_simulation!(S, G, par, plans;
+    timestepper=:leapfrog, ...)
+
+# IMEX-CN (10x larger timestep)
+run_simulation!(S, G, par, plans;
+    timestepper=:imex_cn, ...)
+```
+
+### Manual Time Loop (Leapfrog)
 
 ```julia
 # First step uses forward Euler
@@ -67,6 +79,32 @@ for step = 2:par.nt
     leapfrog_step!(S, G, par, plans, a_ell)
 end
 ```
+
+### Manual Time Loop (IMEX-CN)
+
+```julia
+imex_ws = init_imex_workspace(S, G)
+Snp1 = copy_state(S)
+
+for step = 1:par.nt
+    imex_cn_step!(Snp1, S, G, par, plans, imex_ws;
+                  a=a_ell, dealias_mask=L,
+                  workspace=workspace, N2_profile=N2)
+
+    # Copy for next step (only 2 time levels needed)
+    parent(S.B) .= parent(Snp1.B)
+    parent(S.A) .= parent(Snp1.A)
+    parent(S.q) .= parent(Snp1.q)
+    parent(S.psi) .= parent(Snp1.psi)
+end
+```
+
+### Choosing a Timestep
+
+| Scheme | Stability Constraint | Typical dt |
+|:-------|:--------------------|:-----------|
+| Leapfrog | dt ≤ min(2f/N², dx/U) | ~2s (dispersion-limited) |
+| IMEX-CN | dt ≤ dx/U | ~20s (advection CFL only) |
 
 Each time step performs:
 1. Compute nonlinear terms (Jacobians, refraction)
@@ -369,6 +407,7 @@ end
 
 ### Instability
 
+- **Switch to IMEX-CN**: Use `timestepper=:imex_cn` for unconditional dispersion stability
 - Reduce time step (`dt`)
 - Increase dissipation (`νₕ₂`, `ilap2`)
 - Check initial conditions for sharp gradients
