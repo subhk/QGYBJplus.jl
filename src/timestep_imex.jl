@@ -34,12 +34,46 @@ STABILITY:
 using LinearAlgebra
 
 """
+    IMEXThreadLocal
+
+Per-thread workspace for IMEX tridiagonal solves.
+Each thread needs its own working arrays to avoid data races.
+"""
+struct IMEXThreadLocal
+    tri_diag::Vector{ComplexF64}     # Main diagonal
+    tri_upper::Vector{ComplexF64}    # Upper diagonal
+    tri_lower::Vector{ComplexF64}    # Lower diagonal
+    tri_rhs::Vector{ComplexF64}      # RHS for solve
+    tri_sol::Vector{ComplexF64}      # Solution
+    tri_c_prime::Vector{ComplexF64}  # Work array for forward elimination
+    tri_d_prime::Vector{ComplexF64}  # Work array for forward elimination
+    B_col::Vector{ComplexF64}        # Column work vector
+    A_col::Vector{ComplexF64}        # Column work vector
+    RHS_col::Vector{ComplexF64}      # Column work vector
+end
+
+function init_thread_local(nz::Int)
+    return IMEXThreadLocal(
+        Vector{ComplexF64}(undef, nz),      # tri_diag
+        Vector{ComplexF64}(undef, nz-1),    # tri_upper
+        Vector{ComplexF64}(undef, nz-1),    # tri_lower
+        Vector{ComplexF64}(undef, nz),      # tri_rhs
+        Vector{ComplexF64}(undef, nz),      # tri_sol
+        Vector{ComplexF64}(undef, nz),      # tri_c_prime
+        Vector{ComplexF64}(undef, nz),      # tri_d_prime
+        Vector{ComplexF64}(undef, nz),      # B_col
+        Vector{ComplexF64}(undef, nz),      # A_col
+        Vector{ComplexF64}(undef, nz)       # RHS_col
+    )
+end
+
+"""
     IMEXWorkspace
 
-Pre-allocated workspace for IMEX time stepping.
+Pre-allocated workspace for IMEX time stepping with threading support.
 """
 struct IMEXWorkspace{CT, RT}
-    # Tendency arrays
+    # Tendency arrays (shared, written before parallel region)
     nBk::CT      # J(ψ, B) advection
     rBk::CT      # ζ × B refraction
     nqk::CT      # J(ψ, q) advection
@@ -49,35 +83,27 @@ struct IMEXWorkspace{CT, RT}
     RHS::CT      # Right-hand side for elliptic solve
     Atemp::CT    # Temporary A storage
 
-    # Tridiagonal solver workspace (for each horizontal mode)
-    tri_diag::Vector{ComplexF64}     # Main diagonal
-    tri_upper::Vector{ComplexF64}    # Upper diagonal
-    tri_lower::Vector{ComplexF64}    # Lower diagonal
-    tri_rhs::Vector{ComplexF64}      # RHS for solve
-    tri_sol::Vector{ComplexF64}      # Solution
-
-    # Thomas algorithm work arrays (pre-allocated to avoid heap corruption)
-    tri_c_prime::Vector{ComplexF64}  # Work array for forward elimination
-    tri_d_prime::Vector{ComplexF64}  # Work array for forward elimination
-
-    # Column work vectors for IMEX loop (pre-allocated)
-    B_col::Vector{ComplexF64}
-    A_col::Vector{ComplexF64}
-    RHS_col::Vector{ComplexF64}
+    # Per-thread workspace for tridiagonal solves
+    thread_local::Vector{IMEXThreadLocal}
 
     # For q equation (same as original)
     qtemp::CT
+
+    # Grid size for reference
+    nz::Int
 end
 
 """
-    init_imex_workspace(S, G)
+    init_imex_workspace(S, G; nthreads=Threads.nthreads())
 
-Initialize workspace for IMEX time stepping.
+Initialize workspace for IMEX time stepping with threading support.
 
 NOTE: All work arrays are pre-allocated here to avoid heap corruption
 from repeated allocation/deallocation in tight loops during time stepping.
+Per-thread workspaces are created for the tridiagonal solves to enable
+parallel processing of horizontal modes.
 """
-function init_imex_workspace(S, G)
+function init_imex_workspace(S, G; nthreads=Threads.nthreads())
     CT = typeof(S.B)
     RT = typeof(S.u)
 
@@ -90,32 +116,22 @@ function init_imex_workspace(S, G)
     qtemp = similar(S.q)
 
     nz = G.nz
-    tri_diag = Vector{ComplexF64}(undef, nz)
-    tri_upper = Vector{ComplexF64}(undef, nz-1)
-    tri_lower = Vector{ComplexF64}(undef, nz-1)
-    tri_rhs = Vector{ComplexF64}(undef, nz)
-    tri_sol = Vector{ComplexF64}(undef, nz)
 
-    # Thomas algorithm work arrays (pre-allocated)
-    tri_c_prime = Vector{ComplexF64}(undef, nz)
-    tri_d_prime = Vector{ComplexF64}(undef, nz)
-
-    # Column work vectors for IMEX loop (pre-allocated)
-    B_col = Vector{ComplexF64}(undef, nz)
-    A_col = Vector{ComplexF64}(undef, nz)
-    RHS_col = Vector{ComplexF64}(undef, nz)
+    # Create per-thread workspaces
+    # Use max(1, nthreads) to ensure at least one workspace exists
+    n_workspaces = max(1, nthreads)
+    thread_local = [init_thread_local(nz) for _ in 1:n_workspaces]
 
     return IMEXWorkspace{CT, RT}(
         nBk, rBk, nqk, dqk, RHS, Atemp,
-        tri_diag, tri_upper, tri_lower, tri_rhs, tri_sol,
-        tri_c_prime, tri_d_prime,
-        B_col, A_col, RHS_col,
-        qtemp
+        thread_local,
+        qtemp,
+        nz
     )
 end
 
 """
-    solve_modified_elliptic!(A, B, G, par, a, kₕ², β; workspace)
+    solve_modified_elliptic!(A, B, G, par, a, kₕ², β, tl::IMEXThreadLocal)
 
 Solve the modified elliptic problem for IMEX dispersion:
     (L⁺ - β)·A = B
@@ -132,10 +148,10 @@ This is a tridiagonal system for each horizontal mode.
 - `a`: a_ell = f²/N² array
 - `kₕ²`: Horizontal wavenumber squared
 - `β`: Implicit dispersion coefficient = (dt/2)·i·αdisp·kₕ²
-- `workspace`: IMEXWorkspace with pre-allocated tridiagonal arrays
+- `tl`: IMEXThreadLocal with pre-allocated tridiagonal arrays (thread-local)
 """
 function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
-                                   G, par, a, kₕ², β, ws::IMEXWorkspace)
+                                   G, par, a, kₕ², β, tl::IMEXThreadLocal)
     nz = G.nz
     # G.dz is a vector of layer thicknesses; assume uniform grid and use first element
     dz = G.dz[1]
@@ -153,29 +169,29 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
         aₖ = a[k]  # f²/N²(z)
 
         # Main diagonal: -2a/dz² - kₕ²/4 - β
-        ws.tri_diag[k] = -2.0 * aₖ / dz² - kₕ² / 4.0 - β
+        tl.tri_diag[k] = -2.0 * aₖ / dz² - kₕ² / 4.0 - β
 
         # Off-diagonals: a/dz²
         if k < nz
-            ws.tri_upper[k] = aₖ / dz²
+            tl.tri_upper[k] = aₖ / dz²
         end
         if k > 1
-            ws.tri_lower[k-1] = a[k] / dz²  # Use a at current level
+            tl.tri_lower[k-1] = a[k] / dz²  # Use a at current level
         end
 
-        ws.tri_rhs[k] = B_in[k]
+        tl.tri_rhs[k] = B_in[k]
     end
 
     # Apply Neumann BCs by modifying first and last rows
     # At k=1 (bottom): ∂A/∂z = 0 → A[0] = A[2] (ghost point)
     # Row becomes: (-2a/dz² - kₕ²/4 - β)·A[1] + 2a/dz²·A[2] = B[1]
-    ws.tri_diag[1] = -2.0 * a[1] / dz² - kₕ² / 4.0 - β
-    ws.tri_upper[1] = 2.0 * a[1] / dz²
+    tl.tri_diag[1] = -2.0 * a[1] / dz² - kₕ² / 4.0 - β
+    tl.tri_upper[1] = 2.0 * a[1] / dz²
 
     # At k=nz (top): ∂A/∂z = 0 → A[nz+1] = A[nz-1] (ghost point)
     # Row becomes: 2a/dz²·A[nz-1] + (-2a/dz² - kₕ²/4 - β)·A[nz] = B[nz]
-    ws.tri_lower[nz-1] = 2.0 * a[nz] / dz²
-    ws.tri_diag[nz] = -2.0 * a[nz] / dz² - kₕ² / 4.0 - β
+    tl.tri_lower[nz-1] = 2.0 * a[nz] / dz²
+    tl.tri_diag[nz] = -2.0 * a[nz] / dz² - kₕ² / 4.0 - β
 
     # Handle mean mode (kₕ² = 0): operator is singular
     # Set A = 0 for mean mode (consistent with original code)
@@ -185,9 +201,9 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     end
 
     # Solve tridiagonal system using Thomas algorithm
-    # Use pre-allocated work arrays from workspace to avoid heap corruption
-    solve_tridiagonal_complex!(A_out, ws.tri_lower, ws.tri_diag, ws.tri_upper, ws.tri_rhs, nz,
-                                ws.tri_c_prime, ws.tri_d_prime)
+    # Use pre-allocated work arrays from thread-local workspace
+    solve_tridiagonal_complex!(A_out, tl.tri_lower, tl.tri_diag, tl.tri_upper, tl.tri_rhs, nz,
+                                tl.tri_c_prime, tl.tri_d_prime)
 
     return A_out
 end
@@ -378,18 +394,29 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Reformulated: solve for A^{n+1} from modified elliptic problem
     # Then B^{n+1} = L⁺·A^{n+1}
 
-    # Use pre-allocated vectors from workspace to avoid heap corruption
-    B_col = imex_ws.B_col
-    A_col = imex_ws.A_col
-    RHS_col = imex_ws.RHS_col
+    # Pre-compute grid spacing for use in parallel loop
+    dz = G.dz[1]  # Uniform grid: use first element
+    dz² = dz * dz
 
-    @inbounds for j in 1:ny_local, i in 1:nx_local
+    # Process horizontal modes in parallel using threads
+    # Each thread uses its own workspace to avoid data races
+    n_modes = nx_local * ny_local
+
+    Threads.@threads for mode_idx in 1:n_modes
+        # Convert linear index to (i, j)
+        i = ((mode_idx - 1) % nx_local) + 1
+        j = ((mode_idx - 1) ÷ nx_local) + 1
+
+        # Get thread-local workspace
+        tid = Threads.threadid()
+        tl = imex_ws.thread_local[tid]
+
         i_global = local_to_global(i, 2, Sn.q)
         j_global = local_to_global(j, 3, Sn.q)
 
         if !L[i_global, j_global]
             # Zero out dealiased modes
-            for k in 1:nz_local
+            @inbounds for k in 1:nz_local
                 Bnp1_arr[k, i, j] = 0
                 Anp1_arr[k, i, j] = 0
             end
@@ -405,7 +432,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         if !dispersion_active || kₕ² < 1e-14
             # Pure explicit step: B^{n+1} = B^n + dt·N^n (with hyperdiffusion)
             # where N = -J(ψ,B) - (i/2)ζB
-            for k in 1:nz_local
+            @inbounds for k in 1:nz_local
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
                 Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * N_k) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0  # No dispersion means A is meaningless
@@ -416,7 +443,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # where disp = i·αdisp·kₕ²·A and N = -J(ψ,B) - (i/2)ζB
             #
             # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
-            for k in 1:nz_local
+            @inbounds for k in 1:nz_local
                 # Explicit tendency: N = -J(ψ,B) - (i/2)ζB
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
 
@@ -425,7 +452,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 disp_n = im * αdisp * kₕ² * An_arr[k, i, j]
 
                 # RHS for IMEX-CN (without hyperdiffusion - applied later)
-                RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+                tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
             end
 
             # Solve modified elliptic problem for A^{n+1}
@@ -437,29 +464,26 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # where β = (dt/2)·i·αdisp·kₕ²
             β = (dt/2) * im * αdisp * kₕ²
 
-            # Solve (L⁺ - β)·A = RHS
-            solve_modified_elliptic!(A_col, RHS_col, G, par, a, kₕ², β, imex_ws)
+            # Solve (L⁺ - β)·A = RHS using thread-local workspace
+            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ², β, tl)
 
             # Recover B = L⁺·A (apply L⁺ operator)
             # L⁺ = a·∂²/∂z² - kₕ²/4  where a = f²/N²
-            dz = G.dz[1]  # Uniform grid: use first element
-            dz² = dz * dz
-
             # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
-            for k in 1:nz_local
+            @inbounds for k in 1:nz_local
                 # Second derivative with Neumann BCs: ∂A/∂z = 0 at boundaries
                 if k == 1
-                    d2A = a[1] * (2*A_col[2] - 2*A_col[1]) / dz²
+                    d2A = a[1] * (2*tl.A_col[2] - 2*tl.A_col[1]) / dz²
                 elseif k == nz_local
-                    d2A = a[nz_local] * (2*A_col[nz_local-1] - 2*A_col[nz_local]) / dz²
+                    d2A = a[nz_local] * (2*tl.A_col[nz_local-1] - 2*tl.A_col[nz_local]) / dz²
                 else
-                    d2A = a[k] * (A_col[k+1] - 2*A_col[k] + A_col[k-1]) / dz²
+                    d2A = a[k] * (tl.A_col[k+1] - 2*tl.A_col[k] + tl.A_col[k-1]) / dz²
                 end
 
                 # B = L⁺·A, then apply hyperdiffusion as post-processing
-                B_raw = d2A - (kₕ²/4) * A_col[k]
+                B_raw = d2A - (kₕ²/4) * tl.A_col[k]
                 Bnp1_arr[k, i, j] = B_raw * hyperdiff_factor
-                Anp1_arr[k, i, j] = A_col[k] * hyperdiff_factor
+                Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
     end
