@@ -83,6 +83,8 @@ struct IMEXWorkspace{CT, RT}
     RHS::CT      # Right-hand side for elliptic solve
     Atemp::CT    # Temporary A storage
     αdisp_profile::Vector{Float64}  # αdisp(z) cache (length nz)
+    r_ut::Vector{Float64}           # Unstaggered density weights (length nz)
+    r_st::Vector{Float64}           # Staggered density weights (length nz)
 
     # Per-thread workspace for tridiagonal solves
     thread_local::Vector{IMEXThreadLocal}
@@ -115,6 +117,8 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     RHS = similar(S.B)
     Atemp = similar(S.A)
     αdisp_profile = Vector{Float64}(undef, G.nz)
+    r_ut = Vector{Float64}(undef, G.nz)
+    r_st = Vector{Float64}(undef, G.nz)
     qtemp = similar(S.q)
 
     nz = G.nz
@@ -125,7 +129,7 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     thread_local = [init_thread_local(nz) for _ in 1:n_workspaces]
 
     return IMEXWorkspace{CT, RT}(
-        nBk, rBk, nqk, dqk, RHS, Atemp, αdisp_profile,
+        nBk, rBk, nqk, dqk, RHS, Atemp, αdisp_profile, r_ut, r_st,
         thread_local,
         qtemp,
         nz
@@ -133,7 +137,8 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
 end
 
 """
-    solve_modified_elliptic!(A, B, G, par, a, kₕ², β_scale, αdisp_profile, tl::IMEXThreadLocal)
+    solve_modified_elliptic!(A, B, G, par, a, kₕ², β_scale, αdisp_profile, r_ut, r_st,
+                             tl::IMEXThreadLocal)
 
 Solve the modified elliptic problem for IMEX dispersion:
     (L⁺ - β)·A = B
@@ -151,10 +156,13 @@ This is a tridiagonal system for each horizontal mode.
 - `kₕ²`: Horizontal wavenumber squared
 - `β_scale`: Scalar factor = (dt/2)·i·kₕ² (multiplied by αdisp_profile[k] per level)
 - `αdisp_profile`: αdisp(z) profile, length nz
+- `r_ut`: Unstaggered density weights (length nz)
+- `r_st`: Staggered density weights (length nz)
 - `tl`: IMEXThreadLocal with pre-allocated tridiagonal arrays (thread-local)
 """
 function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
                                    G, par, a, kₕ², β_scale, αdisp_profile::AbstractVector,
+                                   r_ut::AbstractVector, r_st::AbstractVector,
                                    tl::IMEXThreadLocal)
     nz = G.nz
     # G.dz is a vector of layer thicknesses; assume uniform grid and use first element
@@ -162,43 +170,34 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     dz² = dz * dz
 
     # Build tridiagonal system: (L⁺ - β)·A = B
-    # where L⁺ = a(z)·∂²A/∂z² - kₕ²/4·A  is the YBJ+ elliptic operator
+    # where L⁺ = (1/ρ)∂/∂z(ρ a(z) ∂A/∂z) - kₕ²/4·A is the YBJ+ elliptic operator
     # and β = (dt/2)·i·αdisp(z)·kₕ² is the implicit dispersion coefficient
     # With Neumann BCs: ∂A/∂z = 0 at z = 0, Lz
 
-    # Interior points: a[k]/dz²·(A[k+1] - 2A[k] + A[k-1]) - kₕ²/4·A[k] - β·A[k] = B[k]
-    # Rearranging: a[k]/dz²·A[k-1] + (-2a[k]/dz² - kₕ²/4 - β)·A[k] + a[k]/dz²·A[k+1] = B[k]
-
+    # This matches the discretization used by invert_B_to_A! (including density weights).
+    # The matrix is scaled by dz², so RHS is dz² * B.
     @inbounds for k in 1:nz
-        aₖ = a[k]  # f²/N²(z)
         βₖ = β_scale * αdisp_profile[k]
+        tl.tri_rhs[k] = dz² * B_in[k]
 
-        # Main diagonal: -2a/dz² - kₕ²/4 - β
-        tl.tri_diag[k] = -2.0 * aₖ / dz² - kₕ² / 4.0 - βₖ
-
-        # Off-diagonals: a/dz²
-        if k < nz
-            tl.tri_upper[k] = aₖ / dz²
+        if k == 1
+            # Bottom boundary (Neumann): A_z = 0 → A[0] = A[1]
+            coeff = (r_ut[1] * a[1]) / r_st[1]
+            tl.tri_diag[1] = -(coeff + (kₕ² * dz²) / 4.0) - βₖ * dz²
+            tl.tri_upper[1] = coeff
+        elseif k == nz
+            # Top boundary (Neumann): A_z = 0 → A[nz+1] = A[nz]
+            coeff = (r_ut[nz-1] * a[nz-1]) / r_st[nz]
+            tl.tri_lower[nz-1] = coeff
+            tl.tri_diag[nz] = -(coeff + (kₕ² * dz²) / 4.0) - βₖ * dz²
+        else
+            coeff_down = (r_ut[k-1] * a[k-1]) / r_st[k]
+            coeff_up = (r_ut[k] * a[k]) / r_st[k]
+            tl.tri_lower[k-1] = coeff_down
+            tl.tri_diag[k] = -(coeff_up + coeff_down + (kₕ² * dz²) / 4.0) - βₖ * dz²
+            tl.tri_upper[k] = coeff_up
         end
-        if k > 1
-            tl.tri_lower[k-1] = a[k] / dz²  # Use a at current level
-        end
-
-        tl.tri_rhs[k] = B_in[k]
     end
-
-    # Apply Neumann BCs by modifying first and last rows
-    # At k=1 (bottom): ∂A/∂z = 0 → A[0] = A[2] (ghost point)
-    # Row becomes: (-2a/dz² - kₕ²/4 - β)·A[1] + 2a/dz²·A[2] = B[1]
-    β₁ = β_scale * αdisp_profile[1]
-    tl.tri_diag[1] = -2.0 * a[1] / dz² - kₕ² / 4.0 - β₁
-    tl.tri_upper[1] = 2.0 * a[1] / dz²
-
-    # At k=nz (top): ∂A/∂z = 0 → A[nz+1] = A[nz-1] (ghost point)
-    # Row becomes: 2a/dz²·A[nz-1] + (-2a/dz² - kₕ²/4 - β)·A[nz] = B[nz]
-    tl.tri_lower[nz-1] = 2.0 * a[nz] / dz²
-    βₙ = β_scale * αdisp_profile[nz]
-    tl.tri_diag[nz] = -2.0 * a[nz] / dz² - kₕ² / 4.0 - βₙ
 
     # Handle mean mode (kₕ² = 0): operator is singular
     # Set A = 0 for mean mode (consistent with original code)
@@ -420,6 +419,30 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         end
     end
 
+    # Density weights (default to unity for Boussinesq)
+    r_ut = imex_ws.r_ut
+    r_st = imex_ws.r_st
+    if length(r_ut) != nz
+        resize!(r_ut, nz)
+    end
+    if length(r_st) != nz
+        resize!(r_st, nz)
+    end
+    if par.ρ_ut_profile !== nothing
+        @inbounds for k in 1:nz
+            r_ut[k] = par.ρ_ut_profile[k]
+        end
+    else
+        fill!(r_ut, one(eltype(r_ut)))
+    end
+    if par.ρ_st_profile !== nothing
+        @inbounds for k in 1:nz
+            r_st[k] = par.ρ_st_profile[k]
+        end
+    else
+        fill!(r_st, one(eltype(r_st)))
+    end
+
     # Process each horizontal mode
     # For IMEX-CN: (I - dt/2·L)·B^{n+1} = (I + dt/2·L)·B^n + dt·N
     # where L·B = i·αdisp·kₕ²·A and A = (L⁺)⁻¹·B
@@ -505,24 +528,12 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
             # Solve (L⁺ - β)·A = RHS using thread-local workspace
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
-                                     β_scale, αdisp_profile, tl)
+                                     β_scale, αdisp_profile, r_ut, r_st, tl)
 
-            # Recover B = L⁺·A (apply L⁺ operator)
-            # L⁺ = a·∂²/∂z² - kₕ²/4  where a = f²/N²
-            # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
+            # Recover B using L⁺·A = RHS + β·A (consistent with the modified solve)
             @inbounds for k in 1:nz_local
-                # Second derivative with Neumann BCs: ∂A/∂z = 0 at boundaries
-                if k == 1
-                    d2A = a[1] * (2*tl.A_col[2] - 2*tl.A_col[1]) / dz²
-                elseif k == nz_local
-                    d2A = a[nz_local] * (2*tl.A_col[nz_local-1] - 2*tl.A_col[nz_local]) / dz²
-                else
-                    d2A = a[k] * (tl.A_col[k+1] - 2*tl.A_col[k] + tl.A_col[k-1]) / dz²
-                end
-
-                # B = L⁺·A, then apply hyperdiffusion as post-processing
-                B_raw = d2A - (kₕ²/4) * tl.A_col[k]
-                Bnp1_arr[k, i, j] = B_raw * hyperdiff_factor
+                βₖ = β_scale * αdisp_profile[k]
+                Bnp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
@@ -567,18 +578,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
             β_scale = (dt/2) * im * kₕ²
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
-                                     β_scale, αdisp_profile, tl)
+                                     β_scale, αdisp_profile, r_ut, r_st, tl)
 
             for k in 1:nz_local
-                if k == 1
-                    d2A = a[1] * (2*tl.A_col[2] - 2*tl.A_col[1]) / dz²
-                elseif k == nz_local
-                    d2A = a[nz_local] * (2*tl.A_col[nz_local-1] - 2*tl.A_col[nz_local]) / dz²
-                else
-                    d2A = a[k] * (tl.A_col[k+1] - 2*tl.A_col[k] + tl.A_col[k-1]) / dz²
-                end
-                B_raw = d2A - (kₕ²/4) * tl.A_col[k]
-                Bnp1_arr[k, i, j] = B_raw * hyperdiff_factor
+                βₖ = β_scale * αdisp_profile[k]
+                Bnp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
