@@ -131,12 +131,12 @@ function init_imex_workspace(S, G; nthreads=Threads.nthreads())
 end
 
 """
-    solve_modified_elliptic!(A, B, G, par, a, kₕ², β, tl::IMEXThreadLocal)
+    solve_modified_elliptic!(A, B, G, par, a, kₕ², β_scale, αdisp_profile, tl::IMEXThreadLocal)
 
 Solve the modified elliptic problem for IMEX dispersion:
     (L⁺ - β)·A = B
 
-where L⁺ = (f²/N²)∂²/∂z² - kₕ²/4 and β = (dt/2)·i·αdisp·kₕ²
+where L⁺ = (f²/N²)∂²/∂z² - kₕ²/4 and β = (dt/2)·i·αdisp(z)·kₕ²
 
 This is a tridiagonal system for each horizontal mode.
 
@@ -147,11 +147,13 @@ This is a tridiagonal system for each horizontal mode.
 - `par`: Parameters
 - `a`: a_ell = f²/N² array
 - `kₕ²`: Horizontal wavenumber squared
-- `β`: Implicit dispersion coefficient = (dt/2)·i·αdisp·kₕ²
+- `β_scale`: Scalar factor = (dt/2)·i·kₕ² (multiplied by αdisp_profile[k] per level)
+- `αdisp_profile`: αdisp(z) profile, length nz
 - `tl`: IMEXThreadLocal with pre-allocated tridiagonal arrays (thread-local)
 """
 function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
-                                   G, par, a, kₕ², β, tl::IMEXThreadLocal)
+                                   G, par, a, kₕ², β_scale, αdisp_profile::AbstractVector,
+                                   tl::IMEXThreadLocal)
     nz = G.nz
     # G.dz is a vector of layer thicknesses; assume uniform grid and use first element
     dz = G.dz[1]
@@ -159,7 +161,7 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
 
     # Build tridiagonal system: (L⁺ - β)·A = B
     # where L⁺ = a(z)·∂²A/∂z² - kₕ²/4·A  is the YBJ+ elliptic operator
-    # and β = (dt/2)·i·αdisp·kₕ² is the implicit dispersion coefficient
+    # and β = (dt/2)·i·αdisp(z)·kₕ² is the implicit dispersion coefficient
     # With Neumann BCs: ∂A/∂z = 0 at z = 0, Lz
 
     # Interior points: a[k]/dz²·(A[k+1] - 2A[k] + A[k-1]) - kₕ²/4·A[k] - β·A[k] = B[k]
@@ -167,9 +169,10 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
 
     @inbounds for k in 1:nz
         aₖ = a[k]  # f²/N²(z)
+        βₖ = β_scale * αdisp_profile[k]
 
         # Main diagonal: -2a/dz² - kₕ²/4 - β
-        tl.tri_diag[k] = -2.0 * aₖ / dz² - kₕ² / 4.0 - β
+        tl.tri_diag[k] = -2.0 * aₖ / dz² - kₕ² / 4.0 - βₖ
 
         # Off-diagonals: a/dz²
         if k < nz
@@ -185,17 +188,19 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     # Apply Neumann BCs by modifying first and last rows
     # At k=1 (bottom): ∂A/∂z = 0 → A[0] = A[2] (ghost point)
     # Row becomes: (-2a/dz² - kₕ²/4 - β)·A[1] + 2a/dz²·A[2] = B[1]
-    tl.tri_diag[1] = -2.0 * a[1] / dz² - kₕ² / 4.0 - β
+    β₁ = β_scale * αdisp_profile[1]
+    tl.tri_diag[1] = -2.0 * a[1] / dz² - kₕ² / 4.0 - β₁
     tl.tri_upper[1] = 2.0 * a[1] / dz²
 
     # At k=nz (top): ∂A/∂z = 0 → A[nz+1] = A[nz-1] (ghost point)
     # Row becomes: 2a/dz²·A[nz-1] + (-2a/dz² - kₕ²/4 - β)·A[nz] = B[nz]
     tl.tri_lower[nz-1] = 2.0 * a[nz] / dz²
-    tl.tri_diag[nz] = -2.0 * a[nz] / dz² - kₕ² / 4.0 - β
+    βₙ = β_scale * αdisp_profile[nz]
+    tl.tri_diag[nz] = -2.0 * a[nz] / dz² - kₕ² / 4.0 - βₙ
 
     # Handle mean mode (kₕ² = 0): operator is singular
     # Set A = 0 for mean mode (consistent with original code)
-    if kₕ² < 1e-14 && abs(β) < 1e-14
+    if kₕ² < 1e-14 && abs(β_scale) < 1e-14
         fill!(A_out, zero(eltype(A_out)))
         return A_out
     end
@@ -388,13 +393,24 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     #= Step 5: IMEX Crank-Nicolson for B equation =#
     # IMPORTANT: For IMEX-CN to be consistent, the implicit and explicit parts
-    # must use the SAME αdisp value. We use constant αdisp = N²/(2f₀) based on
-    # the reference stratification par.N². This is consistent with the YBJ+
-    # formulation which assumes slowly-varying stratification.
+    # must use the SAME αdisp profile. Use N²(z) when provided; otherwise derive
+    # αdisp from a_ell to stay consistent with the elliptic operator.
     #
     # The dispersion coefficient αdisp = N²/(2f₀) appears in the dispersion term:
     #   ∂B/∂t = ... + i·αdisp·kₕ²·A
-    αdisp = par.N² / (2.0 * par.f₀)
+    T = eltype(a)
+    αdisp_profile = Vector{T}(undef, nz)
+    if N2_profile !== nothing && length(N2_profile) == nz
+        inv_two_f0 = T(1) / (T(2) * T(par.f₀))
+        @inbounds for k in 1:nz
+            αdisp_profile[k] = T(N2_profile[k]) * inv_two_f0
+        end
+    else
+        half_f0 = T(par.f₀) / T(2)
+        @inbounds for k in 1:nz
+            αdisp_profile[k] = half_f0 / a[k]
+        end
+    end
 
     # Process each horizontal mode
     # For IMEX-CN: (I - dt/2·L)·B^{n+1} = (I + dt/2·L)·B^n + dt·N
@@ -463,7 +479,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
                 # Dispersion term at time n: disp^n = i·αdisp·kₕ²·A^n
                 # Uses the SAME αdisp as the implicit solve for consistency
-                disp_n = im * αdisp * kₕ² * An_arr[k, i, j]
+                disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
 
                 # RHS for IMEX-CN (without hyperdiffusion - applied later)
                 tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
@@ -476,10 +492,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             #   L⁺·A^{n+1} - (dt/2)·i·αdisp·kₕ²·A^{n+1} = RHS
             #   (L⁺ - β)·A^{n+1} = RHS
             # where β = (dt/2)·i·αdisp·kₕ²
-            β = (dt/2) * im * αdisp * kₕ²
+            β_scale = (dt/2) * im * kₕ²
 
             # Solve (L⁺ - β)·A = RHS using thread-local workspace
-            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ², β, tl)
+            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
+                                     β_scale, αdisp_profile, tl)
 
             # Recover B = L⁺·A (apply L⁺ operator)
             # L⁺ = a·∂²/∂z² - kₕ²/4  where a = f²/N²
