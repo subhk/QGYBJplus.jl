@@ -6,9 +6,31 @@ CurrentModule = QGYBJplus
 
 This page documents the time integration functions.
 
-## Main Time Stepping Scheme
+## Available Time Stepping Schemes
 
-QGYBJ+.jl uses a **Leapfrog scheme with Robert-Asselin filter** for time integration. This provides second-order accuracy while maintaining stability through computational mode damping.
+QGYBJ+.jl provides two time stepping methods:
+
+| Method | Description | When to Use |
+|:-------|:------------|:------------|
+| **Leapfrog** | Explicit, 2nd order | Default, dt ≤ 2f/N² (~2s) |
+| **IMEX-CN** | Implicit dispersion, explicit advection | Large dt (~20s), 10x speedup |
+
+### Choosing a Method
+
+Use the `timestepper` keyword in `run_simulation!`:
+```julia
+# Leapfrog (default, explicit)
+run_simulation!(S, G, par, plans; timestepper=:leapfrog, ...)
+
+# IMEX Crank-Nicolson (implicit dispersion)
+run_simulation!(S, G, par, plans; timestepper=:imex_cn, ...)
+```
+
+---
+
+## Leapfrog Scheme (Default)
+
+The **Leapfrog scheme with Robert-Asselin filter** provides second-order accuracy with computational mode damping.
 
 ### Overview
 
