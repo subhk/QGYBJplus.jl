@@ -65,6 +65,9 @@ struct IMEXWorkspace{CT, RT}
     A_col::Vector{ComplexF64}
     RHS_col::Vector{ComplexF64}
 
+    # Dispersion coefficient profile (pre-allocated)
+    αdisp_profile::Vector{Float64}
+
     # For q equation (same as original)
     qtemp::CT
 end
