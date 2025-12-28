@@ -108,11 +108,15 @@ function init_imex_workspace(S, G)
     A_col = Vector{ComplexF64}(undef, nz)
     RHS_col = Vector{ComplexF64}(undef, nz)
 
+    # Dispersion coefficient profile (pre-allocated)
+    αdisp_profile = Vector{Float64}(undef, nz)
+
     return IMEXWorkspace{CT, RT}(
         nBk, rBk, nqk, dqk, RHS, Atemp,
         tri_diag, tri_upper, tri_lower, tri_rhs, tri_sol,
         tri_c_prime, tri_d_prime,
         B_col, A_col, RHS_col,
+        αdisp_profile,
         qtemp
     )
 end
@@ -363,9 +367,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
 
     #= Step 5: IMEX Crank-Nicolson for B equation =#
-    # Dispersion coefficient profile (use workspace to avoid allocation)
-    # NOTE: Allocate outside the loop to avoid repeated allocation
-    αdisp_profile = Vector{Float64}(undef, nz)
+    # Use pre-allocated dispersion coefficient profile from workspace
+    # to avoid heap corruption from repeated allocation
+    αdisp_profile = imex_ws.αdisp_profile
     if N2_profile !== nothing && length(N2_profile) == nz
         for k_level in 1:nz
             αdisp_profile[k_level] = N2_profile[k_level] / (2.0 * par.f₀)

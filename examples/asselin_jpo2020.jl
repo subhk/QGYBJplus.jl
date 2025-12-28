@@ -131,6 +131,13 @@ function main()
     S = QGYBJplus.init_mpi_state(G, plans, mpi_config)
     workspace = QGYBJplus.init_mpi_workspace(G, mpi_config)
 
+    # Compute N2 profile for consistent physics across all operations
+    # This is passed to run_simulation! for use in elliptic inversions and vertical velocity
+    N2_profile = QGYBJplus.compute_stratification_profile(
+        QGYBJplus.SkewedGaussian{T}(T(N02), T(N12), T(s_gauss), T(z0_gauss), T(α_sg)),
+        G
+    )
+
     # Local index ranges (physical vs spectral pencils)
     local_range_phys = QGYBJplus.get_local_range_physical(plans)
     local_range_spec = QGYBJplus.get_local_range_spectral(plans)
@@ -214,6 +221,7 @@ function main()
         output_config = output_config,
         mpi_config = mpi_config,
         workspace = workspace,
+        N2_profile = N2_profile,  # Pass stratification profile for consistent physics
         print_progress = is_root,
         diagnostics_interval = diag_steps,
         timestepper = TIMESTEPPER  # :leapfrog or :imex_cn
