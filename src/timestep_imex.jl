@@ -438,7 +438,6 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     #= Step 2: Compute explicit tendencies =#
     nqk_arr = parent(imex_ws.nqk)
     nBk_arr = parent(imex_ws.nBk)
-    rBk_arr = parent(imex_ws.rBk)
     dqk_arr = parent(imex_ws.dqk)
     qtemp_arr = parent(imex_ws.qtemp)
 
@@ -448,8 +447,8 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
     convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
 
-    # Refraction
-    refraction_waqg_B!(imex_ws.rBk, Sn.B, Sn.psi, G, plans; Lmask=L)
+    # Note: Refraction is now handled exactly via operator splitting in Step 3.5,
+    # so we skip the explicit refraction_waqg_B! computation.
 
     # Vertical diffusion for q - skip if flow is fixed
     if !par.fixed_flow
@@ -473,9 +472,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     apply_refraction_exact!(Bstar, Sn.B, Sn.psi, G, par, plans)
 
     # Get B* array for use in IMEX loop
-    # Note: For Lie splitting, we use A^n (not A*) for the dispersion term.
-    # This is O(dt) consistent with the splitting error and avoids an extra elliptic solve.
     Bstar_arr = parent(Bstar)
+
+    # IMPORTANT: We must compute A* = (L⁺)⁻¹B* for consistency.
+    # Using A^n with B* breaks the relation A = (L⁺)⁻¹B that IMEX-CN relies on,
+    # causing instability. A* is computed per-mode in the IMEX loop below.
 
     #= Step 4: Update q with explicit Euler (or could use CN for diffusion) =#
     if par.fixed_flow
@@ -600,34 +601,28 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             end
         else
             # IMEX-CN for B equation with dispersion (after exact refraction)
-            # Build RHS for IMEX-CN: B* + (dt/2)·disp^n + dt·N^n
-            # where disp = i·αdisp·kₕ²·A and N = -J(ψ,B) (advection only)
-            # Note: B* = B^n × exp(-i·dt·ζ/2) from operator splitting
-            #
             # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
+
+            # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with B*
+            # This is critical: using A^n with B* breaks IMEX-CN stability!
             @inbounds for k in 1:nz_local
-                # Explicit tendency: N = -J(ψ,B) (advection only - refraction handled by splitting)
-                N_k = -nBk_arr[k, i, j]
+                tl.B_col[k] = Bstar_arr[k, i, j]
+            end
+            # Use β_scale=0 to get standard L⁺ inversion (A* = (L⁺)⁻¹B*)
+            solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
+                                     complex(0.0), αdisp_profile, r_ut, r_st, tl)
 
-                # Dispersion term at time n: disp^n = i·αdisp·kₕ²·A^n
-                # Uses the SAME αdisp as the implicit solve for consistency
-                disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
-
-                # RHS for IMEX-CN (without hyperdiffusion - applied later)
-                # Start from B* (after refraction), not B^n
-                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+            # Step 2: Build RHS for IMEX-CN using B* and A*
+            @inbounds for k in 1:nz_local
+                N_k = -nBk_arr[k, i, j]  # Advection only (refraction handled by splitting)
+                disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]  # Uses A*, not A^n!
+                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + dt * N_k
             end
 
-            # Solve modified elliptic problem for A^{n+1}
-            # IMEX-CN formulation:
-            #   B^{n+1} - (dt/2)·i·αdisp·kₕ²·A^{n+1} = RHS
-            # Since B = L⁺·A:
-            #   L⁺·A^{n+1} - (dt/2)·i·αdisp·kₕ²·A^{n+1} = RHS
-            #   (L⁺ - β)·A^{n+1} = RHS
-            # where β = (dt/2)·i·αdisp·kₕ²
+            # Step 3: Solve modified elliptic problem for A^{n+1}
+            # IMEX-CN formulation: (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
             β_scale = (dt/2) * im * kₕ²
 
-            # Solve (L⁺ - β)·A = RHS using thread-local workspace
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
                                      β_scale, αdisp_profile, r_ut, r_st, tl)
 
@@ -673,27 +668,37 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 Anp1_arr[k, i, j] = 0
             end
         else
-            # Build RHS for IMEX solve using B* (after exact refraction)
+            # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with the refraction-rotated B*
+            # This is critical: using A^n with B* breaks IMEX-CN stability!
+            # We solve L⁺·A* = B* using the elliptic solver with β=0
+            for k in 1:nz_local
+                tl.B_col[k] = Bstar_arr[k, i, j]
+            end
+            # Use β_scale=0 to get standard L⁺ inversion (A* = (L⁺)⁻¹B*)
+            solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
+                                     complex(0.0), αdisp_profile, r_ut, r_st, tl)
+
+            # Step 2: Build RHS for IMEX solve using B* and A*
             for k in 1:nz_local
                 N_k = -nBk_arr[k, i, j]  # Advection only (refraction handled by splitting)
-                disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
-                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+                disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]  # Uses A*, not A^n!
+                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + dt * N_k
             end
 
             # Check if RHS is too small for stable implicit solve
-            # For very small RHS, use explicit forward Euler instead to avoid ill-conditioning
             rhs_max = maximum(k -> abs(tl.RHS_col[k]), 1:nz_local)
             if rhs_max < 1e-20
-                # Explicit forward Euler: B^{n+1} = B* + dt*(N + disp)
+                # Explicit forward Euler: B^{n+1} = B* + dt*(N + disp*)
                 for k in 1:nz_local
-                    N_k = -nBk_arr[k, i, j]  # Advection only
-                    disp_k = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
+                    N_k = -nBk_arr[k, i, j]
+                    disp_k = im * αdisp_profile[k] * kₕ² * tl.A_col[k]  # Uses A*
                     Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + dt * (N_k + disp_k)) * hyperdiff_factor
-                    Anp1_arr[k, i, j] = 0  # Will be recomputed by invert_B_to_A! at end
+                    Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
                 end
                 continue
             end
 
+            # Step 3: Solve modified elliptic problem for A^{n+1}
             β_scale = (dt/2) * im * kₕ²
 
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
