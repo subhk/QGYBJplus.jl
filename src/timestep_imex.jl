@@ -216,9 +216,22 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
         diag_max = maximum(abs, tl.tri_diag[1:nz])
         @warn "Invalid tri_diag" kₕ² diag_max
     end
+    if any(v -> isnan(v) || isinf(v), tl.tri_lower[1:nz-1])
+        @warn "Invalid tri_lower" kₕ²
+    end
+    if any(v -> isnan(v) || isinf(v), tl.tri_upper[1:nz-1])
+        @warn "Invalid tri_upper" kₕ²
+    end
     if any(v -> isnan(v) || isinf(v), tl.tri_rhs[1:nz])
         rhs_max = maximum(abs, tl.tri_rhs[1:nz])
         @warn "Invalid tri_rhs" kₕ² rhs_max
+    end
+
+    # DEBUG: Check condition - diagonal should dominate for stability
+    diag_min = minimum(abs, tl.tri_diag[1:nz])
+    offdiag_max = max(maximum(abs, tl.tri_lower[1:nz-1]), maximum(abs, tl.tri_upper[1:nz-1]))
+    if diag_min < 0.1 * offdiag_max
+        @warn "Ill-conditioned matrix: diagonal too small" kₕ² diag_min offdiag_max ratio=diag_min/offdiag_max
     end
 
     # Solve tridiagonal system using Thomas algorithm
@@ -631,6 +644,15 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             for k in 1:nz_local
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
                 Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * N_k) * hyperdiff_factor
+                Anp1_arr[k, i, j] = 0
+            end
+        # Check for near-zero modes where B and A are essentially numerical noise
+        # These modes can cause ill-conditioning in the elliptic solve
+        elseif maximum(k -> abs(Bn_arr[k, i, j]), 1:nz_local) < 1e-14 &&
+               maximum(k -> abs(An_arr[k, i, j]), 1:nz_local) < 1e-14
+            # Mode has negligible amplitude - just zero it out
+            for k in 1:nz_local
+                Bnp1_arr[k, i, j] = 0
                 Anp1_arr[k, i, j] = 0
             end
         else
