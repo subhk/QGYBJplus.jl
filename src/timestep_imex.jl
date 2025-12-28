@@ -310,8 +310,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     if !par.fixed_flow
         invert_q_to_psi!(Sn, G; a=a, par=par, workspace=workspace)
     end
+    # Only compute u, v - not w (omega equation is expensive and not needed for advection)
     compute_velocities!(Sn, G; plans=plans, params=par, N2_profile=N2_profile,
-                        workspace=workspace, dealias_mask=L)
+                        workspace=workspace, dealias_mask=L, compute_w=false)
     invert_B_to_A!(Sn, G, par, a; workspace=workspace)
 
     #= Step 2: Compute explicit tendencies =#
@@ -494,8 +495,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Actually, let's just do full inversion to be safe
     invert_B_to_A!(Snp1, G, par, a; workspace=workspace)
 
+    # Only compute u, v for diagnostics - w can be computed separately if needed
     compute_velocities!(Snp1, G; plans=plans, params=par, N2_profile=N2_profile,
-                        workspace=workspace, dealias_mask=L)
+                        workspace=workspace, dealias_mask=L, compute_w=false)
 
     return Snp1
 end
