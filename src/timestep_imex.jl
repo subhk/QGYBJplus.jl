@@ -552,12 +552,13 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         else
             for k in 1:nz_local
                 N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
-                disp_n = im * αdisp * kₕ² * An_arr[k, i, j]
+                disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
                 tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
             end
 
-            β = (dt/2) * im * αdisp * kₕ²
-            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ², β, tl)
+            β_scale = (dt/2) * im * kₕ²
+            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
+                                     β_scale, αdisp_profile, tl)
 
             for k in 1:nz_local
                 if k == 1
