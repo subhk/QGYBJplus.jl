@@ -37,9 +37,9 @@ using Printf
 #                       SIMULATION PARAMETERS
 # ============================================================================
 
-const nx = 128
-const ny = 128
-const nz = 64
+const nx = 256
+const ny = 256
+const nz = 128
 
 # Physical parameters from Asselin et al. (2020)
 const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
@@ -50,7 +50,7 @@ const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
 # Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
 const Lx = 70e3              # 70 km horizontal domain in (X,Y)
 const Ly = 70e3              # 70 km horizontal domain in (X,Y)
-const Lz = 3000.0            # 3 km depth, surface at z = Lz
+const Lz = 2000.0            # 2 km depth, surface at z = Lz
 
 # Time stepping
 const n_inertial_periods = 15
@@ -108,8 +108,8 @@ function main()
     # Biharmonic (4th order) hyperdiffusion for waves
     # For meaningful damping at grid scale: λʷ = dt × ν × k_max⁴ ≈ 0.1
     # k_max = π×nx/Lx ≈ 5.7e-3 m⁻¹, k_max⁴ ≈ 1.1e-9 m⁻⁴
-    # νₕ₁ʷ ≈ 0.1 / (dt × k_max⁴) ≈ 1e7 m⁴/s
-    νₕ₁ʷ_wave = 1.0e7  # [m⁴/s] - grid-scale damping ~10% per timestep
+    # νₕ₁ʷ ≈ 0.01 / (dt × k_max⁴) ≈ 1e5 m⁴/s
+    νₕ₁ʷ_wave = 1.0e5  # [m⁴/s] - grid-scale damping ~0.1% per timestep
 
     par = QGYBJplus.default_params(
         nx = nx, ny = ny, nz = nz,
@@ -122,7 +122,7 @@ function main()
         no_wave_feedback = true,
         νₕ₁ʷ = νₕ₁ʷ_wave,      # ∇⁴ hyperdiffusion for waves
         ilap1w = 2,            # 4th order (biharmonic)
-        γ = 0.01               # Stronger Robert-Asselin filter (default: 1e-3)
+        γ = 0.001               # Stronger Robert-Asselin filter (default: 1e-3)
     )
 
     # Initialize distributed grid, plans, and state
