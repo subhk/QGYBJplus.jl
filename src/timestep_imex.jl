@@ -95,7 +95,7 @@ struct IMEXWorkspace{CT, RT}
 end
 
 """
-    init_imex_workspace(S, G; nthreads=Threads.threadpoolsize())
+    init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
 
 Initialize workspace for IMEX time stepping with threading support.
 
@@ -104,7 +104,7 @@ from repeated allocation/deallocation in tight loops during time stepping.
 Per-thread workspaces are created for the tridiagonal solves to enable
 parallel processing of horizontal modes.
 """
-function init_imex_workspace(S, G; nthreads=Threads.threadpoolsize())
+function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     CT = typeof(S.B)
     RT = typeof(S.u)
 
@@ -329,9 +329,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
-    # Ensure we have enough thread-local workspaces for the default threadpool
+    # Ensure we have enough thread-local workspaces for any thread id in use
     # (thread count at init time may differ from runtime, especially with MPI)
-    nthreads = Threads.threadpoolsize()
+    nthreads = Threads.maxthreadid()
     if length(imex_ws.thread_local) < nthreads
         for _ in (length(imex_ws.thread_local)+1):nthreads
             push!(imex_ws.thread_local, init_thread_local(nz))
@@ -354,42 +354,45 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     dqk_arr = parent(imex_ws.dqk)
     qtemp_arr = parent(imex_ws.qtemp)
 
-    # Advection
-    convol_waqg_q!(imex_ws.nqk, Sn.u, Sn.v, Sn.q, G, plans; Lmask=L)
+    # Advection - skip q advection if flow is fixed (saves FFTs)
+    if !par.fixed_flow
+        convol_waqg_q!(imex_ws.nqk, Sn.u, Sn.v, Sn.q, G, plans; Lmask=L)
+    end
     convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
 
     # Refraction
     refraction_waqg_B!(imex_ws.rBk, Sn.B, Sn.psi, G, plans; Lmask=L)
 
-    # Vertical diffusion for q
-    dissipation_q_nv!(imex_ws.dqk, Sn.q, par, G; workspace=workspace)
+    # Vertical diffusion for q - skip if flow is fixed
+    if !par.fixed_flow
+        dissipation_q_nv!(imex_ws.dqk, Sn.q, par, G; workspace=workspace)
+    end
 
     #= Step 3: Apply physics switches =#
     if par.inviscid; imex_ws.dqk .= 0; end
     if par.linear; imex_ws.nqk .= 0; imex_ws.nBk .= 0; end
     if par.passive_scalar; imex_ws.rBk .= 0; end  # No refraction
-    if par.fixed_flow; imex_ws.nqk .= 0; end
 
     # Determine if dispersion is active (needed for IMEX implicit solve)
     dispersion_active = !par.no_dispersion && !par.passive_scalar
 
     #= Step 4: Update q with explicit Euler (or could use CN for diffusion) =#
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
+    if par.fixed_flow
+        # Just copy q - no evolution when flow is fixed
+        qnp1_arr .= qn_arr
+    else
+        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+            i_global = local_to_global(i, 2, Sn.q)
+            j_global = local_to_global(j, 3, Sn.q)
 
-        if L[i_global, j_global]
-            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-            λₑ = int_factor(kₓ, kᵧ, par; waves=false)
-
-            if par.fixed_flow
-                qnp1_arr[k, i, j] = qn_arr[k, i, j]
-            else
+            if L[i_global, j_global]
+                kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
+                λₑ = int_factor(kₓ, kᵧ, par; waves=false)
                 # Forward Euler with integrating factor for hyperdiffusion
                 qnp1_arr[k, i, j] = (qn_arr[k, i, j] - dt*nqk_arr[k, i, j] + dt*dqk_arr[k, i, j]) * exp(-λₑ)
+            else
+                qnp1_arr[k, i, j] = 0
             end
-        else
-            qnp1_arr[k, i, j] = 0
         end
     end
 
