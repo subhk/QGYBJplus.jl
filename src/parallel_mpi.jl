@@ -147,12 +147,11 @@ function setup_mpi_environment(; topology=nothing, parallel_io=true)
         @info "MPI initialized with 2D decomposition" nprocs topology=topo
     end
 
-    # Register atexit handler to ensure MPI.Finalize() is called
-    atexit() do
-        if MPI.Initialized() && !MPI.Finalized()
-            MPI.Finalize()
-        end
-    end
+    # NOTE: Do NOT register atexit handler for MPI.Finalize() here.
+    # The user script (e.g., examples/asselin_jpo2020.jl) explicitly calls MPI.Finalize()
+    # at the end of main(). Adding an atexit handler causes a race condition where
+    # Julia's GC may finalize MPI-dependent objects while MPI.Finalize is being called,
+    # leading to heap corruption ("corrupted double-linked list" errors).
 
     return MPIConfig(comm, rank, nprocs, is_root, topo, true, parallel_io)
 end
@@ -267,8 +266,13 @@ end
 
 # Two-step transpose using PencilArrays' built-in MPI transpose.
 # We keep a cached xz-pencil buffer to satisfy the "one-dimension-at-a-time" rule.
-const _transpose_buffer_cache = Dict{Tuple{UInt, UInt, DataType}, Any}()
-const _plan_transpose_buffer_cache = Dict{Tuple{UInt, DataType}, Any}()
+#
+# IMPORTANT: Use WeakRef to avoid keeping arrays alive that have been garbage collected.
+# The cache is keyed by (decomposition tuple, global dims, element type) instead of objectid,
+# to avoid issues with objectid reuse after garbage collection.
+const _transpose_buffer_cache = Dict{Tuple{Tuple{Int,Int}, Tuple{Int,Int}, NTuple{3,Int}, DataType}, Any}()
+const _plan_transpose_buffer_cache = Dict{Tuple{Tuple{Int,Int}, NTuple{3,Int}, DataType}, Any}()
+const _buffer_cache_lock = ReentrantLock()
 
 @inline function _decomp_diff_count(a::NTuple{2, Int}, b::NTuple{2, Int})
     return (a[1] != b[1]) + (a[2] != b[2])
@@ -289,19 +293,24 @@ end
 function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) where T
     src_p = pencil(src)
     dst_p = pencil(dst)
-    key = (objectid(src_p), objectid(dst_p), T)
-    if !haskey(_transpose_buffer_cache, key)
-        src_decomp = decomposition(src_p)
-        dst_decomp = decomposition(dst_p)
-        mid_decomp = _intermediate_decomp(src_decomp, dst_decomp)
-        if mid_decomp === nothing
-            error("Cannot construct intermediate pencil between decompositions " *
-                  "$src_decomp and $dst_decomp.")
+    src_decomp = decomposition(src_p)
+    dst_decomp = decomposition(dst_p)
+    dims = PencilArrays.size_global(src_p)
+
+    # Use stable key based on decomposition and dimensions, not objectid
+    key = (src_decomp, dst_decomp, dims, T)
+
+    lock(_buffer_cache_lock) do
+        if !haskey(_transpose_buffer_cache, key)
+            mid_decomp = _intermediate_decomp(src_decomp, dst_decomp)
+            if mid_decomp === nothing
+                error("Cannot construct intermediate pencil between decompositions " *
+                      "$src_decomp and $dst_decomp.")
+            end
+            topo = PencilArrays.topology(src_p)
+            mid_pencil = Pencil(topo, dims, mid_decomp; permute=permutation(src_p))
+            _transpose_buffer_cache[key] = PencilArray{T}(undef, mid_pencil)
         end
-        topo = PencilArrays.topology(src_p)
-        dims = PencilArrays.size_global(src_p)
-        mid_pencil = Pencil(topo, dims, mid_decomp; permute=permutation(src_p))
-        _transpose_buffer_cache[key] = PencilArray{T}(undef, mid_pencil)
     end
     return _transpose_buffer_cache[key]::PencilArray{T}
 end
@@ -333,12 +342,18 @@ function transpose_to_z_pencil!(dst::PencilArray, src::PencilArray, decomp::Penc
     src_decomp = decomposition(pencil(src))
     dst_decomp = decomposition(pencil(dst))
     if _decomp_diff_count(src_decomp, dst_decomp) <= 1
-        transpose!(dst, src)
+        # Use GC.@preserve to prevent garbage collection during MPI transpose
+        GC.@preserve src dst begin
+            transpose!(dst, src)
+        end
         return dst
     end
     buffer_xz = _get_transpose_buffer(src, dst, eltype(src))
-    transpose!(buffer_xz, src)
-    transpose!(dst, buffer_xz)
+    # Use GC.@preserve to prevent garbage collection during MPI transpose
+    GC.@preserve src dst buffer_xz begin
+        transpose!(buffer_xz, src)
+        transpose!(dst, buffer_xz)
+    end
     return dst
 end
 
@@ -354,12 +369,18 @@ function transpose_to_xy_pencil!(dst::PencilArray, src::PencilArray, decomp::Pen
     src_decomp = decomposition(pencil(src))
     dst_decomp = decomposition(pencil(dst))
     if _decomp_diff_count(src_decomp, dst_decomp) <= 1
-        transpose!(dst, src)
+        # Use GC.@preserve to prevent garbage collection during MPI transpose
+        GC.@preserve src dst begin
+            transpose!(dst, src)
+        end
         return dst
     end
     buffer_xz = _get_transpose_buffer(src, dst, eltype(src))
-    transpose!(buffer_xz, src)
-    transpose!(dst, buffer_xz)
+    # Use GC.@preserve to prevent garbage collection during MPI transpose
+    GC.@preserve src dst buffer_xz begin
+        transpose!(buffer_xz, src)
+        transpose!(dst, buffer_xz)
+    end
     return dst
 end
 
@@ -491,12 +512,18 @@ function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
         error("PencilFFTs plan input/output topologies differ. " *
               "Ensure plans and arrays are created from the same MPI grid/topology.")
     end
-    key = (objectid(plans), T)
-    if !haskey(_plan_transpose_buffer_cache, key)
-        topo = PencilArrays.topology(plans.input_pencil)
-        dims = PencilArrays.size_global(plans.input_pencil)
-        pencil_xz = Pencil(topo, dims, (1, 3))
-        _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
+    dims = PencilArrays.size_global(plans.input_pencil)
+    input_decomp = decomposition(plans.input_pencil)
+
+    # Use stable key based on decomposition and dimensions, not objectid
+    key = (input_decomp, dims, T)
+
+    lock(_buffer_cache_lock) do
+        if !haskey(_plan_transpose_buffer_cache, key)
+            topo = PencilArrays.topology(plans.input_pencil)
+            pencil_xz = Pencil(topo, dims, (1, 3))
+            _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
+        end
     end
     return _plan_transpose_buffer_cache[key]::PencilArray{T}
 end
@@ -505,16 +532,22 @@ end
 function _transpose_output_to_input!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     T = eltype(src)
     buffer_xz = _get_plan_transpose_buffer(plans, T)
-    transpose!(buffer_xz, src)
-    transpose!(dst, buffer_xz)
+    # Use GC.@preserve to prevent garbage collection during MPI transpose
+    GC.@preserve src dst buffer_xz begin
+        transpose!(buffer_xz, src)
+        transpose!(dst, buffer_xz)
+    end
     return dst
 end
 
 function _transpose_input_to_output!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     T = eltype(src)
     buffer_xz = _get_plan_transpose_buffer(plans, T)
-    transpose!(buffer_xz, src)
-    transpose!(dst, buffer_xz)
+    # Use GC.@preserve to prevent garbage collection during MPI transpose
+    GC.@preserve src dst buffer_xz begin
+        transpose!(buffer_xz, src)
+        transpose!(dst, buffer_xz)
+    end
     return dst
 end
 
@@ -676,6 +709,10 @@ end
 #
 # With permute_dims=Val(false), input and output have the same logical dimension order.
 # If pencils_match is true, input/output pencils share the same local ranges.
+#
+# IMPORTANT: The legacy paths use shared work arrays. A lock is used to prevent
+# concurrent access which can cause heap corruption.
+const _fft_work_lock = ReentrantLock()
 
 function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
     src_is_input = _pencil_matches(src, plans.input_pencil)
@@ -684,16 +721,24 @@ function fft_forward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
 
     if src_is_input && dst_is_output
         # Direct transform - src on input pencil, dst on output pencil
-        mul!(dst, plans.forward, src)
+        # Use GC.@preserve to prevent garbage collection during FFT
+        GC.@preserve src dst begin
+            mul!(dst, plans.forward, src)
+        end
     elseif src_is_input && dst_is_input
         # Legacy path: keep output on input pencil via transposes
-        work_in = plans.work_arrays.input
-        work_out = plans.work_arrays.output
+        # Lock to prevent concurrent access to shared work arrays
+        lock(_fft_work_lock) do
+            work_in = plans.work_arrays.input
+            work_out = plans.work_arrays.output
 
-        _copy_if_ranges_match!(work_in, src, "fft_forward! source -> plan input")
-        mul!(work_out, plans.forward, work_in)
-        _transpose_output_to_input!(work_in, work_out, plans)
-        _copy_if_ranges_match!(dst, work_in, "fft_forward! plan input -> destination")
+            GC.@preserve src dst work_in work_out begin
+                _copy_if_ranges_match!(work_in, src, "fft_forward! source -> plan input")
+                mul!(work_out, plans.forward, work_in)
+                _transpose_output_to_input!(work_in, work_out, plans)
+                _copy_if_ranges_match!(dst, work_in, "fft_forward! plan input -> destination")
+            end
+        end
     else
         error("fft_forward!: source must be on input pencil and destination on output or input pencil. " *
               "Use allocate_physical/allocate_spectral helpers for MPI plans.")
@@ -708,16 +753,24 @@ function fft_backward!(dst::PencilArray, src::PencilArray, plans::MPIPlans)
 
     if src_is_output && dst_is_input
         # Direct inverse transform - src on output pencil, dst on input pencil
-        ldiv!(dst, plans.forward, src)
+        # Use GC.@preserve to prevent garbage collection during FFT
+        GC.@preserve src dst begin
+            ldiv!(dst, plans.forward, src)
+        end
     elseif src_is_input && dst_is_input
         # Legacy path: src/dst on input pencil via transposes
-        work_in = plans.work_arrays.input
-        work_out = plans.work_arrays.output
+        # Lock to prevent concurrent access to shared work arrays
+        lock(_fft_work_lock) do
+            work_in = plans.work_arrays.input
+            work_out = plans.work_arrays.output
 
-        _copy_if_ranges_match!(work_in, src, "fft_backward! source -> plan input")
-        _transpose_input_to_output!(work_out, work_in, plans)
-        ldiv!(work_in, plans.forward, work_out)
-        _copy_if_ranges_match!(dst, work_in, "fft_backward! plan input -> destination")
+            GC.@preserve src dst work_in work_out begin
+                _copy_if_ranges_match!(work_in, src, "fft_backward! source -> plan input")
+                _transpose_input_to_output!(work_out, work_in, plans)
+                ldiv!(work_in, plans.forward, work_out)
+                _copy_if_ranges_match!(dst, work_in, "fft_backward! plan input -> destination")
+            end
+        end
     else
         error("fft_backward!: source must be on output pencil and destination on input pencil. " *
               "Use allocate_physical/allocate_spectral helpers for MPI plans.")
@@ -900,7 +953,11 @@ end
 Gather a distributed PencilArray to the root process.
 """
 function gather_to_root(arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
-    gathered = gather(arr)
+    # Use GC.@preserve to prevent garbage collection during MPI communication
+    local gathered
+    GC.@preserve arr begin
+        gathered = gather(arr)
+    end
     return mpi_config.is_root ? gathered : nothing
 end
 
@@ -934,26 +991,29 @@ function scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig; pencil=nothin
     distributed = PencilArray{T}(undef, target_pencil)
     parent_arr = parent(distributed)
 
-    if mpi_config.is_root
-        cart_comm = PencilArrays.get_comm(target_pencil)
-        topo = PencilArrays.topology(target_pencil)
-        for coords in CartesianIndices(size(topo))
-            coords_tuple = Tuple(coords)
-            coords_zero = collect(coords_tuple .- 1)
-            rank = MPI.Cart_rank(cart_comm, coords_zero)
-            rank_range = range_remote(target_pencil, coords_tuple)
-            portion = arr[rank_range[1], rank_range[2], rank_range[3]]
+    # Use GC.@preserve to prevent garbage collection during MPI communication
+    GC.@preserve arr distributed parent_arr begin
+        if mpi_config.is_root
+            cart_comm = PencilArrays.get_comm(target_pencil)
+            topo = PencilArrays.topology(target_pencil)
+            for coords in CartesianIndices(size(topo))
+                coords_tuple = Tuple(coords)
+                coords_zero = collect(coords_tuple .- 1)
+                rank = MPI.Cart_rank(cart_comm, coords_zero)
+                rank_range = range_remote(target_pencil, coords_tuple)
+                portion = arr[rank_range[1], rank_range[2], rank_range[3]]
 
-            if rank == mpi_config.rank
-                parent_arr .= portion
-            else
-                MPI.Send(Array(portion), rank, 0, mpi_config.comm)
+                if rank == mpi_config.rank
+                    parent_arr .= portion
+                else
+                    MPI.Send(Array(portion), rank, 0, mpi_config.comm)
+                end
             end
+        else
+            recv_buf = similar(parent_arr)
+            MPI.Recv!(recv_buf, 0, 0, mpi_config.comm)
+            parent_arr .= recv_buf
         end
-    else
-        recv_buf = similar(parent_arr)
-        MPI.Recv!(recv_buf, 0, 0, mpi_config.comm)
-        parent_arr .= recv_buf
     end
 
     return distributed
@@ -1129,6 +1189,11 @@ Get maximum across all MPI ranks.
 function reduce_max_if_mpi(val::T, mpi_config::MPIConfig) where T
     return MPI.Allreduce(val, max, mpi_config.comm)
 end
+
+# Fallback for non-MPI case (mpi_config = nothing)
+reduce_sum_if_mpi(val, ::Nothing) = val
+reduce_min_if_mpi(val, ::Nothing) = val
+reduce_max_if_mpi(val, ::Nothing) = val
 
 # Alias for backward compatibility
 const gather_array_for_io = gather_to_root

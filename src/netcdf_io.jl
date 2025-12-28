@@ -11,6 +11,7 @@ This module provides comprehensive NetCDF input/output capabilities including:
 using NCDatasets
 using Printf
 using Dates
+using MPI  # Import MPI at module level to avoid dynamic loading
 using ..QGYBJplus: Grid, State, QGParams
 using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
@@ -371,8 +372,7 @@ Write state file using parallel NetCDF I/O.
 function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config;
                                    params=nothing, write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
-    # Import MPI
-    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+    # MPI is imported at module level
 
     # Generate filename
     io = IOBuffer()
@@ -460,9 +460,7 @@ This is simpler and more reliable than parallel NetCDF.
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
                                     params=nothing, write_psi=true, write_waves=true,
                                     write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
-
-    # Import MPI
-    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+    # MPI is imported at module level
 
     rank = MPI.Comm_rank(parallel_config.comm)
 
@@ -499,12 +497,21 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
                              gather_psi=true, gather_waves=true,
                              gather_velocities=false, gather_vertical_velocity=false)
     # Use QGYBJplus's gather function which handles 2D decomposition
-    gathered_psi = gather_psi ? QGYBJplus.gather_to_root(S.psi, G, parallel_config) : nothing
-    gathered_B = gather_waves ? QGYBJplus.gather_to_root(S.B, G, parallel_config) : nothing
+    # Use GC.@preserve to prevent premature garbage collection during MPI communication
+    gathered_psi = nothing
+    gathered_B = nothing
+    gathered_u = nothing
+    gathered_v = nothing
+    gathered_w = nothing
 
-    gathered_u = gather_velocities ? QGYBJplus.gather_to_root(S.u, G, parallel_config) : nothing
-    gathered_v = gather_velocities ? QGYBJplus.gather_to_root(S.v, G, parallel_config) : nothing
-    gathered_w = gather_vertical_velocity ? QGYBJplus.gather_to_root(S.w, G, parallel_config) : nothing
+    GC.@preserve S begin
+        gathered_psi = gather_psi ? QGYBJplus.gather_to_root(S.psi, G, parallel_config) : nothing
+        gathered_B = gather_waves ? QGYBJplus.gather_to_root(S.B, G, parallel_config) : nothing
+
+        gathered_u = gather_velocities ? QGYBJplus.gather_to_root(S.u, G, parallel_config) : nothing
+        gathered_v = gather_velocities ? QGYBJplus.gather_to_root(S.v, G, parallel_config) : nothing
+        gathered_w = gather_vertical_velocity ? QGYBJplus.gather_to_root(S.w, G, parallel_config) : nothing
+    end
 
     # Create tuple with gathered arrays (only meaningful on rank 0)
     return (psi=gathered_psi, B=gathered_B, u=gathered_u, v=gathered_v, w=gathered_w)
@@ -769,7 +776,7 @@ end
 Parallel implementation: rank 0 reads, then scatters to all processes.
 """
 function _read_initial_psi_parallel(filename::String, G::Grid, plans, parallel_config)
-    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+    # MPI is imported at module level
 
     rank = MPI.Comm_rank(parallel_config.comm)
 
@@ -868,7 +875,7 @@ end
 Parallel implementation: rank 0 reads, then scatters to all processes.
 """
 function _read_initial_waves_parallel(filename::String, G::Grid, plans, parallel_config)
-    MPI = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+    # MPI is imported at module level
 
     rank = MPI.Comm_rank(parallel_config.comm)
 

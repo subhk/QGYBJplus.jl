@@ -9,6 +9,7 @@ using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
 using ..QGYBJplus: first_projection_step!, leapfrog_step!
+using ..QGYBJplus: IMEXWorkspace, init_imex_workspace, imex_cn_step!
 using ..QGYBJplus: invert_q_to_psi!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
@@ -936,6 +937,9 @@ This is the recommended high-level interface that handles all the details of:
   When `nothing`, uses constant N² from `par.N²`.
 - `print_progress::Bool=true`: Print progress to stdout
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
+- `timestepper::Symbol=:leapfrog`: Time-stepping method. Options:
+  - `:leapfrog`: Leapfrog with Robert-Asselin filter (default, explicit, CFL-limited)
+  - `:imex_cn`: IMEX Crank-Nicolson (implicit dispersion, allows larger dt)
 
 # Returns
 - Final `State` at the end of the simulation
@@ -959,9 +963,14 @@ output_config = OutputConfig(
 
 # Run simulation - all time-stepping handled automatically
 S_final = run_simulation!(S, G, par, plans; output_config=output_config)
+
+# Or use IMEX for larger timesteps
+S_final = run_simulation!(S, G, par, plans;
+                          output_config=output_config,
+                          timestepper=:imex_cn)
 ```
 
-See also: [`OutputConfig`](@ref), [`leapfrog_step!`](@ref)
+See also: [`OutputConfig`](@ref), [`leapfrog_step!`](@ref), [`imex_cn_step!`](@ref)
 """
 function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          output_config::Union{OutputConfig,Nothing}=nothing,
@@ -971,7 +980,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          N2_profile=nothing,
                          print_progress::Bool=true,
                          progress_interval::Int=0,
-                         diagnostics_interval::Int=0)
+                         diagnostics_interval::Int=0,
+                         timestepper::Symbol=:leapfrog)
 
     # Determine if running in MPI mode
     is_mpi = mpi_config !== nothing
@@ -1024,20 +1034,6 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
     end
 
-    # Setup leapfrog states - save initial state BEFORE advancing
-    # Snm1 = state at time 0 (initial condition)
-    # Use copy_state instead of deepcopy to preserve PencilArray topology
-    Snm1 = copy_state(S)
-
-    # First projection step (Forward Euler to initialize leapfrog)
-    # Advances S from time 0 to time dt
-    first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
-
-    # Sn = state at time dt (after first projection step)
-    Sn = copy_state(S)
-    # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
-    Snp1 = copy_state(S)
-
     # Determine progress interval
     nt = par.nt
     dt = par.dt
@@ -1058,9 +1054,10 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     save_steps = psi_save_steps > 0 ? psi_save_steps : wave_save_steps
 
     # Print header
+    timestepper_name = timestepper == :imex_cn ? "IMEX Crank-Nicolson" : "Leapfrog"
     if is_root && print_progress
         println("\n" * "="^60)
-        println("Starting time integration...")
+        println("Starting time integration ($timestepper_name)...")
         println("  Steps: $nt, dt: $dt")
         if save_steps > 0
             println("  Saving every $save_steps steps")
@@ -1098,56 +1095,130 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         end
     end
 
-    # Time integration loop
-    for step in 1:nt
-        # Leapfrog step
-        leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                       a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+    # Branch based on timestepper
+    if timestepper == :leapfrog
+        # ==================== LEAPFROG TIME STEPPING ====================
+        # Setup leapfrog states - save initial state BEFORE advancing
+        # Snm1 = state at time 0 (initial condition)
+        # Use copy_state instead of deepcopy to preserve PencilArray topology
+        Snm1 = copy_state(S)
 
-        # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
-        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+        # First projection step (Forward Euler to initialize leapfrog)
+        # Advances S from time 0 to time dt
+        first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
-        current_time = step * dt
+        # Sn = state at time dt (after first projection step)
+        Sn = copy_state(S)
+        # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
+        Snp1 = copy_state(S)
 
-        # Diagnostics output
-        # Note: All processes must participate in MPI reductions
-        if diagnostics_interval > 0 && step % diagnostics_interval == 0
-            # Velocities u, v are already in physical space
-            max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
-            max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
-            max_vel = max(max_u, max_v)
+        # Time integration loop
+        for step in 1:nt
+            # Leapfrog step
+            leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
+                           a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
-            # Transform B and A to physical space for meaningful diagnostics
-            fft_backward!(B_phys, Sn.B, plans)
-            fft_backward!(A_phys, Sn.A, plans)
-            max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
-            max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
+            # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
+            Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 
-            # Print diagnostics (only on root)
-            if is_root && print_progress
-                @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
-                        step, current_time, max_vel, max_B, max_A)
+            current_time = step * dt
+
+            # Diagnostics output
+            # Note: All processes must participate in MPI reductions
+            if diagnostics_interval > 0 && step % diagnostics_interval == 0
+                # Velocities u, v are already in physical space
+                max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
+                max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
+                max_vel = max(max_u, max_v)
+
+                # Transform B and A to physical space for meaningful diagnostics
+                fft_backward!(B_phys, Sn.B, plans)
+                fft_backward!(A_phys, Sn.A, plans)
+                max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
+                max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
+
+                # Print diagnostics (only on root)
+                if is_root && print_progress
+                    @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
+                            step, current_time, max_vel, max_B, max_A)
+                end
+            end
+
+            # Save state
+            if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
+                write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
             end
         end
 
-        # Save state
-        if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
-            write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
+        # Copy final state back to S
+        copyto!(parent(S.psi), parent(Sn.psi))
+        copyto!(parent(S.q), parent(Sn.q))
+        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.A), parent(Sn.A))
+        copyto!(parent(S.C), parent(Sn.C))
+        copyto!(parent(S.u), parent(Sn.u))
+        copyto!(parent(S.v), parent(Sn.v))
+        copyto!(parent(S.w), parent(Sn.w))
+
+    elseif timestepper == :imex_cn
+        # ==================== IMEX CRANK-NICOLSON ====================
+        # IMEX only needs two time levels: Sn (current) and Snp1 (next)
+        # Dispersion is treated implicitly for unconditional stability
+
+        # Initialize IMEX workspace
+        imex_ws = init_imex_workspace(S, G)
+
+        # Setup states
+        Sn = copy_state(S)
+        Snp1 = copy_state(S)
+
+        # Time integration loop
+        for step in 1:nt
+            # IMEX Crank-Nicolson step
+            imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws;
+                          a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+
+            # Swap states: (n) ← (n+1)
+            Sn, Snp1 = Snp1, Sn
+
+            current_time = step * dt
+
+            # Diagnostics output
+            if diagnostics_interval > 0 && step % diagnostics_interval == 0
+                max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
+                max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
+                max_vel = max(max_u, max_v)
+
+                fft_backward!(B_phys, Sn.B, plans)
+                fft_backward!(A_phys, Sn.A, plans)
+                max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
+                max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
+
+                if is_root && print_progress
+                    @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
+                            step, current_time, max_vel, max_B, max_A)
+                end
+            end
+
+            # Save state
+            if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
+                write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
+            end
         end
+
+        # Copy final state back to S
+        copyto!(parent(S.psi), parent(Sn.psi))
+        copyto!(parent(S.q), parent(Sn.q))
+        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.A), parent(Sn.A))
+        copyto!(parent(S.C), parent(Sn.C))
+        copyto!(parent(S.u), parent(Sn.u))
+        copyto!(parent(S.v), parent(Sn.v))
+        copyto!(parent(S.w), parent(Sn.w))
+
+    else
+        error("Unknown timestepper: $timestepper. Valid options: :leapfrog, :imex_cn")
     end
-
-    # Copy final state back to S
-    copyto!(parent(S.psi), parent(Sn.psi))
-
-    copyto!(parent(S.q), parent(Sn.q))
-
-    copyto!(parent(S.B), parent(Sn.B))
-    copyto!(parent(S.A), parent(Sn.A))
-    copyto!(parent(S.C), parent(Sn.C))
-
-    copyto!(parent(S.u), parent(Sn.u))
-    copyto!(parent(S.v), parent(Sn.v))
-    copyto!(parent(S.w), parent(Sn.w))
 
     # Print completion message
     if is_root && print_progress

@@ -14,6 +14,16 @@ USAGE:
     mpirun -n 4 julia --project examples/asselin_jpo2020.jl
     mpirun -n 16 julia --project examples/asselin_jpo2020.jl
 
+TIME-STEPPING OPTIONS:
+----------------------
+This example supports two time-stepping methods:
+- :leapfrog (default in Fortran): Explicit leapfrog with Robert-Asselin filter
+                                  Requires dt ≤ 2f/N² ≈ 2s for dispersion CFL
+- :imex_cn: IMEX Crank-Nicolson with implicit dispersion
+            Allows dt ~ 20s (10x speedup), only limited by advection CFL
+
+Set TIMESTEPPER in the parameters section below to choose.
+
 ================================================================================
 =#
 
@@ -36,16 +46,26 @@ const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
 const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
 
 # Domain size [m] (Asselin et al. 2020)
-const Lx = 70e3              # 70 km horizontal domain
-const Ly = 70e3              # 70 km horizontal domain
+# Grid is in cardinal (X,Y) coordinates with 70 km periodic domain
+# Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
+const Lx = 70e3              # 70 km horizontal domain in (X,Y)
+const Ly = 70e3              # 70 km horizontal domain in (X,Y)
 const Lz = 3000.0            # 3 km depth, surface at z = Lz
 
 # Time stepping
 const n_inertial_periods = 15
 const T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
-# NOTE: Wave dispersion CFL requires dt ≤ 2f/N² ≈ 25s for stability.
-# Using smaller dt to avoid leapfrog computational mode instability.
-const dt = 2.0               # Time step [s] (reduced for stability)
+
+# Time-stepping method selection:
+# - :leapfrog (default): Explicit leapfrog with Robert-Asselin filter
+#                        CFL-limited by wave dispersion: dt ≤ 2f/N² ≈ 25s
+# - :imex_cn: IMEX Crank-Nicolson with implicit dispersion
+#             Allows larger dt (limited only by advection CFL)
+const TIMESTEPPER = :imex_cn  # Options: :leapfrog or :imex_cn
+
+# Timestep selection based on method
+# IMEX allows ~10x larger timesteps since dispersion is treated implicitly
+const dt = TIMESTEPPER == :imex_cn ? 20.0 : 2.0  # [s]
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
 # Wave parameters
@@ -54,7 +74,7 @@ const surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
 const U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
-const k_dipole = 2π / Lx  # κ = 2π/(70 km) per Asselin et al. (2020)
+const k_dipole = sqrt(2) * π / Lx  # κ = √2π/(70 km) per Asselin et al. (2020)
 const psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
 
 # Output settings
@@ -115,7 +135,8 @@ function main()
     local_range_phys = QGYBJplus.get_local_range_physical(plans)
     local_range_spec = QGYBJplus.get_local_range_spectral(plans)
 
-    # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy)
+    # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy) in rotated (x,y) coordinates
+    # Grid is in cardinal (X,Y); transform via x=(X-Y)/√2, y=(X+Y)/√2 (Fig. 1)
     # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
     if is_root; println("\nSetting up dipole..."); end
     psi_phys = QGYBJplus.allocate_fft_backward_dst(S.psi, plans)
@@ -123,10 +144,13 @@ function main()
     for k_local in axes(psi_phys_arr, 1)
         for j_local in axes(psi_phys_arr, 3)
             j_global = local_range_phys[3][j_local]
-            y = (j_global - 1) * G.dy - G.Ly / 2  # Centered y (rotated coords)
+            Y = (j_global - 1) * G.dy - G.Ly / 2  # Centered Y (cardinal coords)
             for i_local in axes(psi_phys_arr, 2)
                 i_global = local_range_phys[2][i_local]
-                x = (i_global - 1) * G.dx - G.Lx / 2  # Centered x (rotated coords)
+                X = (i_global - 1) * G.dx - G.Lx / 2  # Centered X (cardinal coords)
+                # Transform to rotated (x,y) for dipole formula
+                x = (X - Y) / sqrt(2)
+                y = (X + Y) / sqrt(2)
                 # Dimensional streamfunction [m²/s]
                 psi_phys_arr[k_local, i_local, j_local] = complex(psi0 * sin(k_dipole * x) * cos(k_dipole * y))
             end
@@ -134,7 +158,9 @@ function main()
     end
     QGYBJplus.fft_forward!(S.psi, psi_phys, plans)
 
-    # Compute q = -kh² × ψ (spectral space operation)
+    # Compute vorticity: ζ = ∇²ψ (on f-plane, q = ζ)
+    # In spectral space: ζ̂ = -kh² × ψ̂
+    # For dipole: ζ = -2κU sin(κx) cos(κy) per Eq. (3)
     q_local = parent(S.q)
     psi_local = parent(S.psi)
     for k_local in axes(q_local, 1)
@@ -181,20 +207,29 @@ function main()
     diag_steps = max(1, round(Int, diag_interval_IP * T_inertial / dt))
 
     # Run simulation - all time-stepping handled automatically
-    # This handles: leapfrog state management, initial projection step,
+    # This handles: state management, initial projection step,
     # output file saving, progress reporting, and energy diagnostics
+    # The timestepper can be :leapfrog (explicit) or :imex_cn (implicit dispersion)
     QGYBJplus.run_simulation!(S, G, par, plans;
         output_config = output_config,
         mpi_config = mpi_config,
         workspace = workspace,
         print_progress = is_root,
-        diagnostics_interval = 10 #diag_steps
+        diagnostics_interval = diag_steps,
+        timestepper = TIMESTEPPER  # :leapfrog or :imex_cn
     )
 
     if is_root
         println("\nOutput files saved to: $output_dir/")
         println("  - Variables: psi (flow), LAr, LAi (waves)")
     end
+
+    # Ensure all MPI operations are complete before finalization
+    MPI.Barrier(mpi_config.comm)
+
+    # Force garbage collection BEFORE MPI.Finalize to prevent heap corruption
+    # from Julia finalizers running after MPI is shut down
+    GC.gc(true)  # Full garbage collection
 
     MPI.Finalize()
 end

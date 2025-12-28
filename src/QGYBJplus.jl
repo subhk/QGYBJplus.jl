@@ -155,6 +155,8 @@ export QGParams, Grid, State,
        init_random_psi!, init_analytical_psi!, init_analytical_waves!,
        add_balanced_component!, compute_q_from_psi!, initialize_from_config,
         first_projection_step!, leapfrog_step!,
+        # IMEX time stepping (unconditionally stable for dispersion)
+        IMEXWorkspace, init_imex_workspace, imex_cn_step!, first_imex_step!,
         sumB!, compute_sigma, compute_A!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz,
         # Global energy diagnostics (MPI-aware)
@@ -234,6 +236,7 @@ include("nonlinear.jl")     # Jacobians, refraction, wave feedback qʷ
 
 # Time integration
 include("timestep.jl")      # Forward Euler, Leapfrog with Robert-Asselin
+include("timestep_imex.jl") # IMEX Crank-Nicolson (implicit dispersion)
 
 # Initial conditions
 include("initconds.jl")     # Random and analytic initial conditions
