@@ -373,11 +373,13 @@ This fixes the instability of forward Euler for refraction, which amplifies:
 |1 - i·dt·ζ/2| = sqrt(1 + (dt·ζ/2)²) > 1.
 
 # Algorithm
-1. Apply exact refraction: B* = B^n × exp(-i·dt·ζ/2)
+1. Apply exact refraction: B* = B^n × exp(-i·dt·ζ/2) in physical space
 2. Compute advection tendency: N = -J(ψ,B^n)
-3. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A^n + dt·N
-4. Solve modified elliptic: (L⁺ - (dt/2)·i·αdisp·kₕ²)·A^{n+1} = RHS
-5. Recover B^{n+1} = RHS + (dt/2)·i·αdisp·kₕ²·A^{n+1}
+3. For each spectral mode (kx, ky):
+   a. Compute A* = (L⁺)⁻¹B* (essential for IMEX-CN consistency!)
+   b. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + dt·N
+   c. Solve modified elliptic: (L⁺ - (dt/2)·i·αdisp·kₕ²)·A^{n+1} = RHS
+   d. Recover B^{n+1} = RHS + (dt/2)·i·αdisp·kₕ²·A^{n+1}
 
 # Arguments
 - `Snp1::State`: State at time n+1 (output)
