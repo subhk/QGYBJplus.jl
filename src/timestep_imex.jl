@@ -3,28 +3,30 @@
                 timestep_imex.jl - IMEX Time Integration
 ================================================================================
 
-IMEX (Implicit-Explicit) Crank-Nicolson time stepping for YBJ+ equation.
+IMEX (Implicit-Explicit) time stepping for YBJ+ equation with operator splitting.
 
 The YBJ+ equation for B:
     ∂B/∂t + J(ψ,B) + (i/2)ζB = i·αdisp·kₕ²·A
 
 where A = (L⁺)⁻¹·B (elliptic inversion).
 
-IMEX splits this into:
-- EXPLICIT: N(B) = -J(ψ,B) - (i/2)ζB  (advection + refraction)
-- IMPLICIT: L(B) = i·αdisp·kₕ²·(L⁺)⁻¹·B  (dispersion)
+OPERATOR SPLITTING + IMEX-CN:
+-----------------------------
+Step 1 (Exact refraction): B* = B^n × exp(-i·dt·ζ/2)  [in physical space]
+Step 2 (IMEX-CN for advection + dispersion):
+    - EXPLICIT: N(B) = -J(ψ,B)  (advection only)
+    - IMPLICIT: L(B) = i·αdisp·kₕ²·(L⁺)⁻¹·B  (dispersion)
 
-The Crank-Nicolson scheme:
-    (I - dt/2·L)·B^{n+1} = (I + dt/2·L)·B^n + dt·N^n
+The refraction term is handled exactly via integrating factor:
+    dB/dt = -(i/2)ζB  →  B(t) = B(0)·exp(-i·ζ·t/2)
 
-Since L involves (L⁺)⁻¹, we reformulate as a modified elliptic problem:
-    (L⁺ - dt/2·i·αdisp·kₕ²)·A^{n+1} = B^n + dt/2·i·αdisp·kₕ²·A^n + dt·N^n
-
-This is a tridiagonal system with complex diagonal modification.
+This is energy-preserving since |exp(-i·ζ·t/2)| = 1, unlike forward Euler
+which amplifies: |1 - i·dt·ζ/2| = sqrt(1 + (dt·ζ/2)²) > 1.
 
 STABILITY:
 ---------
-- Dispersion: Unconditionally stable (implicit treatment)
+- Refraction: Exactly energy-preserving (integrating factor)
+- Dispersion: Unconditionally stable (implicit CN)
 - Advection: CFL limited by dt × U_max / dx < 1
 - For U = 0.335 m/s, dx ≈ 550m: dt_max ≈ 1600s
 
@@ -136,6 +138,77 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
         qtemp,
         nz
     )
+end
+
+"""
+    apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans)
+
+Apply exact refraction using integrating factor (operator splitting step 1).
+
+Solves: dB/dt = -(i/2)ζB  exactly over one timestep dt.
+Solution: B(dt) = B(0) × exp(-i·dt·ζ/2)
+
+This is energy-preserving since |exp(-i·dt·ζ/2)| = 1 for real ζ.
+
+# Arguments
+- `Bk_out`: Output wave envelope in spectral space
+- `Bk_in`: Input wave envelope in spectral space
+- `ψk`: Streamfunction in spectral space (for computing ζ = ∇²ψ)
+- `G`: Grid
+- `par`: Parameters (uses par.dt and par.passive_scalar)
+- `plans`: FFT plans
+
+# Notes
+If par.passive_scalar is true, refraction is skipped (just copies Bk_in to Bk_out).
+"""
+function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans)
+    # Skip refraction for passive scalar mode
+    if par.passive_scalar
+        parent(Bk_out) .= parent(Bk_in)
+        return Bk_out
+    end
+
+    dt = par.dt
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    ψ_arr = parent(ψk)
+    nz_spec, nx_spec, ny_spec = size(ψ_arr)
+
+    # Compute vorticity ζ = -kₕ²ψ in spectral space
+    ζk = similar(ψk)
+    ζk_arr = parent(ζk)
+
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
+        i_global = local_to_global(i_local, 2, ψk)
+        j_global = local_to_global(j_local, 3, ψk)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+        ζk_arr[k, i_local, j_local] = -kₕ² * ψ_arr[k, i_local, j_local]
+    end
+
+    # Transform to physical space
+    ζ_phys = allocate_fft_backward_dst(ζk, plans)
+    B_phys = allocate_fft_backward_dst(Bk_in, plans)
+    fft_backward!(ζ_phys, ζk, plans)
+    fft_backward!(B_phys, Bk_in, plans)
+
+    ζ_phys_arr = parent(ζ_phys)
+    B_phys_arr = parent(B_phys)
+    nz_phys, nx_phys, ny_phys = size(ζ_phys_arr)
+
+    # Apply exact integrating factor: B* = B × exp(-i·dt·ζ/2)
+    # The factor exp(-i·dt·ζ/2) has magnitude 1 since ζ is real, ensuring energy conservation
+    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
+        ζ_val = real(ζ_phys_arr[k, i, j])  # Vorticity is real
+        phase_factor = exp(-im * dt * ζ_val / 2)
+        B_phys_arr[k, i, j] *= phase_factor
+    end
+
+    # Transform back to spectral space
+    fft_forward!(Bk_out, B_phys, plans)
+
+    return Bk_out
 end
 
 """
@@ -286,15 +359,25 @@ end
 """
     imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
 
-IMEX Crank-Nicolson time step for YBJ+ equation.
+IMEX Crank-Nicolson time step for YBJ+ equation with operator splitting for refraction.
 
-Treats dispersion implicitly for unconditional stability, advection/refraction explicitly.
+Uses a Lie splitting approach:
+1. **Stage 1 (Exact Refraction)**: B* = B^n × exp(-i·dt·ζ/2)
+   - Solves dB/dt = -(i/2)ζB exactly using integrating factor
+   - Energy-preserving since |exp(-i·dt·ζ/2)| = 1
+2. **Stage 2 (IMEX-CN for Advection + Dispersion)**: Starting from B*
+   - Advection treated explicitly: N(B) = -J(ψ,B)
+   - Dispersion treated implicitly via Crank-Nicolson
+
+This fixes the instability of forward Euler for refraction, which amplifies:
+|1 - i·dt·ζ/2| = sqrt(1 + (dt·ζ/2)²) > 1.
 
 # Algorithm
-1. Compute explicit tendencies N(B) = -J(ψ,B) - (i/2)ζB at time n
-2. Compute RHS = B^n + (dt/2)·i·αdisp·kₕ²·A^n + dt·N^n
-3. Solve modified elliptic: (L⁺ - (dt/2)·i·αdisp·kₕ²)·A^{n+1} = (some function of RHS)
-4. Recover B^{n+1} = L⁺·A^{n+1}
+1. Apply exact refraction: B* = B^n × exp(-i·dt·ζ/2)
+2. Compute advection tendency: N = -J(ψ,B^n)
+3. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A^n + dt·N
+4. Solve modified elliptic: (L⁺ - (dt/2)·i·αdisp·kₕ²)·A^{n+1} = RHS
+5. Recover B^{n+1} = RHS + (dt/2)·i·αdisp·kₕ²·A^{n+1}
 
 # Arguments
 - `Snp1::State`: State at time n+1 (output)
@@ -309,7 +392,8 @@ Treats dispersion implicitly for unconditional stability, advection/refraction e
 - `N2_profile`: N²(z) profile
 
 # Stability
-- Dispersion: Unconditionally stable
+- Refraction: Exactly energy-preserving (integrating factor)
+- Dispersion: Unconditionally stable (implicit CN)
 - Advection CFL: dt < dx/U_max ≈ 1600s for this problem
 """
 function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, imex_ws::IMEXWorkspace;
@@ -375,10 +459,23 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     #= Step 3: Apply physics switches =#
     if par.inviscid; imex_ws.dqk .= 0; end
     if par.linear; imex_ws.nqk .= 0; imex_ws.nBk .= 0; end
-    if par.passive_scalar; imex_ws.rBk .= 0; end  # No refraction
+    # Note: passive_scalar flag is handled in apply_refraction_exact!
 
     # Determine if dispersion is active (needed for IMEX implicit solve)
     dispersion_active = !par.no_dispersion && !par.passive_scalar
+
+    #= Step 3.5: Apply exact refraction via operator splitting =#
+    # This is the key fix for stability: instead of treating refraction with
+    # forward Euler (which amplifies), we solve it exactly using an integrating factor.
+    # B* = B^n × exp(-i·dt·ζ/2) is energy-preserving since |exp(...)| = 1.
+    # Store B* in imex_ws.RHS (reused later for IMEX RHS)
+    Bstar = imex_ws.RHS  # Temporary storage for refraction-applied B
+    apply_refraction_exact!(Bstar, Sn.B, Sn.psi, G, par, plans)
+
+    # Get B* array for use in IMEX loop
+    # Note: For Lie splitting, we use A^n (not A*) for the dispersion term.
+    # This is O(dt) consistent with the splitting error and avoids an extra elliptic solve.
+    Bstar_arr = parent(Bstar)
 
     #= Step 4: Update q with explicit Euler (or could use CN for diffusion) =#
     if par.fixed_flow
@@ -493,29 +590,32 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
         # Handle cases where dispersion is disabled or kₕ² ≈ 0
         if !dispersion_active || kₕ² < 1e-14
-            # Pure explicit step: B^{n+1} = B^n + dt·N^n (with hyperdiffusion)
-            # where N = -J(ψ,B) - (i/2)ζB
+            # Pure explicit step: B^{n+1} = B* + dt·N^n (with hyperdiffusion)
+            # where N = -J(ψ,B) (advection only - refraction already applied exactly)
+            # Note: B* = B^n × exp(-i·dt·ζ/2) from operator splitting
             @inbounds for k in 1:nz_local
-                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
-                Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * N_k) * hyperdiff_factor
+                N_k = -nBk_arr[k, i, j]  # Advection only (refraction handled by splitting)
+                Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + dt * N_k) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0  # No dispersion means A is meaningless
             end
         else
-            # IMEX-CN for B equation with dispersion
-            # Build RHS for IMEX-CN: B^n + (dt/2)·disp^n + dt·N^n
-            # where disp = i·αdisp·kₕ²·A and N = -J(ψ,B) - (i/2)ζB
+            # IMEX-CN for B equation with dispersion (after exact refraction)
+            # Build RHS for IMEX-CN: B* + (dt/2)·disp^n + dt·N^n
+            # where disp = i·αdisp·kₕ²·A and N = -J(ψ,B) (advection only)
+            # Note: B* = B^n × exp(-i·dt·ζ/2) from operator splitting
             #
             # NOTE: nz_local == nz for xy-pencil decomposition (z is not distributed)
             @inbounds for k in 1:nz_local
-                # Explicit tendency: N = -J(ψ,B) - (i/2)ζB
-                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
+                # Explicit tendency: N = -J(ψ,B) (advection only - refraction handled by splitting)
+                N_k = -nBk_arr[k, i, j]
 
                 # Dispersion term at time n: disp^n = i·αdisp·kₕ²·A^n
                 # Uses the SAME αdisp as the implicit solve for consistency
                 disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
 
                 # RHS for IMEX-CN (without hyperdiffusion - applied later)
-                tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+                # Start from B* (after refraction), not B^n
+                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
             end
 
             # Solve modified elliptic problem for A^{n+1}
@@ -566,28 +666,29 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
         if !dispersion_active || kₕ² < 1e-14
             # Explicit update for mean mode or when dispersion is disabled
+            # Use B* (after exact refraction) and advection only
             for k in 1:nz_local
-                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
-                Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * N_k) * hyperdiff_factor
+                N_k = -nBk_arr[k, i, j]  # Advection only (refraction handled by splitting)
+                Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + dt * N_k) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
             end
         else
-            # Build RHS for IMEX solve
+            # Build RHS for IMEX solve using B* (after exact refraction)
             for k in 1:nz_local
-                N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
+                N_k = -nBk_arr[k, i, j]  # Advection only (refraction handled by splitting)
                 disp_n = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
-                tl.RHS_col[k] = Bn_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
+                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_n + dt * N_k
             end
 
             # Check if RHS is too small for stable implicit solve
             # For very small RHS, use explicit forward Euler instead to avoid ill-conditioning
             rhs_max = maximum(k -> abs(tl.RHS_col[k]), 1:nz_local)
             if rhs_max < 1e-20
-                # Explicit forward Euler: B^{n+1} = B^n + dt*(N + disp)
+                # Explicit forward Euler: B^{n+1} = B* + dt*(N + disp)
                 for k in 1:nz_local
-                    N_k = -nBk_arr[k, i, j] - 0.5im * rBk_arr[k, i, j]
+                    N_k = -nBk_arr[k, i, j]  # Advection only
                     disp_k = im * αdisp_profile[k] * kₕ² * An_arr[k, i, j]
-                    Bnp1_arr[k, i, j] = (Bn_arr[k, i, j] + dt * (N_k + disp_k)) * hyperdiff_factor
+                    Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + dt * (N_k + disp_k)) * hyperdiff_factor
                     Anp1_arr[k, i, j] = 0  # Will be recomputed by invert_B_to_A! at end
                 end
                 continue
