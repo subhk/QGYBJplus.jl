@@ -322,6 +322,15 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
+    # Ensure we have enough thread-local workspaces for the actual thread count
+    # (Threads.nthreads() at init time may differ from runtime, especially with MPI)
+    nthreads = Threads.nthreads()
+    if length(imex_ws.thread_local) < nthreads
+        for _ in (length(imex_ws.thread_local)+1):nthreads
+            push!(imex_ws.thread_local, init_thread_local(nz))
+        end
+    end
+
     #= Step 1: Update diagnostics ψ, u, v, A for current state =#
     if !par.fixed_flow
         invert_q_to_psi!(Sn, G; a=a, par=par, workspace=workspace)

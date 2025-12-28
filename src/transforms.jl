@@ -114,6 +114,11 @@ function plan_transforms!(G::Grid, parallel_config=nothing)
     end
 
     # Default: serial FFTW mode
+    # Enable FFTW threading for better performance on multi-core systems
+    # (MPI mode disables this in parallel_mpi.jl to prevent conflicts)
+    if Threads.nthreads() > 1
+        FFTW.set_num_threads(Threads.nthreads())
+    end
     # Note: We don't pre-plan here for simplicity. FFTW caches plans internally.
     return Plans(backend=:fftw)
 end
