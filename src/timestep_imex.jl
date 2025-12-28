@@ -95,7 +95,7 @@ struct IMEXWorkspace{CT, RT}
 end
 
 """
-    init_imex_workspace(S, G; nthreads=Threads.nthreads())
+    init_imex_workspace(S, G; nthreads=Threads.threadpoolsize())
 
 Initialize workspace for IMEX time stepping with threading support.
 
@@ -104,7 +104,7 @@ from repeated allocation/deallocation in tight loops during time stepping.
 Per-thread workspaces are created for the tridiagonal solves to enable
 parallel processing of horizontal modes.
 """
-function init_imex_workspace(S, G; nthreads=Threads.nthreads())
+function init_imex_workspace(S, G; nthreads=Threads.threadpoolsize())
     CT = typeof(S.B)
     RT = typeof(S.u)
 
@@ -329,9 +329,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
-    # Ensure we have enough thread-local workspaces for the actual thread count
-    # (Threads.nthreads() at init time may differ from runtime, especially with MPI)
-    nthreads = Threads.nthreads()
+    # Ensure we have enough thread-local workspaces for the default threadpool
+    # (thread count at init time may differ from runtime, especially with MPI)
+    nthreads = Threads.threadpoolsize()
     if length(imex_ws.thread_local) < nthreads
         for _ in (length(imex_ws.thread_local)+1):nthreads
             push!(imex_ws.thread_local, init_thread_local(nz))
