@@ -17,7 +17,7 @@ KE = \frac{1}{2}\int (u^2 + v^2) \, dV
 ```
 
 ```julia
-KE = flow_kinetic_energy(state.u, state.v, grid)
+KE = flow_kinetic_energy(state.u, state.v)
 ```
 
 ### Flow Potential Energy
@@ -46,7 +46,7 @@ E_{wave} = \frac{1}{2}\int |A|^2 \, dV
 ```
 
 ```julia
-E_B, E_A = wave_energy(state.B, state.A, grid)
+E_B, E_A = wave_energy(state.B, state.A)
 ```
 
 !!! note
@@ -424,9 +424,9 @@ for step = 1:nsteps
 
     # Record diagnostics
     push!(ts.time, step * dt)
-    push!(ts.KE, flow_kinetic_energy(state.u, state.v, grid))
+    push!(ts.KE, flow_kinetic_energy(state.u, state.v))
     push!(ts.PE, flow_potential_energy(state.psi, grid, params))
-    push!(ts.WE, wave_energy(state.B, state.A, grid)[2])
+    push!(ts.WE, wave_energy(state.B, state.A)[2])
 end
 ```
 
@@ -531,9 +531,9 @@ function compute_all_diagnostics(state, grid, params, plans)
     diag = Dict{String, Any}()
 
     # Energy
-    diag["KE"] = flow_kinetic_energy(state.u, state.v, grid)
+    diag["KE"] = flow_kinetic_energy(state.u, state.v)
     diag["PE"] = flow_potential_energy(state.psi, grid, params)
-    diag["WE_B"], diag["WE_A"] = wave_energy(state.B, state.A, grid)
+    diag["WE_B"], diag["WE_A"] = wave_energy(state.B, state.A)
 
     # Enstrophy
     diag["Z_rel"] = relative_enstrophy(state.psi, grid)
@@ -568,7 +568,10 @@ end
 ## API Reference
 
 See the [Physics API Reference](../api/physics.md) for complete documentation of diagnostic functions:
+- `flow_kinetic_energy` - Mean flow kinetic energy
 - `wave_energy` - Wave energy diagnostics
+- `flow_kinetic_energy_global` / `wave_energy_global` - MPI-aware global reductions
 - `omega_eqn_rhs!` - Omega equation RHS computation
+- `EnergyDiagnosticsManager` - Automatic energy output to separate files
 
 Additional diagnostic utilities are available through the model interface.

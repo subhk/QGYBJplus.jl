@@ -100,11 +100,15 @@ Dissipation functions are documented in the [Time Stepping API](timestepping.md)
 
 ### Energy
 
+**Flow Kinetic Energy:**
+```@docs
+flow_kinetic_energy
+```
+
+**Wave Energy:**
 ```@docs
 wave_energy
 ```
-
-Flow energy can be computed from velocity fields using standard summation.
 
 ### Spectral Energy Functions
 
@@ -120,6 +124,13 @@ wave_energy_spectral
 
 For parallel simulations, use these MPI-aware versions that reduce across all processes:
 
+**Physical-space energy (simple sum):**
+```@docs
+flow_kinetic_energy_global
+wave_energy_global
+```
+
+**Spectral energy (with dealiasing):**
 ```@docs
 flow_kinetic_energy_spectral_global
 flow_potential_energy_spectral_global
@@ -243,7 +254,9 @@ compute_A!
 | `jacobian_spectral!` | a, b | J(a,b) | Yes |
 | `compute_velocities!` | psi | u, v | Yes |
 | `flow_kinetic_energy` | u, v | scalar | No |
-| `wave_energy` | B, A | scalar | No |
+| `flow_kinetic_energy_global` | u, v, mpi_config | scalar | No |
+| `wave_energy` | B, A | (EB, EA) | No |
+| `wave_energy_global` | B, A, mpi_config | (EB, EA) | No |
 
 ## Performance Notes
 

@@ -11,7 +11,7 @@ Complete API reference for QGYBJ+.jl.
 - [Core Types](types.md): `QGParams`, `Grid`, `State`
 - [Grid & State](grid_state.md): Initialization and utilities
 - [Physics Functions](physics.md): Inversions, operators, diagnostics
-- [Time Stepping](timestepping.md): Leapfrog integration
+- [Time Stepping](timestepping.md): Leapfrog and IMEX-CNAB integration
 - [Particles](particles.md): Lagrangian particle tracking
 
 ## Module Structure
@@ -33,7 +33,8 @@ QGYBJplus/src/
 │   ├── transforms.jl  # FFT planning (serial)
 │   └── parallel_mpi.jl # MPI 2D decomposition, transposes
 ├── Time Stepping
-│   └── timestep.jl    # Leapfrog with Robert-Asselin
+│   ├── timestep.jl       # Leapfrog with Robert-Asselin filter
+│   └── timestep_imex.jl  # IMEX-CNAB with Strang splitting
 ├── Initialization
 │   ├── initconds.jl       # Random/analytic initial conditions
 │   ├── initialization.jl  # Field initialization helpers
@@ -80,11 +81,14 @@ G, S, plans, a = setup_model(par)
 ### Time Stepping
 
 ```julia
-# Initial projection step
+# Leapfrog (default, explicit)
 first_projection_step!(S, G, par, plans; a=a, dealias_mask=L)
-
-# Leapfrog steps
 leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a, dealias_mask=L)
+
+# IMEX-CNAB (implicit dispersion, 10x larger timestep)
+imex_ws = init_imex_workspace(S, G)
+first_imex_step!(S, G, par, plans, imex_ws; a=a, dealias_mask=L)
+imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a, dealias_mask=L)
 ```
 
 ### MPI Parallel Mode
@@ -121,8 +125,11 @@ workspace = init_mpi_workspace(G, mpi_config)
 ### Time Stepping
 | Function | Description |
 |:---------|:------------|
-| `first_projection_step!` | Forward Euler initialization |
+| `first_projection_step!` | Forward Euler initialization (Leapfrog) |
 | `leapfrog_step!` | Leapfrog with Robert-Asselin filter |
+| `init_imex_workspace` | Allocate IMEX workspace arrays |
+| `first_imex_step!` | Forward Euler initialization (IMEX) |
+| `imex_cn_step!` | IMEX-CNAB with Strang splitting |
 
 ### Parallel Utilities
 | Function | Description |

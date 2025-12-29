@@ -29,11 +29,6 @@ where directions are: W=left(-x), E=right(+x), S=bottom(-y), N=top(+y)
 
 module HaloExchange
 
-# Access Grid from grandparent module (QGYBJplus)
-const _PARENT = Base.parentmodule(@__MODULE__)           # UnifiedParticleAdvection
-const _GRANDPARENT = Base.parentmodule(_PARENT)          # QGYBJplus
-const Grid = _GRANDPARENT.Grid
-
 # Import interpolation types for halo width calculation
 using ..InterpolationSchemes: InterpolationMethod, TRILINEAR, TRICUBIC, QUINTIC, ADAPTIVE, required_halo_width
 
@@ -135,13 +130,19 @@ mutable struct HaloInfo{T<:AbstractFloat}
     # Decomposition type flag
     is_2d_decomposition::Bool
 
-    function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm;
+    function HaloInfo{T}(grid_info, rank::Int, nprocs::Int, comm;
                          halo_width::Union{Int,Nothing}=nothing,
                          interpolation_method::InterpolationMethod=TRILINEAR,
                          periodic_x::Bool=true,
                          periodic_y::Bool=true,
                          local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
                          process_grid::Union{Nothing,Tuple{Int,Int}}=nothing) where T
+        # grid_info can be a Grid object or a NamedTuple with (nx, ny, nz)
+
+        # Extract global dimensions
+        nx_global = grid_info.nx
+        ny_global = grid_info.ny
+        nz_global = grid_info.nz
 
         # Compute halo width from interpolation method if not explicitly provided
         if halo_width === nothing
@@ -171,9 +172,9 @@ mutable struct HaloInfo{T<:AbstractFloat}
             nz_local, nx_local, ny_local = local_dims
         else
             # Compute local dimensions from global and process grid
-            nx_local = compute_local_size(grid.nx, px, rank_x)
-            ny_local = compute_local_size(grid.ny, py, rank_y)
-            nz_local = grid.nz  # z is never decomposed for particles
+            nx_local = compute_local_size(nx_global, px, rank_x)
+            ny_local = compute_local_size(ny_global, py, rank_y)
+            nz_local = nz_global  # z is never decomposed for particles
         end
 
         # Extended grid dimensions (local + 2*halo_width in BOTH x and y)
@@ -229,7 +230,7 @@ mutable struct HaloInfo{T<:AbstractFloat}
             send_sw, send_se, send_nw, send_ne,
             recv_sw, recv_se, recv_nw, recv_ne,
             comm, rank, nprocs,
-            grid.nx, grid.ny, grid.nz,
+            nx_global, ny_global, nz_global,
             nx_local, ny_local, nz_local,
             px, py, rank_x, rank_y,
             periodic_x, periodic_y,
@@ -356,11 +357,13 @@ function setup_halo_exchange!(tracker)
     end
 
     T = eltype(tracker.u_field)
-    grid_info = (nx=tracker.nx, ny=tracker.ny, nz=tracker.nz,
-                Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz)
-    grid = Grid(grid_info)
 
-    halo_info = HaloInfo{T}(grid, tracker.rank, tracker.nprocs, tracker.comm)
+    # Create a minimal struct with just the required grid info
+    grid_dims = (nx=tracker.nx, ny=tracker.ny, nz=tracker.nz)
+
+    halo_info = HaloInfo{T}(grid_dims, tracker.rank, tracker.nprocs, tracker.comm;
+                            periodic_x=tracker.config.periodic_x,
+                            periodic_y=tracker.config.periodic_y)
 
     return halo_info
 end

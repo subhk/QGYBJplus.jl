@@ -201,7 +201,12 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        particles_random_3d, particles_custom,
        # 3D particle distributions (types and internals)
        ParticleConfig3D, ParticleDistribution, initialize_particles_3d!,
-       UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM
+       UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
+       # High-level Simulation API (simplified interface)
+       Simulation, initialize_simulation, run!,
+       set_dipole_flow!, set_surface_waves!, set_random_flow!, set_wave_packet!,
+       get_inertial_period, get_duration, get_duration_ip,
+       is_root, nprocs, finalize!
 
 #=
 ================================================================================
@@ -260,6 +265,9 @@ include("stratification.jl")    # Stratification profiles
 
 # High-level user interface (depends on the above)
 include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.
+
+# Simplified simulation API (higher-level than model_interface.jl)
+include("simulation.jl")        # Simulation struct, initialize_simulation, run!
 
 # Particle advection system (for Lagrangian tracking)
 include("particles/particle_advection.jl")  # Particle tracking core
