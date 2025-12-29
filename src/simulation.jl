@@ -27,7 +27,7 @@ set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)
 run!(sim; output_dir="output", timestepper=:imex_cn)
 
 # Cleanup
-finalize!(sim)
+finalize_simulation!(sim)
 ```
 """
 
@@ -542,7 +542,7 @@ end
 =#
 
 """
-    finalize!(sim::Simulation)
+    finalize_simulation!(sim::Simulation)
 
 Clean up simulation resources and finalize MPI.
 
@@ -550,10 +550,10 @@ Call this at the end of your script to ensure proper cleanup.
 
 # Example
 ```julia
-finalize!(sim)
+finalize_simulation!(sim)
 ```
 """
-function finalize!(sim::Simulation)
+function finalize_simulation!(sim::Simulation)
     MPI.Barrier(sim.mpi_config.comm)
     GC.gc(true)  # Force garbage collection before MPI finalization
     MPI.Finalize()

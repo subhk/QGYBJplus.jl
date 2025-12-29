@@ -79,4 +79,4 @@ run!(sim;
 if is_root(sim)
     println("\nSimulation complete!")
 end
-finalize!(sim)
+finalize_simulation!(sim)

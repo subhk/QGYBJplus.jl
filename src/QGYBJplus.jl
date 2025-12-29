@@ -206,7 +206,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        Simulation, initialize_simulation, run!,
        set_dipole_flow!, set_surface_waves!, set_random_flow!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
-       is_root, nprocs, finalize!
+       is_root, nprocs, finalize_simulation!
 
 #=
 ================================================================================
