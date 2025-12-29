@@ -366,32 +366,40 @@ end
 
 ## IMEX Crank-Nicolson Scheme
 
-The **IMEX-CN scheme** treats dispersion implicitly for unconditional stability, allowing timesteps ~10x larger than leapfrog.
+The **IMEX-CNAB scheme** (Crank-Nicolson for implicit terms, Adams-Bashforth 2 for explicit terms) treats dispersion implicitly for unconditional stability, allowing timesteps ~10x larger than leapfrog.
 
-### Why IMEX-CN?
+### Why IMEX-CNAB?
 
 The YBJ+ wave equation has three terms with different timescales:
 - **Advection**: J(ψ,B) - slow, O(hours)
 - **Refraction**: (i/2)ζB - moderate, O(minutes)
 - **Dispersion**: i·αdisp·kₕ²·A - fast, CFL-limited to dt ≤ 2f/N² (~2s)
 
-IMEX-CN treats dispersion implicitly, removing the stiff CFL constraint.
+IMEX-CNAB treats dispersion implicitly with Crank-Nicolson, removing the stiff CFL constraint.
 
-### Algorithm: Operator Splitting + IMEX-CN
+### Algorithm: Strang Splitting + IMEX-CNAB
 
-The scheme uses Lie splitting for refraction plus IMEX-CN for advection/dispersion:
+The scheme uses **Strang splitting** for refraction (second-order accurate) combined with IMEX-CNAB for advection/dispersion:
 
-**Stage 1 (Exact Refraction):**
+**Stage 1 (First Half-Refraction - Strang):**
 ```math
-B^* = B^n \times \exp(-i \Delta t \zeta / 2)
+B^* = B^n \times \exp\left(-i \frac{\Delta t}{2} \frac{\zeta}{2}\right)
 ```
 Applied in physical space with exact integrating factor (energy-preserving).
 
-**Stage 2 (IMEX-CN for Advection + Dispersion):**
+**Stage 2 (IMEX-CNAB for Advection + Dispersion):**
 ```math
-B^{n+1} = B^* + \frac{\Delta t}{2}[D^* + D^{n+1}] + \Delta t \cdot N^*
+B^{**} = B^* + \frac{\Delta t}{2}[D^* + D^{**}] + \Delta t \left[\frac{3}{2}N^n - \frac{1}{2}N^{n-1}\right]
 ```
-where D = i·αdisp·kₕ²·A (dispersion) and N = -J(ψ,B) (advection).
+where:
+- D = i·αdisp·kₕ²·A (dispersion, treated implicitly with Crank-Nicolson)
+- N = -J(ψ,B) (advection, treated explicitly with Adams-Bashforth 2)
+
+**Stage 3 (Second Half-Refraction - Strang):**
+```math
+B^{n+1} = B^{**} \times \exp\left(-i \frac{\Delta t}{2} \frac{\zeta}{2}\right)
+```
+The symmetric half-steps ensure second-order accuracy in time.
 
 ### Functions
 
@@ -426,9 +434,9 @@ end
 
 | Term | Treatment | Stability |
 |:-----|:----------|:----------|
-| Refraction | Exact integrating factor | **Unconditionally stable** |
+| Refraction | Exact integrating factor (Strang split) | **Unconditionally stable** |
 | Dispersion | Implicit Crank-Nicolson | **Unconditionally stable** |
-| Advection | Explicit forward Euler | CFL: dt < dx/U_max |
+| Advection | Explicit Adams-Bashforth 2 | CFL: dt < dx/U_max |
 
 For U = 0.335 m/s and dx ≈ 273m (256 grid, 70km domain): **dt_max ≈ 800s**
 
@@ -436,9 +444,10 @@ This allows dt = 20s (vs dt = 2s for leapfrog), a **10x speedup**.
 
 ### Key Implementation Details
 
-1. **Operator Splitting**: Refraction is applied exactly using `exp(-i·dt·ζ/2)` in physical space before IMEX-CN
-2. **Consistent A***: After refraction, A* = (L⁺)⁻¹B* is computed to maintain IMEX-CN consistency
-3. **Modified Elliptic Solve**: Each mode solves (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
+1. **Strang Splitting**: Refraction is split symmetrically with two half-steps: `exp(-i·(dt/2)·ζ/2)` before and after the IMEX solve
+2. **Adams-Bashforth 2**: Advection uses `(3/2)N^n - (1/2)N^{n-1}` extrapolation (bootstraps with forward Euler on first step)
+3. **Consistent A***: After first half-refraction, A* = (L⁺)⁻¹B* is computed (critical for IMEX-CN consistency)
+4. **Modified Elliptic Solve**: Each mode solves (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
 
 ### When to Use
 
