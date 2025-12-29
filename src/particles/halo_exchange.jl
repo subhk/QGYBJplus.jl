@@ -27,34 +27,52 @@ export HaloInfo, setup_halo_exchange!, exchange_velocity_halos!,
 
 """
 Information about halo regions for MPI communication.
+
+# Fields
+- `halo_width`: Number of ghost cells on each side (depends on interpolation scheme)
+- `u_extended, v_extended, w_extended`: Extended velocity arrays including halos
+- `local_start, local_end`: Indices of local domain within extended arrays
+- `left_neighbor, right_neighbor`: MPI ranks of neighbors (-1 if none)
+- `nx_global, ny_global, nz_global`: Global domain dimensions (for periodic BC)
+- `comm, rank, nprocs`: MPI information
+
+# Note on Periodic Boundaries
+For periodic y-boundaries, wrapping must use `ny_global` not local `ny`.
+The current implementation assumes 1D x-decomposition where y is not distributed.
+For 2D decomposition, y-direction halos would need to be added.
 """
 mutable struct HaloInfo{T<:AbstractFloat}
     # Halo width (number of ghost cells on each side)
     halo_width::Int
-    
+
     # Extended arrays including halos
     u_extended::Array{T,3}
     v_extended::Array{T,3}
     w_extended::Array{T,3}
-    
+
     # Local domain indices in extended arrays
     local_start::NTuple{3,Int}  # (k_start, i_start, j_start) = (z, x, y)
     local_end::NTuple{3,Int}    # (k_end, i_end, j_end) = (z, x, y)
-    
+
     # Neighbor information
     left_neighbor::Int     # Rank of left neighbor (-1 if none)
     right_neighbor::Int    # Rank of right neighbor (-1 if none)
-    
+
     # Communication buffers
     send_left::Vector{T}
     send_right::Vector{T}
     recv_left::Vector{T}
     recv_right::Vector{T}
-    
+
     # MPI info
     comm::Any
     rank::Int
     nprocs::Int
+
+    # Global domain dimensions (for periodic boundary wrapping)
+    nx_global::Int
+    ny_global::Int
+    nz_global::Int
     
     function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm;
                          halo_width::Union{Int,Nothing}=nothing,
@@ -115,13 +133,21 @@ mutable struct HaloInfo{T<:AbstractFloat}
         recv_left = Vector{T}(undef, buffer_size)
         recv_right = Vector{T}(undef, buffer_size)
 
+        # Check for 2D decomposition with periodic y (unsupported)
+        if ny_local < grid.ny && periodic_x  # periodic_x is the only BC flag we have; assume periodic_y if periodic_x
+            @warn "2D decomposition detected (ny_local=$ny_local < ny_global=$(grid.ny)). " *
+                  "Y-direction halo exchange is not implemented; particles near y-boundaries may have incorrect velocities. " *
+                  "Consider using 1D x-decomposition for particle advection."
+        end
+
         new{T}(
             halo_width,
             u_extended, v_extended, w_extended,
             local_start, local_end,
             left_neighbor, right_neighbor,
             send_left, send_right, recv_left, recv_right,
-            comm, rank, nprocs
+            comm, rank, nprocs,
+            grid.nx, grid.ny, grid.nz  # Store global dimensions
         )
     end
 end
@@ -306,48 +332,69 @@ end
     interpolate_velocity_with_halos(x, y, z, tracker, halo_info)
 
 Interpolate velocity using extended arrays with halo data.
+
+Uses trilinear interpolation with:
+- X-direction: halo data for cross-boundary interpolation (no periodic wrapping needed)
+- Y-direction: periodic wrapping using GLOBAL ny (for 1D x-decomposition where y is not distributed)
+- Z-direction: clamping to [1, nz] (vertical boundaries are not periodic)
+
+# Note
+This function assumes 1D x-decomposition where the full y-domain is on each rank.
+For 2D decomposition with distributed y, y-direction halos would need to be implemented.
 """
-function interpolate_velocity_with_halos(x::T, y::T, z::T, 
+function interpolate_velocity_with_halos(x::T, y::T, z::T,
                                        tracker, halo_info::HaloInfo{T}) where T
-    
-    # Handle periodic boundaries
+
+    # Handle periodic boundaries using GLOBAL domain lengths
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
     z_clamped = clamp(z, 0, tracker.Lz)
-    
+
     # Convert to local domain coordinates
     local_domain = tracker.local_domain
     x_local = x_periodic - local_domain.x_start
-    
+
     # Convert to extended grid indices (accounting for halo offset)
     fx = x_local / tracker.dx + halo_info.halo_width + 1  # +1 for 1-based indexing
     fy = y_periodic / tracker.dy + 1
     fz = z_clamped / tracker.dz + 1
-    
+
     # Get integer and fractional parts
     ix = floor(Int, fx)
     iy = floor(Int, fy)
     iz = floor(Int, fz)
-    
+
     rx = fx - ix
     ry = fy - iy
     rz = fz - iz
-    
+
     # Bounds check for extended arrays
     nz_ext, nx_ext, ny_ext = size(halo_info.u_extended)
-    
-    # Handle boundary indices (now we have halo data!)
+
+    # Handle boundary indices
+    # X: halos handle boundaries, just clamp to extended array bounds
     ix1 = max(1, min(nx_ext, ix))
     ix2 = max(1, min(nx_ext, ix + 1))
-    
+
+    # Y: Use GLOBAL ny for periodic wrapping (assumes 1D x-decomposition)
+    # In 1D x-decomposition, ny_ext == ny_global, so this is equivalent
+    # For safety, we use halo_info.ny_global which is explicitly the global dimension
     if tracker.config.periodic_y
-        iy1 = mod(iy - 1, ny_ext) + 1
-        iy2 = mod(iy, ny_ext) + 1
+        # Wrap around global domain, then clamp to local array
+        # For 1D decomposition: ny_ext == ny_global, so mod works correctly
+        # For 2D decomposition: this will be incorrect (need y-halos)
+        ny_for_wrap = halo_info.ny_global
+        iy1 = mod(iy - 1, ny_for_wrap) + 1
+        iy2 = mod(iy, ny_for_wrap) + 1
+        # Clamp to local array bounds (in case 2D decomposition)
+        iy1 = min(iy1, ny_ext)
+        iy2 = min(iy2, ny_ext)
     else
         iy1 = max(1, min(ny_ext, iy))
         iy2 = max(1, min(ny_ext, iy + 1))
     end
-    
+
+    # Z: never periodic, just clamp
     iz1 = max(1, min(nz_ext, iz))
     iz2 = max(1, min(nz_ext, iz + 1))
     

@@ -11,7 +11,8 @@ export InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        interpolate_velocity_advanced,
        CubicSpline1D, tricubic_weights, bicubic_interpolation,
        quintic_basis_functions, quintic_interpolation,
-       required_halo_width
+       required_halo_width,
+       get_grid_index, get_grid_index_global
 
 """
 Available interpolation methods.
@@ -167,12 +168,64 @@ end
     get_grid_index(idx, n, periodic)
 
 Get valid grid index with boundary conditions.
+
+# Arguments
+- `idx`: 1-based grid index (may be outside [1, n])
+- `n`: Array size for boundary handling
+- `periodic`: If true, wraps around [1, n]; if false, clamps to [1, n]
+
+# Note on Parallel Mode
+In parallel mode, `n` should be the LOCAL array size. For periodic boundaries,
+the calling code must ensure that:
+1. For x-direction: halos are used (periodic_x=false in interpolation)
+2. For y-direction: either y is not distributed (1D x-decomposition), or
+   global ny is passed and halos are set up for y
+
+The halo-aware interpolation functions handle this correctly for 1D decomposition.
 """
 function get_grid_index(idx::Int, n::Int, periodic::Bool)
     if periodic
         return mod(idx - 1, n) + 1  # Periodic wrapping (1-based)
     else
         return max(1, min(n, idx))  # Clamping for non-periodic
+    end
+end
+
+"""
+    get_grid_index_global(idx, n_local, n_global, periodic)
+
+Get valid grid index with boundary conditions, using GLOBAL domain size for periodic wrapping.
+
+This is the preferred function for parallel mode interpolation where periodic boundaries
+must wrap around the global domain, not the local array.
+
+# Arguments
+- `idx`: 1-based grid index (may be outside [1, n_local])
+- `n_local`: Size of the local array
+- `n_global`: Size of the global domain (for periodic wrapping)
+- `periodic`: If true, wraps around [1, n_global]; if false, clamps to [1, n_local]
+
+# Returns
+- For periodic=true: Index wrapped to [1, n_global]. If result > n_local, caller
+  must use halo data or skip this point.
+- For periodic=false: Index clamped to [1, n_local]
+
+# Example
+```julia
+# 1D x-decomposition: rank 0 has x indices 1:32 of global 128
+# Particle at global x=127 needs to wrap to x=127 (or use halo from rank 3)
+gx = get_grid_index_global(127, 32, 128, true)  # Returns 127 (outside local)
+```
+"""
+function get_grid_index_global(idx::Int, n_local::Int, n_global::Int, periodic::Bool)
+    if periodic
+        # Wrap around global domain
+        idx_wrapped = mod(idx - 1, n_global) + 1
+        # Return the wrapped index (caller checks if it's in local range)
+        return idx_wrapped
+    else
+        # Clamp to local array bounds
+        return max(1, min(n_local, idx))
     end
 end
 
