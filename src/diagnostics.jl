@@ -27,7 +27,7 @@ OMEGA EQUATION RHS:
 -------------------
 The omega equation RHS drives ageostrophic vertical motion:
 
-    ∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
 
 The RHS 2J(ψ_z, ∇²ψ) represents:
 - Jacobian of vertical shear (thermal wind) and vorticity
@@ -81,10 +81,13 @@ Compute the RHS forcing for the QG omega equation.
 # Physical Background
 The QG omega equation relates vertical velocity w to the horizontal flow:
 
-    ∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+    N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
 
-This function computes the RHS: 2 J(ψ_z, ∇²ψ), which represents the forcing
-for ageostrophic vertical motion.
+or equivalently (dividing by N²):
+
+    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+
+This function computes 2 J(ψ_z, ∇²ψ). The solver then applies the (f/N²) scaling.
 
 # Physical Interpretation
 The Jacobian J(ψ_z, ∇²ψ) represents:

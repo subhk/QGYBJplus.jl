@@ -33,7 +33,11 @@ QG OMEGA EQUATION:
 ------------------
 The ageostrophic vertical velocity w comes from the omega equation:
 
-    ∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+    N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
+
+or equivalently (dividing by N²):
+
+    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
 
 This is a 3D elliptic PDE solved via:
 - Horizontal: spectral differentiation (kₓ², kᵧ²)
@@ -55,13 +59,15 @@ where:
 
 This represents vertical motion induced by wave envelope modulation.
 
-WAVE-INDUCED HORIZONTAL VELOCITIES:
------------------------------------
-The Stokes drift from near-inertial waves:
+WAVE-INDUCED STOKES DRIFT:
+--------------------------
+Following Xie & Vanneste (2015), the Stokes drift from near-inertial waves:
 
-    u_wave = Re[(∂A*/∂x)A + A*(∂A/∂x)] = 2 Re[A* ∂A/∂x]
-    v_wave = Re[(∂A*/∂y)A + A*(∂A/∂y)] = 2 Re[A* ∂A/∂y]
+    u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
+    v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
+    w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
 
+where φ is the wave phase. This drift is in the direction of wave propagation.
 These wave corrections are important for Lagrangian particle advection.
 
 SPECTRAL DIFFERENTIATION:
@@ -138,7 +144,7 @@ v =  ∂ψ/∂x  →  v̂(k) =  i kₓ ψ̂(k)
 
 Vertical velocity from QG omega equation:
 ```
-∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
 ```
 or YBJ formulation:
 ```
@@ -271,12 +277,18 @@ thermal wind balance as the flow evolves.
 
 The omega equation relates w to the horizontal flow:
 ```
-∇²w + (N²/f²) ∂²w/∂z² = 2 J(ψ_z, ∇²ψ)
+N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
+```
+
+or equivalently (dividing by N²):
+```
+∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
 ```
 
 where:
 - Left side: 3D Laplacian (horizontal + stratification-weighted vertical)
 - Right side: Jacobian forcing from vertical shear and vorticity
+- f²/N² << 1: stratification suppresses vertical motion relative to horizontal
 
 # Physical Interpretation
 The RHS forcing J(ψ_z, ∇²ψ) represents:
@@ -364,7 +376,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     # Get N² profile - use provided profile, or create constant profile from params.N²
     N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
-    # Solve the full omega equation: ∇²w + (N²/f²)(∂²w/∂z²) = RHS
+    # Solve the full omega equation: ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
+    # Note: The RHS from omega_eqn_rhs! is 2 J(ψ_z, ∇²ψ), so we multiply by f/N² below
     wk = similar(S.psi)
     wk_arr = parent(wk)
     fill!(wk_arr, 0.0)
@@ -399,20 +412,24 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
         if kₕ² > 0 && nz > 2  # Need at least 3 levels for tridiagonal
             if n_interior > 0
                 # Fill tridiagonal system (reusing pre-allocated arrays)
-                # ∇²w + (N²/f²)(∂²w/∂z²) = RHS
+                # ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
+                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS
                 # Centered second derivative: ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz²
                 fill!(dₗ, 0.0); fill!(dᵤ, 0.0)
                 for iz in 1:n_interior
                     k = iz + 1  # Actual z-level (2 to nz-1)
-                    coeff_z = (N2_profile[k]/f²)/(Δz*Δz)
-                    d[iz] = -2*coeff_z - kₕ²  # Factor of 2 for centered difference diagonal
+                    # Correct coefficient: f²/N² (not N²/f²)
+                    coeff_z = (f²/N2_profile[k])/(Δz*Δz)
+                    d[iz] = -2*coeff_z - kₕ²  # Diagonal
                     if iz > 1
-                        dₗ[iz-1] = coeff_z
+                        dₗ[iz-1] = coeff_z    # Sub-diagonal
                     end
                     if iz < n_interior
-                        dᵤ[iz] = coeff_z
+                        dᵤ[iz] = coeff_z      # Super-diagonal
                     end
-                    rhs[iz] = rhsk_arr[k, i_local, j_local]
+                    # RHS scaling: omega_eqn_rhs! gives 2 J(...), we need (2f/N²) J(...)
+                    # So multiply by f/N²
+                    rhs[iz] = (f/N2_profile[k]) * rhsk_arr[k, i_local, j_local]
                 end
 
                 # Solve tridiagonal system - real and imaginary parts separately
@@ -544,20 +561,23 @@ function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_pro
         if kₕ² > 0 && nz > 2
             if n_interior > 0
                 # Fill tridiagonal system (reusing pre-allocated arrays)
-                # ∇²w + (N²/f²)(∂²w/∂z²) = RHS
+                # ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
+                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS
                 # Centered second derivative: ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz²
                 fill!(dₗ, 0.0); fill!(dᵤ, 0.0)
                 for iz in 1:n_interior
                     k = iz + 1
-                    coeff_z = (N2_profile[k]/f²)/(Δz*Δz)
-                    d[iz] = -2*coeff_z - kₕ²  # Factor of 2 for centered difference diagonal
+                    # Correct coefficient: f²/N² (not N²/f²)
+                    coeff_z = (f²/N2_profile[k])/(Δz*Δz)
+                    d[iz] = -2*coeff_z - kₕ²  # Diagonal
                     if iz > 1
-                        dₗ[iz-1] = coeff_z
+                        dₗ[iz-1] = coeff_z    # Sub-diagonal
                     end
                     if iz < n_interior
-                        dᵤ[iz] = coeff_z
+                        dᵤ[iz] = coeff_z      # Super-diagonal
                     end
-                    rhs[iz] = rhsk_z_arr[k, i_local, j_local]
+                    # RHS scaling: omega_eqn_rhs! gives 2 J(...), we need (2f/N²) J(...)
+                    rhs[iz] = (f/N2_profile[k]) * rhsk_z_arr[k, i_local, j_local]
                 end
 
                 dₗ_work .= dₗ
@@ -969,14 +989,16 @@ v_total = v_QG + v_wave
 w_total = w (from omega equation or YBJ)
 ```
 
-# Wave-Induced Horizontal Velocities
-The Stokes drift from the wave envelope:
+# Wave-Induced Stokes Drift
+Following Xie & Vanneste (2015), the Stokes drift from the wave envelope:
 ```
-u_wave = Re[(∂A*/∂x)A + A*(∂A/∂x)] = 2 Re[A* ∂A/∂x]
-v_wave = Re[(∂A*/∂y)A + A*(∂A/∂y)] = 2 Re[A* ∂A/∂y]
+u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
+v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
+w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
 ```
 
-These wave corrections can be significant in regions of strong wave gradients.
+where φ is the wave phase. Particles drift in the direction of wave propagation.
+The drift magnitude scales with wave intensity |A|².
 
 # Usage
 For Lagrangian particle advection, always use this function rather than
@@ -1023,26 +1045,37 @@ Compute wave-induced Stokes drift velocities and add to existing QG velocities.
 # Physical Background
 Near-inertial waves induce a net Lagrangian drift (Stokes drift) due to the
 correlation between wave orbital velocity and wave-induced displacement.
-For wave amplitude A:
+
+Following Xie & Vanneste (2015) and the GLM framework, the Stokes drift for
+NIWs with complex amplitude A is:
 
 ```
-u_wave = Re[(∂A*/∂x)A + A*(∂A/∂x)] = 2 Re[A* ∂A/∂x]
-v_wave = Re[(∂A*/∂y)A + A*(∂A/∂y)] = 2 Re[A* ∂A/∂y]
-w_wave = Re[(∂A*/∂z)A + A*(∂A/∂z)] = 2 Re[A* ∂A/∂z]
+u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
+v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
+w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
 ```
+
+where φ is the wave phase (A = |A|e^{iφ}).
 
 # Physical Interpretation
-- The Stokes drift is proportional to the gradient of |A|²
-- Particles drift from regions of low to high wave amplitude
-- Horizontal drift: particles move toward regions of high wave energy
-- Vertical drift: particles move along vertical wave energy gradients
-- Important for Lagrangian dispersion in NIW-active regions
+- The Stokes drift is proportional to the phase gradient weighted by wave intensity
+- Particles drift in the direction of wave propagation (phase gradient)
+- For a plane wave: drift is in the direction the wave travels
+- For standing waves: drift depends on local phase structure
+- Important for Lagrangian transport in NIW-active regions
+
+# Mathematical Note
+Writing A* ∂A/∂x = Re[...] + i Im[...]:
+- Re[A* ∂A/∂x] = |A| ∂|A|/∂x = (1/2) ∂|A|²/∂x (amplitude gradient)
+- Im[A* ∂A/∂x] = |A|² ∂φ/∂x (phase gradient × intensity)
+
+The Stokes drift uses the imaginary part (phase gradient), not the real part.
 
 # Algorithm
 1. Compute horizontal gradients: ∂A/∂x, ∂A/∂y in spectral space
 2. Use S.C = A_z = ∂A/∂z (computed by invert_B_to_A!)
 3. Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
-4. Compute wave velocities: u_wave, v_wave, w_wave = 2 Re[A* ∂A/∂(x,y,z)]
+4. Compute Stokes drift: u_S, v_S, w_S = Im[A* ∂A/∂(x,y,z)]
 5. Add to existing u, v, w fields (in-place modification)
 
 # Arguments
@@ -1056,6 +1089,10 @@ w_wave = Re[(∂A*/∂z)A + A*(∂A/∂z)] = 2 Re[A* ∂A/∂z]
 This function modifies u, v, w in-place by adding wave contributions.
 Call after compute_velocities! to get total velocity.
 S.C must contain A_z (set by invert_B_to_A!) before calling this function.
+
+# References
+- Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
+- Wagner & Young (2016), J. Fluid Mech. 802, 806-837
 """
 function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true)
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -1089,7 +1126,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     end
 
     # Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
-    # The Stokes drift formula u_wave = 2*Re[A* ∂A/∂x] is a product of fields
+    # The Stokes drift formula u_S = Im[A* ∂A/∂x] is a product of fields
     # and MUST be computed in physical space, not spectral space
     Aᵣ = _allocate_fft_dst(S.A, plans)
     dA_dxᵣ = _allocate_fft_dst(dA_dxₖ, plans)
@@ -1107,29 +1144,32 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     dA_dzᵣ_arr = parent(dA_dzᵣ)
 
     # Compute Stokes drift in physical space:
-    # u_wave = 2 * Re[A* ∂A/∂x] = ∂|A|²/∂x (gradient of wave energy density)
-    # v_wave = 2 * Re[A* ∂A/∂y] = ∂|A|²/∂y
-    # w_wave = 2 * Re[A* ∂A/∂z] = ∂|A|²/∂z (vertical Stokes drift)
+    # u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x (phase gradient × intensity)
+    # v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
+    # w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z (vertical Stokes drift)
+    #
+    # This is the correct Stokes drift formula from Xie & Vanneste (2015).
     # Note: fft_backward! is normalized, so Aᵣ and derivatives are in physical space
 
-    # Add wave velocities to existing QG velocities directly in physical space
+    # Add Stokes drift to existing QG velocities directly in physical space
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
         A_phys = Aᵣ_arr[k, i_local, j_local]
         dAdx_phys = dA_dxᵣ_arr[k, i_local, j_local]
         dAdy_phys = dA_dyᵣ_arr[k, i_local, j_local]
 
-        # Stokes drift: (u,v)_wave = 2 * Re[conj(A) * ∂A/∂(x,y)]
-        u_wave = 2.0 * real(conj(A_phys) * dAdx_phys)
-        v_wave = 2.0 * real(conj(A_phys) * dAdy_phys)
+        # Stokes drift: (u,v)_S = Im[conj(A) * ∂A/∂(x,y)] = |A|² ∂φ/∂(x,y)
+        # This represents particle drift in the direction of wave propagation
+        u_stokes = imag(conj(A_phys) * dAdx_phys)
+        v_stokes = imag(conj(A_phys) * dAdy_phys)
 
-        u_arr[k, i_local, j_local] += u_wave
-        v_arr[k, i_local, j_local] += v_wave
+        u_arr[k, i_local, j_local] += u_stokes
+        v_arr[k, i_local, j_local] += v_stokes
 
         # Only add vertical Stokes drift if compute_w is requested
         if compute_w
             dAdz_phys = dA_dzᵣ_arr[k, i_local, j_local]
-            w_wave = 2.0 * real(conj(A_phys) * dAdz_phys)
-            w_arr[k, i_local, j_local] += w_wave
+            w_stokes = imag(conj(A_phys) * dAdz_phys)
+            w_arr[k, i_local, j_local] += w_stokes
         end
     end
 

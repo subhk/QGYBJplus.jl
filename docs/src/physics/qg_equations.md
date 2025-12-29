@@ -94,10 +94,16 @@ In spectral space:
 The QG omega equation gives the ageostrophic vertical velocity:
 
 ```math
-\nabla^2 w + \frac{N^2}{f_0^2}\frac{\partial^2 w}{\partial z^2} = 2J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
+N^2 \nabla^2 w + f_0^2\frac{\partial^2 w}{\partial z^2} = 2f_0 J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
 ```
 
-The RHS represents frontogenesis/frontolysis forcing.
+or equivalently (dividing by ``N^2``):
+
+```math
+\nabla^2 w + \frac{f_0^2}{N^2}\frac{\partial^2 w}{\partial z^2} = \frac{2f_0}{N^2}J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
+```
+
+The coefficient ``f_0^2/N^2 \ll 1`` in typical oceanic conditions, reflecting that stratification strongly suppresses vertical motion relative to horizontal. The RHS represents frontogenesis/frontolysis forcing through the interaction of vertical shear (thermal wind) with relative vorticity gradients.
 
 ## Jacobian Operator
 

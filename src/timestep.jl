@@ -204,7 +204,8 @@ L = dealias_mask(grid)
 first_projection_step!(state, grid, params, plans; a=a, dealias_mask=L)
 ```
 """
-function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
+function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
+                                particle_tracker=nothing, current_time=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     q_arr = parent(S.q)
     B_arr = parent(S.B)
@@ -478,6 +479,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     # Compute velocities from ψ (with dealiasing for omega equation RHS)
     compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
 
+    #= Step 7: Advect particles (if tracker provided) =#
+    # Particles co-evolve with the wave and mean flow equations using the same dt
+    if particle_tracker !== nothing
+        advect_particles!(particle_tracker, S, G, par.dt, current_time;
+                          params=par, N2_profile=N2_profile)
+    end
+
     return S
 end
 
@@ -580,7 +588,8 @@ end
 ```
 """
 function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
-                        G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
+                        G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
+                        particle_tracker=nothing, current_time=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     qn_arr = parent(Sn.q)
     Bn_arr = parent(Sn.B)
@@ -851,6 +860,13 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
     # Compute velocities
     compute_velocities!(Snp1, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
+
+    #= Step 9: Advect particles (if tracker provided) =#
+    # Particles co-evolve with the wave and mean flow equations using the same dt
+    if particle_tracker !== nothing
+        advect_particles!(particle_tracker, Snp1, G, par.dt, current_time;
+                          params=par, N2_profile=N2_profile)
+    end
 
     return Snp1
 end

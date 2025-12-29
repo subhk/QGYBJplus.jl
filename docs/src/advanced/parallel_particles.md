@@ -94,6 +94,27 @@ end
 
 When a particle is near a domain boundary, velocity interpolation requires data from the neighboring rank. **Halo regions** (ghost cells) store copies of neighbor data.
 
+### Halo Width Requirements
+
+The halo width is automatically determined by the interpolation method:
+
+| Interpolation | Stencil | Halo Width | Accuracy |
+|:--------------|:--------|:-----------|:---------|
+| TRILINEAR | 2×2×2 | 1 cell | O(h²) |
+| TRICUBIC | 4×4×4 | 2 cells | O(h⁴) |
+| QUINTIC | 6×6×6 | 3 cells | O(h⁶) |
+| ADAPTIVE | varies | 3 cells | varies |
+
+The `required_halo_width()` function computes this automatically:
+
+```julia
+using QGYBJplus: required_halo_width, TRILINEAR, TRICUBIC, QUINTIC
+
+required_halo_width(TRILINEAR)  # → 1
+required_halo_width(TRICUBIC)   # → 2
+required_halo_width(QUINTIC)    # → 3
+```
+
 ### Extended Array Structure
 
 ```
@@ -107,7 +128,7 @@ When a particle is near a domain boundary, velocity interpolation requires data 
 │           │ (from R0)   │      (owned)         │ (from R2) │        │  │
 │           └────┴────┴───┴────┴─────┴───┴───────┴───────┴───┴────────┘  │
 │                                                                        │
-│   hw = halo_width (default: 2)                                         │
+│   hw = halo_width (depends on interpolation method)                    │
 │   nx = local grid points                                               │
 │                                                                        │
 │   Total extended size: nx + 2*hw                                       │
@@ -338,10 +359,10 @@ end
 │  │       û = -i·kᵧ·ψ̂,  v̂ = i·kₓ·ψ̂                                         │  │
 │  │                                                                        │  │
 │  │   • Solve omega equation for w (tridiagonal in z):                     │  │
-│  │       ∇²w + (N²/f²)∂²w/∂z² = 2·J(ψ_z, ∇²ψ)                             │  │
+│  │       ∇²w + (f²/N²)∂²w/∂z² = (2f/N²)·J(ψ_z, ∇²ψ)                       │  │
 │  │                                                                        │  │
 │  │   • Add wave Stokes drift (horizontal + vertical):                     │  │
-│  │       u += 2·Re[A*·∂A/∂x],  v += 2·Re[A*·∂A/∂y],  w += 2·Re[A*·∂A/∂z]  │  │
+│  │       u += Im[A*·∂A/∂x],  v += Im[A*·∂A/∂y],  w += Im[A*·∂A/∂z]        │  │
 │  │                                                                        │  │
 │  │   • Exchange velocity halos (MPI non-blocking)                         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │ 
@@ -387,6 +408,228 @@ end
 │  │   Option B: Gather all particles to rank 0, unified output      │         │
 │  └─────────────────────────────────────────────────────────────────┘         │
 └──────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Velocity Data Flow: QG + Wave
+
+This section explains how particles obtain the combined QG flow and wave Stokes drift velocities in parallel mode.
+
+### Overview
+
+Particles are advected by the **total velocity field**:
+```
+u_total = u_QG + u_Stokes
+v_total = v_QG + v_Stokes
+w_total = w_QG + w_Stokes
+```
+
+where:
+- **QG velocities**: Geostrophic flow from streamfunction ψ, vertical from omega equation
+- **Stokes drift**: Wave-induced drift from near-inertial wave amplitude A
+
+### Data Flow Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                    VELOCITY DATA FLOW FOR PARTICLE ADVECTION                      │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ STEP 1: advect_particles!(tracker, state, grid, dt)                         │ │
+│  │                            ↓                                                │ │
+│  │         calls update_velocity_fields!(tracker, state, grid)                 │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                ↓                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ STEP 2: compute_total_velocities!(state, grid; plans=tracker.plans, ...)    │ │
+│  │                                                                             │ │
+│  │   ┌───────────────────────────────────────────────────────────────────────┐ │ │
+│  │   │ compute_velocities!(S, G) → QG velocities                              │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   HORIZONTAL (geostrophic):                                           │ │ │
+│  │   │     û = -i·kᵧ·ψ̂   →  u_QG = -∂ψ/∂y                                    │ │ │
+│  │   │     v̂ =  i·kₓ·ψ̂   →  v_QG = +∂ψ/∂x                                    │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   VERTICAL (omega equation):                                          │ │ │
+│  │   │     ∇²w + (f²/N²)∂²w/∂z² = (2f/N²)·J(ψ_z, ∇²ψ)                        │ │ │
+│  │   │     → Tridiagonal solve per (kₓ,kᵧ) → w_QG                            │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   State.u = u_QG, State.v = v_QG, State.w = w_QG                      │ │ │
+│  │   └───────────────────────────────────────────────────────────────────────┘ │ │
+│  │                               ↓                                             │ │
+│  │   ┌───────────────────────────────────────────────────────────────────────┐ │ │
+│  │   │ compute_wave_velocities!(S, G) → Wave Stokes drift (ADDS to QG)       │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   From wave amplitude A = |A|·e^{iφ}:                                 │ │ │
+│  │   │     ∂A/∂x, ∂A/∂y in spectral: i·kₓ·Â, i·kᵧ·Â                         │ │ │
+│  │   │     ∂A/∂z from S.C (computed by invert_B_to_A!)                       │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   Transform to physical space, then:                                  │ │ │
+│  │   │     u_S = Im[A*·∂A/∂x] = |A|²·∂φ/∂x  (phase gradient × intensity)    │ │ │
+│  │   │     v_S = Im[A*·∂A/∂y] = |A|²·∂φ/∂y                                   │ │ │
+│  │   │     w_S = Im[A*·∂A/∂z] = |A|²·∂φ/∂z                                   │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   State.u += u_S  →  State.u = u_QG + u_S (TOTAL)                     │ │ │
+│  │   │   State.v += v_S  →  State.v = v_QG + v_S (TOTAL)                     │ │ │
+│  │   │   State.w += w_S  →  State.w = w_QG + w_S (TOTAL)                     │ │ │
+│  │   └───────────────────────────────────────────────────────────────────────┘ │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                ↓                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ STEP 3: Copy to tracker (LOCAL data only in parallel)                       │ │
+│  │                                                                             │ │
+│  │   u_data = parent(state.u)   # LOCAL portion of distributed array          │ │
+│  │   v_data = parent(state.v)                                                  │ │
+│  │   w_data = parent(state.w)                                                  │ │
+│  │                                                                             │ │
+│  │   tracker.u_field .= u_data  # Copy TOTAL velocities to tracker            │ │
+│  │   tracker.v_field .= v_data                                                 │ │
+│  │   tracker.w_field .= w_data                                                 │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                ↓                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ STEP 4: Halo Exchange (PARALLEL MODE ONLY)                                  │ │
+│  │                                                                             │ │
+│  │   exchange_velocity_halos!(halo_info, u_field, v_field, w_field)            │ │
+│  │                                                                             │ │
+│  │   Rank 0           Rank 1           Rank 2                                  │ │
+│  │   [u,v,w]    →     [u,v,w]    →     [u,v,w]                                │ │
+│  │      ↓                ↓                ↓                                    │ │
+│  │   [H|local|H]     [H|local|H]     [H|local|H]                              │ │
+│  │      └──send──→──recv──┘──send──→──recv──┘                                 │ │
+│  │                                                                             │ │
+│  │   Extended arrays now contain:                                              │ │
+│  │   • Left halo: neighbor's RIGHT edge velocities                             │ │
+│  │   • Local: own velocity data (QG + wave)                                   │ │
+│  │   • Right halo: neighbor's LEFT edge velocities                             │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                ↓                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ STEP 5: Particle Interpolation                                              │ │
+│  │                                                                             │ │
+│  │   For each particle at (x, y, z):                                           │ │
+│  │     (u, v, w) = interpolate_velocity_at_position(x, y, z, tracker)          │ │
+│  │                                                                             │ │
+│  │   • Uses extended arrays (local + halos)                                    │ │
+│  │   • TRILINEAR / TRICUBIC / QUINTIC interpolation                           │ │
+│  │   • Returns TOTAL velocity (QG + wave) at particle position                │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Implementation Details
+
+#### 1. State Contains TOTAL Velocities
+
+After `compute_total_velocities!`, the State arrays contain the **sum** of QG and wave contributions:
+
+```julia
+# In compute_total_velocities!:
+compute_velocities!(S, G; ...)      # Sets S.u, S.v, S.w to QG values
+compute_wave_velocities!(S, G; ...) # ADDS Stokes drift to S.u, S.v, S.w
+```
+
+#### 2. Parallel Data Distribution (PencilArrays)
+
+In MPI parallel mode:
+- `state.u`, `state.v`, `state.w` are **distributed arrays** (PencilArrays)
+- Each rank owns a slab: `[x_start, x_end] × [0, Ly] × [0, Lz]`
+- `parent(state.u)` extracts only the **local portion**
+
+```julia
+# In update_velocity_fields!:
+u_data = parent(state.u)  # Shape: (nz, nx_local, ny) - LOCAL data only
+tracker.u_field .= u_data # Copy to tracker's workspace
+```
+
+#### 3. Wave Data Source
+
+The wave amplitude `A` and its derivatives come from the simulation state:
+
+| Field | Location | Description |
+|:------|:---------|:------------|
+| `State.A` | Spectral | Wave amplitude Â(kₓ, kᵧ, z) |
+| `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_B_to_A!`) |
+
+The Stokes drift computation:
+1. Computes ∂A/∂x, ∂A/∂y in spectral space: `i·kₓ·Â`, `i·kᵧ·Â`
+2. Transforms A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
+3. Computes `Im[A* · ∂A/∂(x,y,z)]` pointwise in physical space
+4. Adds result to existing QG velocities
+
+#### 4. Halo Exchange Enables Cross-Boundary Interpolation
+
+After halo exchange, each rank's extended arrays contain:
+
+```
+Extended Array: [left_halo | local_data | right_halo]
+                     ↑           ↑            ↑
+              from rank-1   owned data   from rank+1
+```
+
+This allows particles near domain boundaries to interpolate velocities using neighbor data without additional MPI communication during advection.
+
+### Code Path Summary
+
+```julia
+advect_particles!(tracker, state, grid, dt)
+  └─→ update_velocity_fields!(tracker, state, grid)
+        ├─→ compute_total_velocities!(state, grid)
+        │     ├─→ compute_velocities!()      # QG: u,v from ψ; w from omega eqn
+        │     └─→ compute_wave_velocities!() # Stokes: Im[A*·∇A] added to u,v,w
+        ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL total velocity
+        └─→ exchange_velocity_halos!()          # Fill halos from neighbors
+  └─→ advect_euler!/advect_rk2!/advect_rk4!()
+        └─→ interpolate_velocity_at_position()  # Uses extended arrays
+```
+
+## CFL Stability for Particle Advection
+
+### Halo Constraint
+
+For multi-stage integration methods (RK2, RK4), intermediate particle positions are evaluated during a single timestep. If a particle moves beyond the halo region, velocity interpolation becomes inaccurate (values are clamped to boundary).
+
+**Stability requirement:**
+```
+max_velocity × dt < halo_width × dx
+```
+
+where:
+- `max_velocity`: Maximum expected flow velocity
+- `dt`: Timestep
+- `halo_width`: Ghost cell count (1, 2, or 3 depending on interpolation)
+- `dx`: Grid spacing
+
+### Validation Function
+
+Use `validate_particle_cfl` to check if your timestep is appropriate:
+
+```julia
+using QGYBJplus: validate_particle_cfl
+
+# Estimate maximum velocity in your simulation
+max_velocity = 0.1  # m/s
+
+# Check if timestep is safe
+if !validate_particle_cfl(tracker, max_velocity, dt)
+    @warn "Timestep may exceed halo region; consider reducing dt"
+end
+```
+
+### Recommendations
+
+1. **Use higher-order interpolation**: TRICUBIC (hw=2) or QUINTIC (hw=3) provide larger halo regions
+2. **Reduce timestep**: If dt is too large for the flow velocities
+3. **Use Euler integration**: Only evaluates velocity at current position (no intermediate stages)
+
+**Example CFL calculation:**
+```julia
+# Grid: 256 points, Lx = 2π, using TRICUBIC (hw=2)
+dx = 2π / 256  ≈ 0.0245
+halo_width = 2
+safe_displacement = halo_width * dx ≈ 0.049
+
+# If max velocity = 0.1 m/s, max safe dt:
+dt_max = safe_displacement / max_velocity ≈ 0.49
 ```
 
 ## Scalability Analysis

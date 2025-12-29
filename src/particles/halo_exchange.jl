@@ -3,6 +3,13 @@ Halo exchange system for particle advection in parallel domains.
 
 This module handles the communication of velocity field data between neighboring
 MPI domains to enable accurate interpolation for particles near domain boundaries.
+
+# Halo Width Requirements
+The halo width depends on the interpolation scheme used:
+- TRILINEAR: 1 cell  (2×2×2 stencil)
+- TRICUBIC:  2 cells (4×4×4 stencil)
+- QUINTIC:   3 cells (6×6×6 stencil)
+- ADAPTIVE:  3 cells (supports all schemes)
 """
 
 module HaloExchange
@@ -11,6 +18,9 @@ module HaloExchange
 const _PARENT = Base.parentmodule(@__MODULE__)           # UnifiedParticleAdvection
 const _GRANDPARENT = Base.parentmodule(_PARENT)          # QGYBJplus
 const Grid = _GRANDPARENT.Grid
+
+# Import interpolation types for halo width calculation
+using ..InterpolationSchemes: InterpolationMethod, TRILINEAR, TRICUBIC, QUINTIC, ADAPTIVE, required_halo_width
 
 export HaloInfo, setup_halo_exchange!, exchange_velocity_halos!,
        interpolate_velocity_with_halos
@@ -46,8 +56,15 @@ mutable struct HaloInfo{T<:AbstractFloat}
     rank::Int
     nprocs::Int
     
-    function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm, halo_width::Int=2;
-                         periodic_x::Bool=true, local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing) where T
+    function HaloInfo{T}(grid::Grid, rank::Int, nprocs::Int, comm;
+                         halo_width::Union{Int,Nothing}=nothing,
+                         interpolation_method::InterpolationMethod=TRILINEAR,
+                         periodic_x::Bool=true,
+                         local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing) where T
+        # Compute halo width from interpolation method if not explicitly provided
+        if halo_width === nothing
+            halo_width = required_halo_width(interpolation_method)
+        end
         # Get LOCAL grid dimensions
         # For 2D pencil decomposition, all three dimensions may be < global size
         # If local_dims provided, use them (order: nz, nx, ny); otherwise compute from 1D decomposition in x

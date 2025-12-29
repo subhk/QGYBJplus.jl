@@ -41,22 +41,27 @@ const compute_total_velocities! = _PARENT.compute_total_velocities!
 const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
-       create_particle_config, initialize_particles!, 
+       create_particle_config, initialize_particles!,
        advect_particles!, interpolate_velocity_at_position,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        # 3D particle distributions
        ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
-       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution
+       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution,
+       # Simplified particle initialization
+       particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
+       particles_random_3d, particles_custom,
+       # Parallel utilities
+       validate_particle_cfl
+
+# Include advanced interpolation schemes FIRST (halo_exchange.jl depends on it)
+include("interpolation_schemes.jl")
+using .InterpolationSchemes
 
 # Include halo exchange for cross-domain interpolation
 include("halo_exchange.jl")
 using .HaloExchange
-
-# Include advanced interpolation schemes
-include("interpolation_schemes.jl")
-using .InterpolationSchemes
 
 # NOTE: particle_config.jl is included AFTER ParticleConfig struct definition below
 # because it needs to access ParticleConfig from this module
@@ -116,53 +121,50 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
 end
 
 """
-    particles_in_box(z_level; x_max, y_max, x_min=0, y_min=0, nx=10, ny=10, kwargs...)
+    particles_in_box([T=Float32], z_level; x_max, y_max, x_min=0, y_min=0, nx=10, ny=10, kwargs...)
 
-Create particles uniformly distributed in a 2D rectangular box at a fixed z-level.
+Create 2D particle distribution at a fixed z-level. Default precision is Float32 for memory efficiency.
 
 # Arguments
-- `z_level`: Vertical level where particles are placed (REQUIRED)
-- `x_max, y_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly)
+- `T`: Optional type parameter (Float32 or Float64). Default: Float32
+- `z_level`: The z-level (depth) for all particles
+- `x_max, y_max`: Maximum domain bounds (REQUIRED)
 - `x_min, y_min`: Minimum bounds (default: 0.0)
-- `nx, ny`: Number of particles in x and y directions (default: 10 each)
+- `nx, ny`: Number of particles in each direction (default: 10 each)
 
-# Example
+# Examples
 ```julia
-# 100 particles in the full domain at depth 2000m
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+# Default Float32 precision (recommended for memory efficiency)
+config = particles_in_box(500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
 
-# 64 particles in a smaller region at depth 1000m
-config = particles_in_box(1000.0; x_max=250e3, y_max=250e3, nx=8, ny=8)
-
-# With delayed release
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10, particle_advec_time=0.5)
+# Explicit Float64 if higher precision needed
+config = particles_in_box(Float64, 500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
 ```
 """
-function particles_in_box(z_level::T;
-                          x_max::T, y_max::T,  # REQUIRED
-                          x_min::T=T(0), y_min::T=T(0),
+function particles_in_box(::Type{T}, z_level::Real;
+                          x_max::Real, y_max::Real,  # REQUIRED
+                          x_min::Real=0.0, y_min::Real=0.0,
                           nx::Int=10, ny::Int=10,
                           kwargs...) where T<:AbstractFloat
     return ParticleConfig{T}(;
-        x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-        z_level=z_level, nx_particles=nx, ny_particles=ny,
+        x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
+        z_level=T(z_level), nx_particles=nx, ny_particles=ny,
         kwargs...)
 end
 
-# Convenience method for non-typed call
+# Default method uses Float32 for memory efficiency (50% less than Float64)
 function particles_in_box(z_level::Real;
                           x_max::Real, y_max::Real,  # REQUIRED
                           x_min::Real=0.0, y_min::Real=0.0,
                           nx::Int=10, ny::Int=10,
                           kwargs...)
-    T = Float64
-    return particles_in_box(T(z_level);
-        x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
+    return particles_in_box(Float32, z_level;
+        x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
         nx=nx, ny=ny, kwargs...)
 end
 
-# Legacy alias for backwards compatibility
-create_particle_config(::Type{T}=Float64; kwargs...) where T = ParticleConfig{T}(; kwargs...)
+# Legacy alias for backwards compatibility (default is now Float32 for memory efficiency)
+create_particle_config(::Type{T}=Float32; kwargs...) where T = ParticleConfig{T}(; kwargs...)
 
 # Include 3D particle configuration AFTER ParticleConfig is defined
 # (particle_config.jl needs to access ParticleConfig from this module)
@@ -311,18 +313,26 @@ end
 ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
 
 """
-    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing)
+    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, interpolation_method=TRILINEAR)
 
 Helper function to set up halo exchange system.
 
 # Arguments
 - `local_dims`: Tuple (nz_local, nx_local, ny_local) for 2D pencil decomposition.
                 If nothing, assumes 1D decomposition in x.
+- `interpolation_method`: The interpolation scheme to use. Determines halo width:
+                          - TRILINEAR: 1 halo cell
+                          - TRICUBIC:  2 halo cells
+                          - QUINTIC:   3 halo cells
+                          - ADAPTIVE:  3 halo cells (supports all schemes)
 """
 function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
-                                     local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing) where T
+                                     local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
+                                     interpolation_method::InterpolationMethod=TRILINEAR) where T
     try
-        return HaloInfo{T}(grid, rank, nprocs, comm; local_dims=local_dims)
+        return HaloInfo{T}(grid, rank, nprocs, comm;
+                          local_dims=local_dims,
+                          interpolation_method=interpolation_method)
     catch e
         @warn "Failed to set up halo exchange: $e"
         return nothing
@@ -655,10 +665,12 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     tracker.w_field .= w_data
 
     # Lazily initialize halo exchange system with actual local dimensions
+    # The halo width is determined by the interpolation method
     if tracker.is_parallel && tracker.halo_info === nothing
         tracker.halo_info = setup_halo_exchange_for_grid(
             grid, tracker.rank, tracker.nprocs, tracker.comm, T;
-            local_dims=local_dims
+            local_dims=local_dims,
+            interpolation_method=tracker.config.interpolation_method
         )
     end
 
@@ -674,11 +686,43 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
 end
 
 """
+    validate_particle_cfl(tracker, max_velocity, dt)
+
+Check if timestep satisfies CFL condition for particle advection in parallel mode.
+
+For RK4 integration, intermediate positions can move up to dt*max_velocity from their
+starting position. If this exceeds the halo region, interpolation will be inaccurate.
+
+Returns true if timestep is safe, false if timestep may cause issues.
+
+# Warning
+If this returns false, consider:
+- Reducing dt
+- Increasing halo_width (use higher-order interpolation which has wider halos)
+- Using Euler instead of RK4 (which only evaluates at current position)
+"""
+function validate_particle_cfl(tracker::ParticleTracker{T}, max_velocity::T, dt::T) where T
+    if !tracker.is_parallel || tracker.halo_info === nothing
+        return true  # No halo constraints for serial mode
+    end
+
+    hw = tracker.halo_info.halo_width
+    dx = tracker.dx
+
+    # For RK4, intermediate positions can be up to dt * max_velocity away
+    # For safety, we require this to be less than halo_width * dx
+    max_displacement = dt * max_velocity
+    safe_displacement = hw * dx
+
+    return max_displacement < safe_displacement
+end
+
+"""
     interpolate_velocity_at_position(x, y, z, tracker)
 
 Interpolate velocity at particle position with advanced schemes and cross-domain capability.
 """
-function interpolate_velocity_at_position(x::T, y::T, z::T, 
+function interpolate_velocity_at_position(x::T, y::T, z::T,
                                         tracker::ParticleTracker{T}) where T
     
     # Use halo-aware interpolation if available (parallel case)
@@ -1087,8 +1131,9 @@ function exchange_particles!(tracker::ParticleTracker{T}) where T
         rank = tracker.rank
 
         # Send/receive particle counts using Alltoall
+        # Each rank sends 1 element (particle count) to every other rank
         send_counts = [length(tracker.send_buffers[i]) ÷ 6 for i in 1:nprocs]
-        recv_counts = M.Alltoall(send_counts, comm)
+        recv_counts = M.Alltoall(send_counts, 1, comm)
 
         # Post all non-blocking receives first
         recv_reqs = M.Request[]

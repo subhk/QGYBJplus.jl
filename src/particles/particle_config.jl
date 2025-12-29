@@ -70,7 +70,7 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     use_3d_advection::Bool = true
     
     # Integration and interpolation methods
-    integration_method::Symbol = :rk4
+    integration_method::Symbol = :euler
     interpolation_method::InterpolationMethod = TRILINEAR
     
     # Boundary conditions
@@ -143,7 +143,7 @@ function particles_in_grid_3d(; x_max::Real, y_max::Real, z_max::Real,  # REQUIR
                                x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
                                nx::Int=10, ny::Int=10, nz::Int=5,
                                kwargs...)
-    T = Float64
+    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
         z_min=T(z_min), z_max=T(z_max),
@@ -178,7 +178,7 @@ function particles_in_layers(z_levels::Vector{<:Real};
                             x_min::Real=0.0, y_min::Real=0.0,
                             nx::Int=10, ny::Int=10,
                             particles_per_level::Vector{Int}=Int[], kwargs...)
-    T = Float64
+    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
     z_levels_T = T.(z_levels)
     z_min = minimum(z_levels_T)
     z_max = maximum(z_levels_T)
@@ -222,7 +222,7 @@ function particles_random_3d(n::Int;
                             x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
                             x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
                             seed::Int=1234, kwargs...)
-    T = Float64
+    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
 
     # Generate random positions
     Random.seed!(seed)
@@ -255,7 +255,7 @@ config = particles_custom([(1.0, 1.0, 0.5), (2.0, 2.0, 1.0), (3.0, 1.5, 0.75), (
 ```
 """
 function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}}; kwargs...)
-    T = Float64
+    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
 
     custom_x = T[pos[1] for pos in positions]
     custom_y = T[pos[2] for pos in positions]
@@ -407,14 +407,14 @@ function particles_in_circle(z_level::T;
     )
 end
 
-# Convenience method with default Float64 type
+# Convenience method with default Float32 type for memory efficiency
 function particles_in_circle(z_level::Real;
                             center::Tuple{Real,Real}=(π, π),
                             radius::Real=1.0,
                             n::Int=100,
                             pattern::Symbol=:sunflower,
                             kwargs...)
-    T = Float64
+    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
     return particles_in_circle(T(z_level);
         center=(T(center[1]), T(center[2])),
         radius=T(radius),

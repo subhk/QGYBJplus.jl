@@ -28,24 +28,26 @@ u_{QG} = -\frac{\partial \psi}{\partial y}, \quad v_{QG} = \frac{\partial \psi}{
 
 **2. Wave-Induced Stokes Drift** (from wave amplitude A):
 
-*Horizontal Stokes Drift:*
+*Horizontal Stokes Drift* (Xie & Vanneste 2015):
 ```math
-u_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial x}\right] = \frac{\partial |A|^2}{\partial x}
+u_S = \text{Im}\left[A^* \frac{\partial A}{\partial x}\right] = |A|^2 \frac{\partial \phi}{\partial x}
 ```
 ```math
-v_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial y}\right] = \frac{\partial |A|^2}{\partial y}
+v_S = \text{Im}\left[A^* \frac{\partial A}{\partial y}\right] = |A|^2 \frac{\partial \phi}{\partial y}
 ```
 
 *Vertical Stokes Drift:*
 ```math
-w_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial z}\right] = \frac{\partial |A|^2}{\partial z}
+w_S = \text{Im}\left[A^* \frac{\partial A}{\partial z}\right] = |A|^2 \frac{\partial \phi}{\partial z}
 ```
+
+where ``\phi`` is the wave phase (``A = |A|e^{i\phi}``). The Stokes drift represents particle drift in the direction of wave propagation (phase gradient), weighted by wave intensity.
 
 The vertical derivative ∂A/∂z is computed by `invert_B_to_A!` and stored in `S.C`.
 
 **3. QG Vertical Velocity** (from omega equation):
 ```math
-\nabla^2 w_{QG} + \frac{N^2}{f^2}\frac{\partial^2 w_{QG}}{\partial z^2} = 2\,J(\psi_z, \nabla^2\psi)
+\nabla^2 w_{QG} + \frac{f^2}{N^2}\frac{\partial^2 w_{QG}}{\partial z^2} = \frac{2f}{N^2}\,J(\psi_z, \nabla^2\psi)
 ```
 
 **4. YBJ Vertical Velocity** (alternative wave-induced formulation):
@@ -66,36 +68,63 @@ This includes both horizontal and **vertical Stokes drift**, ensuring particles 
 
 ## Quick Start
 
-### Basic Setup
+### Co-Evolution with Fluid (Recommended)
+
+Particles can be passed directly to the timestep functions to co-evolve with the wave and mean flow equations. This ensures particles use the same `dt` as the fluid simulation:
 
 ```julia
 using QGYBJplus
 
-# Create simulation configuration
-config = SimulationConfig(
-    domain = DomainConfig(nx=128, ny=128, nz=64),
-    # ... other settings
-)
+# Create particle configuration (100 particles, default Euler integration)
+particle_config = particles_in_box(π/2; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
-# Set up simulation
-sim = setup_simulation(config)
+# Create and initialize particle tracker
+tracker = ParticleTracker(particle_config, grid)
+initialize_particles!(tracker, particle_config)
 
-# Create particle configuration (100 particles in a box at z = π/2)
+# Particles co-evolve automatically with the fluid
+# Option 1: Leapfrog time stepping
+first_projection_step!(S, G, par, plans; a=a, particle_tracker=tracker, current_time=0.0)
+for step in 1:nsteps
+    current_time = step * par.dt
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a,
+                   particle_tracker=tracker, current_time=current_time)
+    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+end
+
+# Option 2: IMEX time stepping
+first_imex_step!(S, G, par, plans, imex_ws; a=a, particle_tracker=tracker, current_time=0.0)
+for step in 1:nsteps
+    current_time = step * par.dt
+    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a,
+                  particle_tracker=tracker, current_time=current_time)
+    Sn, Snp1 = Snp1, Sn
+end
+
+# Save trajectories
+write_particle_trajectories("particles.nc", tracker)
+```
+
+### Manual Advection (Alternative)
+
+For more control, particles can be advected manually:
+
+```julia
+# Create particle configuration
 particle_config = particles_in_box(π/2;
+    x_max=G.Lx, y_max=G.Ly,
     nx=10, ny=10,
-    integration_method=:rk4,
-    interpolation_method=TRILINEAR,
     save_interval=0.1
 )
 
 # Create particle tracker
-tracker = ParticleTracker(particle_config, sim.grid)
+tracker = ParticleTracker(particle_config, grid)
 initialize_particles!(tracker, particle_config)
 
-# Advect particles during simulation
+# Advect particles manually after each timestep
 for step in 1:nsteps
     timestep!(sim)
-    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
+    advect_particles!(tracker, sim.state, sim.grid, par.dt, sim.current_time)
 end
 
 # Save trajectories
@@ -146,7 +175,7 @@ config = particles_in_box(π/2; integration_method=:rk4)
 
 | Method | Order | Velocity Evaluations/Step | Recommended Use |
 |:-------|:------|:--------------------------|:----------------|
-| `:euler` | 1 | 1 | Quick tests, large dt |
+| `:euler` (default) | 1 | 1 | Co-evolution with fluid, large dt |
 | `:rk2` | 2 | 2 | Balance of speed/accuracy |
 | `:rk4` | 4 | 4 | High accuracy studies |
 

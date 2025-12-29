@@ -7,18 +7,48 @@ interpolation, including tricubic and adaptive schemes for improved accuracy.
 
 module InterpolationSchemes
 
-export InterpolationMethod, interpolate_velocity_advanced,
+export InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
+       interpolate_velocity_advanced,
        CubicSpline1D, tricubic_weights, bicubic_interpolation,
-       quintic_basis_functions, quintic_interpolation
+       quintic_basis_functions, quintic_interpolation,
+       required_halo_width
 
 """
 Available interpolation methods.
 """
 @enum InterpolationMethod begin
-    TRILINEAR = 1    # O(h²) - Fast, standard trilinear 
+    TRILINEAR = 1    # O(h²) - Fast, standard trilinear
     TRICUBIC = 2     # O(h⁴) - High accuracy, C¹ smooth
     ADAPTIVE = 3     # Adaptive based on local gradient
     QUINTIC = 4      # O(h⁶) - Highest accuracy (experimental)
+end
+
+"""
+    required_halo_width(method::InterpolationMethod)
+
+Return the minimum halo width required for a given interpolation method.
+
+The halo width is the number of ghost cells needed on each side of the local
+domain to perform interpolation for particles near domain boundaries.
+
+# Stencil Requirements
+- TRILINEAR: 2×2×2 stencil, needs 1 halo cell (accesses [0, +1])
+- TRICUBIC:  4×4×4 stencil, needs 2 halo cells (accesses [-1, 0, +1, +2])
+- QUINTIC:   6×6×6 stencil, needs 3 halo cells (accesses [-2, -1, 0, +1, +2, +3])
+- ADAPTIVE:  May use any scheme, defaults to max (3)
+"""
+function required_halo_width(method::InterpolationMethod)
+    if method == TRILINEAR
+        return 1
+    elseif method == TRICUBIC
+        return 2
+    elseif method == QUINTIC
+        return 3
+    elseif method == ADAPTIVE
+        return 3  # Conservative: support all schemes
+    else
+        return 2  # Default fallback
+    end
 end
 
 """

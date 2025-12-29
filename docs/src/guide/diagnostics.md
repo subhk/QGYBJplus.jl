@@ -379,7 +379,7 @@ w_max = maximum(abs.(w))
 
 The omega equation:
 ```math
-\nabla^2 w + \frac{N^2}{f_0^2}\frac{\partial^2 w}{\partial z^2} = 2J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
+\nabla^2 w + \frac{f_0^2}{N^2}\frac{\partial^2 w}{\partial z^2} = \frac{2f_0}{N^2}J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
 ```
 
 ## Eddy Identification

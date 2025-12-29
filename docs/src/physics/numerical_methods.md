@@ -154,9 +154,9 @@ The wave field has its own integrating factor ``\lambda_w`` with potentially dif
 - Allows much larger time steps than explicit diffusion treatment
 - Second-order accuracy preserved for advective terms
 
-### IMEX Crank-Nicolson with Operator Splitting
+### Second-Order IMEX-CNAB with Strang Splitting
 
-For applications where the dispersion CFL constraint (dt ≤ 2f/N² ≈ 2s) is limiting, we provide an **IMEX Crank-Nicolson** scheme that treats dispersion implicitly.
+For applications where the dispersion CFL constraint (dt ≤ 2f/N² ≈ 2s) is limiting, we provide a **second-order IMEX-CNAB** scheme that treats dispersion implicitly and uses Strang splitting for refraction.
 
 #### The Challenge: Refraction Instability
 
@@ -168,23 +168,28 @@ The YBJ+ equation includes a refraction term ``-(i/2)\zeta B`` which, when discr
 
 This amplifies energy regardless of time step size.
 
-#### Solution: Operator Splitting
+#### Solution: Strang Splitting + IMEX-CNAB
 
-We use **Lie splitting** to handle refraction exactly:
+We use **Strang splitting** for refraction (second-order) combined with **Adams-Bashforth 2** for advection (second-order):
 
-**Stage 1 - Exact Refraction:**
+**Stage 1 - First Half-Refraction (Strang):**
 ```math
-B^* = B^n \times \exp(-i \Delta t \zeta / 2)
+B^* = B^n \times \exp(-i \frac{\Delta t}{2} \frac{\zeta}{2})
 ```
 
-This is applied in physical space. Since ``|\exp(-i \Delta t \zeta / 2)| = 1``, it is **exactly energy-preserving**.
-
-**Stage 2 - IMEX-CN for Advection + Dispersion:**
+**Stage 2 - IMEX-CNAB for Advection + Dispersion:**
 ```math
-B^{n+1} - \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^{n+1} = B^* + \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^* + \Delta t \cdot N^*
+B^{**} - \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^{n+1} = B^* + \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^* + \frac{3\Delta t}{2} N^n - \frac{\Delta t}{2} N^{n-1}
 ```
 
-where ``N^* = -J(\psi, B^n)`` is the advection tendency.
+where ``N^n = -J(\psi^n, B^n)`` is the advection tendency at time ``n``, and Adams-Bashforth 2 extrapolation ``\frac{3}{2}N^n - \frac{1}{2}N^{n-1}`` provides second-order accuracy.
+
+**Stage 3 - Second Half-Refraction (Strang):**
+```math
+B^{n+1} = B^{**} \times \exp(-i \frac{\Delta t}{2} \frac{\zeta}{2})
+```
+
+Since ``|\exp(-i \theta)| = 1`` for real ``\theta``, refraction is **exactly energy-preserving**.
 
 #### Critical: Consistent A*
 
@@ -200,13 +205,24 @@ where ``\beta = (\Delta t/2) \cdot i \cdot \alpha_{\text{disp}} \cdot k_h^2``.
 
 This is a tridiagonal system for each ``(k_x, k_y)`` mode, solved with the Thomas algorithm.
 
+#### Temporal Accuracy
+
+| Component | Method | Order |
+|:----------|:-------|:------|
+| Refraction | Strang splitting | 2nd |
+| Dispersion | Crank-Nicolson | 2nd |
+| Advection | Adams-Bashforth 2 | 2nd |
+| **Overall** | **IMEX-CNAB** | **2nd** |
+
+Note: The first time step uses forward Euler for advection (AB2 bootstrap), so the very first step is first-order.
+
 #### Stability Summary
 
 | Term | Treatment | Stability |
 |:-----|:----------|:----------|
 | Refraction | Exact integrating factor | Unconditionally stable |
 | Dispersion | Implicit Crank-Nicolson | Unconditionally stable |
-| Advection | Explicit forward Euler | CFL: ``\Delta t < \Delta x / U_{\max}`` |
+| Advection | Explicit Adams-Bashforth 2 | CFL: ``\Delta t < \Delta x / U_{\max}`` |
 
 For typical oceanographic parameters (U ≈ 0.3 m/s, dx ≈ 300m), this allows **dt ≈ 20s** vs **dt ≈ 2s** for explicit leapfrog—a **10x speedup**.
 
