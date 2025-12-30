@@ -526,7 +526,7 @@ MPI.Init()
 parallel_config = setup_mpi_environment()
 
 # Create particle tracker with parallel support
-tracker = ParticleTracker(particle_config, grid, parallel_config)
+tracker = ParticleTracker(particle_config, sim.grid, parallel_config)
 initialize_particles!(tracker, particle_config)
 
 # Advection automatically handles:
