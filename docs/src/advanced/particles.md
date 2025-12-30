@@ -84,7 +84,7 @@ G, S, plans, a = setup_model(par)
 particle_config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Create and initialize particle tracker
-tracker = ParticleTracker(particle_config, grid)
+tracker = ParticleTracker(particle_config, G)
 initialize_particles!(tracker, particle_config)
 
 # Particles co-evolve automatically with the fluid
@@ -124,7 +124,7 @@ particle_config = particles_in_box(2000.0;
 )
 
 # Create particle tracker
-tracker = ParticleTracker(particle_config, grid)
+tracker = ParticleTracker(particle_config, sim.grid)
 initialize_particles!(tracker, particle_config)
 
 # Advect particles manually after each timestep
@@ -423,21 +423,22 @@ When running with MPI, particle advection uses domain decomposition.
 
 ### Domain Decomposition
 
-The domain is split in the x-direction across MPI ranks:
+The domain is split in both x and y according to the MPI process grid (px × py).
+Each rank owns a tile in the horizontal plane and the full z-range.
+
+Example for a 2×2 topology:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│           Domain: [0, Lx] × [0, Ly] × [0, Lz]       │
-│                                                     │
-│   ┌──────────┬──────────┬──────────┬──────────┐     │
-│   │  Rank 0  │  Rank 1  │  Rank 2  │  Rank 3  │     │
-│   │x∈[0,Lx/4)│x∈[Lx/4,  │x∈[Lx/2,  │x∈[3Lx/4, │     │
-│   │          │   Lx/2)  │  3Lx/4)  │   Lx)    │     │
-│   └──────────┴──────────┴──────────┴──────────┘     │
-│                                                     │
-│   Each rank owns particles within its x-range       │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────┬─────────────────────────┐
+│ Rank (0,1)               │ Rank (1,1)              │
+│ x∈[0, Lx/2), y∈[Ly/2, Ly) │ x∈[Lx/2, Lx), y∈[Ly/2, Ly) │
+├─────────────────────────┼─────────────────────────┤
+│ Rank (0,0)               │ Rank (1,0)              │
+│ x∈[0, Lx/2), y∈[0, Ly/2)  │ x∈[Lx/2, Lx), y∈[0, Ly/2)  │
+└─────────────────────────┴─────────────────────────┘
 ```
+
+Particles belong to the rank that owns their (x, y) position.
 
 ### Halo Exchange
 
@@ -457,9 +458,13 @@ For interpolation near domain boundaries, velocity data is exchanged between nei
 │   • Rank 0 sends RIGHT edge → Rank 1's LEFT halo            │
 │   • Rank 1 sends LEFT edge  → Rank 0's RIGHT halo           │
 │                                                             │
-│   Halo width = 2 cells (enough for trilinear/tricubic)      │
+│   Halo width depends on interpolation: 1 (trilinear), 2     │
+│   (tricubic), 3 (quintic/adaptive)                          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+For 2D topologies (py > 1), halos are exchanged in both x and y directions,
+including corner halos needed by wider stencils.
 
 ### Particle Migration
 
@@ -470,7 +475,7 @@ When particles cross domain boundaries, they are transferred:
 │                   PARTICLE MIGRATION                        │
 │                                                             │
 │   1. After advection, check each particle's position        │
-│   2. If x outside local domain → pack into send buffer      │
+│   2. If (x,y) outside local domain → pack into send buffer  │
 │   3. MPI.Alltoall to exchange particle counts               │
 │   4. MPI.Send/Recv to transfer particle data                │
 │   5. Unpack received particles into local collection        │
@@ -489,7 +494,7 @@ When particles cross domain boundaries, they are transferred:
 │     • Compute QG velocities (distributed FFT)                 │
 │     • Solve omega equation (tridiagonal in z)                 │
 │     • Add wave Stokes drift                                   │
-│     • Exchange velocity halos (MPI)                           │
+│     • Exchange velocity halos in x/y (and corners for 2D)     │
 │                              ↓                                │
 │  2. ADVECT PARTICLES (each rank processes local particles)    │
 │     • Interpolate velocity (use halo for boundary particles)  │
@@ -518,7 +523,7 @@ using QGYBJplus
 MPI.Init()
 
 # Set up parallel configuration
-parallel_config = setup_parallel_environment()
+parallel_config = setup_mpi_environment()
 
 # Create particle tracker with parallel support
 tracker = ParticleTracker(particle_config, grid, parallel_config)
@@ -572,7 +577,7 @@ end
 ### ParticleTracker
 
 ```julia
-mutable struct ParticleTracker{T}
+mutable struct ParticleTracker{T}  # Simplified view (omits I/O bookkeeping)
     config::ParticleConfig{T}
     particles::ParticleState{T}   # x, y, z, u, v, w arrays
 
@@ -584,14 +589,12 @@ mutable struct ParticleTracker{T}
     u_field, v_field, w_field::Array{T,3}
 
     # MPI info (for parallel)
-    comm, rank, nprocs
-    local_domain::NamedTuple
+    comm, rank, nprocs, is_parallel
+    local_domain::NamedTuple  # x/y bounds, local sizes, topology info
     halo_info::HaloInfo{T}
     send_buffers, recv_buffers::Vector{Vector{T}}
-
-    # I/O
-    save_counter::Int
-    last_save_time::T
+    is_io_rank::Bool
+    gather_for_io::Bool
 end
 ```
 
@@ -601,7 +604,7 @@ end
 |:-------|:-------|:---------|
 | Velocity computation | O(N) | O(N/P) per rank |
 | Interpolation | O(Np × stencil) | O(Np/P × stencil) |
-| Halo exchange | N/A | O(ny × nz × halo_width) |
+| Halo exchange | N/A | O((nx_local + ny_local) × nz × halo_width) |
 | Migration | N/A | O(Np_crossing) |
 
 **Tips:**

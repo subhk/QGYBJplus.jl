@@ -10,83 +10,78 @@ This page provides detailed technical documentation of the parallel particle adv
 
 The parallel particle algorithm enables efficient Lagrangian particle tracking on distributed-memory systems using MPI. Key features:
 
-- **1D domain decomposition** in x-direction
-- **Halo exchange** for cross-boundary velocity interpolation
+- **2D domain decomposition** in x and y (px × py topology)
+- **Halo exchange** in x/y (plus corners) for cross-boundary interpolation
 - **Automatic particle migration** between MPI ranks
 - **Non-blocking MPI communication** for efficiency
 - **Load balancing** as particles redistribute
 
 ## Domain Decomposition
 
-### Slab Decomposition
+### 2D Tile Decomposition
 
-The physical domain `[0, Lx] × [0, Ly] × [0, Lz]` is partitioned into slabs along the x-direction:
+The physical domain `[0, Lx] × [0, Ly] × [0, Lz]` is partitioned into tiles across
+x and y according to the MPI process grid (px × py). Each rank owns a contiguous
+tile in x/y and the full z-range.
+
+Example for a 2×2 topology:
 
 ```
-         Physical Domain
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   x=0                                                     x=Lx  │
-│    │                                                        │   │
-│    ▼                                                        ▼   │
-│   ┌──────────┬──────────┬──────────┬──────────┬──────────┐      │
-│   │          │          │          │          │          │      │
-│   │  Rank 0  │  Rank 1  │  Rank 2  │  Rank 3  │  Rank 4  │      │
-│   │          │          │          │          │          │      │
-│   │ x ∈ [0,  │ x ∈ [L/5,│ x ∈ [2L/5│ x ∈ [3L/5│ x ∈ [4L/5│      │
-│   │    L/5)  │   2L/5)  │   3L/5)  │   4L/5)  │    L)    │      │
-│   │          │          │          │          │          │      │
-│   └──────────┴──────────┴──────────┴──────────┴──────────┘      │
-│                                                                 │
-│   • Each rank owns a contiguous x-range                         │
-│   • Full y and z dimensions on each rank                        │
-│   • Particles "belong" to the rank containing their x-position  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────┬─────────────────────────┐
+│ Rank (0,1)               │ Rank (1,1)              │
+│ x∈[0, Lx/2), y∈[Ly/2, Ly) │ x∈[Lx/2, Lx), y∈[Ly/2, Ly) │
+├─────────────────────────┼─────────────────────────┤
+│ Rank (0,0)               │ Rank (1,0)              │
+│ x∈[0, Lx/2), y∈[0, Ly/2)  │ x∈[Lx/2, Lx), y∈[0, Ly/2)  │
+└─────────────────────────┴─────────────────────────┘
 ```
+
+- Each rank owns contiguous x and y ranges
+- Full z dimension on each rank
+- Particles belong to the rank containing their (x, y) position
 
 ### Local Domain Calculation
 
 ```julia
-function compute_local_domain(grid::Grid, rank::Int, nprocs::Int)
-    # Base points per rank
-    nx_local = grid.nx ÷ nprocs
-    remainder = grid.nx % nprocs
+function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothing)
+    # Determine process grid (px × py)
+    px, py = topology === nothing ? compute_2d_topology(nprocs) : topology
 
-    # Handle uneven division (first 'remainder' ranks get +1 point)
-    if rank < remainder
-        nx_local += 1
-        x_start = rank * nx_local
-    else
-        x_start = remainder * (nx_local + 1) + (rank - remainder) * nx_local
-    end
+    rank_x = rank % px
+    rank_y = rank ÷ px
 
-    x_end = x_start + nx_local - 1
+    nx_local = compute_local_size(grid.nx, px, rank_x)
+    ny_local = compute_local_size(grid.ny, py, rank_y)
 
-    # Convert grid indices to physical coordinates
+    x_start = compute_start_index(grid.nx, px, rank_x)
+    y_start = compute_start_index(grid.ny, py, rank_y)
+
     dx = grid.Lx / grid.nx
+    dy = grid.Ly / grid.ny
+
     x_start_phys = x_start * dx
-    x_end_phys = (x_end + 1) * dx
+    x_end_phys = (x_start + nx_local) * dx
+    y_start_phys = y_start * dy
+    y_end_phys = (y_start + ny_local) * dy
 
     return (
         x_start = x_start_phys,
         x_end = x_end_phys,
-        y_start = 0.0,
-        y_end = grid.Ly,
+        y_start = y_start_phys,
+        y_end = y_end_phys,
         z_start = 0.0,
         z_end = grid.Lz,
-        nx_local = nx_local
+        nx_local = nx_local,
+        ny_local = ny_local,
+        px = px,
+        py = py,
+        rank_x = rank_x,
+        rank_y = rank_y
     )
 end
 ```
 
-**Example**: 256 grid points, 4 ranks → 64 points per rank
-
-| Rank | Grid Indices | Physical Range (Lx=2π) |
-|:-----|:-------------|:-----------------------|
-| 0 | [0, 63] | [0, π/2) |
-| 1 | [64, 127] | [π/2, π) |
-| 2 | [128, 191] | [π, 3π/2) |
-| 3 | [192, 255] | [3π/2, 2π) |
+**Example**: 256×256 grid points, topology (2,2) → local 128×128 tiles per rank.
 
 ## Halo Exchange
 
@@ -118,21 +113,23 @@ required_halo_width(QUINTIC)    # → 3
 ### Extended Array Structure
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                    EXTENDED ARRAY LAYOUT (Rank 1)                      │
-│                                                                        │
-│   Index:   1    2   ...  hw   hw+1  ...  hw+nx  hw+nx+1 ... hw+nx+hw   │
-│           ┌────┬────┬───┬────┬─────┬───┬───────┬───────┬───┬────────┐  │
-│           │    │    │   │    │     │   │       │       │   │        │  │
-│           │ Left Halo   │ ←── Local Data ──→   │ Right Halo│        │  │
-│           │ (from R0)   │      (owned)         │ (from R2) │        │  │
-│           └────┴────┴───┴────┴─────┴───┴───────┴───────┴───┴────────┘  │
-│                                                                        │
-│   hw = halo_width (depends on interpolation method)                    │
-│   nx = local grid points                                               │
-│                                                                        │
-│   Total extended size: nx + 2*hw                                       │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│            EXTENDED ARRAY LAYOUT (local + halos)            │
+│                                                             │
+│   y (north)                                                  │
+│      ▲                                                      │
+│      │   ┌───────────────────────────────┐                  │
+│      │   │           top halo           │                  │
+│      │   ├───────────┬───────────┬───────┤                  │
+│      │   │ left halo │   local   │ right │                  │
+│      │   │           │   data    │ halo  │                  │
+│      │   ├───────────┴───────────┴───────┤                  │
+│      │   │         bottom halo           │                  │
+│      │   └───────────────────────────────┘                  │
+│                                                             │
+│   hw = halo_width (depends on interpolation method)         │
+│   Extended size: (nz_local, nx_local + 2*hw, ny_local + 2*hw)│
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Communication Pattern (Periodic Boundaries)
