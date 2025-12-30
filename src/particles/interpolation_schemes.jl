@@ -143,11 +143,15 @@ function tricubic_interpolation(x::T, y::T, z::T,
     w_interp = zero(T)
     
     # 4×4×4 interpolation stencil
+    # Catmull-Rom stencil: P_{-1}, P_0, P_1, P_2 relative to interval [ix, ix+1]
+    # At t=0, w1=1 gives P_0 (start of interval)
+    # For ix (0-based), P_0 is at array index ix+1 (1-based)
+    # So stencil indices are: ix (P_{-1}), ix+1 (P_0), ix+2 (P_1), ix+3 (P_2)
     for k in 0:3, j in 0:3, i in 0:3
-        # Grid indices with boundary handling
-        gx = get_grid_index(ix + i - 1, nx, boundary_conditions.periodic_x)
-        gy = get_grid_index(iy + j - 1, ny, boundary_conditions.periodic_y)
-        gz = get_grid_index(iz + k - 1, nz, false)  # Z never periodic
+        # Grid indices with boundary handling (convert 0-based ix to 1-based)
+        gx = get_grid_index(ix + i, nx, boundary_conditions.periodic_x)
+        gy = get_grid_index(iy + j, ny, boundary_conditions.periodic_y)
+        gz = get_grid_index(iz + k, nz, false)  # Z never periodic
         
         if gx > 0 && gy > 0 && gz > 0  # Valid indices
             # Combined weight
@@ -438,12 +442,15 @@ function quintic_interpolation(x::T, y::T, z::T,
     w_interp = zero(T)
 
     # 6×6×6 interpolation stencil
+    # Quintic B-spline stencil: P_{-2}, P_{-1}, P_0, P_1, P_2, P_3 relative to interval
+    # At t=0, the weights are centered on P_0 (position 0 = start of interval)
+    # For ix (0-based), P_0 is at array index ix+1 (1-based)
+    # So stencil indices are: ix-1, ix, ix+1, ix+2, ix+3, ix+4 (1-based)
     for k in 0:5, j in 0:5, i in 0:5
-        # Grid indices with boundary handling
-        # Stencil points: ix + i - 2 covers [-2, -1, 0, 1, 2, 3] relative to ix
-        gx = get_grid_index(ix + i - 2, nx, boundary_conditions.periodic_x)
-        gy = get_grid_index(iy + j - 2, ny, boundary_conditions.periodic_y)
-        gz = get_grid_index(iz + k - 2, nz, false)  # Z never periodic
+        # Grid indices with boundary handling (convert 0-based ix to 1-based)
+        gx = get_grid_index(ix + i - 1, nx, boundary_conditions.periodic_x)
+        gy = get_grid_index(iy + j - 1, ny, boundary_conditions.periodic_y)
+        gz = get_grid_index(iz + k - 1, nz, false)  # Z never periodic
 
         if gx > 0 && gy > 0 && gz > 0  # Valid indices
             # Combined weight from tensor product

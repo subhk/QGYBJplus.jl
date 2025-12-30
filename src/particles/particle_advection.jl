@@ -771,52 +771,72 @@ end
 
 Advanced interpolation using halo data for parallel case.
 
-The extended arrays have layout: [left_halo | local_data | right_halo]
-So index 1 is the left halo, and local data starts at index (halo_width + 1).
-We need to offset x_local by halo_width * dx to account for this.
+The extended arrays have layout: [left_halo | local_data | right_halo] in BOTH x and y.
+So index 1 is the left/bottom halo, and local data starts at index (halo_width + 1).
+We need to offset both x_local and y_local by halo_width * dx/dy to account for this.
+
+# 2D Decomposition Support
+For 2D MPI decomposition (py > 1), both x and y coordinates must be converted to
+local extended array coordinates. The halo regions contain neighbor data in both
+directions, so periodic boundary conditions are handled by the halos, not by wrapping.
 """
 function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
                                                  tracker::ParticleTracker{T},
                                                  halo_info::HaloInfo{T}) where T
 
     # For high-order interpolation, we need extended halos
-    if tracker.config.interpolation_method == TRICUBIC || tracker.config.interpolation_method == ADAPTIVE
-        # Check if we have enough halo width for tricubic (needs at least 2)
-        if halo_info.halo_width < 2
-            @warn "Insufficient halo width for tricubic interpolation, falling back to trilinear"
+    method = tracker.config.interpolation_method
+    if method == TRICUBIC || method == ADAPTIVE || method == QUINTIC
+        # Check if we have enough halo width for the interpolation method
+        min_halo = method == QUINTIC ? 3 : 2
+        if halo_info.halo_width < min_halo
+            @warn "Insufficient halo width ($( halo_info.halo_width)) for $(method) interpolation (needs $min_halo), falling back to trilinear"
             return interpolate_velocity_with_halos(x, y, z, tracker, halo_info)
         end
 
-        # Adjust grid_info for extended arrays (includes halo regions)
-        # The extended array is larger by 2*halo_width in x
         hw = halo_info.halo_width
         nz_ext, nx_ext, ny_ext = size(halo_info.u_extended)
-        Lx_ext = nx_ext * tracker.dx  # Extended domain length
 
+        # Extended domain lengths for the padded arrays
+        Lx_ext = nx_ext * tracker.dx
+        Ly_ext = ny_ext * tracker.dy
+
+        # Grid info uses extended domain lengths since we're interpolating in extended arrays
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
-                    Lx=Lx_ext, Ly=tracker.Ly, Lz=tracker.Lz)
+                    Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz)
 
-        # For extended arrays, we don't use periodic in x (halo handles boundaries)
+        # For extended arrays, we don't use periodic BCs - halos handle cross-boundary data
+        # This applies to BOTH x and y for 2D decomposition
         boundary_conditions = (periodic_x=false,
-                              periodic_y=tracker.config.periodic_y,
+                              periodic_y=false,
                               periodic_z=false)
 
-        # Convert global position to extended array coordinates
-        # x_local is position relative to local domain start
-        # Add halo_width * dx to shift into the extended array coordinate system
-        local_domain = tracker.local_domain
-        x_local = x - local_domain.x_start + hw * tracker.dx
+        # Convert global positions to extended array coordinates
+        # Step 1: Apply periodic wrapping to global coordinates
+        x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
+        y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
+
+        # Step 2: Compute local domain start positions (using HaloExchange functions)
+        x_start = compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
+        y_start = compute_start_index(halo_info.ny_global, halo_info.py, halo_info.rank_y) * tracker.dy
+
+        # Step 3: Convert to local coordinates relative to domain start
+        # Then add hw * dx/dy to shift into extended array coordinate system
+        # Extended array: [left_halo(hw) | local_data | right_halo(hw)]
+        # Index 1 corresponds to position -hw*dx relative to local domain start
+        x_local = x_periodic - x_start + hw * tracker.dx
+        y_local = y_periodic - y_start + hw * tracker.dy
 
         u_interp, v_interp, w_interp = interpolate_velocity_advanced(
-            x_local, y, z,
+            x_local, y_local, z,
             halo_info.u_extended, halo_info.v_extended, halo_info.w_extended,
             grid_info, boundary_conditions,
-            tracker.config.interpolation_method
+            method
         )
 
         # For 2D advection, set w to zero
         if !tracker.config.use_3d_advection
-            w_interp = 0.0
+            w_interp = zero(T)
         end
 
         return u_interp, v_interp, w_interp
