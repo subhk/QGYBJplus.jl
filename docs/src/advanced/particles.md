@@ -571,6 +571,7 @@ struct ParticleConfig{T}
     # I/O
     save_interval::T
     max_save_points::Int
+    auto_split_files::Bool
 end
 ```
 

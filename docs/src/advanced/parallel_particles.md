@@ -144,11 +144,11 @@ For periodic domains, neighbor relationships wrap in x and y. In 2D, each rank
 has up to 8 neighbors:
 
 ```
-    NW(6) --- N(3) --- NE(7)
+    NW(7) --- N(4) --- NE(8)
       |        |        |
     W(1) --- local --- E(2)
       |        |        |
-    SW(5) --- S(4) --- SE(8)
+    SW(5) --- S(3) --- SE(6)
 ```
 
 With `periodic_x`/`periodic_y` enabled, edge neighbors wrap around (e.g., west of
@@ -219,6 +219,8 @@ After advection, particles may have moved outside their owning rank's domain:
 │   → Particle must be migrated from Rank 0 to Rank 1                    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+
+The same logic applies across y-boundaries when py > 1.
 
 ### Migration Algorithm
 
