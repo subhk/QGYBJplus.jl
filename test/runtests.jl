@@ -106,6 +106,28 @@ end
     @test all(isfinite, real.(Snp1.q))
 end
 
+@testset "IMEX-CN step (wave feedback enabled)" begin
+    par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         dt=0.01, no_feedback=false, no_wave_feedback=false)
+    G, S, plans, a = setup_model(par)
+    L = dealias_mask(G)
+
+    # Seed a nontrivial wave mode
+    S.B[3, 2, 2] = 1.0 + 0.2im
+
+    imex_ws = init_imex_workspace(S, G)
+    first_imex_step!(S, G, par, plans, imex_ws; a=a, dealias_mask=L)
+
+    Snp1 = copy_state(S)
+    imex_cn_step!(Snp1, S, G, par, plans, imex_ws; a=a, dealias_mask=L)
+
+    @test all(isfinite, real.(Snp1.q))
+    @test all(isfinite, imag.(Snp1.q))
+    @test all(isfinite, real.(Snp1.B))
+    @test all(isfinite, imag.(Snp1.B))
+    @test all(isfinite, real.(Snp1.psi))
+end
+
 @testset "Normal YBJ branch + dealias + kh=0" begin
     par = default_params(nx=12, ny=12, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, stratification=:constant_N)
 

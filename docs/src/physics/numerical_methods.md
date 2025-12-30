@@ -191,6 +191,11 @@ B^{n+1} = B^{**} \times \exp(-i \frac{\Delta t}{2} \frac{\zeta}{2})
 
 Since ``|\exp(-i \theta)| = 1`` for real ``\theta``, refraction is **exactly energy-preserving**.
 
+**Mean-Flow Update (q):** The PV equation is advanced with Adams–Bashforth 2 on
+``-J(\psi,q) + \text{diffusion}``, using the integrating factor for hyperdiffusion.
+To keep the coupled system second-order, the second refraction half-step uses
+``\psi^{n+1}`` predicted from the updated ``q`` (and ``q^w`` when wave feedback is enabled).
+
 #### Critical: Consistent A*
 
 After applying refraction to get ``B^*``, we must compute ``A^* = (L^+)^{-1} B^*`` (not use ``A^n``). Using ``A^n`` with ``B^*`` breaks the consistency required by IMEX-CN, causing instability.

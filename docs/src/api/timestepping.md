@@ -445,9 +445,10 @@ This allows dt = 20s (vs dt = 2s for leapfrog), a **10x speedup**.
 ### Key Implementation Details
 
 1. **Strang Splitting**: Refraction is split symmetrically with two half-steps: `exp(-i·(dt/2)·ζ/2)` before and after the IMEX solve
-2. **Adams-Bashforth 2**: Advection uses `(3/2)N^n - (1/2)N^{n-1}` extrapolation (bootstraps with forward Euler on first step)
+2. **Adams-Bashforth 2**: Advection uses `(3/2)N^n - (1/2)N^{n-1}` extrapolation for both `q` and `B` (bootstraps with forward Euler on first step)
 3. **Consistent A***: After first half-refraction, A* = (L⁺)⁻¹B* is computed (critical for IMEX-CN consistency)
 4. **Modified Elliptic Solve**: Each mode solves (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
+5. **Updated Refraction**: The second refraction half-step uses a ψ^{n+1} predictor (with q^w when enabled) to keep the coupled system second-order
 
 ### When to Use
 
