@@ -841,24 +841,80 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end  # end serial for
     end  # end if use_threading
 
-    #= Step 5.5: Apply SECOND HALF refraction via Strang splitting =#
-    # Complete the Strang splitting by applying the second half of refraction.
-    # B^{n+1} = B** × exp(-i·(dt/2)·ζ/2)
-    # Note: We use ζ^n (same as first half) for symmetric Strang splitting.
-    # Store B** temporarily, then apply refraction to get B^{n+1}
+    #= Step 5.5: Apply SECOND HALF refraction with updated ψ =#
+    # Use ψ^{n+1} (from the updated mean flow) for the second half-step to
+    # keep the coupled system formally second-order in time.
     RHS_temp = imex_ws.RHS  # Reuse RHS as temporary storage
     parent(RHS_temp) .= Bnp1_arr  # Copy B** to temporary
-    apply_refraction_exact!(Snp1.B, RHS_temp, Sn.psi, G, par, plans;
-                            dt_fraction=0.5, dealias_mask=L)
+
+    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
+    psi_pred_valid = false
+
+    if par.fixed_flow
+        # Mean flow is fixed: use ψ^n for refraction
+        apply_refraction_exact!(Snp1.B, RHS_temp, Sn.psi, G, par, plans;
+                                dt_fraction=0.5, dealias_mask=L)
+        psi_pred_valid = true
+    else
+        if wave_feedback_enabled
+            # Predictor: use ψ^n to get B_pred and q^w_pred for ψ^{n+1}
+            apply_refraction_exact!(Snp1.B, RHS_temp, Sn.psi, G, par, plans;
+                                    dt_fraction=0.5, dealias_mask=L)
+
+            # Backup q^{n+1} (base, before wave feedback)
+            qtemp_arr .= qnp1_arr
+
+            # Compute q^w_pred into qnp1_arr, then form q_pred = q_base - q^w_pred
+            compute_qw_complex!(Snp1.q, Snp1.B, par, G, plans; Lmask=L)
+            @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+                i_global = local_to_global(i, 2, Snp1.q)
+                j_global = local_to_global(j, 3, Snp1.q)
+                if L[i_global, j_global]
+                    qnp1_arr[k, i, j] = qtemp_arr[k, i, j] - qnp1_arr[k, i, j]
+                else
+                    qnp1_arr[k, i, j] = 0
+                end
+            end
+
+            # Compute ψ^{n+1} predictor from q_pred
+            invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
+
+            # Restore q^{n+1} base state before final wave feedback
+            qnp1_arr .= qtemp_arr
+
+            # Corrector: refraction with ψ^{n+1} predictor
+            apply_refraction_exact!(Snp1.B, RHS_temp, Snp1.psi, G, par, plans;
+                                    dt_fraction=0.5, dealias_mask=L)
+        else
+            # No wave feedback: compute ψ^{n+1} from q^{n+1} base
+            invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
+            apply_refraction_exact!(Snp1.B, RHS_temp, Snp1.psi, G, par, plans;
+                                    dt_fraction=0.5, dealias_mask=L)
+            psi_pred_valid = true
+        end
+    end
+
     # Update Bnp1_arr to point to the final result
     Bnp1_arr = parent(Snp1.B)
 
-    #= Step 5.6: Store current advection tendency for next step (AB2) =#
+    #= Step 5.6: Store current tendencies for next step (AB2) =#
     parent(imex_ws.nBk_prev) .= parent(imex_ws.nBk)
+    if par.fixed_flow
+        fill!(tqk_prev_arr, zero(eltype(tqk_prev_arr)))
+    else
+        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+            i_global = local_to_global(i, 2, Sn.q)
+            j_global = local_to_global(j, 3, Sn.q)
+            if L[i_global, j_global]
+                tqk_prev_arr[k, i, j] = -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+            else
+                tqk_prev_arr[k, i, j] = 0
+            end
+        end
+    end
     imex_ws.has_prev_tendency[] = true
 
     #= Step 6: Wave feedback on mean flow =#
-    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     if wave_feedback_enabled
         # Reuse qtemp from workspace to avoid allocation every timestep
         # (allocation inside tight loops causes heap corruption in MPI)
