@@ -134,42 +134,19 @@ required_halo_width(QUINTIC)    # → 3
 
 ### Communication Pattern (Periodic Boundaries)
 
-For doubly-periodic domains, the halo exchange wraps around:
+For periodic domains, neighbor relationships wrap in x and y. In 2D, each rank
+has up to 8 neighbors:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                  PERIODIC HALO EXCHANGE COMMUNICATION                  │
-│                                                                        │
-│   RANK 0                 RANK 1                 RANK 2 (last)          │
-│   ┌──────────────┐       ┌──────────────┐       ┌──────────────┐       │
-│   │ L │ Local│ R │       │ L │ Local│ R │       │ L │ Local│ R │       │
-│   │   │      │   │       │   │      │   │       │   │      │   │       │
-│   └───┴──────┴───┘       └───┴──────┴───┘       └───┴──────┴───┘       │
-│     ↑                                                      │           │
-│     └──────────────── Periodic wrap ──────────────────────┘           │
-│                                                                        │
-│   Interior Communication (same as before):                             │
-│   ═════════════════════════════════════                                │
-│   Rank 0 → Rank 1:  send_right → recv_left                             │
-│   Rank 1 → Rank 0:  send_left  → recv_right                            │
-│   Rank 1 → Rank 2:  send_right → recv_left                             │
-│   Rank 2 → Rank 1:  send_left  → recv_right                            │
-│                                                                        │
-│   Periodic Boundary Communication:                                     │
-│   ════════════════════════════════                                     │
-│   Rank 2 → Rank 0:  send_right (R2's right edge) → recv_left (R0)      │
-│   Rank 0 → Rank 2:  send_left  (R0's left edge)  → recv_right (R2)     │
-│                                                                        │
-│   After exchange:                                                      │
-│   • R0's left halo contains R2's right edge data (periodic wrap!)      │
-│   • R2's right halo contains R0's left edge data (periodic wrap!)      │
-│   • All particles can interpolate correctly near boundaries            │
-└────────────────────────────────────────────────────────────────────────┘
+    NW(6) --- N(3) --- NE(7)
+      |        |        |
+    W(1) --- local --- E(2)
+      |        |        |
+    SW(5) --- S(4) --- SE(8)
 ```
 
-**Key**: With `periodic_x=true` (default), rank 0's left neighbor is the last rank,
-and the last rank's right neighbor is rank 0. This ensures correct velocity
-interpolation for particles near the periodic boundaries.
+With `periodic_x`/`periodic_y` enabled, edge neighbors wrap around (e.g., west of
+rank_x=0 is rank_x=px-1). For py==1, only W/E neighbors are used.
 
 ### Implementation
 
@@ -178,32 +155,15 @@ function exchange_velocity_halos!(halo_info, u_field, v_field, w_field)
     # 1. Copy local data to center of extended arrays
     copy_local_to_extended!(halo_info, u_field, v_field, w_field)
 
-    # 2. Pack boundary data into send buffers
-    pack_halo_data!(halo_info)
-    # send_left  ← our LEFT edge  (for left neighbor's RIGHT halo)
-    # send_right ← our RIGHT edge (for right neighbor's LEFT halo)
+    # 2. Pack boundary data into send buffers (W/E/S/N and corners)
+    #    For py==1, only W/E buffers are used.
 
-    # 3. Post non-blocking receives
-    if left_neighbor >= 0
-        MPI.Irecv!(recv_left, left_neighbor, tag=0, comm)
-    end
-    if right_neighbor >= 0
-        MPI.Irecv!(recv_right, right_neighbor, tag=1, comm)
-    end
+    # 3. Post non-blocking receives from all neighbors (up to 8)
 
     # 4. Send to neighbors (non-blocking)
-    if right_neighbor >= 0
-        MPI.Isend(send_right, right_neighbor, tag=0, comm)
-    end
-    if left_neighbor >= 0
-        MPI.Isend(send_left, left_neighbor, tag=1, comm)
-    end
 
-    # 5. Wait for receives and unpack
+    # 5. Wait for receives and unpack into halo regions
     MPI.Waitall(recv_reqs)
-    unpack_halo_data!(halo_info)
-    # recv_left  → our LEFT halo region
-    # recv_right → our RIGHT halo region
 
     # 6. Wait for sends to complete
     MPI.Waitall(send_reqs)
@@ -217,9 +177,10 @@ Each buffer contains packed velocity components:
 ```
 Buffer layout: [u₁, v₁, w₁, u₂, v₂, w₂, ..., uₙ, vₙ, wₙ]
 
-where n = halo_width × ny × nz
-
-Total buffer size = 3 × halo_width × ny × nz × sizeof(T)
+where n depends on the buffer type:
+- X-direction buffers: halo_width × ny_local × nz_local
+- Y-direction buffers: nx_local × halo_width × nz_local
+- Corner buffers: halo_width × halo_width × nz_local
 ```
 
 ## Particle Migration
@@ -270,7 +231,8 @@ function migrate_particles!(tracker)
 
     for i in 1:particles.np
         x = particles.x[i]
-        target_rank = find_target_rank(x, tracker)
+        y = particles.y[i]
+        target_rank = find_target_rank(x, y, tracker)
 
         if target_rank == tracker.rank
             # Particle stays local
@@ -298,15 +260,27 @@ function migrate_particles!(tracker)
     add_received_particles!(tracker)
 end
 
-function find_target_rank(x, tracker)
-    # Handle periodic boundary
+function find_target_rank(x, y, tracker)
+    # Handle periodic boundaries
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
+    y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
 
-    # Determine owning rank based on x-position
-    dx_rank = tracker.Lx / tracker.nprocs
-    rank = min(tracker.nprocs - 1, floor(Int, x_periodic / dx_rank))
+    # Convert to grid indices (0-based)
+    ix = floor(Int, x_periodic / tracker.dx)
+    iy = floor(Int, y_periodic / tracker.dy)
+    ix = min(ix, tracker.nx - 1)
+    iy = min(iy, tracker.ny - 1)
 
-    return rank
+    # Determine process grid (px × py)
+    px, py = tracker.local_domain === nothing ?
+             compute_2d_topology(tracker.nprocs) :
+             (tracker.local_domain.px, tracker.local_domain.py)
+
+    # Map indices to rank coordinates (handles uneven division)
+    rank_x = rank_for_index(ix, tracker.nx, px)
+    rank_y = rank_for_index(iy, tracker.ny, py)
+
+    return rank_y * px + rank_x
 end
 ```
 
@@ -529,12 +503,12 @@ compute_wave_velocities!(S, G; ...) # ADDS Stokes drift to S.u, S.v, S.w
 
 In MPI parallel mode:
 - `state.u`, `state.v`, `state.w` are **distributed arrays** (PencilArrays)
-- Each rank owns a slab: `[x_start, x_end] × [0, Ly] × [0, Lz]`
+- Each rank owns a tile: `[x_start, x_end] × [y_start, y_end] × [0, Lz]`
 - `parent(state.u)` extracts only the **local portion**
 
 ```julia
 # In update_velocity_fields!:
-u_data = parent(state.u)  # Shape: (nz, nx_local, ny) - LOCAL data only
+u_data = parent(state.u)  # Shape: (nz, nx_local, ny_local) - LOCAL data only
 tracker.u_field .= u_data # Copy to tracker's workspace
 ```
 
@@ -558,9 +532,8 @@ The Stokes drift computation:
 After halo exchange, each rank's extended arrays contain:
 
 ```
-Extended Array: [left_halo | local_data | right_halo]
-                     ↑           ↑            ↑
-              from rank-1   owned data   from rank+1
+Extended Array: halos in x and y around the local tile
+                (left/right + bottom/top + corners)
 ```
 
 This allows particles near domain boundaries to interpolate velocities using neighbor data without additional MPI communication during advection.
@@ -635,7 +608,7 @@ dt_max = safe_displacement / max_velocity ≈ 0.49
 
 | Operation | Data Volume | Frequency |
 |:----------|:------------|:----------|
-| Halo exchange | O(ny × nz × halo_width × 3) per neighbor | Every timestep |
+| Halo exchange | O((nx_local + ny_local) × nz × halo_width × 3) | Every timestep |
 | Migration Alltoall | O(nprocs) integers | Every timestep |
 | Migration Send/Recv | O(Np_crossing × 6) floats | Every timestep |
 
@@ -668,31 +641,55 @@ Particle load can become imbalanced if:
 
 ```julia
 mutable struct HaloInfo{T}
-    halo_width::Int              # Ghost cell width (default: 2)
+    halo_width::Int
 
-    # Extended arrays with halos
-    u_extended::Array{T,3}       # Size: (nx_local + 2*hw, ny, nz)
+    # Extended arrays with halos (x and y)
+    u_extended::Array{T,3}       # Size: (nz_local, nx_local + 2*hw, ny_local + 2*hw)
     v_extended::Array{T,3}
     w_extended::Array{T,3}
 
     # Local data position in extended arrays
-    local_start::NTuple{3,Int}   # (hw+1, 1, 1)
-    local_end::NTuple{3,Int}     # (hw+nx, ny, nz)
+    local_start::NTuple{3,Int}   # (1, hw+1, hw+1)
+    local_end::NTuple{3,Int}     # (nz_local, hw+nx_local, hw+ny_local)
 
-    # Neighbor ranks (-1 if at boundary)
-    left_neighbor::Int
-    right_neighbor::Int
+    # Neighbor ranks (W, E, S, N, SW, SE, NW, NE)
+    neighbors::Vector{Int}
 
-    # Communication buffers
-    send_left::Vector{T}         # Size: 3 × hw × ny × nz
-    send_right::Vector{T}
-    recv_left::Vector{T}
-    recv_right::Vector{T}
+    # Communication buffers (x/y edges + corners)
+    send_west::Vector{T}
+    send_east::Vector{T}
+    recv_west::Vector{T}
+    recv_east::Vector{T}
+    send_south::Vector{T}
+    send_north::Vector{T}
+    recv_south::Vector{T}
+    recv_north::Vector{T}
+    send_sw::Vector{T}
+    send_se::Vector{T}
+    send_nw::Vector{T}
+    send_ne::Vector{T}
+    recv_sw::Vector{T}
+    recv_se::Vector{T}
+    recv_nw::Vector{T}
+    recv_ne::Vector{T}
 
-    # MPI info
+    # MPI + topology info
     comm::Any
     rank::Int
     nprocs::Int
+    nx_global::Int
+    ny_global::Int
+    nz_global::Int
+    nx_local::Int
+    ny_local::Int
+    nz_local::Int
+    px::Int
+    py::Int
+    rank_x::Int
+    rank_y::Int
+    periodic_x::Bool
+    periodic_y::Bool
+    is_2d_decomposition::Bool
 end
 ```
 
@@ -709,7 +706,7 @@ mutable struct ParticleTracker{T}
     is_parallel::Bool            # true if nprocs > 1
 
     # Domain decomposition
-    local_domain::NamedTuple     # (x_start, x_end, y_start, y_end, ...)
+    local_domain::NamedTuple     # (x_start, x_end, y_start, y_end, nx_local, ny_local, px, py, rank_x, rank_y, ...)
 
     # Halo exchange
     halo_info::HaloInfo{T}       # Extended arrays + buffers
@@ -732,20 +729,14 @@ using QGYBJplus
 
 # Initialize MPI
 MPI.Init()
-comm = MPI.COMM_WORLD
-rank = MPI.Comm_rank(comm)
-nprocs = MPI.Comm_size(comm)
-
 # Set up parallel configuration
-parallel_config = ParallelConfig(
-    use_mpi = true,
-    comm = comm,
-    n_processes = nprocs
-)
+mpi_config = setup_mpi_environment()
 
-# Create simulation (distributed grid and state)
-config = SimulationConfig(...)
-sim = setup_simulation(config; parallel_config=parallel_config)
+# Create distributed grid and state
+par = default_params(Lx=2π, Ly=2π, Lz=1.0, nx=64, ny=64, nz=32)
+grid = init_mpi_grid(par, mpi_config)
+plans = plan_mpi_transforms(grid, mpi_config)
+state = init_mpi_state(grid, plans, mpi_config)
 
 # Create particle configuration
 particle_config = create_particle_config(
@@ -759,21 +750,18 @@ particle_config = create_particle_config(
 )
 
 # Create particle tracker with parallel support
-tracker = ParticleTracker(particle_config, sim.grid, parallel_config)
+tracker = ParticleTracker(particle_config, grid, mpi_config)
 initialize_particles!(tracker, particle_config)
 
-# Main simulation loop
+# Main simulation loop (advance fluid state separately)
 for step in 1:nsteps
-    # Advance fluid state
-    timestep!(sim)
-
-    # Advect particles (handles halo exchange + migration automatically)
-    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
+    current_time = step * par.dt
+    advect_particles!(tracker, state, grid, par.dt, current_time)
 end
 
 # Save trajectories (rank 0 gathers and writes, or each rank writes independently)
-if rank == 0 || !tracker.gather_for_io
-    write_particle_trajectories("particles_rank$(rank).nc", tracker)
+if mpi_config.is_root || !tracker.gather_for_io
+    write_particle_trajectories("particles_rank$(mpi_config.rank).nc", tracker)
 end
 
 MPI.Finalize()
