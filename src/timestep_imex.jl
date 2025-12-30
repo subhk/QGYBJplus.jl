@@ -92,7 +92,7 @@ end
 Pre-allocated workspace for IMEX time stepping with threading support.
 
 For second-order IMEX-CNAB with Strang splitting, we store the previous
-advection tendency to enable Adams-Bashforth 2 extrapolation.
+tendencies for both q and B to enable Adams-Bashforth 2 extrapolation.
 """
 struct IMEXWorkspace{CT, RT}
     # Tendency arrays (shared, written before parallel region)
@@ -392,7 +392,7 @@ First-order forward Euler step to initialize IMEX time stepping.
 
 This function:
 1. Performs a first-order forward Euler step (same as first_projection_step!)
-2. Initializes the AB2 state by computing and storing the advection tendency
+2. Initializes the AB2 state by computing and storing the q and B tendencies
 
 After this function is called, subsequent calls to imex_cn_step! will use
 second-order Adams-Bashforth 2 for advection.
@@ -453,28 +453,30 @@ end
 
 Second-order IMEX-CNAB time step for YBJ+ equation with Strang splitting for refraction.
 
-Uses Strang splitting with Adams-Bashforth 2 for advection:
+Uses Strang splitting with Adams-Bashforth 2 for advection (waves and mean flow):
 1. **Stage 1 (First Half-Refraction)**: B* = B^n × exp(-i·(dt/2)·ζ/2)
 2. **Stage 2 (IMEX-CNAB for Advection + Dispersion)**:
    - Advection (AB2): (3/2)N^n - (1/2)N^{n-1} where N = -J(ψ,B)
    - Dispersion (CN): (1/2)[L(B*) + L(B^{n+1})]
-3. **Stage 3 (Second Half-Refraction)**: B^{n+1} = B** × exp(-i·(dt/2)·ζ/2)
+3. **Stage 3 (Second Half-Refraction)**: B^{n+1} = B** × exp(-i·(dt/2)·ζ/2) using ψ^{n+1} predictor
 
 This achieves second-order temporal accuracy through:
 - Strang splitting (second-order) instead of Lie splitting (first-order)
-- Adams-Bashforth 2 (second-order) instead of forward Euler (first-order)
+- Adams-Bashforth 2 (second-order) for advection (q and B)
 - Crank-Nicolson for dispersion (second-order)
 
 # Algorithm
-1. Compute advection tendency: N^n = -J(ψ^n, B^n) (before any refraction!)
+1. Compute advection tendencies at time n: N^n = -J(ψ^n, B^n), Q^n = -J(ψ^n, q^n) + diffusion
 2. Apply first half-refraction: B* = B^n × exp(-i·(dt/2)·ζ/2)
-3. For each spectral mode (kx, ky):
+3. For each spectral mode (kx, ky) solve IMEX-CNAB for B:
    a. Compute A* = (L⁺)⁻¹B* (essential for IMEX-CN consistency!)
    b. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (3dt/2)·N^n - (dt/2)·N^{n-1}
    c. Solve modified elliptic: (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
    d. Recover B** = RHS + β·A^{n+1}
-4. Apply second half-refraction: B^{n+1} = B** × exp(-i·(dt/2)·ζ/2)
-5. Store N^n as N^{n-1} for next step
+4. Update q with AB2: q^{n+1} = q^n + dt·[ (3/2)Q^n - (1/2)Q^{n-1} ] (with integrating factor)
+5. Compute ψ^{n+1} predictor from q^{n+1} (and q^w predictor when enabled)
+6. Apply second half-refraction using ψ^{n+1} predictor
+7. Store tendencies for next step (AB2)
 
 # Arguments
 - `Snp1::State`: State at time n+1 (output)
@@ -714,7 +716,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Use B* (after first half-refraction) and AB2 advection
             @inbounds for k in 1:nz_local
                 N_n = -nBk_arr[k, i, j]
-                N_nm1 = -nBk_prev_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
@@ -731,7 +733,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
             @inbounds for k in 1:nz_local
                 N_n = -nBk_arr[k, i, j]
-                N_nm1 = -nBk_prev_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + advection_term
@@ -782,7 +784,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # AB2: (c_n * dt) * N^n + (c_nm1 * dt) * N^{n-1}
             for k in 1:nz_local
                 N_n = -nBk_arr[k, i, j]
-                N_nm1 = -nBk_prev_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 # Store B** (before second half-refraction) in Bnp1 temporarily
                 Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term) * hyperdiff_factor
@@ -803,7 +805,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (c_n·dt)·N^n + (c_nm1·dt)·N^{n-1}
             for k in 1:nz_local
                 N_n = -nBk_arr[k, i, j]
-                N_nm1 = -nBk_prev_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + advection_term
@@ -815,7 +817,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 # Explicit fallback: B** = B* + advection + disp*
                 for k in 1:nz_local
                     N_n = -nBk_arr[k, i, j]
-                    N_nm1 = -nBk_prev_arr[k, i, j]
+                    N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
                     disp_k = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                     advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                     Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term + dt * disp_k) * hyperdiff_factor
@@ -933,7 +935,9 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     #= Step 7: Update diagnostics for new state =#
     if !par.fixed_flow
-        invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
+        if !psi_pred_valid
+            invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
+        end
     else
         # Copy psi from Sn
         parent(Snp1.psi) .= parent(Sn.psi)
