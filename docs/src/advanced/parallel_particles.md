@@ -45,7 +45,13 @@ Example for a 2×2 topology:
 ```julia
 function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothing)
     # Determine process grid (px × py)
-    px, py = topology === nothing ? compute_2d_topology(nprocs) : topology
+    px, py = if topology !== nothing
+        topology
+    elseif grid.decomp !== nothing && hasfield(typeof(grid.decomp), :topology)
+        grid.decomp.topology
+    else
+        (nprocs, 1)
+    end
 
     rank_x = rank % px
     rank_y = rank ÷ px
@@ -273,12 +279,12 @@ function find_target_rank(x, y, tracker)
 
     # Determine process grid (px × py)
     px, py = tracker.local_domain === nothing ?
-             compute_2d_topology(tracker.nprocs) :
+             compute_process_grid(tracker.nprocs) :
              (tracker.local_domain.px, tracker.local_domain.py)
 
     # Map indices to rank coordinates (handles uneven division)
-    rank_x = rank_for_index(ix, tracker.nx, px)
-    rank_y = rank_for_index(iy, tracker.ny, py)
+    rank_x = _rank_for_index(ix, tracker.nx, px)
+    rank_y = _rank_for_index(iy, tracker.ny, py)
 
     return rank_y * px + rank_x
 end
