@@ -324,6 +324,8 @@ Helper function to set up halo exchange system.
 # Arguments
 - `local_dims`: Tuple (nz_local, nx_local, ny_local) for 2D pencil decomposition.
                 If nothing, assumes 1D decomposition in x.
+- `process_grid`: Optional (px, py) process grid to match simulation topology.
+- `periodic_x, periodic_y`: Boundary condition flags for halo exchange.
 - `interpolation_method`: The interpolation scheme to use. Determines halo width:
                           - TRILINEAR: 1 halo cell
                           - TRICUBIC:  2 halo cells
@@ -387,7 +389,7 @@ function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothi
     elseif grid.decomp !== nothing && hasfield(typeof(grid.decomp), :topology)
         grid.decomp.topology
     else
-        compute_process_grid(nprocs)
+        (nprocs, 1)
     end
 
     @assert px * py == nprocs "Process grid ($px × $py) must equal nprocs ($nprocs)"
