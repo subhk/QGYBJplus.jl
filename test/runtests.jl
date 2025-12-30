@@ -306,3 +306,103 @@ end
     # computation should have happened
     @test all(isfinite, S.A)
 end
+
+@testset "Nonlinear operator normalization and balance" begin
+    par = default_params(nx=32, ny=32, nz=1, Lx=2*pi, Ly=2*pi, Lz=1.0)
+    G = init_grid(par)
+    plans = plan_transforms!(G)
+    L = dealias_mask(G)
+
+    dx = G.Lx / G.nx
+    dy = G.Ly / G.ny
+    x = [dx * (i - 1) for i in 1:G.nx]
+    y = [dy * (j - 1) for j in 1:G.ny]
+
+    # ---- convol_waqg! normalization and energy balance ----
+    u = zeros(Float64, G.nz, G.nx, G.ny)
+    v = zeros(Float64, G.nz, G.nx, G.ny)
+    q_phys = zeros(Float64, G.nz, G.nx, G.ny)
+    J_expected = zeros(Float64, G.nz, G.nx, G.ny)
+
+    for j in 1:G.ny, i in 1:G.nx
+        xi = x[i]
+        yj = y[j]
+        u[1, i, j] = sin(yj)
+        v[1, i, j] = cos(xi)
+        q_phys[1, i, j] = sin(2 * xi) + cos(3 * yj)
+        J_expected[1, i, j] = 2 * sin(yj) * cos(2 * xi) - 3 * cos(xi) * sin(3 * yj)
+    end
+
+    qk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_forward!(qk, q_phys, plans)
+    BRk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    BIk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    nqk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    nBRk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    nBIk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+
+    convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G, plans; Lmask=L)
+
+    nq_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_backward!(nq_phys, nqk, plans)
+
+    @test maximum(abs.(real.(nq_phys) .- J_expected)) < 5e-10
+    @test abs(real(nqk[1, 1, 1])) < 1e-12
+
+    energy_balance = sum(q_phys .* real.(nq_phys)) / (G.nx * G.ny)
+    @test abs(energy_balance) < 1e-10
+
+    # ---- refraction_waqg! normalization ----
+    psi_phys = zeros(Float64, G.nz, G.nx, G.ny)
+    BR_phys = ones(Float64, G.nz, G.nx, G.ny)
+    BI_phys = zeros(Float64, G.nz, G.nx, G.ny)
+    zeta_expected = zeros(Float64, G.nz, G.nx, G.ny)
+
+    for j in 1:G.ny, i in 1:G.nx
+        xi = x[i]
+        yj = y[j]
+        psi_phys[1, i, j] = sin(xi) + cos(yj)
+        zeta_expected[1, i, j] = -sin(xi) - cos(yj)
+    end
+
+    psik = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_forward!(psik, psi_phys, plans)
+    fft_forward!(BRk, BR_phys, plans)
+    fft_forward!(BIk, BI_phys, plans)
+
+    rBRk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    rBIk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    refraction_waqg!(rBRk, rBIk, BRk, BIk, psik, G, plans; Lmask=L)
+
+    rBR_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    rBI_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_backward!(rBR_phys, rBRk, plans)
+    fft_backward!(rBI_phys, rBIk, plans)
+
+    @test maximum(abs.(real.(rBR_phys) .- zeta_expected)) < 5e-10
+    @test maximum(abs.(real.(rBI_phys))) < 1e-12
+
+    # ---- compute_qw! normalization ----
+    BR_phys .= 0.0
+    BI_phys .= 0.0
+    qw_expected = zeros(Float64, G.nz, G.nx, G.ny)
+
+    for j in 1:G.ny, i in 1:G.nx
+        xi = x[i]
+        yj = y[j]
+        BR_phys[1, i, j] = cos(xi) + cos(yj)
+        BI_phys[1, i, j] = sin(xi) + sin(yj)
+        qw_expected[1, i, j] = sin(xi - yj) - cos(xi - yj)
+    end
+
+    fft_forward!(BRk, BR_phys, plans)
+    fft_forward!(BIk, BI_phys, plans)
+
+    qwk = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+
+    qw_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_backward!(qw_phys, qwk, plans)
+
+    @test maximum(abs.(real.(qw_phys) .- qw_expected)) < 5e-10
+end
