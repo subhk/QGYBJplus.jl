@@ -267,8 +267,10 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             comm, rank, nprocs, is_parallel = detect_parallel_environment()
         end
         
-        # Set up domain decomposition if parallel
-        local_domain = is_parallel ? compute_local_domain(grid, rank, nprocs) : nothing
+        # Set up domain decomposition if parallel (use MPI topology when available)
+        topology = parallel_config !== nothing && hasfield(typeof(parallel_config), :topology) ?
+                   parallel_config.topology : nothing
+        local_domain = is_parallel ? compute_local_domain(grid, rank, nprocs; topology=topology) : nothing
 
         # Initialize buffers
         send_buffers = [T[] for _ in 1:nprocs]
@@ -277,9 +279,10 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         # Velocity field workspace - use LOCAL size in parallel mode
         if is_parallel && local_domain !== nothing
             nx_local = local_domain.nx_local
-            u_field = zeros(T, grid.nz, nx_local, grid.ny)
-            v_field = zeros(T, grid.nz, nx_local, grid.ny)
-            w_field = zeros(T, grid.nz, nx_local, grid.ny)
+            ny_local = local_domain.ny_local
+            u_field = zeros(T, grid.nz, nx_local, ny_local)
+            v_field = zeros(T, grid.nz, nx_local, ny_local)
+            w_field = zeros(T, grid.nz, nx_local, ny_local)
         else
             u_field = zeros(T, grid.nz, grid.nx, grid.ny)
             v_field = zeros(T, grid.nz, grid.nx, grid.ny)
@@ -313,7 +316,8 @@ end
 ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
 
 """
-    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, interpolation_method=TRILINEAR)
+    setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, process_grid=nothing,
+                                 periodic_x=true, periodic_y=true, interpolation_method=TRILINEAR)
 
 Helper function to set up halo exchange system.
 
@@ -328,10 +332,16 @@ Helper function to set up halo exchange system.
 """
 function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
                                      local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
+                                     process_grid::Union{Nothing,Tuple{Int,Int}}=nothing,
+                                     periodic_x::Bool=true,
+                                     periodic_y::Bool=true,
                                      interpolation_method::InterpolationMethod=TRILINEAR) where T
     try
         return HaloInfo{T}(grid, rank, nprocs, comm;
                           local_dims=local_dims,
+                          process_grid=process_grid,
+                          periodic_x=periodic_x,
+                          periodic_y=periodic_y,
                           interpolation_method=interpolation_method)
     catch e
         @warn "Failed to set up halo exchange: $e"
@@ -366,33 +376,47 @@ function detect_parallel_environment()
 end
 
 """
-    compute_local_domain(grid, rank, nprocs)
+    compute_local_domain(grid, rank, nprocs; topology=nothing)
 
-Compute local domain bounds for MPI rank (1D decomposition in x).
+Compute local domain bounds for MPI rank (1D or 2D decomposition).
 """
-function compute_local_domain(grid::Grid, rank::Int, nprocs::Int)
-    # Simple 1D decomposition in x-direction
-    nx_local = grid.nx ÷ nprocs
-    remainder = grid.nx % nprocs
-    
-    if rank < remainder
-        nx_local += 1
-        x_start = rank * nx_local
+function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothing)
+    # Determine process grid (px × py)
+    px, py = if topology !== nothing
+        topology
+    elseif grid.decomp !== nothing && hasfield(typeof(grid.decomp), :topology)
+        grid.decomp.topology
     else
-        x_start = remainder * (nx_local + 1) + (rank - remainder) * nx_local
+        compute_process_grid(nprocs)
     end
-    
-    x_end = x_start + nx_local - 1
-    
-    # Convert to physical coordinates  
+
+    @assert px * py == nprocs "Process grid ($px × $py) must equal nprocs ($nprocs)"
+
+    # Compute rank coordinates in process grid
+    rank_x = rank % px
+    rank_y = rank ÷ px
+
+    # Local sizes for each dimension
+    nx_local = compute_local_size(grid.nx, px, rank_x)
+    ny_local = compute_local_size(grid.ny, py, rank_y)
+
+    # Start indices (0-based) for each dimension
+    x_start = compute_start_index(grid.nx, px, rank_x)
+    y_start = compute_start_index(grid.ny, py, rank_y)
+
+    # Convert to physical coordinates
     dx = grid.Lx / grid.nx
+    dy = grid.Ly / grid.ny
     x_start_phys = x_start * dx
-    x_end_phys = (x_end + 1) * dx
-    
+    x_end_phys = (x_start + nx_local) * dx
+    y_start_phys = y_start * dy
+    y_end_phys = (y_start + ny_local) * dy
+
     return (x_start=x_start_phys, x_end=x_end_phys,
-            y_start=0.0, y_end=grid.Ly,
+            y_start=y_start_phys, y_end=y_end_phys,
             z_start=0.0, z_end=grid.Lz,
-            nx_local=nx_local)
+            nx_local=nx_local, ny_local=ny_local,
+            px=px, py=py, rank_x=rank_x, rank_y=rank_y)
 end
 
 """
@@ -472,8 +496,10 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     # Find intersection of particle region with local domain
     x_min = max(config.x_min, local_domain.x_start)
     x_max = min(config.x_max, local_domain.x_end)
+    y_min = max(config.y_min, local_domain.y_start)
+    y_max = min(config.y_max, local_domain.y_end)
     
-    if x_min >= x_max
+    if x_min >= x_max || y_min >= y_max
         # No particles in this domain
         resize!(tracker.particles.x, 0)
         resize!(tracker.particles.y, 0)
@@ -487,13 +513,15 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     
     # Calculate local particle distribution
     x_frac = (x_max - x_min) / (config.x_max - config.x_min)
+    y_frac = (y_max - y_min) / (config.y_max - config.y_min)
     nx_local = max(1, round(Int, config.nx_particles * x_frac))
+    ny_local = max(1, round(Int, config.ny_particles * y_frac))
     
     # Create local particle grid
     x_range = range(x_min, x_max, length=nx_local+1)[1:end-1]
-    y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
+    y_range = range(y_min, y_max, length=ny_local+1)[1:end-1]
     
-    n_local = nx_local * config.ny_particles
+    n_local = nx_local * ny_local
     
     # Resize arrays to actual local particle count
     resize!(tracker.particles.x, n_local)
@@ -667,9 +695,14 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     # Lazily initialize halo exchange system with actual local dimensions
     # The halo width is determined by the interpolation method
     if tracker.is_parallel && tracker.halo_info === nothing
+        process_grid = tracker.local_domain !== nothing && hasproperty(tracker.local_domain, :px) ?
+                       (tracker.local_domain.px, tracker.local_domain.py) : nothing
         tracker.halo_info = setup_halo_exchange_for_grid(
             grid, tracker.rank, tracker.nprocs, tracker.comm, T;
             local_dims=local_dims,
+            process_grid=process_grid,
+            periodic_x=tracker.config.periodic_x,
+            periodic_y=tracker.config.periodic_y,
             interpolation_method=tracker.config.interpolation_method
         )
     end
@@ -1059,9 +1092,14 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         # Find particles that need migration
         keep_indices = Int[]
         
+        use_2d = tracker.local_domain !== nothing &&
+                 hasproperty(tracker.local_domain, :py) &&
+                 tracker.local_domain.py > 1
+
         for i in 1:particles.np
             x = particles.x[i]
-            target_rank = find_target_rank(x, tracker)
+            y = particles.y[i]
+            target_rank = use_2d ? find_target_rank(x, y, tracker) : find_target_rank(x, tracker)
             
             if target_rank == tracker.rank
                 push!(keep_indices, i)
@@ -1093,44 +1131,69 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
 end
 
 """
-Find which rank should own a particle at position x.
+Find which rank should own a particle at position (x, y).
 
 Uses the same domain decomposition logic as compute_local_domain to ensure consistency.
 Handles uneven division where first `remainder` ranks get one extra grid point.
 """
-function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
+function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
+    y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
 
     # Grid parameters
     nx = tracker.nx
-    nprocs = tracker.nprocs
+    ny = tracker.ny
     dx = tracker.dx
+    dy = tracker.dy
 
     # Convert physical position to grid index (0-based)
-    grid_idx = floor(Int, x_periodic / dx)
-    grid_idx = min(grid_idx, nx - 1)  # Clamp to valid range
+    ix = floor(Int, x_periodic / dx)
+    iy = floor(Int, y_periodic / dy)
+    ix = min(ix, nx - 1)
+    iy = min(iy, ny - 1)
 
-    # Find which rank owns this grid index
-    # First `remainder` ranks own (nx_base + 1) points each
-    # Remaining ranks own nx_base points each
-    nx_base = nx ÷ nprocs
-    remainder = nx % nprocs
-
-    if remainder == 0
-        # Equal division - simple case
-        return min(nprocs - 1, grid_idx ÷ nx_base)
+    # Determine process grid
+    if tracker.local_domain !== nothing && hasproperty(tracker.local_domain, :px)
+        px = tracker.local_domain.px
+        py = tracker.local_domain.py
+    else
+        px, py = compute_process_grid(tracker.nprocs)
     end
 
-    # Uneven division: first `remainder` ranks get (nx_base + 1) points
-    # Boundary between "large" and "small" domains
-    large_domain_end = remainder * (nx_base + 1)
+    # Map index to rank coordinate in each dimension
+    rank_x = _rank_for_index(ix, nx, px)
+    rank_y = _rank_for_index(iy, ny, py)
 
-    if grid_idx < large_domain_end
-        # In the "large domain" region (ranks 0 to remainder-1)
-        return grid_idx ÷ (nx_base + 1)
+    return rank_y * px + rank_x
+end
+
+"""
+Find which rank should own a particle at position x (1D decomposition fallback).
+"""
+function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
+    # Fallback for 1D decomposition in x
+    x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
+    nx = tracker.nx
+    dx = tracker.dx
+    ix = floor(Int, x_periodic / dx)
+    ix = min(ix, nx - 1)
+
+    nprocs = tracker.nprocs
+    return _rank_for_index(ix, nx, nprocs)
+end
+
+function _rank_for_index(idx::Int, n_global::Int, nprocs::Int)
+    base = n_global ÷ nprocs
+    remainder = n_global % nprocs
+    if remainder == 0
+        return min(nprocs - 1, idx ÷ base)
+    end
+
+    large_domain_end = remainder * (base + 1)
+    if idx < large_domain_end
+        return idx ÷ (base + 1)
     else
-        # In the "small domain" region (ranks remainder to nprocs-1)
-        return remainder + (grid_idx - large_domain_end) ÷ nx_base
+        return remainder + (idx - large_domain_end) ÷ base
     end
 end
 
