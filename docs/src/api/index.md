@@ -46,6 +46,7 @@ QGYBJplus/src/
 │   └── netcdf_io.jl   # NetCDF read/write
 ├── High-Level Interface
 │   ├── model_interface.jl # QGYBJSimulation, run_simulation!
+│   ├── simulation.jl      # Simulation API (initialize_simulation, run!)
 │   └── runtime.jl         # Setup helpers
 ├── Particles
 │   ├── particle_advection.jl  # Core advection
