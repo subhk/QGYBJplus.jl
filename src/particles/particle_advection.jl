@@ -45,6 +45,7 @@ export ParticleConfig, ParticleState, ParticleTracker,
        advect_particles!, interpolate_velocity_at_position,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
+       interpolate_velocity_advanced,
        # 3D particle distributions
        ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,

@@ -196,6 +196,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        enable_auto_file_splitting!, finalize_trajectory_files!,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
+       interpolate_velocity_advanced,
        # Particle initialization (simplified API)
        particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom,

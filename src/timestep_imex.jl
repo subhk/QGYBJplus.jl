@@ -101,7 +101,7 @@ struct IMEXWorkspace{CT, RT}
     rBk::CT      # ζ × B refraction
     nqk::CT      # J(ψ, q) advection
     dqk::CT      # Vertical diffusion
-    tqk_prev::CT # Total q tendency at time n-1 (for AB2)
+    tqk_prev::CT # q advection tendency at time n-1 (for AB2)
 
     # Temporary arrays for IMEX
     RHS::CT      # Right-hand side for elliptic solve
@@ -146,7 +146,7 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     rBk = similar(S.B)
     nqk = similar(S.q)
     dqk = similar(S.B)
-    tqk_prev = similar(S.q)  # For AB2: stores T^{n-1} = -J(ψ,q) + diff
+    tqk_prev = similar(S.q)  # For AB2: stores N^{n-1} = -J(ψ,q)
     RHS = similar(S.B)
     Bstar = similar(S.B)     # For Strang: B after first half-refraction
     Atemp = similar(S.A)
@@ -402,7 +402,7 @@ First-order forward Euler step to initialize IMEX time stepping.
 
 This function:
 1. Performs a first-order forward Euler step (same as first_projection_step!)
-2. Initializes the AB2 state by computing and storing the q and B tendencies
+2. Initializes the AB2 state by computing and storing the q and B advection tendencies
 
 After this function is called, subsequent calls to imex_cn_step! will use
 second-order Adams-Bashforth 2 for advection.
@@ -423,23 +423,20 @@ function first_imex_step!(S::State, G::Grid, par::QGParams, plans, imex_ws::IMEX
                         workspace=workspace, dealias_mask=L, compute_w=false)
     convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, S.B, G, plans; Lmask=L)
 
-    # Initialize q tendency history for AB2
+    # Initialize q advection history for AB2
     tqk_prev_arr = parent(imex_ws.tqk_prev)
     if par.fixed_flow
         fill!(tqk_prev_arr, zero(eltype(tqk_prev_arr)))
     else
         convol_waqg_q!(imex_ws.nqk, S.u, S.v, S.q, G, plans; Lmask=L)
-        dissipation_q_nv!(imex_ws.dqk, S.q, par, G; workspace=workspace)
-        if par.inviscid; imex_ws.dqk .= 0; end
         if par.linear; imex_ws.nqk .= 0; end
         nqk_arr = parent(imex_ws.nqk)
-        dqk_arr = parent(imex_ws.dqk)
         nz_local, nx_local, ny_local = size(tqk_prev_arr)
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
             i_global = local_to_global(i, 2, S.q)
             j_global = local_to_global(j, 3, S.q)
             if L[i_global, j_global]
-                tqk_prev_arr[k, i, j] = -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+                tqk_prev_arr[k, i, j] = -nqk_arr[k, i, j]
             else
                 tqk_prev_arr[k, i, j] = 0
             end
@@ -463,7 +460,8 @@ end
 
 Second-order IMEX-CNAB time step for YBJ+ equation with Strang splitting for refraction.
 
-Uses Strang splitting with Adams-Bashforth 2 for advection (waves and mean flow):
+Uses Strang splitting with Adams-Bashforth 2 for advection (waves and mean flow) and
+Crank-Nicolson for linear PV diffusion/hyperdiffusion:
 1. **Stage 1 (First Half-Refraction)**: B* = B^n × exp(-i·(dt/2)·ζ/2)
 2. **Stage 2 (IMEX-CNAB for Advection + Dispersion)**:
    - Advection (AB2): (3/2)N^n - (1/2)N^{n-1} where N = -J(ψ,B)
@@ -476,14 +474,15 @@ This achieves second-order temporal accuracy through:
 - Crank-Nicolson for dispersion (second-order)
 
 # Algorithm
-1. Compute advection tendencies at time n: N^n = -J(ψ^n, B^n), Q^n = -J(ψ^n, q^n) + diffusion
+1. Compute advection tendencies at time n: N^n = -J(ψ^n, B^n), Q^n = -J(ψ^n, q^n)
 2. Apply first half-refraction: B* = B^n × exp(-i·(dt/2)·ζ/2)
 3. For each spectral mode (kx, ky) solve IMEX-CNAB for B:
    a. Compute A* = (L⁺)⁻¹B* (essential for IMEX-CN consistency!)
    b. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (3dt/2)·N^n - (dt/2)·N^{n-1}
    c. Solve modified elliptic: (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
    d. Recover B** = RHS + β·A^{n+1}
-4. Update q with AB2: q^{n+1} = q^n + dt·[ (3/2)Q^n - (1/2)Q^{n-1} ] (with integrating factor)
+4. Update q with CNAB: (I - dt/2·L)·q^{n+1} = (I + dt/2·L)·q^n + dt·[ (3/2)Q^n - (1/2)Q^{n-1} ]
+   where L = νz∂zz - λ_h (vertical diffusion + hyperdiffusion)
 5. Compute ψ^{n+1} predictor from q^{n+1} (and q^w predictor when enabled)
 6. Apply second half-refraction using ψ^{n+1} predictor
 7. Store tendencies for next step (AB2)
@@ -608,23 +607,77 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Using A^n with B* breaks the relation A = (L⁺)⁻¹B that IMEX-CN relies on,
     # causing instability. A* is computed per-mode in the IMEX loop below.
 
-    #= Step 4: Update q with AB2 (advection + diffusion) and integrating factor =#
+    #= Step 4: Update q with CNAB (advection AB2 + CN for diffusion/hyperdiffusion) =#
     if par.fixed_flow
         # Just copy q - no evolution when flow is fixed
         qnp1_arr .= qn_arr
     else
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+        nz = G.nz
+        dt = par.dt
+        Treal = eltype(G.z)
+        νz = par.inviscid ? zero(Treal) : Treal(par.νz)
+        has_vert_diff = (νz != 0) && (nz > 1)
+        Δz = has_vert_diff ? (G.z[2] - G.z[1]) : one(Treal)
+        α = has_vert_diff ? (νz / (Δz * Δz)) : zero(Treal)
+        off = has_vert_diff ? (-0.5 * dt * α) : zero(Treal)
+
+        tl = imex_ws.thread_local[1]
+        tri_diag = tl.tri_diag
+        tri_upper = tl.tri_upper
+        tri_lower = tl.tri_lower
+        tri_rhs = tl.tri_rhs
+        tri_sol = tl.tri_sol
+        tri_c_prime = tl.tri_c_prime
+        tri_d_prime = tl.tri_d_prime
+
+        @inbounds for j in 1:ny_local, i in 1:nx_local
             i_global = local_to_global(i, 2, Sn.q)
             j_global = local_to_global(j, 3, Sn.q)
 
             if L[i_global, j_global]
-                kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-                λₑ = int_factor(kₓ, kᵧ, par; waves=false)
-                tqk_n = -nqk_arr[k, i, j] + dqk_arr[k, i, j]
-                tqk_nm1 = use_ab2 ? tqk_prev_arr[k, i, j] : zero(eltype(tqk_prev_arr))
-                qnp1_arr[k, i, j] = (qn_arr[k, i, j] + dt*(c_n*tqk_n + c_nm1*tqk_nm1)) * exp(-λₑ)
+                kₓ = G.kx[i_global]
+                kᵧ = G.ky[j_global]
+                λ_dt = int_factor(kₓ, kᵧ, par; waves=false)
+                λ = dt > 0 ? (λ_dt / dt) : zero(Treal)
+                denom = one(Treal) + 0.5 * dt * λ
+
+                if !has_vert_diff
+                    @inbounds for k in 1:nz_local
+                        N_n = -nqk_arr[k, i, j]
+                        N_nm1 = use_ab2 ? tqk_prev_arr[k, i, j] : zero(eltype(tqk_prev_arr))
+                        rhs = (one(Treal) - 0.5 * dt * λ) * qn_arr[k, i, j] +
+                              dt * (c_n * N_n + c_nm1 * N_nm1)
+                        qnp1_arr[k, i, j] = rhs / denom
+                    end
+                else
+                    @inbounds for k in 1:nz
+                        diag = (k == 1 || k == nz) ?
+                               (one(Treal) + 0.5 * dt * α + 0.5 * dt * λ) :
+                               (one(Treal) + dt * α + 0.5 * dt * λ)
+                        tri_diag[k] = Complex(diag, 0)
+                        if k < nz
+                            tri_upper[k] = Complex(off, 0)
+                            tri_lower[k] = Complex(off, 0)
+                        end
+                        N_n = -nqk_arr[k, i, j]
+                        N_nm1 = use_ab2 ? tqk_prev_arr[k, i, j] : zero(eltype(tqk_prev_arr))
+                        tri_rhs[k] = (one(Treal) - 0.5 * dt * λ) * qn_arr[k, i, j] +
+                                     dt * (c_n * N_n + c_nm1 * N_nm1) +
+                                     0.5 * dt * dqk_arr[k, i, j]
+                    end
+
+                    solve_tridiagonal_complex!(
+                        tri_sol, tri_lower, tri_diag, tri_upper, tri_rhs, nz,
+                        tri_c_prime, tri_d_prime
+                    )
+                    @inbounds for k in 1:nz
+                        qnp1_arr[k, i, j] = tri_sol[k]
+                    end
+                end
             else
-                qnp1_arr[k, i, j] = 0
+                @inbounds for k in 1:nz_local
+                    qnp1_arr[k, i, j] = 0
+                end
             end
         end
     end
@@ -909,7 +962,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Update Bnp1_arr to point to the final result
     Bnp1_arr = parent(Snp1.B)
 
-    #= Step 5.6: Store current tendencies for next step (AB2) =#
+    #= Step 5.6: Store current advection tendencies for next step (AB2) =#
     parent(imex_ws.nBk_prev) .= parent(imex_ws.nBk)
     if par.fixed_flow
         fill!(tqk_prev_arr, zero(eltype(tqk_prev_arr)))
@@ -918,7 +971,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             i_global = local_to_global(i, 2, Sn.q)
             j_global = local_to_global(j, 3, Sn.q)
             if L[i_global, j_global]
-                tqk_prev_arr[k, i, j] = -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+                tqk_prev_arr[k, i, j] = -nqk_arr[k, i, j]
             else
                 tqk_prev_arr[k, i, j] = 0
             end
