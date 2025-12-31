@@ -80,6 +80,33 @@ end
     @test size(S_small.q) == (par_small.nz, par_small.nx, par_small.ny)
 end
 
+@testset "Vertical discretization" begin
+    par = default_params(nx=4, ny=4, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, νz=1.0)
+    G = init_grid(par)
+    dz = TEST_Lz / par.nz
+
+    @test isapprox(G.z[1], dz; rtol=0.0, atol=10 * eps(dz))
+    @test isapprox(G.z[end], TEST_Lz; rtol=0.0, atol=10 * eps(TEST_Lz))
+    @test all(isapprox.(diff(G.z), dz; rtol=0.0, atol=10 * eps(dz)))
+    @test all(isapprox.(G.dz, dz; rtol=0.0, atol=10 * eps(dz)))
+
+    qok = zeros(ComplexF64, par.nz, par.nx, par.ny)
+    for k in 1:par.nz
+        z = G.z[k]
+        qval = cos(pi * z / TEST_Lz)
+        qok[k, :, :] .= qval
+    end
+
+    dqk = similar(qok)
+    dissipation_q_nv!(dqk, qok, par, G)
+
+    k2 = (pi / TEST_Lz)^2
+    for k in 2:(par.nz - 1)
+        expected = -k2 * cos(pi * G.z[k] / TEST_Lz)
+        @test isapprox(real(dqk[k, 1, 1]), expected; rtol=0.05, atol=1e-8)
+    end
+end
+
 @testset "Adaptive interpolation small grids" begin
     nx, ny, nz = 2, 2, 1
     dx = 1.0
