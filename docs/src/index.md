@@ -85,7 +85,7 @@ B = result.state.B       # Wave envelope
 ### API Reference
 - [Core Types](@ref api-types) - QGParams, Grid, State
 - [Physics Functions](@ref api-physics) - Operators and solvers
-- [Full Index](@ref api-index) - Complete function listing
+- [Full Index](@ref api-index) - Complete function listing and codebase structure
 
 ## Installation
 

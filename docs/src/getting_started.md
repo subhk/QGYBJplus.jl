@@ -166,6 +166,40 @@ fft_backward!(dst, src, plans)  # Spectral → Physical
 plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
 ```
 
+## Codebase Overview
+
+Understanding the code organization helps when debugging or extending the model:
+
+```
+src/
+├── QGYBJplus.jl       # Main module (all exports)
+├── parameters.jl      # QGParams struct (all configuration)
+├── grid.jl            # Grid struct (coordinates, wavenumbers)
+├── transforms.jl      # FFT planning and execution
+├── physics.jl         # Stratification, N² profiles
+├── elliptic.jl        # q→ψ and B→A inversions
+├── operators.jl       # Velocity computation
+├── nonlinear.jl       # Jacobians, wave feedback
+├── timestep.jl        # Leapfrog time stepping
+├── timestep_imex.jl   # IMEX-CNAB (implicit dispersion)
+├── simulation.jl      # High-level Simulation API
+├── parallel_mpi.jl    # MPI 2D decomposition
+├── netcdf_io.jl       # NetCDF I/O
+├── diagnostics.jl     # Energy diagnostics
+└── particles/         # Lagrangian particle tracking
+    ├── particle_advection.jl
+    ├── particle_config.jl
+    └── interpolation_schemes.jl
+```
+
+**Key entry points:**
+- `default_params()` → Create model parameters
+- `setup_model()` → Initialize Grid, State, FFT plans
+- `Simulation` / `run!()` → High-level simulation API
+- `leapfrog_step!()` / `imex_cn_step!()` → Low-level time stepping
+
+See [API Reference](@ref api-index) for the complete module structure.
+
 ## What's Next?
 
 - [Quick Start Tutorial](@ref quickstart) - Hands-on introduction

@@ -16,46 +16,71 @@ Complete API reference for QGYBJ+.jl.
 
 ## Module Structure
 
+The codebase is organized into logical groups. Files are included in dependency order in the main module.
+
 ```
-QGYBJplus/src/
-├── QGYBJplus.jl       # Main module, exports
-├── Core Types
-│   ├── parameters.jl  # QGParams struct
-│   ├── grid.jl        # Grid struct, wavenumbers
-│   └── config.jl      # Configuration types
-├── Physics
-│   ├── physics.jl     # Stratification N², a_ell coefficients
-│   ├── elliptic.jl    # Tridiagonal inversions (q→ψ, B→A)
-│   ├── nonlinear.jl   # Jacobians, refraction, qw feedback
-│   ├── operators.jl   # Velocity computation
-│   └── ybj_normal.jl  # Normal YBJ operators
-├── Transforms
-│   ├── transforms.jl  # FFT planning (serial)
-│   └── parallel_mpi.jl # MPI 2D decomposition, transposes
-├── Time Stepping
-│   ├── timestep.jl       # Leapfrog with Robert-Asselin filter
-│   └── timestep_imex.jl  # IMEX-CNAB with Strang splitting
-├── Initialization
-│   ├── initconds.jl       # Random/analytic initial conditions
-│   ├── initialization.jl  # Field initialization helpers
-│   └── stratification.jl  # Stratification profiles
-├── Diagnostics
-│   ├── diagnostics.jl        # Energy, omega equation
-│   └── energy_diagnostics.jl # Separate energy output files
-├── I/O
-│   └── netcdf_io.jl   # NetCDF read/write
-├── High-Level Interface
-│   ├── model_interface.jl # QGYBJSimulation, run_simulation!
-│   ├── simulation.jl      # Simulation API (initialize_simulation, run!)
-│   └── runtime.jl         # Setup helpers
-├── Particles
-│   ├── particle_advection.jl  # Core advection
-│   ├── particle_config.jl     # Configuration types
-│   ├── particle_io.jl         # Trajectory I/O
-│   ├── interpolation_schemes.jl # Trilinear, tricubic, etc.
-│   └── halo_exchange.jl       # MPI halo exchange
-└── Utilities
-    └── pretty_printing.jl # Display formatting
+QGYBJplus.jl/
+├── src/
+│   ├── QGYBJplus.jl          # Main module: exports, includes
+│   │
+│   ├── ─── Core Data Structures ───
+│   ├── parameters.jl         # QGParams: all model parameters
+│   ├── grid.jl               # Grid: coordinates, wavenumbers, decomposition
+│   ├── config.jl             # DomainConfig, PhysicsConfig, OutputConfig
+│   │
+│   ├── ─── Transforms ───
+│   ├── transforms.jl         # FFTW planning, fft_forward!, fft_backward!
+│   ├── parallel_mpi.jl       # MPI 2D pencil decomposition, transposes
+│   │
+│   ├── ─── Physics & Operators ───
+│   ├── physics.jl            # Stratification N², a_ell coefficients
+│   ├── elliptic.jl           # Tridiagonal solvers (q→ψ, B→A inversions)
+│   ├── operators.jl          # Velocity computation from streamfunction
+│   ├── nonlinear.jl          # Jacobians, refraction, wave feedback qʷ
+│   ├── ybj_normal.jl         # Normal YBJ operators (non-plus variant)
+│   │
+│   ├── ─── Time Integration ───
+│   ├── timestep.jl           # Forward Euler, Leapfrog + Robert-Asselin
+│   ├── timestep_imex.jl      # IMEX Crank-Nicolson (implicit dispersion)
+│   │
+│   ├── ─── Initialization ───
+│   ├── initconds.jl          # Random/analytic initial conditions
+│   ├── initialization.jl     # Field initialization helpers
+│   ├── stratification.jl     # Stratification profiles (constant, exponential, custom)
+│   │
+│   ├── ─── Diagnostics ───
+│   ├── diagnostics.jl        # Energy diagnostics, omega equation RHS
+│   ├── energy_diagnostics.jl # Separate energy output files
+│   │
+│   ├── ─── I/O ───
+│   ├── netcdf_io.jl          # NetCDF read/write with legacy compatibility
+│   │
+│   ├── ─── High-Level Interface ───
+│   ├── runtime.jl            # Setup helpers (setup_model, dealias_mask)
+│   ├── model_interface.jl    # QGYBJSimulation, run_simulation!
+│   ├── simulation.jl         # Simulation struct, initialize_simulation, run!
+│   │
+│   ├── ─── Particle Tracking ───
+│   ├── particles/
+│   │   ├── particle_advection.jl     # Core advection, ParticleTracker
+│   │   ├── particle_config.jl        # ParticleConfig, ParticleConfig3D
+│   │   ├── particle_io.jl            # Trajectory I/O (NetCDF)
+│   │   ├── interpolation_schemes.jl  # TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC
+│   │   └── halo_exchange.jl          # MPI halo exchange for particles
+│   │
+│   └── pretty_printing.jl    # Display formatting for structs
+│
+├── test/
+│   ├── runtests.jl           # Main test suite
+│   ├── test_mpi_extension.jl # MPI-specific tests
+│   └── test_parallel_particles_detailed.jl
+│
+├── docs/
+│   ├── make.jl               # Documenter.jl build script
+│   └── src/                  # Documentation source (Markdown)
+│
+└── ext/
+    └── QGYBJplusMPIExt.jl    # MPI extension (auto-loaded with MPI.jl)
 ```
 
 ## Naming Conventions
