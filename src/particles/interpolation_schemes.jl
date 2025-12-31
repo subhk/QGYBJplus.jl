@@ -164,16 +164,17 @@ function tricubic_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
     
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, 0, Lz)
+    z_clamped = clamp(z, z0, Lz)
     
     # Convert to grid coordinates
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = z_clamped / dz
+    fz = (z_clamped - z0) / dz
     
     # Get integer parts and fractional coordinates
     ix = floor(Int, fx)
@@ -314,11 +315,13 @@ function estimate_field_smoothness(x::T, y::T, z::T,
     
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
     
     # Convert to grid indices
     ix_raw = round(Int, x / dx)
     iy_raw = round(Int, y / dy)
-    iz_raw = round(Int, z / dz)
+    z_clamped = clamp(z, z0, grid_info.Lz)
+    iz_raw = round(Int, (z_clamped - z0) / dz)
 
     ix = nx >= 3 ? clamp(ix_raw, 2, nx - 1) : clamp(ix_raw, 1, nx)
     iy = ny >= 3 ? clamp(iy_raw, 2, ny - 1) : clamp(iy_raw, 1, ny)
@@ -368,16 +371,17 @@ function trilinear_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
     
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, 0, Lz)
+    z_clamped = clamp(z, z0, Lz)
     
     # Convert to grid indices
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = z_clamped / dz
+    fz = (z_clamped - z0) / dz
     
     ix = floor(Int, fx)
     iy = floor(Int, fy)
@@ -467,16 +471,17 @@ function quintic_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
 
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, 0, Lz)
+    z_clamped = clamp(z, z0, Lz)
 
     # Convert to grid coordinates
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = z_clamped / dz
+    fz = (z_clamped - z0) / dz
 
     # Get integer parts and fractional coordinates
     ix = floor(Int, fx)

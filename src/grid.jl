@@ -125,7 +125,7 @@ Base.@kwdef mutable struct Grid{T, AT}
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
     #= Vertical grid (unstaggered) =#
-    z::Vector{T}           # Vertical levels z[k] ∈ [0, Lz], size nz
+    z::Vector{T}           # Vertical levels z[k] ∈ (0, Lz], size nz
     dz::Vector{T}          # Layer thicknesses: dz[k] = z[k+1] - z[k], size nz-1
 
     #= Spectral wavenumbers =#
@@ -144,7 +144,7 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 
 # Grid Setup
 - Horizontal: Uniform grid with spacing dx = Lx/nx, dy = Ly/ny
-- Vertical: Uniform grid from 0 to Lz with spacing dz = Lz/(nz-1)
+- Vertical: Uniform grid from dz to Lz with spacing dz = Lz/nz
 - Domain size (Lx, Ly, Lz) is REQUIRED - specify in meters (e.g., 500e3 for 500 km)
 
 # Wavenumber Arrays
@@ -179,17 +179,17 @@ function init_grid(par::QGParams)
     dx = par.Lx / nx
     dy = par.Ly / ny
 
-    #= Vertical grid: z ∈ [0, Lz]
-    z[k] ranges from 0 to Lz with nz points
+    #= Vertical grid: z ∈ (0, Lz]
+    z[k] ranges from dz to Lz with nz points
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
-    # Handle nz=1 edge case: range() requires length>=2 when endpoints differ
-    z = if nz == 1
-        T[par.Lz / 2]  # Single point at mid-depth
+    if nz == 1
+        z = T[par.Lz]  # Single point at the top boundary
+        dz = T[par.Lz]
     else
-        T.(collect(range(0, par.Lz; length=nz)))
+        dz_scalar = par.Lz / nz
+        z = T.(dz_scalar .* collect(1:nz))
+        dz = fill(T(dz_scalar), nz - 1)
     end
-    # Handle nz=1 edge case: diff returns empty array, so use full domain depth
-    dz = nz > 1 ? diff(z) : T[par.Lz]
 
     #= Wavenumbers for periodic domain
     Following FFTW convention:

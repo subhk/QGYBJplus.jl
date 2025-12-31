@@ -72,7 +72,7 @@ Lx, Ly = grid.Lx, grid.Ly
 # Grid spacings
 dx, dy = grid.dx, grid.dy
 
-# Vertical levels
+# Vertical levels (z runs from dz to Lz with dz = Lz/nz)
 z = grid.z       # Vector of length nz
 dz = grid.dz     # Vector of length nz-1
 

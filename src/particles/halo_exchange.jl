@@ -754,7 +754,8 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     # Handle periodic boundaries using GLOBAL domain lengths
     x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
-    z_clamped = clamp(z, 0, tracker.Lz)
+    z0 = tracker.dz
+    z_clamped = clamp(z, z0, tracker.Lz)
 
     # Compute local domain start positions
     x_start = compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
@@ -769,7 +770,7 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     # Convert to extended grid indices (accounting for halo offset)
     fx = x_local / tracker.dx + hw + 1  # +1 for 1-based indexing
     fy = y_local / tracker.dy + hw + 1
-    fz = z_clamped / tracker.dz + 1
+    fz = (z_clamped - z0) / tracker.dz + 1
 
     # Get integer and fractional parts
     ix = floor(Int, fx)

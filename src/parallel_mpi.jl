@@ -436,12 +436,14 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
     dy = params.Ly / ny
 
     # Vertical grid (same on all processes)
-    z = if nz == 1
-        T[params.Lz / 2]
+    if nz == 1
+        z = T[params.Lz]
+        dz = T[params.Lz]
     else
-        T.(collect(range(0, params.Lz; length=nz)))
+        dz_scalar = params.Lz / nz
+        z = T.(dz_scalar .* collect(1:nz))
+        dz = fill(T(dz_scalar), nz - 1)
     end
-    dz = nz > 1 ? diff(z) : T[params.Lz]
 
     # Wavenumbers (global arrays, same on all processes)
     kx = T.([i <= (nx+1)÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
