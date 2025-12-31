@@ -79,9 +79,10 @@ QGYBJplus.jl/
 │   ├── make.jl               # Documenter.jl build script
 │   └── src/                  # Documentation source (Markdown)
 │
-└── ext/
-    └── QGYBJplusMPIExt.jl    # MPI extension (auto-loaded with MPI.jl)
 ```
+
+MPI support is built into the main module via `src/parallel_mpi.jl`
+(there is no `ext/` directory in this repository).
 
 ## Naming Conventions
 

@@ -158,7 +158,8 @@ The physics is implemented across several modules:
 | `elliptic.jl` | q → ψ and B → A inversions |
 | `nonlinear.jl` | Jacobians, refraction, wave feedback |
 | `operators.jl` | Velocity computation |
-| `timestep.jl` | Time integration |
+| `timestep.jl` | Time integration (Euler/Leapfrog) |
+| `timestep_imex.jl` | IMEX-CNAB time integration for waves |
 | `diagnostics.jl` | Energy and omega equation |
 
 ## Further Reading
