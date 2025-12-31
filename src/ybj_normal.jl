@@ -14,7 +14,7 @@ YBJ vs YBJ+ COMPARISON:
    - More accurate for high vertical wavenumber modes
 
 2. Normal YBJ (this file):
-   - B = N² ∂²A/∂z² (simplified relation)
+   - B = (∂²A/∂z²) / N² (implementation uses N²-weighted inversion)
    - Recover A from B via vertical INTEGRATION
    - Computationally simpler but less accurate for high-kz
 
@@ -27,7 +27,7 @@ The normal YBJ equation describes near-inertial wave evolution:
 where:
 - αdisp = N²/(2f) is the dispersion coefficient
 - ζ = ∇²ψ is the relative vorticity
-- B is related to the wave amplitude A by: B ≈ N² ∂²A/∂z² (simplified)
+- B is related to the wave amplitude A by: B ≈ (∂²A/∂z²) / N² (implementation form)
 
 To recover A from B, we integrate twice in z with appropriate constraints.
 
@@ -80,7 +80,7 @@ Remove the vertical mean from the wave envelope B at each horizontal wavenumber.
 # Physical Background
 In the normal YBJ formulation, the wave envelope B is related to amplitude A by:
 
-    B = N² ∂²A/∂z²
+    B = (∂²A/∂z²) / N²
 
 Since ∂²A/∂z² must integrate to zero (boundary conditions), B should have
 zero vertical mean. This function enforces that constraint.
@@ -362,11 +362,11 @@ Recover wave amplitude A from envelope B using normal YBJ vertical integration.
 # Physical Background
 In normal YBJ, B and A are related by:
 
-    B = N² ∂²A/∂z²
+    B = (∂²A/∂z²) / N²
 
-To recover A from B, we integrate twice:
-1. First integral: ∂A/∂z = ∫ B/N² dz + c₁
-2. Second integral: A = ∫∫ B/N² dz² + c₁z + c₂
+To recover A from B, we integrate twice using the N² weight:
+1. First integral: ∂A/∂z = ∫ B · N² dz + c₁
+2. Second integral: A = ∫∫ B · N² dz² + c₁z + c₂
 
 The constants are determined by:
 - Boundary condition: ∂A/∂z = 0 at top (Neumann)
