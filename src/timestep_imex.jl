@@ -17,7 +17,8 @@ Step 1: First half-refraction (Strang)
     B* = B^n × exp(-i·(dt/2)·ζ/2)
 
 Step 2: IMEX-CNAB for advection + dispersion
-    - EXPLICIT (AB2): (3/2)N^n - (1/2)N^{n-1}  where N = -J(ψ,B)
+    - EXPLICIT (AB2): (3/2)N^n - (1/2)N^{n-1}  where N = -J(ψ,B*) and
+      B* is the half-refraction state
     - IMPLICIT (CN):  (1/2)[L(B*) + L(B^{n+1})]  where L(B) = i·αdisp·kₕ²·A
 
 Step 3: Second half-refraction (Strang)
@@ -202,17 +203,28 @@ This is energy-preserving since |exp(-i·Δt·ζ/2)| = 1 for real ζ.
 """
 function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
                                  dt_fraction::Real=1.0, dealias_mask=nothing)
-    # Skip refraction for passive scalar mode
-    if par.passive_scalar
-        parent(Bk_out) .= parent(Bk_in)
-        return Bk_out
-    end
-
     dt = par.dt * dt_fraction
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψk)
     nz_spec, nx_spec, ny_spec = size(ψ_arr)
+
+    # Skip refraction for passive scalar mode, but still enforce dealiasing
+    if par.passive_scalar
+        parent(Bk_out) .= parent(Bk_in)
+        Bk_out_arr = parent(Bk_out)
+        nz_spec, nx_spec, ny_spec = size(Bk_out_arr)
+        use_inline_dealias = isnothing(dealias_mask)
+        @inline should_keep(i_g, j_g) = use_inline_dealias ? is_dealiased(i_g, j_g, nx, ny) : dealias_mask[i_g, j_g]
+        @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
+            i_global = local_to_global(i_local, 2, Bk_out)
+            j_global = local_to_global(j_local, 3, Bk_out)
+            if !should_keep(i_global, j_global)
+                Bk_out_arr[k, i_local, j_local] = 0
+            end
+        end
+        return Bk_out
+    end
 
     # Compute vorticity ζ = -kₕ²ψ in spectral space
     ζk = similar(ψk)
@@ -421,7 +433,11 @@ function first_imex_step!(S::State, G::Grid, par::QGParams, plans, imex_ws::IMEX
     end
     compute_velocities!(S, G; plans=plans, params=par, N2_profile=N2_profile,
                         workspace=workspace, dealias_mask=L, compute_w=false)
-    convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, S.B, G, plans; Lmask=L)
+
+    # Use half-step refraction state for AB2 history to stay consistent with Strang splitting
+    apply_refraction_exact!(imex_ws.Bstar, S.B, S.psi, G, par, plans;
+                            dt_fraction=0.5, dealias_mask=L)
+    convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, imex_ws.Bstar, G, plans; Lmask=L)
 
     # Initialize q advection history for AB2
     tqk_prev_arr = parent(imex_ws.tqk_prev)
@@ -474,18 +490,19 @@ This achieves second-order temporal accuracy through:
 - Crank-Nicolson for dispersion (second-order)
 
 # Algorithm
-1. Compute advection tendencies at time n: N^n = -J(ψ^n, B^n), Q^n = -J(ψ^n, q^n)
+1. Compute q advection at time n: Q^n = -J(ψ^n, q^n)
 2. Apply first half-refraction: B* = B^n × exp(-i·(dt/2)·ζ/2)
-3. For each spectral mode (kx, ky) solve IMEX-CNAB for B:
+3. Compute B advection using B*: N^n = -J(ψ^n, B*)
+4. For each spectral mode (kx, ky) solve IMEX-CNAB for B:
    a. Compute A* = (L⁺)⁻¹B* (essential for IMEX-CN consistency!)
    b. Build RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (3dt/2)·N^n - (dt/2)·N^{n-1}
    c. Solve modified elliptic: (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
    d. Recover B** = RHS + β·A^{n+1}
-4. Update q with CNAB: (I - dt/2·L)·q^{n+1} = (I + dt/2·L)·q^n + dt·[ (3/2)Q^n - (1/2)Q^{n-1} ]
+5. Update q with CNAB: (I - dt/2·L)·q^{n+1} = (I + dt/2·L)·q^n + dt·[ (3/2)Q^n - (1/2)Q^{n-1} ]
    where L = νz∂zz - λ_h (vertical diffusion + hyperdiffusion)
-5. Compute ψ^{n+1} predictor from q^{n+1} (and q^w predictor when enabled)
-6. Apply second half-refraction using ψ^{n+1} predictor
-7. Store tendencies for next step (AB2)
+6. Compute ψ^{n+1} predictor from q^{n+1} (and q^w predictor when enabled)
+7. Apply second half-refraction using ψ^{n+1} predictor
+8. Store tendencies for next step (AB2)
 
 # Arguments
 - `Snp1::State`: State at time n+1 (output)
@@ -558,11 +575,6 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     if !par.fixed_flow
         convol_waqg_q!(imex_ws.nqk, Sn.u, Sn.v, Sn.q, G, plans; Lmask=L)
     end
-    convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
-
-    # Note: Refraction is now handled exactly via operator splitting in Step 3.5,
-    # so we skip the explicit refraction_waqg_B! computation.
-
     # Vertical diffusion for q - skip if flow is fixed
     if !par.fixed_flow
         dissipation_q_nv!(imex_ws.dqk, Sn.q, par, G; workspace=workspace)
@@ -602,6 +614,10 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     # Get B* array for use in IMEX loop
     Bstar_arr = parent(Bstar)
+
+    # IMPORTANT: Compute B advection using the refraction-rotated state (B*).
+    # This keeps the Strang split consistent and preserves second-order accuracy.
+    convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Bstar, G, plans; Lmask=L)
 
     # IMPORTANT: We must compute A* = (L⁺)⁻¹B* for consistency.
     # Using A^n with B* breaks the relation A = (L⁺)⁻¹B that IMEX-CN relies on,
@@ -872,21 +888,6 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + advection_term
-            end
-
-            # Check if RHS is too small for stable implicit solve
-            rhs_max = maximum(k -> abs(tl.RHS_col[k]), 1:nz_local)
-            if rhs_max < 1e-20
-                # Explicit fallback: B** = B* + advection + disp*
-                for k in 1:nz_local
-                    N_n = -nBk_arr[k, i, j]
-                    N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
-                    disp_k = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
-                    advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                    Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term + dt * disp_k) * hyperdiff_factor
-                    Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
-                end
-                continue
             end
 
             # Step 3: Solve modified elliptic problem for A^{n+1}
