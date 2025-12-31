@@ -23,6 +23,22 @@ export ParticleConfig3D, ParticleDistribution,
        particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom
 
+function _parallel_local_domain(tracker)
+    if hasproperty(tracker, :is_parallel) && getproperty(tracker, :is_parallel) &&
+       hasproperty(tracker, :local_domain)
+        return getproperty(tracker, :local_domain)
+    end
+    return nothing
+end
+
+function _within_local_domain(x, y, local_domain, Lx, Ly)
+    in_x = x >= local_domain.x_start &&
+           (x < local_domain.x_end || (x == local_domain.x_end && local_domain.x_end == Lx))
+    in_y = y >= local_domain.y_start &&
+           (y < local_domain.y_end || (y == local_domain.y_end && local_domain.y_end == Ly))
+    return in_x && in_y
+end
+
 """
 Available particle distribution patterns.
 """
@@ -81,13 +97,17 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     # I/O configuration
     save_interval::T = 0.1
     max_save_points::Int = 1000
+
+    # Random distribution seed
+    seed::Int = 1234
     
     # Validation
     function ParticleConfig3D{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                                 distribution_type, nx_particles, ny_particles, nz_particles,
                                 z_levels, particles_per_level, custom_x, custom_y, custom_z,
                                 use_ybj_w, use_3d_advection, integration_method, interpolation_method,
-                                periodic_x, periodic_y, reflect_z, save_interval, max_save_points) where T
+                                periodic_x, periodic_y, reflect_z, save_interval, max_save_points,
+                                seed) where T
         
         # Basic validation
         @assert x_max > x_min "x_max must be greater than x_min"
@@ -103,6 +123,10 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
                 @assert all(z_min ≤ z ≤ z_max for z in z_levels) "All z_levels must be within [z_min, z_max]"
                 @assert length(z_levels) == length(unique(z_levels)) "z_levels must be unique"
             end
+            if !isempty(particles_per_level)
+                expected_levels = isempty(z_levels) ? nz_particles : length(z_levels)
+                @assert length(particles_per_level) == expected_levels "particles_per_level must match number of levels"
+            end
         elseif distribution_type == CUSTOM
             @assert length(custom_x) == length(custom_y) == length(custom_z) "Custom position arrays must have same length"
             if !isempty(custom_x)
@@ -116,7 +140,7 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
                distribution_type, nx_particles, ny_particles, nz_particles,
                z_levels, particles_per_level, custom_x, custom_y, custom_z,
                use_ybj_w, use_3d_advection, integration_method, interpolation_method,
-               periodic_x, periodic_y, reflect_z, save_interval, max_save_points)
+               periodic_x, periodic_y, reflect_z, save_interval, max_save_points, seed)
     end
 end
 
@@ -186,6 +210,8 @@ function particles_in_layers(z_levels::Vector{<:Real};
     # Default: same number of particles per level
     if isempty(particles_per_level)
         particles_per_level = fill(nx * ny, length(z_levels_T))
+    else
+        @assert length(particles_per_level) == length(z_levels_T) "particles_per_level must match length(z_levels)"
     end
 
     return ParticleConfig3D{T}(
@@ -224,18 +250,12 @@ function particles_random_3d(n::Int;
                             seed::Int=1234, kwargs...)
     T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
 
-    # Generate random positions
-    Random.seed!(seed)
-    custom_x = T(x_min) .+ (T(x_max) - T(x_min)) .* rand(T, n)
-    custom_y = T(y_min) .+ (T(y_max) - T(y_min)) .* rand(T, n)
-    custom_z = T(z_min) .+ (T(z_max) - T(z_min)) .* rand(T, n)
-
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
         z_min=T(z_min), z_max=T(z_max),
-        distribution_type=CUSTOM,
+        distribution_type=RANDOM_3D,
         nx_particles=n, ny_particles=1, nz_particles=1,
-        custom_x=custom_x, custom_y=custom_y, custom_z=custom_z;
+        seed=seed;
         kwargs...
     )
 end
@@ -435,7 +455,9 @@ function initialize_particles_3d!(tracker, config::ParticleConfig3D{T}) where T
         initialize_uniform_3d_grid!(tracker, config)
     elseif config.distribution_type == LAYERED
         initialize_layered_distribution!(tracker, config)
-    elseif config.distribution_type == RANDOM_3D || config.distribution_type == CUSTOM
+    elseif config.distribution_type == RANDOM_3D
+        initialize_random_positions!(tracker, config)
+    elseif config.distribution_type == CUSTOM
         initialize_custom_positions!(tracker, config)
     else
         error("Unknown distribution type: $(config.distribution_type)")
@@ -456,31 +478,86 @@ end
 Initialize uniform 3D grid of particles.
 """
 function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where T
-    
-    # Create 3D grid
+
+    local_domain = _parallel_local_domain(tracker)
+    dxp = (config.x_max - config.x_min) / config.nx_particles
+    dyp = (config.y_max - config.y_min) / config.ny_particles
+    dzp = (config.z_max - config.z_min) / config.nz_particles
+
+    if local_domain !== nothing
+        tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
+        x_rel_min = (local_domain.x_start - config.x_min) / dxp
+        x_rel_max = (local_domain.x_end - config.x_min) / dxp
+        y_rel_min = (local_domain.y_start - config.y_min) / dyp
+        y_rel_max = (local_domain.y_end - config.y_min) / dyp
+
+        i_start = max(1, floor(Int, x_rel_min + tol) + 1)
+        i_end = min(config.nx_particles, ceil(Int, x_rel_max - tol))
+        j_start = max(1, floor(Int, y_rel_min + tol) + 1)
+        j_end = min(config.ny_particles, ceil(Int, y_rel_max - tol))
+
+        if i_start > i_end || j_start > j_end
+            resize!(tracker.particles.x, 0)
+            resize!(tracker.particles.y, 0)
+            resize!(tracker.particles.z, 0)
+            resize!(tracker.particles.id, 0)
+            resize!(tracker.particles.u, 0)
+            resize!(tracker.particles.v, 0)
+            resize!(tracker.particles.w, 0)
+            tracker.particles.np = 0
+            return tracker
+        end
+
+        total_particles = (i_end - i_start + 1) * (j_end - j_start + 1) * config.nz_particles
+
+        resize!(tracker.particles.x, total_particles)
+        resize!(tracker.particles.y, total_particles)
+        resize!(tracker.particles.z, total_particles)
+        resize!(tracker.particles.id, total_particles)
+        resize!(tracker.particles.u, total_particles)
+        resize!(tracker.particles.v, total_particles)
+        resize!(tracker.particles.w, total_particles)
+
+        idx = 1
+        for k in 1:config.nz_particles, j in j_start:j_end, i in i_start:i_end
+            tracker.particles.x[idx] = config.x_min + (i - 1) * dxp
+            tracker.particles.y[idx] = config.y_min + (j - 1) * dyp
+            tracker.particles.z[idx] = config.z_min + (k - 1) * dzp
+            tracker.particles.id[idx] = (k - 1) * config.nx_particles * config.ny_particles +
+                                        (j - 1) * config.nx_particles + i
+            idx += 1
+        end
+
+        tracker.particles.np = total_particles
+        return tracker
+    end
+
+    # Create 3D grid (serial or no local domain)
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
     z_range = range(config.z_min, config.z_max, length=config.nz_particles+1)[1:end-1]
-    
+
     total_particles = config.nx_particles * config.ny_particles * config.nz_particles
-    
+
     # Resize particle arrays
     resize!(tracker.particles.x, total_particles)
     resize!(tracker.particles.y, total_particles)
     resize!(tracker.particles.z, total_particles)
+    resize!(tracker.particles.id, total_particles)
     resize!(tracker.particles.u, total_particles)
     resize!(tracker.particles.v, total_particles)
     resize!(tracker.particles.w, total_particles)
-    
+
     # Fill particle positions
     idx = 1
     for z in z_range, y in y_range, x in x_range
         tracker.particles.x[idx] = x
         tracker.particles.y[idx] = y
         tracker.particles.z[idx] = z
+        tracker.particles.id[idx] = idx
         idx += 1
     end
-    
+
     tracker.particles.np = total_particles
     
     return tracker
@@ -501,13 +578,87 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     else
         particles_per_level = config.particles_per_level
     end
+    @assert length(particles_per_level) == length(z_levels) "particles_per_level must match number of layers"
     
-    total_particles = sum(particles_per_level)
+    local_domain = _parallel_local_domain(tracker)
+    total_particles = 0
+    n_levels = length(z_levels)
+
+    nx_levels = Vector{Int}(undef, n_levels)
+    ny_levels = Vector{Int}(undef, n_levels)
+    i_starts = Vector{Int}(undef, n_levels)
+    i_ends = Vector{Int}(undef, n_levels)
+    j_starts = Vector{Int}(undef, n_levels)
+    j_ends = Vector{Int}(undef, n_levels)
+    level_counts = Vector{Int}(undef, n_levels)
+    level_offsets = Vector{Int}(undef, n_levels)
+
+    tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
     
+    offset = 0
+    for level in 1:n_levels
+        level_offsets[level] = offset
+        n_level = particles_per_level[level]
+        offset += n_level
+        if n_level <= 0
+            nx_levels[level] = 0
+            ny_levels[level] = 0
+            i_starts[level] = 1
+            i_ends[level] = 0
+            j_starts[level] = 1
+            j_ends[level] = 0
+            level_counts[level] = 0
+            continue
+        end
+
+        aspect = config.nx_particles / config.ny_particles
+        ny_level = max(1, round(Int, sqrt(n_level / aspect)))
+        nx_level = max(1, ceil(Int, n_level / ny_level))
+
+        if local_domain !== nothing
+            dxp = (config.x_max - config.x_min) / nx_level
+            dyp = (config.y_max - config.y_min) / ny_level
+            x_rel_min = (local_domain.x_start - config.x_min) / dxp
+            x_rel_max = (local_domain.x_end - config.x_min) / dxp
+            y_rel_min = (local_domain.y_start - config.y_min) / dyp
+            y_rel_max = (local_domain.y_end - config.y_min) / dyp
+
+            i_start = max(1, floor(Int, x_rel_min + tol) + 1)
+            i_end = min(nx_level, ceil(Int, x_rel_max - tol))
+            j_start = max(1, floor(Int, y_rel_min + tol) + 1)
+            j_end = min(ny_level, ceil(Int, y_rel_max - tol))
+        else
+            i_start = 1
+            i_end = nx_level
+            j_start = 1
+            j_end = ny_level
+        end
+
+        count = 0
+        if i_start <= i_end && j_start <= j_end
+            for j in j_start:j_end
+                max_i = min(i_end, n_level - (j - 1) * nx_level)
+                if max_i >= i_start
+                    count += max_i - i_start + 1
+                end
+            end
+        end
+
+        nx_levels[level] = nx_level
+        ny_levels[level] = ny_level
+        i_starts[level] = i_start
+        i_ends[level] = i_end
+        j_starts[level] = j_start
+        j_ends[level] = j_end
+        level_counts[level] = count
+        total_particles += count
+    end
+
     # Resize particle arrays
     resize!(tracker.particles.x, total_particles)
     resize!(tracker.particles.y, total_particles)
     resize!(tracker.particles.z, total_particles)
+    resize!(tracker.particles.id, total_particles)
     resize!(tracker.particles.u, total_particles)
     resize!(tracker.particles.v, total_particles)
     resize!(tracker.particles.w, total_particles)
@@ -516,21 +667,30 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     idx = 1
     for (level, z_level) in enumerate(z_levels)
         n_level = particles_per_level[level]
-        
-        # Estimate grid size for this level
-        ny_level = config.ny_particles
-        nx_level = div(n_level, ny_level)
-        
-        # Create 2D grid for this level
-        x_range = range(config.x_min, config.x_max, length=nx_level+1)[1:end-1]
-        y_range = range(config.y_min, config.y_max, length=ny_level+1)[1:end-1]
-        
-        # Place particles
-        for y in y_range, x in x_range
-            if idx <= total_particles
-                tracker.particles.x[idx] = x
-                tracker.particles.y[idx] = y
+        if level_counts[level] == 0
+            continue
+        end
+
+        nx_level = nx_levels[level]
+        ny_level = ny_levels[level]
+        i_start = i_starts[level]
+        i_end = i_ends[level]
+        j_start = j_starts[level]
+        j_end = j_ends[level]
+
+        dxp = (config.x_max - config.x_min) / nx_level
+        dyp = (config.y_max - config.y_min) / ny_level
+
+        for j in j_start:j_end
+            max_i = min(i_end, n_level - (j - 1) * nx_level)
+            if max_i < i_start
+                continue
+            end
+            for i in i_start:max_i
+                tracker.particles.x[idx] = config.x_min + (i - 1) * dxp
+                tracker.particles.y[idx] = config.y_min + (j - 1) * dyp
                 tracker.particles.z[idx] = z_level
+                tracker.particles.id[idx] = level_offsets[level] + (j - 1) * nx_level + i
                 idx += 1
             end
         end
@@ -547,22 +707,125 @@ Initialize particles at custom positions.
 function initialize_custom_positions!(tracker, config::ParticleConfig3D{T}) where T
     
     n_particles = length(config.custom_x)
-    
+
+    local_domain = _parallel_local_domain(tracker)
+    if local_domain !== nothing
+        keep = Int[]
+        for i in 1:n_particles
+            x = config.periodic_x ? mod(config.custom_x[i], tracker.Lx) : config.custom_x[i]
+            y = config.periodic_y ? mod(config.custom_y[i], tracker.Ly) : config.custom_y[i]
+            if _within_local_domain(x, y, local_domain, tracker.Lx, tracker.Ly)
+                push!(keep, i)
+            end
+        end
+
+        n_local = length(keep)
+        resize!(tracker.particles.x, n_local)
+        resize!(tracker.particles.y, n_local)
+        resize!(tracker.particles.z, n_local)
+        resize!(tracker.particles.id, n_local)
+        resize!(tracker.particles.u, n_local)
+        resize!(tracker.particles.v, n_local)
+        resize!(tracker.particles.w, n_local)
+
+        for (j, idx) in enumerate(keep)
+            tracker.particles.x[j] = config.custom_x[idx]
+            tracker.particles.y[j] = config.custom_y[idx]
+            tracker.particles.z[j] = config.custom_z[idx]
+            tracker.particles.id[j] = idx
+        end
+
+        tracker.particles.np = n_local
+        return tracker
+    end
+
     # Resize particle arrays
     resize!(tracker.particles.x, n_particles)
     resize!(tracker.particles.y, n_particles)
     resize!(tracker.particles.z, n_particles)
+    resize!(tracker.particles.id, n_particles)
     resize!(tracker.particles.u, n_particles)
     resize!(tracker.particles.v, n_particles)
     resize!(tracker.particles.w, n_particles)
-    
+
     # Copy custom positions
     tracker.particles.x .= config.custom_x
     tracker.particles.y .= config.custom_y
     tracker.particles.z .= config.custom_z
-    
+    tracker.particles.id .= collect(1:n_particles)
+
     tracker.particles.np = n_particles
     
+    return tracker
+end
+
+"""
+Initialize particles at random positions within the 3D domain.
+"""
+function initialize_random_positions!(tracker, config::ParticleConfig3D{T}) where T
+    n_particles = config.nx_particles * config.ny_particles * config.nz_particles
+    if n_particles <= 0
+        resize!(tracker.particles.x, 0)
+        resize!(tracker.particles.y, 0)
+        resize!(tracker.particles.z, 0)
+        resize!(tracker.particles.id, 0)
+        resize!(tracker.particles.u, 0)
+        resize!(tracker.particles.v, 0)
+        resize!(tracker.particles.w, 0)
+        tracker.particles.np = 0
+        return tracker
+    end
+
+    rng = MersenneTwister(config.seed)
+    xs = T(config.x_min) .+ (T(config.x_max) - T(config.x_min)) .* rand(rng, T, n_particles)
+    ys = T(config.y_min) .+ (T(config.y_max) - T(config.y_min)) .* rand(rng, T, n_particles)
+    zs = T(config.z_min) .+ (T(config.z_max) - T(config.z_min)) .* rand(rng, T, n_particles)
+
+    local_domain = _parallel_local_domain(tracker)
+    if local_domain !== nothing
+        keep = Int[]
+        for i in 1:n_particles
+            x = config.periodic_x ? mod(xs[i], tracker.Lx) : xs[i]
+            y = config.periodic_y ? mod(ys[i], tracker.Ly) : ys[i]
+            if _within_local_domain(x, y, local_domain, tracker.Lx, tracker.Ly)
+                push!(keep, i)
+            end
+        end
+
+        n_local = length(keep)
+        resize!(tracker.particles.x, n_local)
+        resize!(tracker.particles.y, n_local)
+        resize!(tracker.particles.z, n_local)
+        resize!(tracker.particles.id, n_local)
+        resize!(tracker.particles.u, n_local)
+        resize!(tracker.particles.v, n_local)
+        resize!(tracker.particles.w, n_local)
+
+        for (j, idx) in enumerate(keep)
+            tracker.particles.x[j] = xs[idx]
+            tracker.particles.y[j] = ys[idx]
+            tracker.particles.z[j] = zs[idx]
+            tracker.particles.id[j] = idx
+        end
+
+        tracker.particles.np = n_local
+        return tracker
+    end
+
+    resize!(tracker.particles.x, n_particles)
+    resize!(tracker.particles.y, n_particles)
+    resize!(tracker.particles.z, n_particles)
+    resize!(tracker.particles.id, n_particles)
+    resize!(tracker.particles.u, n_particles)
+    resize!(tracker.particles.v, n_particles)
+    resize!(tracker.particles.w, n_particles)
+
+    tracker.particles.x .= xs
+    tracker.particles.y .= ys
+    tracker.particles.z .= zs
+    tracker.particles.id .= collect(1:n_particles)
+
+    tracker.particles.np = n_particles
     return tracker
 end
 

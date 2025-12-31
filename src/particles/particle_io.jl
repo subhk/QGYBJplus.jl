@@ -17,6 +17,7 @@ module ParticleIO
 
 using Dates
 using NCDatasets
+using MPI
 using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
 # NCDatasets is always available since it's a required dependency (using NCDatasets above)
@@ -29,6 +30,101 @@ export write_particle_trajectories, read_particle_trajectories,
        ParticleOutputManager, setup_particle_output!,
        should_save_particles, save_particle_positions!,
        finalize_particle_output!
+
+function _dim_length(ds, name::String)
+    dim = ds.dim[name]
+    return length(dim)
+end
+
+function _gatherv_vector(sendbuf, counts::Vector{Cint}, comm::MPI.Comm; root::Int=0)
+    if MPI.Comm_rank(comm) == root
+        recvbuf = similar(sendbuf, sum(counts))
+        MPI.Gatherv!(sendbuf, MPI.VBuffer(recvbuf, counts), comm; root=root)
+        return recvbuf
+    end
+    MPI.Gatherv!(sendbuf, nothing, comm; root=root)
+    return nothing
+end
+
+function _gather_particle_snapshot(tracker::ParticleTracker{T}) where T
+    particles = tracker.particles
+    if !tracker.is_parallel || tracker.comm === nothing
+        return (
+            ids = copy(particles.id),
+            x = copy(particles.x),
+            y = copy(particles.y),
+            z = copy(particles.z),
+            u = copy(particles.u),
+            v = copy(particles.v),
+            w = copy(particles.w)
+        )
+    end
+
+    comm = tracker.comm
+    root = 0
+    counts = MPI.gather(particles.np, comm; root=root)
+    counts_c = counts === nothing ? Cint[] : Cint.(counts)
+
+    ids = _gatherv_vector(particles.id, counts_c, comm; root=root)
+    x = _gatherv_vector(particles.x, counts_c, comm; root=root)
+    y = _gatherv_vector(particles.y, counts_c, comm; root=root)
+    z = _gatherv_vector(particles.z, counts_c, comm; root=root)
+    u = _gatherv_vector(particles.u, counts_c, comm; root=root)
+    v = _gatherv_vector(particles.v, counts_c, comm; root=root)
+    w = _gatherv_vector(particles.w, counts_c, comm; root=root)
+
+    if MPI.Comm_rank(comm) != root
+        return nothing
+    end
+
+    perm = sortperm(ids)
+    return (
+        ids = ids[perm],
+        x = x[perm],
+        y = y[perm],
+        z = z[perm],
+        u = u[perm],
+        v = v[perm],
+        w = w[perm]
+    )
+end
+
+function _gather_particle_positions(tracker::ParticleTracker{T},
+                                    ids_local::Vector{Int},
+                                    x_local::Vector{T},
+                                    y_local::Vector{T},
+                                    z_local::Vector{T}) where T
+    if !tracker.is_parallel || tracker.comm === nothing
+        return (
+            ids = copy(ids_local),
+            x = copy(x_local),
+            y = copy(y_local),
+            z = copy(z_local)
+        )
+    end
+
+    comm = tracker.comm
+    root = 0
+    counts = MPI.gather(length(ids_local), comm; root=root)
+    counts_c = counts === nothing ? Cint[] : Cint.(counts)
+
+    ids = _gatherv_vector(ids_local, counts_c, comm; root=root)
+    x = _gatherv_vector(x_local, counts_c, comm; root=root)
+    y = _gatherv_vector(y_local, counts_c, comm; root=root)
+    z = _gatherv_vector(z_local, counts_c, comm; root=root)
+
+    if MPI.Comm_rank(comm) != root
+        return nothing
+    end
+
+    perm = sortperm(ids)
+    return (
+        ids = ids[perm],
+        x = x[perm],
+        y = y[perm],
+        z = z[perm]
+    )
+end
 
 #=
 ================================================================================
@@ -94,6 +190,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     u_series::Vector{Vector{T}}
     v_series::Vector{Vector{T}}
     w_series::Vector{Vector{T}}
+    particle_ids::Vector{Int}
 
     # State flags
     initialized::Bool
@@ -125,6 +222,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
             Vector{T}[],             # u_series
             Vector{T}[],             # v_series
             Vector{T}[],             # w_series
+            Int[],                   # particle_ids
             false,                   # initialized
             true                     # is_io_rank (default true for serial)
         )
@@ -150,6 +248,9 @@ function setup_particle_output!(manager::ParticleOutputManager{T},
                                 rank::Int=0) where T
 
     manager.is_io_rank = (rank == 0)
+    np_global = tracker.is_parallel && tracker.comm !== nothing ?
+                MPI.Allreduce(tracker.particles.np, +, tracker.comm) :
+                tracker.particles.np
 
     if manager.is_io_rank
         # Create particles directory
@@ -163,7 +264,7 @@ function setup_particle_output!(manager::ParticleOutputManager{T},
             # Create streaming file with unlimited time dimension
             manager.current_file = joinpath(manager.particle_dir,
                                            "$(manager.file_prefix)_stream.nc")
-            create_streaming_particle_file!(manager, tracker)
+            create_streaming_particle_file!(manager, tracker; np_global=np_global)
         elseif manager.output_mode == :trajectory
             # Trajectory mode accumulates in memory, writes at end
             manager.current_file = joinpath(manager.particle_dir,
@@ -214,29 +315,38 @@ Save current particle positions based on the output mode.
 function save_particle_positions!(manager::ParticleOutputManager{T},
                                   tracker::ParticleTracker{T},
                                   iteration::Int, time::T) where T
+    data = _gather_particle_snapshot(tracker)
     if !manager.is_io_rank
         return manager
     end
+    if data === nothing
+        return manager
+    end
 
-    particles = tracker.particles
+    if isempty(manager.particle_ids)
+        manager.particle_ids = data.ids
+    elseif manager.particle_ids != data.ids
+        @warn "Particle ID ordering changed between saves; updating output ordering"
+        manager.particle_ids = data.ids
+    end
 
     if manager.output_mode == :snapshots
         # Save individual snapshot file
-        save_particle_snapshot!(manager, tracker, iteration, time)
+        save_particle_snapshot!(manager, tracker, iteration, time; data=data)
 
     elseif manager.output_mode == :trajectory
         # Accumulate in memory
         push!(manager.time_series, time)
-        push!(manager.x_series, copy(particles.x))
-        push!(manager.y_series, copy(particles.y))
-        push!(manager.z_series, copy(particles.z))
-        push!(manager.u_series, copy(particles.u))
-        push!(manager.v_series, copy(particles.v))
-        push!(manager.w_series, copy(particles.w))
+        push!(manager.x_series, data.x)
+        push!(manager.y_series, data.y)
+        push!(manager.z_series, data.z)
+        push!(manager.u_series, data.u)
+        push!(manager.v_series, data.v)
+        push!(manager.w_series, data.w)
 
     elseif manager.output_mode == :streaming
         # Append to streaming file
-        append_to_streaming_file!(manager, tracker, time)
+        append_to_streaming_file!(manager, tracker, time; data=data)
     end
 
     # Update counters
@@ -254,8 +364,26 @@ Save a single snapshot file with current particle positions.
 """
 function save_particle_snapshot!(manager::ParticleOutputManager{T},
                                  tracker::ParticleTracker{T},
-                                 iteration::Int, time::T) where T
-    particles = tracker.particles
+                                 iteration::Int, time::T;
+                                 data=nothing) where T
+    if data === nothing
+        particles = tracker.particles
+        ids = particles.id
+        x = particles.x
+        y = particles.y
+        z = particles.z
+        u = particles.u
+        v = particles.v
+        w = particles.w
+    else
+        ids = data.ids
+        x = data.x
+        y = data.y
+        z = data.z
+        u = data.u
+        v = data.v
+        w = data.w
+    end
 
     # Create filename with iteration number
     filename = joinpath(manager.particle_dir,
@@ -266,7 +394,7 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
-            ds.dim["particle"] = particles.np
+            ds.dim["particle"] = length(ids)
 
             # Create variables
             defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
@@ -278,13 +406,13 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
             defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle",))
 
             # Fill data
-            defVar_particle[:] = 1:particles.np
-            defVar_x[:] = particles.x
-            defVar_y[:] = particles.y
-            defVar_z[:] = particles.z
-            defVar_u[:] = particles.u
-            defVar_v[:] = particles.v
-            defVar_w[:] = particles.w
+            defVar_particle[:] = ids
+            defVar_x[:] = x
+            defVar_y[:] = y
+            defVar_z[:] = z
+            defVar_u[:] = u
+            defVar_v[:] = v
+            defVar_w[:] = w
 
             # Set variable attributes
             defVar_x.attrib["units"] = "nondimensional"
@@ -305,7 +433,7 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
             ds.attrib["created_at"] = string(now())
             ds.attrib["time"] = time
             ds.attrib["iteration"] = iteration
-            ds.attrib["number_of_particles"] = particles.np
+            ds.attrib["number_of_particles"] = length(ids)
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
             ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
             ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
@@ -324,16 +452,24 @@ end
 Create NetCDF file for streaming particle output with unlimited time dimension.
 """
 function create_streaming_particle_file!(manager::ParticleOutputManager{T},
-                                         tracker::ParticleTracker{T}) where T
+                                         tracker::ParticleTracker{T};
+                                         np_global::Union{Nothing,Int}=nothing) where T
     particles = tracker.particles
     filename = manager.current_file
+    if np_global === nothing
+        np_global = particles.np
+    end
+
+    if isempty(manager.particle_ids)
+        manager.particle_ids = collect(1:np_global)
+    end
 
     try
         HAS_NCDS || error("NCDatasets not available")
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions (time is unlimited)
-            ds.dim["particle"] = particles.np
+            ds.dim["particle"] = np_global
             ds.dim["time"] = NCDatasets.Unlimited()
 
             # Create coordinate variables
@@ -349,7 +485,7 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
             defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
 
             # Fill particle IDs
-            defVar_particle[:] = 1:particles.np
+            defVar_particle[:] = manager.particle_ids
 
             # Set variable attributes
             defVar_particle.attrib["long_name"] = "particle identifier"
@@ -372,7 +508,7 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
             # Global attributes
             ds.attrib["title"] = "QG-YBJ Particle Trajectories (Streaming)"
             ds.attrib["created_at"] = string(now())
-            ds.attrib["number_of_particles"] = particles.np
+            ds.attrib["number_of_particles"] = np_global
             ds.attrib["output_mode"] = "streaming"
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
             ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
@@ -394,8 +530,29 @@ end
 Append current particle positions to streaming NetCDF file.
 """
 function append_to_streaming_file!(manager::ParticleOutputManager{T},
-                                   tracker::ParticleTracker{T}, time::T) where T
-    particles = tracker.particles
+                                   tracker::ParticleTracker{T}, time::T;
+                                   data=nothing) where T
+    if data === nothing
+        particles = tracker.particles
+        ids = particles.id
+        x = particles.x
+        y = particles.y
+        z = particles.z
+        u = particles.u
+        v = particles.v
+        w = particles.w
+    else
+        ids = data.ids
+        x = data.x
+        y = data.y
+        z = data.z
+        u = data.u
+        v = data.v
+        w = data.w
+    end
+    if isempty(manager.particle_ids)
+        manager.particle_ids = ids
+    end
     filename = manager.current_file
 
     try
@@ -408,12 +565,15 @@ function append_to_streaming_file!(manager::ParticleOutputManager{T},
 
             # Append data
             ds["time"][new_idx] = time
-            ds["x"][:, new_idx] = particles.x
-            ds["y"][:, new_idx] = particles.y
-            ds["z"][:, new_idx] = particles.z
-            ds["u"][:, new_idx] = particles.u
-            ds["v"][:, new_idx] = particles.v
-            ds["w"][:, new_idx] = particles.w
+            if haskey(ds, "particle")
+                ds["particle"][:] = manager.particle_ids
+            end
+            ds["x"][:, new_idx] = x
+            ds["y"][:, new_idx] = y
+            ds["z"][:, new_idx] = z
+            ds["u"][:, new_idx] = u
+            ds["v"][:, new_idx] = v
+            ds["w"][:, new_idx] = w
         end
 
     catch e
@@ -473,6 +633,11 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
     filename = manager.current_file
     np = length(manager.x_series[1])
     nt = length(manager.time_series)
+    ids = isempty(manager.particle_ids) ? collect(1:np) : manager.particle_ids
+    if length(ids) != np
+        @warn "Particle ID length ($(length(ids))) does not match trajectory data size ($np); using sequential IDs"
+        ids = collect(1:np)
+    end
 
     println("  Writing $(nt) time points for $(np) particles...")
 
@@ -497,7 +662,7 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
             defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
 
             # Fill coordinate data
-            defVar_particle[:] = 1:np
+            defVar_particle[:] = ids
             defVar_time[:] = manager.time_series
 
             # Fill trajectory data
@@ -640,7 +805,100 @@ Write complete particle trajectory history to NetCDF file.
 """
 function write_particle_trajectories(filename::String, tracker::ParticleTracker;
                                     metadata::Dict=Dict())
+    if tracker.is_parallel && tracker.comm !== nothing
+        return _write_particle_trajectories_parallel(filename, tracker; metadata=metadata)
+    end
+    return _write_particle_trajectories(filename, tracker.particles, tracker.config; metadata=metadata)
+end
+
+function write_particle_trajectories(filename::String, tracker::NamedTuple;
+                                    metadata::Dict=Dict())
+    particles = getproperty(tracker, :particles)
+    config = getproperty(tracker, :config)
+    return _write_particle_trajectories(filename, particles, config; metadata=metadata)
+end
+
+function _write_particle_trajectories(filename::String, particles::ParticleState, config::ParticleConfig;
+                                     metadata::Dict=Dict())
+    if isempty(particles.time_history)
+        @warn "No particle history to save"
+        return filename
+    end
+    ids = isempty(particles.id) ? collect(1:particles.np) : particles.id
+    return _write_particle_trajectories_arrays(
+        filename,
+        ids,
+        particles.time_history,
+        particles.x_history,
+        particles.y_history,
+        particles.z_history,
+        config;
+        metadata=metadata
+    )
+end
+
+function _write_particle_trajectories_parallel(filename::String, tracker::ParticleTracker{T};
+                                              metadata::Dict=Dict()) where T
     particles = tracker.particles
+    if isempty(particles.time_history)
+        @warn "No particle history to save"
+        return filename
+    end
+    if length(particles.id_history) != length(particles.time_history)
+        @warn "Particle id history is missing; global trajectory reconstruction may be incorrect"
+    end
+
+    ntime = length(particles.time_history)
+    x_series = Vector{Vector{T}}(undef, ntime)
+    y_series = Vector{Vector{T}}(undef, ntime)
+    z_series = Vector{Vector{T}}(undef, ntime)
+    ids_global = nothing
+
+    for t_idx in 1:ntime
+        ids_local = t_idx <= length(particles.id_history) ? particles.id_history[t_idx] : particles.id
+        data = _gather_particle_positions(tracker, ids_local,
+                                          particles.x_history[t_idx],
+                                          particles.y_history[t_idx],
+                                          particles.z_history[t_idx])
+        if tracker.rank == 0
+            if ids_global === nothing
+                ids_global = data.ids
+            elseif ids_global != data.ids
+                @warn "Particle ID ordering changed at time index $t_idx; updating output ordering"
+                ids_global = data.ids
+            end
+            x_series[t_idx] = data.x
+            y_series[t_idx] = data.y
+            z_series[t_idx] = data.z
+        end
+    end
+
+    if tracker.rank != 0
+        return filename
+    end
+
+    return _write_particle_trajectories_arrays(
+        filename,
+        ids_global === nothing ? Int[] : ids_global,
+        particles.time_history,
+        x_series,
+        y_series,
+        z_series,
+        tracker.config;
+        metadata=metadata
+    )
+end
+
+function _write_particle_trajectories_arrays(filename::String,
+                                             ids::Vector{Int},
+                                             time_series::Vector,
+                                             x_series::Vector,
+                                             y_series::Vector,
+                                             z_series::Vector,
+                                             config::ParticleConfig;
+                                             metadata::Dict=Dict())
+    np = length(ids)
+    nt = length(time_series)
 
     # Check if NCDatasets is available
     try
@@ -648,8 +906,8 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
-            ds.dim["particle"] = particles.np
-            ds.dim["time"] = length(particles.time_history)
+            ds.dim["particle"] = np
+            ds.dim["time"] = nt
 
             # Create coordinate variables
             particle_var = NCDatasets.defVar(ds, "particle", Int, ("particle",))
@@ -661,14 +919,14 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
             z_var = NCDatasets.defVar(ds, "z", Float64, ("particle", "time"))
 
             # Fill coordinate data
-            particle_var[:] = 1:particles.np
-            time_var[:] = particles.time_history
+            particle_var[:] = ids
+            time_var[:] = time_series
 
             # Fill trajectory data
-            for (t_idx, t) in enumerate(particles.time_history)
-                x_var[:, t_idx] = particles.x_history[t_idx]
-                y_var[:, t_idx] = particles.y_history[t_idx]
-                z_var[:, t_idx] = particles.z_history[t_idx]
+            for (t_idx, _) in enumerate(time_series)
+                x_var[:, t_idx] = x_series[t_idx]
+                y_var[:, t_idx] = y_series[t_idx]
+                z_var[:, t_idx] = z_series[t_idx]
             end
 
             # Set attributes
@@ -686,13 +944,13 @@ function write_particle_trajectories(filename::String, tracker::ParticleTracker;
             # Global attributes
             ds.attrib["title"] = "QG-YBJ Particle Trajectories"
             ds.attrib["created_at"] = string(now())
-            ds.attrib["number_of_particles"] = particles.np
-            ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-            ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
-            ds.attrib["periodic_x"] = tracker.config.periodic_x
-            ds.attrib["periodic_y"] = tracker.config.periodic_y
-            ds.attrib["reflect_z"] = tracker.config.reflect_z
+            ds.attrib["number_of_particles"] = np
+            ds.attrib["integration_method"] = string(config.integration_method)
+            ds.attrib["use_ybj_w"] = config.use_ybj_w
+            ds.attrib["use_3d_advection"] = config.use_3d_advection
+            ds.attrib["periodic_x"] = config.periodic_x
+            ds.attrib["periodic_y"] = config.periodic_y
+            ds.attrib["reflect_z"] = config.reflect_z
 
             # Add user metadata
             for (key, value) in metadata
@@ -749,8 +1007,8 @@ function read_particle_trajectories(filename::String)
 
         NCDatasets.Dataset(filename, "r") do ds
             # Read dimensions
-            np = ds.dim["particle"]
-            ntime = ds.dim["time"]
+            np = _dim_length(ds, "particle")
+            ntime = _dim_length(ds, "time")
 
             # Read coordinate variables
             if haskey(ds, "particle")
@@ -813,14 +1071,28 @@ end
 Write current particle positions to NetCDF file (single time snapshot).
 """
 function write_particle_snapshot(filename::String, tracker::ParticleTracker, time::Real)
-    particles = tracker.particles
+    data = _gather_particle_snapshot(tracker)
+    if tracker.is_parallel && tracker.comm !== nothing && tracker.rank != 0
+        return filename
+    end
+    if data === nothing
+        data = (
+            ids = tracker.particles.id,
+            x = tracker.particles.x,
+            y = tracker.particles.y,
+            z = tracker.particles.z,
+            u = tracker.particles.u,
+            v = tracker.particles.v,
+            w = tracker.particles.w
+        )
+    end
 
     try
         HAS_NCDS || error("NCDatasets not available")
 
         NCDatasets.Dataset(filename, "c") do ds
             # Define dimensions
-            ds.dim["particle"] = particles.np
+            ds.dim["particle"] = length(data.ids)
 
             # Create variables
             particle_var = NCDatasets.defVar(ds, "particle", Int, ("particle",))
@@ -832,13 +1104,13 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             w_var = NCDatasets.defVar(ds, "w", Float64, ("particle",))
 
             # Fill data
-            particle_var[:] = 1:particles.np
-            x_var[:] = particles.x
-            y_var[:] = particles.y
-            z_var[:] = particles.z
-            u_var[:] = particles.u
-            v_var[:] = particles.v
-            w_var[:] = particles.w
+            particle_var[:] = data.ids
+            x_var[:] = data.x
+            y_var[:] = data.y
+            z_var[:] = data.z
+            u_var[:] = data.u
+            v_var[:] = data.v
+            w_var[:] = data.w
 
             # Set attributes
             particle_var.attrib["long_name"] = "particle identifier"
@@ -861,7 +1133,7 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             ds.attrib["title"] = "QG-YBJ Particle Snapshot"
             ds.attrib["created_at"] = string(now())
             ds.attrib["time"] = time
-            ds.attrib["number_of_particles"] = particles.np
+            ds.attrib["number_of_particles"] = length(data.ids)
             ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
             ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
         end
@@ -882,6 +1154,12 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                                     append_mode::Bool=false)
     particles = tracker.particles
     mode = append_mode ? "a" : "c"
+    np_global = tracker.is_parallel && tracker.comm !== nothing ?
+                MPI.Allreduce(particles.np, +, tracker.comm) :
+                particles.np
+    if tracker.is_parallel && tracker.comm !== nothing && tracker.rank != 0
+        return filename
+    end
 
     try
         HAS_NCDS || error("NCDatasets not available")
@@ -889,7 +1167,7 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
         NCDatasets.Dataset(filename, mode) do ds
             if !append_mode
                 # Define dimensions
-                ds.dim["particle"] = particles.np
+                ds.dim["particle"] = np_global
                 ds.dim["time"] = NCDatasets.Unlimited()
 
                 # Create coordinate variables
@@ -905,7 +1183,7 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 w_var = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
 
                 # Fill particle IDs
-                particle_var[:] = 1:particles.np
+                particle_var[:] = collect(1:np_global)
 
                 # Set attributes
                 particle_var.attrib["long_name"] = "particle identifier"
@@ -929,7 +1207,7 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 # Global attributes
                 ds.attrib["title"] = "QG-YBJ Particle Trajectories (Time Series)"
                 ds.attrib["created_at"] = string(now())
-                ds.attrib["number_of_particles"] = particles.np
+                ds.attrib["number_of_particles"] = np_global
                 ds.attrib["integration_method"] = string(tracker.config.integration_method)
                 ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
                 ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
@@ -949,7 +1227,21 @@ end
 Append current particle state to existing NetCDF file.
 """
 function append_particle_data!(filename::String, tracker::ParticleTracker, time_index::Int)
-    particles = tracker.particles
+    data = _gather_particle_snapshot(tracker)
+    if tracker.is_parallel && tracker.comm !== nothing && tracker.rank != 0
+        return filename
+    end
+    if data === nothing
+        data = (
+            ids = tracker.particles.id,
+            x = tracker.particles.x,
+            y = tracker.particles.y,
+            z = tracker.particles.z,
+            u = tracker.particles.u,
+            v = tracker.particles.v,
+            w = tracker.particles.w
+        )
+    end
 
     try
         HAS_NCDS || error("NCDatasets not available")
@@ -957,18 +1249,24 @@ function append_particle_data!(filename::String, tracker::ParticleTracker, time_
         NCDatasets.Dataset(filename, "a") do ds
             # Get current time dimension size
             current_time_size = length(ds["time"])
-            new_time_index = current_time_size + 1
+            new_time_index = time_index > 0 ? time_index : current_time_size + 1
+            if new_time_index <= current_time_size
+                new_time_index = current_time_size + 1
+            end
 
             # Append time
-            ds["time"][new_time_index] = particles.time
+            ds["time"][new_time_index] = tracker.particles.time
 
             # Append particle data
-            ds["x"][:, new_time_index] = particles.x
-            ds["y"][:, new_time_index] = particles.y
-            ds["z"][:, new_time_index] = particles.z
-            ds["u"][:, new_time_index] = particles.u
-            ds["v"][:, new_time_index] = particles.v
-            ds["w"][:, new_time_index] = particles.w
+            if haskey(ds, "particle")
+                ds["particle"][:] = data.ids
+            end
+            ds["x"][:, new_time_index] = data.x
+            ds["y"][:, new_time_index] = data.y
+            ds["z"][:, new_time_index] = data.z
+            ds["u"][:, new_time_index] = data.u
+            ds["v"][:, new_time_index] = data.v
+            ds["w"][:, new_time_index] = data.w
         end
 
     catch e
@@ -1094,6 +1392,7 @@ function create_zlevel_subset(tracker::ParticleTracker{T}, particle_indices::Vec
     subset_particles.x = original.x[particle_indices]
     subset_particles.y = original.y[particle_indices]
     subset_particles.z = original.z[particle_indices]
+    subset_particles.id = original.id[particle_indices]
     subset_particles.u = original.u[particle_indices]
     subset_particles.v = original.v[particle_indices]
     subset_particles.w = original.w[particle_indices]
@@ -1106,6 +1405,9 @@ function create_zlevel_subset(tracker::ParticleTracker{T}, particle_indices::Vec
     subset_particles.x_history = [x_t[particle_indices] for x_t in original.x_history]
     subset_particles.y_history = [y_t[particle_indices] for y_t in original.y_history]
     subset_particles.z_history = [z_t[particle_indices] for z_t in original.z_history]
+    subset_particles.id_history = isempty(original.id_history) ?
+                                  Vector{Int}[] :
+                                  [id_t[particle_indices] for id_t in original.id_history]
     subset_particles.time_history = copy(original.time_history)
 
     # Create a minimal subset tracker (only fields needed for I/O)

@@ -294,6 +294,16 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
                                    r_ut::AbstractVector, r_st::AbstractVector,
                                    tl::IMEXThreadLocal)
     nz = G.nz
+    if nz == 1
+        β₁ = β_scale * αdisp_profile[1]
+        denom = (kₕ² / 4.0) + β₁
+        if abs(denom) < IMEX_KH2_EPS
+            A_out[1] = zero(eltype(A_out))
+        else
+            A_out[1] = -B_in[1] / denom
+        end
+        return A_out
+    end
     # G.dz is a vector of layer thicknesses; assume uniform grid and use first element
     dz = G.dz[1]
     dz² = dz * dz

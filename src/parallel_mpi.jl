@@ -278,8 +278,8 @@ end
 # IMPORTANT: Use WeakRef to avoid keeping arrays alive that have been garbage collected.
 # The cache is keyed by (decomposition tuple, global dims, element type) instead of objectid,
 # to avoid issues with objectid reuse after garbage collection.
-const _transpose_buffer_cache = Dict{Tuple{Tuple{Int,Int}, Tuple{Int,Int}, NTuple{3,Int}, DataType}, Any}()
-const _plan_transpose_buffer_cache = Dict{Tuple{Tuple{Int,Int}, NTuple{3,Int}, DataType}, Any}()
+const _transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, Any}()
+const _plan_transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, Any}()
 const _buffer_cache_lock = ReentrantLock()
 
 @inline function _decomp_diff_count(a::NTuple{2, Int}, b::NTuple{2, Int})
@@ -304,9 +304,11 @@ function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) wh
     src_decomp = decomposition(src_p)
     dst_decomp = decomposition(dst_p)
     dims = PencilArrays.size_global(src_p)
+    topo = PencilArrays.topology(src_p)
+    perm = permutation(src_p)
 
     # Use stable key based on decomposition and dimensions, not objectid
-    key = (src_decomp, dst_decomp, dims, T)
+    key = (topo, src_decomp, dst_decomp, dims, perm, T)
 
     lock(_buffer_cache_lock) do
         if !haskey(_transpose_buffer_cache, key)
@@ -315,8 +317,7 @@ function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) wh
                 error("Cannot construct intermediate pencil between decompositions " *
                       "$src_decomp and $dst_decomp.")
             end
-            topo = PencilArrays.topology(src_p)
-            mid_pencil = Pencil(topo, dims, mid_decomp; permute=permutation(src_p))
+            mid_pencil = Pencil(topo, dims, mid_decomp; permute=perm)
             _transpose_buffer_cache[key] = PencilArray{T}(undef, mid_pencil)
         end
     end
@@ -522,14 +523,15 @@ function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
     end
     dims = PencilArrays.size_global(plans.input_pencil)
     input_decomp = decomposition(plans.input_pencil)
+    topo = PencilArrays.topology(plans.input_pencil)
+    perm = permutation(plans.input_pencil)
 
     # Use stable key based on decomposition and dimensions, not objectid
-    key = (input_decomp, dims, T)
+    key = (topo, input_decomp, dims, perm, T)
 
     lock(_buffer_cache_lock) do
         if !haskey(_plan_transpose_buffer_cache, key)
-            topo = PencilArrays.topology(plans.input_pencil)
-            pencil_xz = Pencil(topo, dims, (1, 3))
+            pencil_xz = Pencil(topo, dims, (1, 3); permute=perm)
             _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
         end
     end
@@ -1103,14 +1105,39 @@ end
 =#
 
 """
-    init_mpi_random_field!(arr::PencilArray, grid::Grid, amplitude, seed_offset=0)
+    init_mpi_random_field!(arr::PencilArray, grid::Grid, amplitude, seed_offset=0; seed=0)
 
 Initialize a PencilArray with deterministic random values.
 """
+const _U53 = 0x1.0p-53
+
+@inline function _mix64(x::UInt64)
+    x += 0x9e3779b97f4a7c15
+    x = (x ⊻ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ⊻ (x >> 27)) * 0x94d049bb133111eb
+    return x ⊻ (x >> 31)
+end
+
+@inline function _hash_u01(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+    x = seed
+    @inbounds for v in vals
+        x = _mix64(x ⊻ UInt64(v))
+    end
+    x = _mix64(x ⊻ tag)
+    return Float64((x >> 11) + 1) * _U53
+end
+
+@inline function _hash_randn(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+    u1 = _hash_u01(seed, vals...; tag=tag)
+    u2 = _hash_u01(seed, vals...; tag=tag + 1)
+    return sqrt(-2 * log(u1)) * cos(2 * pi * u2)
+end
+
 function init_mpi_random_field!(arr::PencilArray, grid::Grid,
-                                amplitude::Real, seed_offset::Int=0)
+                                amplitude::Real, seed_offset::Int=0; seed::Int=0)
     local_range = range_local(pencil(arr))
     parent_arr = parent(arr)
+    base_seed = _mix64(UInt64(seed) ⊻ UInt64(seed_offset))
 
     for k_local in axes(parent_arr, 1)
         k_global = local_range[1][k_local]
@@ -1118,13 +1145,71 @@ function init_mpi_random_field!(arr::PencilArray, grid::Grid,
             i_global = local_range[2][i_local]
             for j_local in axes(parent_arr, 3)
                 j_global = local_range[3][j_local]
-                φ = 2π * ((hash((i_global, j_global, k_global, seed_offset)) % 1_000_000) / 1_000_000)
-                parent_arr[k_local, i_local, j_local] = amplitude * cis(φ)
+                phi = 2 * pi * _hash_u01(base_seed, i_global, j_global, k_global; tag=0x1)
+                parent_arr[k_local, i_local, j_local] = amplitude * cis(phi)
             end
         end
     end
 
     return arr
+end
+
+"""
+    init_mpi_random_psi!(psik::PencilArray, G::Grid, amplitude; slope=-3.0, seed=0, seed_offset=0)
+
+Initialize random streamfunction with Hermitian symmetry for real IFFT output.
+"""
+function init_mpi_random_psi!(psik::PencilArray, G::Grid, amplitude::Real;
+                              slope::Real=-3.0, seed::Int=0, seed_offset::Int=0)
+    fill!(psik, zero(eltype(psik)))
+
+    nx, ny = G.nx, G.ny
+    kx_max = nx ÷ 2
+    ky_max = ny ÷ 2
+    base_seed = _mix64(UInt64(seed) ⊻ UInt64(seed_offset))
+
+    psik_arr = parent(psik)
+
+    for k_local in axes(psik_arr, 1)
+        k_global = local_to_global(k_local, 1, psik)
+        for j_local in axes(psik_arr, 3)
+            j_global = local_to_global(j_local, 3, psik)
+            ky = j_global <= ky_max ? j_global - 1 : j_global - 1 - ny
+            for i_local in axes(psik_arr, 2)
+                i_global = local_to_global(i_local, 2, psik)
+                kx = i_global <= kx_max ? i_global - 1 : i_global - 1 - nx
+
+                if kx == 0 && ky == 0
+                    continue
+                end
+
+                k_total = sqrt(Float64(kx^2 + ky^2))
+                if k_total == 0
+                    continue
+                end
+
+                energy = amplitude * k_total^slope
+                i_conj = i_global == 1 ? 1 : nx - i_global + 2
+                j_conj = j_global == 1 ? 1 : ny - j_global + 2
+
+                if i_global == i_conj && j_global == j_conj
+                    amp = sqrt(2 * energy) * _hash_randn(base_seed, k_global, i_global, j_global; tag=0x10)
+                    psik_arr[k_local, i_local, j_local] = amp
+                else
+                    canonical = (i_global < i_conj) || (i_global == i_conj && j_global <= j_conj)
+                    i_can = canonical ? i_global : i_conj
+                    j_can = canonical ? j_global : j_conj
+                    amp = sqrt(2 * energy) * _hash_randn(base_seed, k_global, i_can, j_can; tag=0x20)
+                    phase = 2 * pi * _hash_u01(base_seed, k_global, i_can, j_can; tag=0x30)
+                    val = amp * cis(phase)
+                    psik_arr[k_local, i_local, j_local] = canonical ? val : conj(val)
+                end
+            end
+        end
+    end
+
+    apply_dealiasing_mask!(psik, G)
+    return psik
 end
 
 """
@@ -1134,13 +1219,15 @@ Initialize fields with MPI support.
 """
 function parallel_initialize_fields!(state, grid, plans, config, mpi_config; params=nothing, N2_profile=nothing)
     if config.initial_conditions.psi_type == :random
-        init_mpi_random_field!(state.psi, grid, config.initial_conditions.psi_amplitude, 0)
+        init_mpi_random_psi!(state.psi, grid, config.initial_conditions.psi_amplitude;
+                             seed=config.initial_conditions.random_seed, seed_offset=0)
     elseif config.initial_conditions.psi_type == :analytical
         init_analytical_psi!(state.psi, grid, config.initial_conditions.psi_amplitude, plans)
     end
 
     if config.initial_conditions.wave_type == :random
-        init_mpi_random_field!(state.B, grid, config.initial_conditions.wave_amplitude, 1)
+        init_mpi_random_field!(state.B, grid, config.initial_conditions.wave_amplitude, 1;
+                               seed=config.initial_conditions.random_seed)
     elseif config.initial_conditions.wave_type == :analytical
         init_analytical_waves!(state.B, grid, config.initial_conditions.wave_amplitude, plans)
     end

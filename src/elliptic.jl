@@ -66,7 +66,7 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJplus: Grid, State, local_to_global, z_is_local
+using ..QGYBJplus: Grid, State, local_to_global, z_is_local, is_parallel_array
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -507,6 +507,16 @@ function invert_helmholtz!(dstk, rhs, G::Grid, par;
     return dstk
 end
 
+@inline function _bc_value(bc, i_local, j_local, i_global, j_global)
+    if bc === nothing
+        return nothing
+    end
+    if is_parallel_array(bc)
+        return parent(bc)[i_local, j_local]
+    end
+    return bc[i_global, j_global]
+end
+
 """
 Direct Helmholtz solve for serial or 1D decomposition.
 
@@ -527,12 +537,15 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     @assert nz_local == nz "Vertical dimension must be fully local"
     @assert length(a) == nz "a must have length nz=$nz"
     @assert length(b) == nz "b must have length nz=$nz"
-
-    bot_bc_arr = bot_bc !== nothing ? parent(bot_bc) : nothing
-    top_bc_arr = top_bc !== nothing ? parent(top_bc) : nothing
+    if bot_bc !== nothing && is_parallel_array(bot_bc)
+        @assert size(parent(bot_bc)) == (nx_local, ny_local) "bot_bc local size must match (nx_local, ny_local)"
+    end
+    if top_bc !== nothing && is_parallel_array(top_bc)
+        @assert size(parent(top_bc)) == (nx_local, ny_local) "top_bc local size must match (nx_local, ny_local)"
+    end
 
     if nz == 1
-        if bot_bc_arr !== nothing || top_bc_arr !== nothing
+        if bot_bc !== nothing || top_bc !== nothing
             @warn "Helmholtz solve with nz=1 ignores boundary conditions" maxlog=1
         end
 
@@ -617,14 +630,16 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
 
         # Add boundary condition contributions to RHS
         # Fortran: br(1) = br(1) + (a_helm(1) - 0.5*b_helm(1)*dz)*DBLE(b_bot)*dz
-        if bot_bc_arr !== nothing
-            rhsᵣ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * real(bot_bc_arr[i_local, j_local])
-            rhsᵢ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * imag(bot_bc_arr[i_local, j_local])
+        if bot_bc !== nothing
+            bc_val = _bc_value(bot_bc, i_local, j_local, i_global, j_global)
+            rhsᵣ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * real(bc_val)
+            rhsᵢ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * imag(bc_val)
         end
         # Fortran: br(n3) = br(n3) - (a_helm(n3) + 0.5*b_helm(n3)*dz)*DBLE(b_top)*dz
-        if top_bc_arr !== nothing
-            rhsᵣ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * real(top_bc_arr[i_local, j_local])
-            rhsᵢ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * imag(top_bc_arr[i_local, j_local])
+        if top_bc !== nothing
+            bc_val = _bc_value(top_bc, i_local, j_local, i_global, j_global)
+            rhsᵣ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * real(bc_val)
+            rhsᵢ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * imag(bc_val)
         end
 
         # Solve tridiagonal systems for real and imaginary parts
@@ -645,17 +660,10 @@ Matches Fortran `helmholtzdouble` discretization exactly:
 - No density weighting (coefficients used directly)
 - Interior: d[k] = -2a[k] - kh²Δz²
 
-Note: Boundary conditions (bot_bc, top_bc) are not currently supported in
-the 2D decomposition version. They would require transposing the BC arrays
-to z-pencil format as well.
 """
 function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc, top_bc, workspace)
     nz = G.nz
 
-    # Warn if boundary conditions are provided but not supported
-    if bot_bc !== nothing || top_bc !== nothing
-        @warn "Boundary conditions not yet supported in 2D decomposition Helmholtz solve" maxlog=1
-    end
     @assert length(a) == nz "a must have length nz=$nz"
     @assert length(b) == nz "b must have length nz=$nz"
 
@@ -674,6 +682,9 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     @assert nz_local == nz "After transpose, z must be fully local"
 
     if nz == 1
+        if bot_bc !== nothing || top_bc !== nothing
+            @warn "Helmholtz solve with nz=1 ignores boundary conditions" maxlog=1
+        end
         tol = sqrt(eps(real(one(eltype(rhs_z_arr)))))
         singular_warned = false
 
@@ -700,6 +711,13 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
 
         transpose_to_xy_pencil!(dstk, dst_z, G)
         return dstk
+    end
+
+    if bot_bc !== nothing && is_parallel_array(bot_bc)
+        @assert size(parent(bot_bc)) == (nx_local, ny_local) "bot_bc local size must match (nx_local, ny_local)"
+    end
+    if top_bc !== nothing && is_parallel_array(top_bc)
+        @assert size(parent(top_bc)) == (nx_local, ny_local) "top_bc local size must match (nx_local, ny_local)"
     end
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -754,6 +772,18 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         @inbounds for k in 1:nz
             rhsᵣ[k] = Δz² * real(rhs_z_arr[k, i_local, j_local])
             rhsᵢ[k] = Δz² * imag(rhs_z_arr[k, i_local, j_local])
+        end
+
+        # Add boundary condition contributions to RHS
+        if bot_bc !== nothing
+            bc_val = _bc_value(bot_bc, i_local, j_local, i_global, j_global)
+            rhsᵣ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * real(bc_val)
+            rhsᵢ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * imag(bc_val)
+        end
+        if top_bc !== nothing
+            bc_val = _bc_value(top_bc, i_local, j_local, i_global, j_global)
+            rhsᵣ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * real(bc_val)
+            rhsᵢ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * imag(bc_val)
         end
 
         # Solve tridiagonal systems for real and imaginary parts

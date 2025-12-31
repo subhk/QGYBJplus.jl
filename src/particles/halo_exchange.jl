@@ -360,10 +360,16 @@ function setup_halo_exchange!(tracker)
 
     # Create a minimal struct with just the required grid info
     grid_dims = (nx=tracker.nx, ny=tracker.ny, nz=tracker.nz)
+    local_dims = size(tracker.u_field)
+    process_grid = tracker.local_domain !== nothing && hasproperty(tracker.local_domain, :px) ?
+                   (tracker.local_domain.px, tracker.local_domain.py) : nothing
 
     halo_info = HaloInfo{T}(grid_dims, tracker.rank, tracker.nprocs, tracker.comm;
+                            local_dims=local_dims,
+                            process_grid=process_grid,
                             periodic_x=tracker.config.periodic_x,
-                            periodic_y=tracker.config.periodic_y)
+                            periodic_y=tracker.config.periodic_y,
+                            interpolation_method=tracker.config.interpolation_method)
 
     return halo_info
 end

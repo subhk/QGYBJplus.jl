@@ -1060,16 +1060,20 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                      max(1, round(Int, output_config.psi_interval / dt)) : 0
     wave_save_steps = output_config !== nothing && output_config.wave_interval > 0 ?
                       max(1, round(Int, output_config.wave_interval / dt)) : 0
-    save_steps = psi_save_steps > 0 ? psi_save_steps : wave_save_steps
-
     # Print header
     timestepper_name = timestepper == :imex_cn ? "IMEX Crank-Nicolson" : "Leapfrog"
     if is_root && print_progress
         println("\n" * "="^60)
         println("Starting time integration ($timestepper_name)...")
         println("  Steps: $nt, dt: $dt")
-        if save_steps > 0
-            println("  Saving every $save_steps steps")
+        if psi_save_steps > 0 || wave_save_steps > 0
+            if psi_save_steps > 0 && wave_save_steps > 0
+                println("  Saving ψ every $psi_save_steps steps, waves every $wave_save_steps steps")
+            elseif psi_save_steps > 0
+                println("  Saving ψ every $psi_save_steps steps")
+            else
+                println("  Saving waves every $wave_save_steps steps")
+            end
         end
         println("  Diagnostics every $diagnostics_interval steps")
         println("="^60)
@@ -1153,9 +1157,14 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                 end
             end
 
-            # Save state
-            if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
-                write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
+            # Save state (allow distinct ψ/waves intervals)
+            if output_manager !== nothing
+                write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
+                write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
+                if write_psi || write_waves
+                    write_state_file(output_manager, Sn, G, plans, current_time, parallel_config;
+                                     params=par, write_psi=write_psi, write_waves=write_waves)
+                end
             end
         end
 
@@ -1209,9 +1218,14 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                 end
             end
 
-            # Save state
-            if output_manager !== nothing && save_steps > 0 && step % save_steps == 0
-                write_state_file(output_manager, Sn, G, plans, current_time, parallel_config; params=par)
+            # Save state (allow distinct ψ/waves intervals)
+            if output_manager !== nothing
+                write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
+                write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
+                if write_psi || write_waves
+                    write_state_file(output_manager, Sn, G, plans, current_time, parallel_config;
+                                     params=par, write_psi=write_psi, write_waves=write_waves)
+                end
             end
         end
 

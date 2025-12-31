@@ -172,13 +172,14 @@ include("particle_config.jl")
 using .EnhancedParticleConfig
 
 """
-Particle state including positions, velocities, and trajectory history.
+Particle state including positions, global IDs, velocities, and trajectory history.
 """
 mutable struct ParticleState{T<:AbstractFloat}
     # Current state
     x::Vector{T}
     y::Vector{T} 
     z::Vector{T}
+    id::Vector{Int}
     u::Vector{T}
     v::Vector{T}
     w::Vector{T}
@@ -189,14 +190,17 @@ mutable struct ParticleState{T<:AbstractFloat}
     x_history::Vector{Vector{T}}
     y_history::Vector{Vector{T}}
     z_history::Vector{Vector{T}}
+    id_history::Vector{Vector{Int}}
     time_history::Vector{T}
     
     function ParticleState{T}(np::Int) where T
+        ids = collect(1:np)
         new{T}(
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
+            ids,
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
             zero(T), np,
-            Vector{T}[], Vector{T}[], Vector{T}[], T[]
+            Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], T[]
         )
     end
 end
@@ -233,6 +237,8 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     # Particle migration buffers (for parallel)
     send_buffers::Vector{Vector{T}}
     recv_buffers::Vector{Vector{T}}
+    send_buffers_id::Vector{Vector{Int}}
+    recv_buffers_id::Vector{Vector{Int}}
     
     # Halo exchange system for cross-domain interpolation
     halo_info::Union{Nothing,HaloInfo{T}}
@@ -275,6 +281,8 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         # Initialize buffers
         send_buffers = [T[] for _ in 1:nprocs]
         recv_buffers = [T[] for _ in 1:nprocs]
+        send_buffers_id = [Int[] for _ in 1:nprocs]
+        recv_buffers_id = [Int[] for _ in 1:nprocs]
 
         # Velocity field workspace - use LOCAL size in parallel mode
         if is_parallel && local_domain !== nothing
@@ -301,11 +309,12 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             config, particles,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
-            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.Lz/grid.nz,
+            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
             u_field, v_field, w_field, plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
+            send_buffers_id, recv_buffers_id,
             halo_info,
             0, zero(T), rank == 0, true,
             0, "", false  # output_file_sequence, base_output_filename, auto_file_splitting
@@ -476,6 +485,7 @@ function initialize_particles_serial!(tracker::ParticleTracker{T},
         particles.x[idx] = x
         particles.y[idx] = y
         particles.z[idx] = config.z_level
+        particles.id[idx] = idx
         particles.u[idx] = 0.0
         particles.v[idx] = 0.0
         particles.w[idx] = 0.0
@@ -501,11 +511,15 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     y_min = max(config.y_min, local_domain.y_start)
     y_max = min(config.y_max, local_domain.y_end)
     
-    if x_min >= x_max || y_min >= y_max
+    dxp = (config.x_max - config.x_min) / config.nx_particles
+    dyp = (config.y_max - config.y_min) / config.ny_particles
+
+    if x_min >= x_max || y_min >= y_max || dxp <= zero(T) || dyp <= zero(T)
         # No particles in this domain
         resize!(tracker.particles.x, 0)
         resize!(tracker.particles.y, 0)
         resize!(tracker.particles.z, 0)
+        resize!(tracker.particles.id, 0)
         resize!(tracker.particles.u, 0)
         resize!(tracker.particles.v, 0)
         resize!(tracker.particles.w, 0)
@@ -513,32 +527,48 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         return tracker
     end
     
-    # Calculate local particle distribution
-    x_frac = (x_max - x_min) / (config.x_max - config.x_min)
-    y_frac = (y_max - y_min) / (config.y_max - config.y_min)
-    nx_local = max(1, round(Int, config.nx_particles * x_frac))
-    ny_local = max(1, round(Int, config.ny_particles * y_frac))
-    
-    # Create local particle grid
-    x_range = range(x_min, x_max, length=nx_local+1)[1:end-1]
-    y_range = range(y_min, y_max, length=ny_local+1)[1:end-1]
-    
-    n_local = nx_local * ny_local
+    # Compute exact index ranges from the global particle grid
+    tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
+    x_rel_min = (x_min - config.x_min) / dxp
+    x_rel_max = (x_max - config.x_min) / dxp
+    y_rel_min = (y_min - config.y_min) / dyp
+    y_rel_max = (y_max - config.y_min) / dyp
+
+    i_start = max(1, floor(Int, x_rel_min + tol) + 1)
+    i_end = min(config.nx_particles, ceil(Int, x_rel_max - tol))
+    j_start = max(1, floor(Int, y_rel_min + tol) + 1)
+    j_end = min(config.ny_particles, ceil(Int, y_rel_max - tol))
+
+    if i_start > i_end || j_start > j_end
+        resize!(tracker.particles.x, 0)
+        resize!(tracker.particles.y, 0)
+        resize!(tracker.particles.z, 0)
+        resize!(tracker.particles.id, 0)
+        resize!(tracker.particles.u, 0)
+        resize!(tracker.particles.v, 0)
+        resize!(tracker.particles.w, 0)
+        tracker.particles.np = 0
+        return tracker
+    end
+
+    n_local = (i_end - i_start + 1) * (j_end - j_start + 1)
     
     # Resize arrays to actual local particle count
     resize!(tracker.particles.x, n_local)
     resize!(tracker.particles.y, n_local)
     resize!(tracker.particles.z, n_local)
+    resize!(tracker.particles.id, n_local)
     resize!(tracker.particles.u, n_local)
     resize!(tracker.particles.v, n_local)
     resize!(tracker.particles.w, n_local)
     
     # Initialize local particles
     idx = 1
-    for y in y_range, x in x_range
-        tracker.particles.x[idx] = x
-        tracker.particles.y[idx] = y
+    for j in j_start:j_end, i in i_start:i_end
+        tracker.particles.x[idx] = config.x_min + (i - 1) * dxp
+        tracker.particles.y[idx] = config.y_min + (j - 1) * dyp
         tracker.particles.z[idx] = config.z_level
+        tracker.particles.id[idx] = (j - 1) * config.nx_particles + i
         tracker.particles.u[idx] = 0.0
         tracker.particles.v[idx] = 0.0
         tracker.particles.w[idx] = 0.0
@@ -1089,6 +1119,7 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         # Clear send buffers
         for i in 1:tracker.nprocs
             empty!(tracker.send_buffers[i])
+            empty!(tracker.send_buffers_id[i])
         end
         
         # Find particles that need migration
@@ -1110,6 +1141,7 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
                 particle_data = [particles.x[i], particles.y[i], particles.z[i],
                                particles.u[i], particles.v[i], particles.w[i]]
                 append!(tracker.send_buffers[target_rank + 1], particle_data)
+                push!(tracker.send_buffers_id[target_rank + 1], particles.id[i])
             end
         end
         
@@ -1117,6 +1149,7 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         particles.x = particles.x[keep_indices]
         particles.y = particles.y[keep_indices]
         particles.z = particles.z[keep_indices]
+        particles.id = particles.id[keep_indices]
         particles.u = particles.u[keep_indices]
         particles.v = particles.v[keep_indices]
         particles.w = particles.w[keep_indices]
@@ -1151,8 +1184,8 @@ function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
     # Convert physical position to grid index (0-based)
     ix = floor(Int, x_periodic / dx)
     iy = floor(Int, y_periodic / dy)
-    ix = min(ix, nx - 1)
-    iy = min(iy, ny - 1)
+    ix = clamp(ix, 0, nx - 1)
+    iy = clamp(iy, 0, ny - 1)
 
     # Determine process grid
     if tracker.local_domain !== nothing && hasproperty(tracker.local_domain, :px)
@@ -1178,7 +1211,7 @@ function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
     nx = tracker.nx
     dx = tracker.dx
     ix = floor(Int, x_periodic / dx)
-    ix = min(ix, nx - 1)
+    ix = clamp(ix, 0, nx - 1)
 
     nprocs = tracker.nprocs
     return _rank_for_index(ix, nx, nprocs)
@@ -1218,6 +1251,8 @@ function exchange_particles!(tracker::ParticleTracker{T}) where T
         # Send/receive particle counts using Alltoall
         # Each rank sends 1 element (particle count) to every other rank
         send_counts = [length(tracker.send_buffers[i]) ÷ 6 for i in 1:nprocs]
+        send_counts_id = [length(tracker.send_buffers_id[i]) for i in 1:nprocs]
+        @assert send_counts == send_counts_id "Particle data and id buffers are inconsistent"
         recv_counts = M.Alltoall(send_counts, 1, comm)
 
         # Post all non-blocking receives first
@@ -1229,8 +1264,13 @@ function exchange_particles!(tracker::ParticleTracker{T}) where T
             if recv_counts[other_rank + 1] > 0
                 recv_data = Vector{T}(undef, recv_counts[other_rank + 1] * 6)
                 tracker.recv_buffers[other_rank + 1] = recv_data
+                recv_ids = Vector{Int}(undef, recv_counts[other_rank + 1])
+                tracker.recv_buffers_id[other_rank + 1] = recv_ids
+
                 req = M.Irecv!(recv_data, other_rank, other_rank, comm)  # Tag = sender rank
+                req_id = M.Irecv!(recv_ids, other_rank, other_rank + nprocs, comm)
                 push!(recv_reqs, req)
+                push!(recv_reqs, req_id)
             end
         end
 
@@ -1243,6 +1283,10 @@ function exchange_particles!(tracker::ParticleTracker{T}) where T
             if !isempty(tracker.send_buffers[other_rank + 1])
                 req = M.Isend(tracker.send_buffers[other_rank + 1], other_rank, rank, comm)  # Tag = my rank
                 push!(send_reqs, req)
+            end
+            if !isempty(tracker.send_buffers_id[other_rank + 1])
+                req_id = M.Isend(tracker.send_buffers_id[other_rank + 1], other_rank, rank + nprocs, comm)
+                push!(send_reqs, req_id)
             end
         end
 
@@ -1273,9 +1317,12 @@ Add received particles to local collection.
 function add_received_particles!(tracker::ParticleTracker{T}) where T
     particles = tracker.particles
     
-    for rank_data in tracker.recv_buffers
+    for i in 1:tracker.nprocs
+        rank_data = tracker.recv_buffers[i]
+        rank_ids = tracker.recv_buffers_id[i]
         if !isempty(rank_data)
             n_new = length(rank_data) ÷ 6
+            @assert length(rank_ids) == n_new "Received particle ids do not match data length"
             
             for i in 1:n_new
                 idx = (i-1) * 6
@@ -1285,6 +1332,7 @@ function add_received_particles!(tracker::ParticleTracker{T}) where T
                 push!(particles.u, rank_data[idx + 4])
                 push!(particles.v, rank_data[idx + 5])
                 push!(particles.w, rank_data[idx + 6])
+                push!(particles.id, rank_ids[i])
             end
             
             particles.np += n_new
@@ -1294,6 +1342,7 @@ function add_received_particles!(tracker::ParticleTracker{T}) where T
     # Clear receive buffers
     for i in 1:tracker.nprocs
         empty!(tracker.recv_buffers[i])
+        empty!(tracker.recv_buffers_id[i])
     end
 end
 
@@ -1352,6 +1401,7 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
             empty!(particles.x_history)
             empty!(particles.y_history) 
             empty!(particles.z_history)
+            empty!(particles.id_history)
             empty!(particles.time_history)
             
             tracker.output_file_sequence += 1
@@ -1365,6 +1415,7 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
     push!(particles.x_history, copy(particles.x))
     push!(particles.y_history, copy(particles.y))
     push!(particles.z_history, copy(particles.z))
+    push!(particles.id_history, copy(particles.id))
     push!(particles.time_history, particles.time)
     
     tracker.save_counter += 1

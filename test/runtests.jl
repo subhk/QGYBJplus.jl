@@ -80,6 +80,93 @@ end
     @test size(S_small.q) == (par_small.nz, par_small.nx, par_small.ny)
 end
 
+@testset "Adaptive interpolation small grids" begin
+    nx, ny, nz = 2, 2, 1
+    dx = 1.0
+    dy = 1.0
+    dz = 1.0
+    Lx = nx * dx
+    Ly = ny * dy
+    Lz = nz * dz
+
+    u = zeros(Float64, nz, nx, ny)
+    v = zeros(Float64, nz, nx, ny)
+    w = zeros(Float64, nz, nx, ny)
+
+    u[1, 1, 1] = 1.0
+    u[1, 2, 1] = 2.0
+    u[1, 1, 2] = 3.0
+    u[1, 2, 2] = 4.0
+    v .= 0.5
+    w .= -0.25
+
+    grid_info = (dx=dx, dy=dy, dz=dz, Lx=Lx, Ly=Ly, Lz=Lz)
+    boundary_conditions = (periodic_x=false, periodic_y=false, periodic_z=false)
+
+    u_i, v_i, w_i = QGYBJplus.interpolate_velocity_advanced(
+        0.6, 0.7, 0.2,
+        u, v, w,
+        grid_info, boundary_conditions,
+        QGYBJplus.ADAPTIVE
+    )
+
+    @test isfinite(u_i)
+    @test isfinite(v_i)
+    @test isfinite(w_i)
+end
+
+@testset "Layered particle distribution counts" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G = init_grid(par)
+
+    base_cfg = ParticleConfig{Float64}(x_max=G.Lx, y_max=G.Ly, z_level=0.0)
+    tracker = ParticleTracker(base_cfg, G)
+
+    z_levels = [1000.0, 3000.0]
+    per_level = [6, 10]
+    cfg3d = particles_in_layers(z_levels; x_max=G.Lx, y_max=G.Ly, nx=4, ny=4,
+                                particles_per_level=per_level)
+
+    initialize_particles!(tracker, cfg3d)
+
+    @test tracker.particles.np == sum(per_level)
+    @test length(tracker.particles.x) == tracker.particles.np
+    @test length(tracker.particles.y) == tracker.particles.np
+    @test length(tracker.particles.z) == tracker.particles.np
+
+    tol = 100 * eps(eltype(tracker.particles.z))
+    level_counts = zeros(Int, length(cfg3d.z_levels))
+    for z in tracker.particles.z
+        level_idx = findfirst(lvl -> isapprox(z, lvl; atol=tol), cfg3d.z_levels)
+        @test level_idx !== nothing
+        level_counts[level_idx] += 1
+    end
+    @test level_counts == per_level
+end
+
+@testset "Random 3D particle seed determinism" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G = init_grid(par)
+
+    base_cfg = ParticleConfig{Float64}(x_max=G.Lx, y_max=G.Ly, z_level=0.0)
+    cfg3d = particles_random_3d(10; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, seed=42)
+
+    tracker1 = ParticleTracker(base_cfg, G)
+    tracker2 = ParticleTracker(base_cfg, G)
+
+    initialize_particles!(tracker1, cfg3d)
+    initialize_particles!(tracker2, cfg3d)
+
+    @test tracker1.particles.np == 10
+    @test tracker1.particles.x == tracker2.particles.x
+    @test tracker1.particles.y == tracker2.particles.y
+    @test tracker1.particles.z == tracker2.particles.z
+
+    @test all(x -> x >= 0.0 && x <= G.Lx, tracker1.particles.x)
+    @test all(y -> y >= 0.0 && y <= G.Ly, tracker1.particles.y)
+    @test all(z -> z >= 0.0 && z <= G.Lz, tracker1.particles.z)
+end
+
 @testset "QGYBJplus basic API" begin
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, stratification=:constant_N)
     G, S, plans, a = setup_model(par)

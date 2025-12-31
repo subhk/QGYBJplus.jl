@@ -83,6 +83,58 @@ function cubic_basis_functions(t::T) where T
 end
 
 """
+    tricubic_weights(tx, ty, tz)
+
+Return Catmull-Rom weights for tricubic interpolation as three 4-tuples
+corresponding to x, y, and z directions.
+"""
+function tricubic_weights(tx::T, ty::T, tz::T) where T
+    return cubic_basis_functions(tx), cubic_basis_functions(ty), cubic_basis_functions(tz)
+end
+
+"""
+    bicubic_interpolation(x, y, field, grid_info, boundary_conditions)
+
+High-accuracy bicubic interpolation using a 4×4 stencil.
+"""
+function bicubic_interpolation(x::T, y::T,
+                              field::Array{T,2},
+                              grid_info, boundary_conditions) where T
+
+    nx, ny = size(field)
+    dx, dy = grid_info.dx, grid_info.dy
+    Lx, Ly = grid_info.Lx, grid_info.Ly
+
+    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
+    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
+
+    fx = x_periodic / dx
+    fy = y_periodic / dy
+
+    ix = floor(Int, fx)
+    iy = floor(Int, fy)
+
+    tx = fx - ix
+    ty = fy - iy
+
+    wx0, wx1, wx2, wx3 = cubic_basis_functions(tx)
+    wy0, wy1, wy2, wy3 = cubic_basis_functions(ty)
+
+    interp = zero(T)
+    for j in 0:3, i in 0:3
+        gx = get_grid_index(ix + i, nx, boundary_conditions.periodic_x)
+        gy = get_grid_index(iy + j, ny, boundary_conditions.periodic_y)
+
+        weight = (i == 0 ? wx0 : i == 1 ? wx1 : i == 2 ? wx2 : wx3) *
+                 (j == 0 ? wy0 : j == 1 ? wy1 : j == 2 ? wy2 : wy3)
+
+        interp += weight * field[gx, gy]
+    end
+
+    return interp
+end
+
+"""
     cubic_derivative_weights(t)
 
 Derivatives of Catmull-Rom basis functions.
@@ -264,14 +316,18 @@ function estimate_field_smoothness(x::T, y::T, z::T,
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     
     # Convert to grid indices
-    ix = clamp(round(Int, x / dx), 2, nx-1)
-    iy = clamp(round(Int, y / dy), 2, ny-1)
-    iz = clamp(round(Int, z / dz), 2, nz-1)
+    ix_raw = round(Int, x / dx)
+    iy_raw = round(Int, y / dy)
+    iz_raw = round(Int, z / dz)
+
+    ix = nx >= 3 ? clamp(ix_raw, 2, nx - 1) : clamp(ix_raw, 1, nx)
+    iy = ny >= 3 ? clamp(iy_raw, 2, ny - 1) : clamp(iy_raw, 1, ny)
+    iz = nz >= 3 ? clamp(iz_raw, 2, nz - 1) : clamp(iz_raw, 1, nz)
     
-    # Compute second derivatives (finite differences)
-    d2u_dx2 = (u_field[iz, ix+1, iy] - 2*u_field[iz, ix, iy] + u_field[iz, ix-1, iy]) / dx^2
-    d2u_dy2 = (u_field[iz, ix, iy+1] - 2*u_field[iz, ix, iy] + u_field[iz, ix, iy-1]) / dy^2
-    d2u_dz2 = (u_field[iz+1, ix, iy] - 2*u_field[iz, ix, iy] + u_field[iz-1, ix, iy]) / dz^2
+    # Compute second derivatives (finite differences) when stencil fits
+    d2u_dx2 = nx >= 3 ? (u_field[iz, ix+1, iy] - 2*u_field[iz, ix, iy] + u_field[iz, ix-1, iy]) / dx^2 : zero(T)
+    d2u_dy2 = ny >= 3 ? (u_field[iz, ix, iy+1] - 2*u_field[iz, ix, iy] + u_field[iz, ix, iy-1]) / dy^2 : zero(T)
+    d2u_dz2 = nz >= 3 ? (u_field[iz+1, ix, iy] - 2*u_field[iz, ix, iy] + u_field[iz-1, ix, iy]) / dz^2 : zero(T)
     
     # RMS curvature as smoothness indicator
     curvature = sqrt(d2u_dx2^2 + d2u_dy2^2 + d2u_dz2^2)

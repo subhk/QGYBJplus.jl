@@ -904,7 +904,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     Aₖ_z_arr = parent(Aₖ_z)
 
     # Compute horizontal derivatives of A_z in xy-pencil
-    nx_local, ny_local, _ = size(Aₖ_z_arr)
+    nz_local, nx_local, ny_local = size(Aₖ_z_arr)
+    @assert nz_local == nz "Vertical dimension must be fully local for YBJ vertical velocity"
     dAz_dxₖ = similar(Aₖ_z)
     dAz_dyₖ = similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
@@ -943,7 +944,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     w_arr = parent(S.w)
 
     # Compute w in physical space
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
+    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
+    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
         k_out = k + 1
         N²ₗ = N2_profile[k_out]
         ybj_factor = -2.0 * (f^2) / N²ₗ
@@ -955,7 +957,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     end
 
     # Apply boundary conditions
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
         w_arr[1, i_local, j_local] = 0.0
         if nz > 1
             w_arr[nz, i_local, j_local] = 0.0
@@ -1152,7 +1154,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Note: fft_backward! is normalized, so Aᵣ and derivatives are in physical space
 
     # Add Stokes drift to existing QG velocities directly in physical space
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+    nz_phys, nx_phys, ny_phys = size(Aᵣ_arr)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         A_phys = Aᵣ_arr[k, i_local, j_local]
         dAdx_phys = dA_dxᵣ_arr[k, i_local, j_local]
         dAdy_phys = dA_dyᵣ_arr[k, i_local, j_local]

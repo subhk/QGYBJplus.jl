@@ -580,7 +580,7 @@ end
 ```julia
 mutable struct ParticleTracker{T}  # Simplified view (omits I/O bookkeeping)
     config::ParticleConfig{T}
-    particles::ParticleState{T}   # x, y, z, u, v, w arrays
+    particles::ParticleState{T}   # x, y, z, id, u, v, w arrays
 
     # Grid info
     nx, ny, nz::Int
@@ -664,7 +664,7 @@ See the [Particle API Reference](../api/particles.md) for complete documentation
 
 **Types:**
 - [`ParticleConfig`](@ref) - Configuration options
-- [`ParticleState`](@ref) - Particle positions and velocities
+- [`ParticleState`](@ref) - Particle positions, IDs, and velocities
 - [`ParticleTracker`](@ref) - Main tracking object
 
 **Initialization Constructors:**
