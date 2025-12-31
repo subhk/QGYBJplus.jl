@@ -209,13 +209,14 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
     ψ_arr = parent(ψk)
     nz_spec, nx_spec, ny_spec = size(ψ_arr)
 
+    use_inline_dealias = isnothing(dealias_mask)
+    @inline should_keep(i_g, j_g) = use_inline_dealias ? is_dealiased(i_g, j_g, nx, ny) : dealias_mask[i_g, j_g]
+
     # Skip refraction for passive scalar mode, but still enforce dealiasing
     if par.passive_scalar
         parent(Bk_out) .= parent(Bk_in)
         Bk_out_arr = parent(Bk_out)
         nz_spec, nx_spec, ny_spec = size(Bk_out_arr)
-        use_inline_dealias = isnothing(dealias_mask)
-        @inline should_keep(i_g, j_g) = use_inline_dealias ? is_dealiased(i_g, j_g, nx, ny) : dealias_mask[i_g, j_g]
         @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
             i_global = local_to_global(i_local, 2, Bk_out)
             j_global = local_to_global(j_local, 3, Bk_out)
@@ -263,9 +264,6 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
     # Apply dealiasing mask to remove quadratic aliasing from ζ·B product
     Bk_out_arr = parent(Bk_out)
     nz_spec, nx_spec, ny_spec = size(Bk_out_arr)
-    use_inline_dealias = isnothing(dealias_mask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? is_dealiased(i_g, j_g, nx, ny) : dealias_mask[i_g, j_g]
-
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, Bk_out)
         j_global = local_to_global(j_local, 3, Bk_out)
