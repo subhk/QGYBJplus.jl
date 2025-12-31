@@ -166,8 +166,8 @@ config = particles_in_grid_3d(x_max=250e3, y_max=250e3, z_max=2000.0, nx=8, ny=8
 function particles_in_grid_3d(; x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
                                x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
                                nx::Int=10, ny::Int=10, nz::Int=5,
-                               kwargs...)
-    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
+                               precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                               kwargs...) where T<:AbstractFloat
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
         z_min=T(z_min), z_max=T(z_max),
@@ -201,8 +201,9 @@ function particles_in_layers(z_levels::Vector{<:Real};
                             x_max::Real, y_max::Real,  # REQUIRED
                             x_min::Real=0.0, y_min::Real=0.0,
                             nx::Int=10, ny::Int=10,
-                            particles_per_level::Vector{Int}=Int[], kwargs...)
-    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
+                            particles_per_level::Vector{Int}=Int[],
+                            precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                            kwargs...) where T<:AbstractFloat
     z_levels_T = T.(z_levels)
     z_min = minimum(z_levels_T)
     z_max = maximum(z_levels_T)
@@ -247,8 +248,9 @@ config = particles_random_3d(1000; x_max=250e3, y_max=250e3, z_max=2000.0)
 function particles_random_3d(n::Int;
                             x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
                             x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
-                            seed::Int=1234, kwargs...)
-    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
+                            seed::Int=1234,
+                            precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                            kwargs...) where T<:AbstractFloat
 
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
@@ -274,8 +276,9 @@ Create particles at user-specified positions.
 config = particles_custom([(1.0, 1.0, 0.5), (2.0, 2.0, 1.0), (3.0, 1.5, 0.75), (1.5, 3.0, 1.25)])
 ```
 """
-function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}}; kwargs...)
-    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
+function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}};
+                         precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                         kwargs...) where T<:AbstractFloat
 
     custom_x = T[pos[1] for pos in positions]
     custom_y = T[pos[2] for pos in positions]

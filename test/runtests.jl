@@ -125,7 +125,7 @@ end
     z_levels = [1000.0, 3000.0]
     per_level = [6, 10]
     cfg3d = particles_in_layers(z_levels; x_max=G.Lx, y_max=G.Ly, nx=4, ny=4,
-                                particles_per_level=per_level)
+                                particles_per_level=per_level, precision=Float64)
 
     initialize_particles!(tracker, cfg3d)
 
@@ -149,7 +149,7 @@ end
     G = init_grid(par)
 
     base_cfg = ParticleConfig{Float64}(x_max=G.Lx, y_max=G.Ly, z_level=0.0)
-    cfg3d = particles_random_3d(10; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, seed=42)
+    cfg3d = particles_random_3d(10; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, seed=42, precision=Float64)
 
     tracker1 = ParticleTracker(base_cfg, G)
     tracker2 = ParticleTracker(base_cfg, G)
