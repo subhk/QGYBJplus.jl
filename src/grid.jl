@@ -13,7 +13,7 @@ GRID STRUCTURE:
 The model uses a doubly-periodic horizontal domain with:
 - x ∈ [0, Lx) with nx points (Lx in meters - REQUIRED)
 - y ∈ [0, Ly) with ny points (Ly in meters - REQUIRED)
-- z ∈ [0, Lz] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
+- z ∈ (0, Lz] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
 
 SPECTRAL REPRESENTATION:
 ------------------------
@@ -26,10 +26,10 @@ VERTICAL DISCRETIZATION:
 ------------------------
 The vertical coordinate uses an unstaggered grid with second-order
 finite differences, matching the Fortran implementation:
-- z ranges from 0 to Lz with nz equally-spaced points
-- z[k] = (k-1) × Lz/(nz-1) for k = 1, ..., nz (Julia 1-indexing)
-- Grid spacing: dz = Lz/(nz-1) (NOT Lz/nz)
-- Staggered values (for derivatives) at z[k] + dz/2
+- z levels run from dz to Lz with nz equally-spaced points
+- z[k] = k × Lz/nz for k = 1, ..., nz (Julia 1-indexing)
+- Grid spacing: dz = Lz/nz
+- Staggered values (for derivatives) at z[k] - dz/2
 
 STATE VARIABLES:
 ----------------
