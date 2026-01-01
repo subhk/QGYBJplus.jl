@@ -72,7 +72,7 @@ Lx, Ly = grid.Lx, grid.Ly
 # Grid spacings
 dx, dy = grid.dx, grid.dy
 
-# Vertical levels (z runs from -Lz+dz to 0 with dz = Lz/nz)
+# Vertical levels (staggered grid: z runs from -Lz+dz/2 to -dz/2 with dz = Lz/nz)
 z = grid.z       # Vector of length nz
 dz = grid.dz     # Vector of length nz-1
 
@@ -217,12 +217,12 @@ nz_local, nx_local, ny_local = size(parent(state.psi))
 val = state.psi[k, i, j]
 
 # Access slice
-surface = state.psi[end, :, :]
+top_level = state.psi[end, :, :]  # Closest level to the surface
 profile = state.psi[:, i, j]
 
 # Set values
 state.psi[k, i, j] = complex_value
-state.psi[end, :, :] .= surface_values
+state.psi[end, :, :] .= top_values
 
 # Copy all of one field
 state.psi .= initial_psi

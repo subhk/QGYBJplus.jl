@@ -437,11 +437,11 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
 
     # Vertical grid (same on all processes): z ∈ [-Lz, 0]
     if nz == 1
-        z = T[0.0]
+        z = T[-params.Lz / 2]
         dz = T[params.Lz]
     else
         dz_scalar = params.Lz / nz
-        z = T.(-params.Lz .+ dz_scalar .* collect(1:nz))
+        z = T.(-params.Lz .+ (collect(1:nz) .- 0.5) .* dz_scalar)
         dz = fill(T(dz_scalar), nz - 1)
     end
 

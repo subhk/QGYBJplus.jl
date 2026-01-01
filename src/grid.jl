@@ -25,11 +25,12 @@ The wavenumber arrays follow FFTW conventions:
 VERTICAL DISCRETIZATION:
 ------------------------
 The vertical coordinate uses the standard oceanographic convention with
-z=0 at the surface and z=-Lz at the bottom:
-- z levels run from -Lz+dz to 0 with nz equally-spaced points
-- z[k] = -Lz + k × dz for k = 1, ..., nz (Julia 1-indexing)
+z=0 at the surface and z=-Lz at the bottom, and a staggered (cell-centered)
+grid between the boundaries:
+- z levels run from -Lz+dz/2 to -dz/2 with nz equally-spaced points
+- z[k] = -Lz + (k - 0.5) × dz for k = 1, ..., nz (Julia 1-indexing)
 - Grid spacing: dz = Lz/nz
-- Staggered values (for derivatives) at z[k] - dz/2
+- Unstaggered (face) values at z[k] + dz/2
 
 STATE VARIABLES:
 ----------------
@@ -85,7 +86,7 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 - `dx, dy::T`: Grid spacing in x, y (computed as Lx/nx, Ly/ny)
 
 ## Vertical Grid
-- `z::Vector{T}`: Unstaggered vertical levels, length nz
+- `z::Vector{T}`: Staggered (cell-centered) vertical levels, length nz
 - `dz::Vector{T}`: Layer thicknesses between levels, length nz-1 (or length 1 containing Lz when nz=1)
 
 ## Spectral Wavenumbers
@@ -147,7 +148,7 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 
 # Grid Setup
 - Horizontal: Uniform grid with spacing dx = Lx/nx, dy = Ly/ny
-- Vertical: Uniform grid from -Lz+dz to 0 with spacing dz = Lz/nz
+- Vertical: Uniform staggered grid from -Lz+dz/2 to -dz/2 with spacing dz = Lz/nz
 - Domain size (Lx, Ly, Lz) is REQUIRED - specify in meters (e.g., 500e3 for 500 km)
 
 # Wavenumber Arrays
@@ -183,15 +184,15 @@ function init_grid(par::QGParams)
     dy = par.Ly / ny
 
     #= Vertical grid: z ∈ [-Lz, 0]
-    z[k] ranges from -Lz+dz to 0 with nz points
+    z[k] ranges from -Lz+dz/2 to -dz/2 with nz points
     Surface at z=0, bottom at z=-Lz (standard oceanographic convention)
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
     if nz == 1
-        z = T[0.0]  # Single point at the surface
+        z = T[-par.Lz / 2]  # Single midpoint
         dz = T[par.Lz]
     else
         dz_scalar = par.Lz / nz
-        z = T.(-par.Lz .+ dz_scalar .* collect(1:nz))
+        z = T.(-par.Lz .+ (collect(1:nz) .- 0.5) .* dz_scalar)
         dz = fill(T(dz_scalar), nz - 1)
     end
 

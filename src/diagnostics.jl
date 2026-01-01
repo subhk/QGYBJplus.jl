@@ -632,8 +632,8 @@ Transforms a spectral field to physical space and extracts the horizontal
 slice at LOCAL vertical index k.
 
 # Use Cases
-- Surface vorticity plots (k=nz for surface)
-- Deep field structure (k=1 for bottom)
+- Top-level plots (k=nz for closest to surface)
+- Deep field structure (k=1 for closest to bottom)
 - Vertical structure analysis at specific depths
 
 # Arguments

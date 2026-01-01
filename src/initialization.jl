@@ -282,7 +282,7 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
     for k in 1:nz_local
         # Get global z-index for correct coordinate
         k_global = local_to_global(k, 1, Br)
-        z = -G.Lz + k_global * dz
+        z = -G.Lz + (k_global - 0.5) * dz
         depth = -z
 
         for j_local in 1:ny_local
