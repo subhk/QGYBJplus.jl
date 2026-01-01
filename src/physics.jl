@@ -378,7 +378,8 @@ quantity characterizing ocean stratification.
 """
     N2_ut(par, G) -> Vector
 
-Compute the Brunt-Väisälä frequency squared N²(z) on unstaggered vertical levels.
+Compute the Brunt-Väisälä frequency squared N²(z) on unstaggered vertical levels
+(z = G.z - dz/2, lower faces).
 
 # Physical Meaning
 N² (buoyancy frequency squared) measures the strength of density stratification:

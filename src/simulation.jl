@@ -52,7 +52,7 @@ High-level container for all simulation components.
 - `plans`: FFT plans for spectral transforms
 - `mpi_config`: MPI configuration
 - `workspace`: Pre-allocated workspace arrays
-- `N2_profile`: Stratification profile N²(z)
+- `N2_profile`: Stratification profile N²(z) on unstaggered (face) levels
 """
 struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W}
     grid::G
