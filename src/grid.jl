@@ -182,15 +182,15 @@ function init_grid(par::QGParams)
     dx = par.Lx / nx
     dy = par.Ly / ny
 
-    #= Vertical grid: z ∈ [-Lz, 0]
-    z[k] ranges from -Lz+dz to 0 with nz points
+    #= Vertical grid: z ∈ (0, Lz]
+    z[k] ranges from dz to Lz with nz points
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
     if nz == 1
-        z = T[0.0]  # Single point at the surface
+        z = T[par.Lz]  # Single point at the top boundary
         dz = T[par.Lz]
     else
         dz_scalar = par.Lz / nz
-        z = T.(-par.Lz .+ dz_scalar .* collect(1:nz))
+        z = T.(dz_scalar .* collect(1:nz))
         dz = fill(T(dz_scalar), nz - 1)
     end
 
