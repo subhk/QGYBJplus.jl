@@ -30,7 +30,7 @@ grid between the boundaries:
 - z levels run from -Lz+dz/2 to -dz/2 with nz equally-spaced points
 - z[k] = -Lz + (k - 0.5) × dz for k = 1, ..., nz (Julia 1-indexing)
 - Grid spacing: dz = Lz/nz
-- Unstaggered (face) values at z[k] + dz/2
+- Unstaggered (face) values at z[k] - dz/2 (lower faces, Fortran za)
 
 Note: This matches the Fortran "staggered" z grid (zas) in init.f90.
 

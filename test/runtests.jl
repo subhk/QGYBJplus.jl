@@ -193,7 +193,8 @@ end
 
     @test all(x -> x >= 0.0 && x <= G.Lx, tracker1.particles.x)
     @test all(y -> y >= 0.0 && y <= G.Ly, tracker1.particles.y)
-    @test all(z -> z >= 0.0 && z <= G.Lz, tracker1.particles.z)
+    # z ∈ [-Lz, 0] with surface at z=0 (oceanographic convention)
+    @test all(z -> z >= -G.Lz && z <= 0.0, tracker1.particles.z)
 end
 
 @testset "QGYBJplus basic API" begin

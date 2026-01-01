@@ -15,7 +15,7 @@ The buoyancy frequency ``N(z)`` affects:
 - **Refraction**: Waves bend toward regions of lower ``N``
 - **Energy flux**: Vertical group velocity scales with ``N``
 
-The vertical coordinate is `z ∈ [-Lz, 0]` with `z = 0` at the surface. Grid points are cell-centered at `z = -Lz+dz/2 ... -dz/2`. For stratification profiles we use depth `d = -z` (positive downward).
+The vertical coordinate is `z ∈ [-Lz, 0]` with `z = 0` at the surface. Grid points are cell-centered at `z = -Lz+dz/2 ... -dz/2`. For stratification profiles we use depth `d = -z` (positive downward), evaluated on the unstaggered (face) grid at `z = G.z - dz/2`.
 
 ## Built-in Stratification Types
 

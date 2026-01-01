@@ -85,7 +85,7 @@ PV to streamfunction and wave envelope B to amplitude A.
     a_ell_ut(par, G) -> Vector
 
 Compute the vertical elliptic coefficient a(z) = f₀²/N²(z) on unstaggered levels
-(z shifted by +dz/2 relative to the cell-centered grid).
+(z shifted by -dz/2 relative to the cell-centered grid).
 
 # Physical Meaning
 This coefficient appears in the stretching term of the QG elliptic operator:
@@ -152,7 +152,7 @@ function a_ell_ut(par::QGParams, G::Grid)
         N2_min = sqrt(eps(T))
         division_guard_warned = false
         @inbounds for k in 1:nz
-            z_unstag = nz == 1 ? zero(eltype(G.z)) : G.z[k] + dz / 2
+            z_unstag = G.z[k] - dz / 2
             depth = -z_unstag
             N2_z = N12*exp(-((depth - d0)^2)/(σ^2))*(1 + erf(α*(depth - d0)/(σ*sqrt(2.0)))) + N02
             # Warn once if division guard activates at any level
@@ -202,7 +202,7 @@ Vector of length nz with a(z) = f²/N²(z) values.
 ```julia
 # Use custom N² profile for elliptic operators (depth = -z on unstaggered levels)
 dz = G.Lz / G.nz
-N2_profile = [compute_N2(-(z + dz / 2)) for z in G.z]
+N2_profile = [compute_N2(-(z - dz / 2)) for z in G.z]
 a_ell = a_ell_from_N2(N2_profile, par)
 invert_q_to_psi!(S, G; a=a_ell)
 ```
@@ -289,13 +289,13 @@ end
 """
     rho_st(par, G) -> Vector
 
-Background density weight on staggered vertical levels (z + dz/2).
+Background density weight on staggered vertical levels (cell centers).
 
 # Physical Context
 Staggered density values are used in finite-difference approximations of
 vertical derivatives. In the vertical discretization:
-- Unstaggered: function values at z[k]
-- Staggered: derivatives at z[k] + dz/2
+- Unstaggered: function values at z[k] - dz/2 (cell faces)
+- Staggered: derivatives at z[k] (cell centers)
 
 The staggered density is typically interpolated from unstaggered values
 or defined at half-levels.
@@ -417,8 +417,8 @@ Vector of length nz with N²(z_k) values on unstaggered levels.
 
 # Example
 ```julia
-N2 = N2_ut(par, G)
-# For plotting: plot(-G.z, N2) shows pycnocline structure vs depth
+    N2 = N2_ut(par, G)
+    # For plotting: depth = -(G.z .- G.Lz / G.nz / 2) aligns with unstaggered levels
 ```
 
 # Fortran Correspondence
@@ -444,7 +444,7 @@ function N2_ut(par::QGParams, G::Grid)
         - α controls asymmetry (positive = sharper above z₀) =#
         N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; d0 = par.z₀_sg; α = par.α_sg
         @inbounds for k in 1:nz
-            z_unstag = nz == 1 ? zero(eltype(G.z)) : G.z[k] + dz / 2
+            z_unstag = G.z[k] - dz / 2
             depth = -z_unstag
             N2[k] = N12*exp(-((depth - d0)^2)/(σ^2))*(1 + erf(α*(depth - d0)/(σ*sqrt(2.0)))) + N02
         end

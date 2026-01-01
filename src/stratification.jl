@@ -252,13 +252,17 @@ end
     compute_stratification_profile(profile::StratificationProfile, G::Grid)
 
 Compute N² profile on model grid.
+
+The profile is evaluated on unstaggered (face) levels at `z = G.z - dz/2`
+to match the Fortran coefficient grid.
 """
 function compute_stratification_profile(profile::StratificationProfile{T}, G::Grid) where T
     N2_profile = zeros(T, G.nz)
+    dz = G.Lz / G.nz
 
     for k in 1:G.nz
-        z = G.z[k]  # Use actual grid z-values
-        N2_profile[k] = evaluate_N2(profile, z)
+        z_unstag = G.z[k] - dz / 2
+        N2_profile[k] = evaluate_N2(profile, z_unstag)
     end
 
     return N2_profile
@@ -299,14 +303,14 @@ function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_
     dz = nz > 1 ? (G.z[2] - G.z[1]) : T(G.Lz / nz)
 
     # Initialize coefficient arrays (following Fortran init_base_state)
-    # Unstaggered (at cell centers)
+    # Unstaggered (cell faces at z = G.z - dz/2)
     r_1_u = ones(T, nz)         # r₁ = 1.0 (Boussinesq)
     r_2_u = zeros(T, nz)        # r₂ = N² at unstaggered points
     r_3_u = zeros(T, nz)        # r₃ = 0.0 (not used in standard QG)
     a_ell_u = zeros(T, nz)      # a_ell = f²/N² at unstaggered points
     rho_u = ones(T, nz)         # ρ = 1.0 (Boussinesq)
 
-    # Staggered (at cell faces)
+    # Staggered (cell centers at z = G.z)
     r_1_s = ones(T, nz)         # r₁ = 1.0 at staggered points
     r_2_s = zeros(T, nz)        # r₂ = N² at staggered points
     r_3_s = zeros(T, nz)        # r₃ = 0.0 at staggered points
@@ -315,13 +319,12 @@ function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_
 
     # Compute coefficients at each vertical level
     for k in 1:nz
-        # Unstaggered values (cell centers)
+        # Unstaggered values (cell faces)
         N2_u = N2_profile[k]
         r_2_u[k] = N2_u
         a_ell_u[k] = f0_sq / max(N2_u, eps(T))  # Avoid division by zero
 
-        # Staggered values (cell faces at z + dz/2)
-        # Interpolate N² to staggered grid
+        # Staggered values (cell centers from adjacent unstaggered levels)
         if k < nz
             N2_s = T(0.5) * (N2_profile[k] + N2_profile[k+1])
         else
