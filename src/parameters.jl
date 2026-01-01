@@ -44,6 +44,7 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 # Domain Parameters
 - `nx, ny, nz`: Grid resolution in x, y, z directions
 - `Lx, Ly, Lz`: Domain size in x, y, z in meters (REQUIRED - no default)
+- `x0, y0`: Domain origin in x, y (default: 0, use -Lx/2,-Ly/2 for centered domain)
 
 # Time Stepping
 - `dt`: Time step size

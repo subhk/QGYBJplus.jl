@@ -11,8 +11,8 @@ This file defines the fundamental data structures for the QG-YBJ+ model:
 GRID STRUCTURE:
 ---------------
 The model uses a doubly-periodic horizontal domain with:
-- x ∈ [0, Lx) with nx points (Lx in meters - REQUIRED)
-- y ∈ [0, Ly) with ny points (Ly in meters - REQUIRED)
+- x ∈ [x0, x0+Lx) with nx points (default x0=0, use centered=true for x0=-Lx/2)
+- y ∈ [y0, y0+Ly) with ny points (default y0=0, use centered=true for y0=-Ly/2)
 - z ∈ (0, Lz] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
 
 SPECTRAL REPRESENTATION:
@@ -81,6 +81,7 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 ## Grid Dimensions
 - `nx, ny, nz::Int`: Number of grid points in x, y, z directions
 - `Lx, Ly, Lz::T`: Domain size in x, y, z in meters (REQUIRED - no default)
+- `x0, y0::T`: Domain origin in x, y (0 = standard [0,Lx), -Lx/2 = centered [-Lx/2,Lx/2))
 - `dx, dy::T`: Grid spacing in x, y (computed as Lx/nx, Ly/ny)
 
 ## Vertical Grid

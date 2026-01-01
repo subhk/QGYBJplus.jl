@@ -218,7 +218,7 @@ end
 =#
 
 """
-    set_dipole_flow!(sim::Simulation; amplitude, k=nothing, centered=true)
+    set_dipole_flow!(sim::Simulation; amplitude, k=nothing, rotated=true)
 
 Set up a barotropic dipole flow (eddy).
 
@@ -227,22 +227,25 @@ The dipole streamfunction follows Asselin et al. (2020):
 
 where U is the velocity amplitude and κ is the dipole wavenumber.
 
+The domain origin is determined by the Grid's `x0`, `y0` fields, which are set via
+`centered=true` in `initialize_simulation()` or `default_params()`.
+
 # Arguments
 - `sim`: Simulation object
 - `amplitude`: Flow velocity scale U [m/s]
 - `k`: Dipole wavenumber κ [rad/m]. Default: sqrt(2)π/Lx
-- `centered`: Center the domain at (0,0) (default: true)
 - `rotated`: Use rotated coordinates x=(X-Y)/√2, y=(X+Y)/√2 (default: true)
 
 # Example
 ```julia
+sim = initialize_simulation(nx=256, ny=256, nz=128, Lx=70e3, Ly=70e3, Lz=2000.0,
+                            centered=true, ...)  # Domain x,y ∈ [-35km, +35km)
 set_dipole_flow!(sim; amplitude=0.335)  # U = 33.5 cm/s
 ```
 """
 function set_dipole_flow!(sim::Simulation;
     amplitude::Real,
     k::Union{Real, Nothing} = nothing,
-    centered::Bool = true,
     rotated::Bool = true)
 
     G = sim.grid
@@ -267,17 +270,13 @@ function set_dipole_flow!(sim::Simulation;
     for k_local in axes(psi_arr, 1)
         for j_local in axes(psi_arr, 3)
             j_global = local_range[3][j_local]
-            Y = (j_global - 1) * G.dy
-            if centered
-                Y -= G.Ly / 2
-            end
+            # Use Grid origin (x0, y0) for domain centering
+            Y = G.y0 + (j_global - 1) * G.dy
 
             for i_local in axes(psi_arr, 2)
                 i_global = local_range[2][i_local]
-                X = (i_global - 1) * G.dx
-                if centered
-                    X -= G.Lx / 2
-                end
+                # Use Grid origin (x0, y0) for domain centering
+                X = G.x0 + (i_global - 1) * G.dx
 
                 # Coordinates for streamfunction
                 if rotated
