@@ -435,7 +435,7 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
     dx = params.Lx / nx
     dy = params.Ly / ny
 
-    # Vertical grid (same on all processes): z ∈ [-Lz, 0]
+    # Vertical grid (same on all processes): z ∈ [-Lz, 0] at cell centers
     if nz == 1
         z = T[-params.Lz / 2]
         dz = T[params.Lz]

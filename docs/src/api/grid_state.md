@@ -27,7 +27,7 @@ mutable struct Grid{T, AT}
     dx::T                  # Grid spacing in x: dx = Lx/nx
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
-    # Vertical grid (unstaggered)
+    # Vertical grid (staggered, cell-centered)
     z::Vector{T}           # Vertical levels z[k], size nz
     dz::Vector{T}          # Layer thicknesses: dz[k] = z[k+1] - z[k], size nz-1
 

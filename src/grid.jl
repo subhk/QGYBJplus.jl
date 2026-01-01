@@ -32,6 +32,8 @@ grid between the boundaries:
 - Grid spacing: dz = Lz/nz
 - Unstaggered (face) values at z[k] + dz/2
 
+Note: This matches the Fortran "staggered" z grid (zas) in init.f90.
+
 STATE VARIABLES:
 ----------------
 All 3D arrays are stored in `(z, x, y)` order so that the FFT dimensions
