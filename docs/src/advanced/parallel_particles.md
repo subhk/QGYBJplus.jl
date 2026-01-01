@@ -20,7 +20,7 @@ The parallel particle algorithm enables efficient Lagrangian particle tracking o
 
 ### 2D Tile Decomposition
 
-The physical domain `[0, Lx] × [0, Ly] × [0, Lz]` is partitioned into tiles across
+The physical domain `[0, Lx] × [0, Ly] × [-Lz, 0]` is partitioned into tiles across
 x and y according to the MPI process grid (px × py). Each rank owns a contiguous
 tile in x/y and the full z-range.
 
@@ -75,8 +75,8 @@ function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothi
         x_end = x_end_phys,
         y_start = y_start_phys,
         y_end = y_end_phys,
-        z_start = 0.0,
-        z_end = grid.Lz,
+        z_start = -grid.Lz,
+        z_end = 0.0,
         nx_local = nx_local,
         ny_local = ny_local,
         px = px,
@@ -376,8 +376,8 @@ end
 │  │   Horizontal (periodic):  x = mod(x, Lx),  y = mod(y, Ly)       │         │
 │  │                                                                 │         │
 │  │   Vertical (reflective):                                        │         │
-│  │     if z < 0:   z = -z,        w = -w                           │         │
-│  │     if z > Lz:  z = 2·Lz - z,  w = -w                           │         │
+│  │     if z > 0:    z = -z,         w = -w                          │         │
+│  │     if z < -Lz:  z = -2·Lz - z, w = -w                           │         │
 │  └─────────────────────────────────────────────────────────────────┘         │
 │                                ↓                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐         │
@@ -511,7 +511,7 @@ compute_wave_velocities!(S, G; ...) # ADDS Stokes drift to S.u, S.v, S.w
 
 In MPI parallel mode:
 - `state.u`, `state.v`, `state.w` are **distributed arrays** (PencilArrays)
-- Each rank owns a tile: `[x_start, x_end] × [y_start, y_end] × [0, Lz]`
+- Each rank owns a tile: `[x_start, x_end] × [y_start, y_end] × [-Lz, 0]`
 - `parent(state.u)` extracts only the **local portion**
 
 ```julia

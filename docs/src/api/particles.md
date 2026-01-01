@@ -68,12 +68,14 @@ initialize_particles_3d!
 
 | Constructor | Description | Example |
 |:------------|:------------|:--------|
-| `particles_in_box(z; x_max, y_max, ...)` | 2D box at fixed z | `particles_in_box(500.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)` |
-| `particles_in_circle(z; ...)` | Circular disk | `particles_in_circle(1.0; radius=0.5, n=100)` |
+| `particles_in_box(z; x_max, y_max, ...)` | 2D box at fixed z | `particles_in_box(-500.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)` |
+| `particles_in_circle(z; ...)` | Circular disk | `particles_in_circle(-1.0; radius=0.5, n=100)` |
 | `particles_in_grid_3d(; x_max, y_max, z_max, ...)` | 3D grid | `particles_in_grid_3d(; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, nx=10, ny=10, nz=5)` |
-| `particles_in_layers(zs; x_max, y_max, ...)` | Multiple z-levels | `particles_in_layers([500.0, 1000.0, 1500.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)` |
+| `particles_in_layers(zs; x_max, y_max, ...)` | Multiple z-levels | `particles_in_layers([-500.0, -1000.0, -1500.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)` |
 | `particles_random_3d(n; x_max, y_max, z_max, ...)` | Random 3D | `particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)` |
-| `particles_custom(pos; ...)` | Custom positions | `particles_custom([(1.0,1.0,0.5), ...])` |
+| `particles_custom(pos; ...)` | Custom positions | `particles_custom([(1.0,1.0,-0.5), ...])` |
+
+Note: `z` is in `[-Lz, 0]` with `z = 0` at the surface. If `z_min` is omitted, `z_max` is treated as a positive depth (e.g., `z_max=G.Lz` gives the full depth).
 
 ## Usage Example
 
@@ -84,9 +86,9 @@ using QGYBJplus
 par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
 G, S, plans, a = setup_model(par)
 
-# Create particle configuration (100 particles in a box at z = 2000m)
+# Create particle configuration (100 particles in a box at z = -2000 m)
 # NOTE: x_max, y_max are REQUIRED - use G.Lx, G.Ly from grid
-pconfig = particles_in_box(2000.0;
+pconfig = particles_in_box(-2000.0;
     x_max=G.Lx, y_max=G.Ly,  # REQUIRED
     nx=10, ny=10,
     integration_method=:rk4,
@@ -94,10 +96,10 @@ pconfig = particles_in_box(2000.0;
 )
 
 # Or use a circular distribution (no x_max/y_max needed - computed from center/radius)
-pconfig = particles_in_circle(2000.0; center=(G.Lx/2, G.Ly/2), radius=50e3, n=100)
+pconfig = particles_in_circle(-2000.0; center=(G.Lx/2, G.Ly/2), radius=50e3, n=100)
 
 # Or multiple z-levels (x_max, y_max REQUIRED)
-pconfig = particles_in_layers([1000.0, 2000.0, 3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+pconfig = particles_in_layers([-1000.0, -2000.0, -3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Create tracker and initialize
 tracker = ParticleTracker(pconfig, G)

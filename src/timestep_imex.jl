@@ -321,7 +321,7 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     # Build tridiagonal system: (L⁺ - β)·A = B
     # where L⁺ = (1/ρ)∂/∂z(ρ a(z) ∂A/∂z) - kₕ²/4·A is the YBJ+ elliptic operator
     # and β = (dt/2)·i·αdisp(z)·kₕ² is the implicit dispersion coefficient
-    # With Neumann BCs: ∂A/∂z = 0 at z = 0, Lz
+    # With Neumann BCs: ∂A/∂z = 0 at z = -Lz, 0
 
     # This matches the discretization used by invert_B_to_A! (including density weights).
     # The matrix is scaled by dz², so RHS is dz² * B.

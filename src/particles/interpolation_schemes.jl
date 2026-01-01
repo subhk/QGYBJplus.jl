@@ -165,11 +165,19 @@ function tricubic_interpolation(x::T, y::T, z::T,
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
     z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : z0
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : Lz
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : z0
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : Lz
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : z0
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : grid_info.Lz
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : z0
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : Lz
     
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, Lz)
+    z_clamped = clamp(z, z_min, z_max)
     
     # Convert to grid coordinates
     fx = x_periodic / dx
@@ -320,7 +328,7 @@ function estimate_field_smoothness(x::T, y::T, z::T,
     # Convert to grid indices
     ix_raw = round(Int, x / dx)
     iy_raw = round(Int, y / dy)
-    z_clamped = clamp(z, z0, grid_info.Lz)
+    z_clamped = clamp(z, z_min, z_max)
     iz_raw = round(Int, (z_clamped - z0) / dz)
 
     ix = nx >= 3 ? clamp(ix_raw, 2, nx - 1) : clamp(ix_raw, 1, nx)
@@ -376,7 +384,7 @@ function trilinear_interpolation(x::T, y::T, z::T,
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, Lz)
+    z_clamped = clamp(z, z_min, z_max)
     
     # Convert to grid indices
     fx = x_periodic / dx
@@ -476,7 +484,7 @@ function quintic_interpolation(x::T, y::T, z::T,
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, Lz)
+    z_clamped = clamp(z, z_min, z_max)
 
     # Convert to grid coordinates
     fx = x_periodic / dx

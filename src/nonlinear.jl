@@ -883,7 +883,7 @@ Compute vertical diffusion of q with Neumann boundary conditions.
 # Mathematical Form
     D = νz ∂²q/∂z²
 
-with ∂q/∂z = 0 at z = 0 and z = H.
+with ∂q/∂z = 0 at z = -Lz and z = 0.
 
 # Discretization
 Interior points (1 < k < nz):

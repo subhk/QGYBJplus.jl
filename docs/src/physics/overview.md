@@ -61,7 +61,7 @@ where:
 The near-inertial wave envelope evolves according to:
 
 ```math
-\frac{\partial B}{\partial t} + J(\psi, B) = -i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}B \times \zeta + \text{dissipation}
+\frac{\partial B}{\partial t} + J(\psi, B) = i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}B \times \zeta + \text{dissipation}
 ```
 
 where:
@@ -131,7 +131,7 @@ Key nondimensional parameters:
 - **Doubly periodic**: ``f(x+L_x, y) = f(x, y+L_y) = f(x, y)``
 
 ### Vertical
-- **Rigid lid**: ``w = 0`` at ``z = 0`` and ``z = H``
+- **Rigid lid**: ``w = 0`` at ``z = -H`` and ``z = 0``
 - **No flux**: ``\frac{\partial\psi}{\partial z} = 0`` at boundaries (Neumann)
 
 ## Energy Budget

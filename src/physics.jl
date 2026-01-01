@@ -136,24 +136,24 @@ function a_ell_ut(par::QGParams, G::Grid)
         end
 
     elseif par.stratification === :skewed_gaussian
-        #= Skewed Gaussian N² profile:
-        N²(z) = N₁² exp(-(z-z₀)²/σ²)[1 + erf(α(z-z₀)/σ√2)] + N₀²
+        #= Skewed Gaussian N² profile (depth-based):
+        N²(z) = N₁² exp(-(d-d₀)²/σ²)[1 + erf(α(d-d₀)/σ√2)] + N₀²
 
         This creates a realistic pycnocline with:
-        - Enhanced stratification near z₀
+        - Enhanced stratification near d₀ (positive depth below surface)
         - Asymmetric shape controlled by α
         - Background N₀² in deep ocean =#
         T = eltype(a)
-        N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; z0 = par.z₀_sg; α = par.α_sg
+        N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; d0 = par.z₀_sg; α = par.α_sg
         # Use consistent threshold for warning and clamping
         N2_min = sqrt(eps(T))
         division_guard_warned = false
         @inbounds for k in 1:nz
-            z = G.z[k]
-            N2_z = N12*exp(-((z - z0)^2)/(σ^2))*(1 + erf(α*(z - z0)/(σ*sqrt(2.0)))) + N02
+            depth = -G.z[k]
+            N2_z = N12*exp(-((depth - d0)^2)/(σ^2))*(1 + erf(α*(depth - d0)/(σ*sqrt(2.0)))) + N02
             # Warn once if division guard activates at any level
             if N2_z < N2_min && !division_guard_warned
-                @warn "N²(z) ≈ 0 at z=$(z) in skewed_gaussian stratification, clamping to $N2_min for numerical stability" maxlog=1
+                @warn "N²(z) ≈ 0 at depth=$(depth) in skewed_gaussian stratification, clamping to $N2_min for numerical stability" maxlog=1
                 division_guard_warned = true
             end
             a[k] = f₀_sq / max(N2_z, N2_min)  # a = f²/N²(z), protected against N²≈0
@@ -196,8 +196,8 @@ Vector of length nz with a(z) = f²/N²(z) values.
 
 # Example
 ```julia
-# Use custom N² profile for elliptic operators
-N2_profile = [compute_N2(z) for z in G.z]
+# Use custom N² profile for elliptic operators (depth = -z)
+N2_profile = [compute_N2(-z) for z in G.z]
 a_ell = a_ell_from_N2(N2_profile, par)
 invert_q_to_psi!(S, G; a=a_ell)
 ```
@@ -395,9 +395,9 @@ where ρ is the background density profile. N² controls:
 1. `:constant_N`: N² = par.N² everywhere (user-specified constant)
    - Simplest case, constant vertical wave speed
 
-2. `:skewed_gaussian`: Realistic ocean profile
-   - N²(z) = N₁² exp(-(z-z₀)²/σ²)[1 + erf(α(z-z₀)/σ√2)] + N₀²
-   - Enhanced stratification at pycnocline depth z₀
+2. `:skewed_gaussian`: Realistic ocean profile (depth-based)
+   - N²(z) = N₁² exp(-(d-d₀)²/σ²)[1 + erf(α(d-d₀)/σ√2)] + N₀²
+   - Enhanced stratification at pycnocline depth d₀ (positive depth below surface)
    - Asymmetry parameter α creates realistic upper-ocean structure
 
 3. `:tanh_profile`, `:from_file`: Require an external N² profile
@@ -413,7 +413,7 @@ Vector of length nz with N²(z_k) values.
 # Example
 ```julia
 N2 = N2_ut(par, G)
-# For plotting: plot(G.z, N2) shows pycnocline structure
+# For plotting: plot(-G.z, N2) shows pycnocline structure vs depth
 ```
 
 # Fortran Correspondence
@@ -435,10 +435,10 @@ function N2_ut(par::QGParams, G::Grid)
         - z₀ is the pycnocline center depth
         - σ is the pycnocline width
         - α controls asymmetry (positive = sharper above z₀) =#
-        N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; z0 = par.z₀_sg; α = par.α_sg
+        N02 = par.N₀²_sg; N12 = par.N₁²_sg; σ = par.σ_sg; d0 = par.z₀_sg; α = par.α_sg
         @inbounds for k in 1:nz
-            z = G.z[k]
-            N2[k] = N12*exp(-((z - z0)^2)/(σ^2))*(1 + erf(α*(z - z0)/(σ*sqrt(2.0)))) + N02
+            depth = -G.z[k]
+            N2[k] = N12*exp(-((depth - d0)^2)/(σ^2))*(1 + erf(α*(depth - d0)/(σ*sqrt(2.0)))) + N02
         end
 
     elseif par.stratification === :tanh_profile || par.stratification === :from_file

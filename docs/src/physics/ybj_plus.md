@@ -33,15 +33,18 @@ where ``A`` is the **slowly-varying complex wave amplitude**.
 The wave envelope ``B = L^+ A`` evolves according to:
 
 ```math
-\frac{\partial B}{\partial t} + J(\psi, B) = -i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}B \times \zeta + \mathcal{D}_B
+\frac{\partial B}{\partial t} + J(\psi, B) = i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}B \times \zeta + \mathcal{D}_B
 ```
+
+!!! note "Sign convention"
+    The sign in the dispersion term depends on the phase convention for the carrier wave (e.g., ``e^{-i f_0 t}`` vs ``e^{+i f_0 t}``). QGYBJ+.jl follows the ``e^{-i f_0 t}`` convention, yielding the ``+i`` sign shown here.
 
 where:
 - ``B = L^+ A``: Evolved wave envelope
 - ``\zeta = \nabla^2\psi``: Relative vorticity
 - ``J(\psi, B)``: Advection by geostrophic flow
 - ``(1/2)B \times \zeta``: Refraction term (wave focusing by vorticity)
-- ``-i k_h^2/(2 \cdot Bu \cdot Ro) A``: Dispersion (nondimensional form of ``-i N^2 k_h^2/(2f_0) A``)
+- ``i k_h^2/(2 \cdot Bu \cdot Ro) A``: Dispersion (nondimensional form of ``i N^2 k_h^2/(2f_0) A``)
 
 ### Real/Imaginary Decomposition
 
@@ -99,7 +102,7 @@ with:
 
 ### Boundary Conditions
 
-- **Neumann**: ``\frac{\partial A}{\partial z} = 0`` at ``z = 0, H``
+- **Neumann**: ``\frac{\partial A}{\partial z} = 0`` at ``z = -H, 0``
 
 ## Wave Refraction
 

@@ -50,7 +50,7 @@ const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
 # Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
 const Lx = 70e3              # 70 km horizontal domain in (X,Y)
 const Ly = 70e3              # 70 km horizontal domain in (X,Y)
-const Lz = 2000.0            # 2 km depth, surface at z = Lz
+const Lz = 2000.0            # 2 km depth, surface at z = 0
 
 # Time stepping
 const n_inertial_periods = 15
@@ -193,7 +193,7 @@ function main()
     B_phys_arr = parent(B_phys)
     for k_local in axes(B_phys_arr, 1)
         k_global = local_range_phys[1][k_local]
-        depth = G.Lz - G.z[k_global]  # Distance from surface [m]
+        depth = -G.z[k_global]  # Distance from surface [m]
         wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         wave_value = complex(u0_wave * wave_profile)
         B_phys_arr[k_local, :, :] .= wave_value

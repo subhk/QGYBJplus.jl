@@ -204,7 +204,7 @@ Base.@kwdef mutable struct QGParams{T}
     N₀²_sg::T                  # Background N² value (N₀²)
     N₁²_sg::T                  # Peak N² amplitude (N₁²)
     σ_sg::T                    # Width of pycnocline (σ)
-    z₀_sg::T                   # Center depth of pycnocline (z₀)
+    z₀_sg::T                   # Center depth of pycnocline (positive below surface)
     α_sg::T                    # Skewness parameter (α)
 
     #= ====================================================================

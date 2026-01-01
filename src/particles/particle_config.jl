@@ -53,7 +53,8 @@ end
 Enhanced particle configuration supporting 3D distributions.
 
 Domain bounds (x_max, y_max, z_max) are REQUIRED - no defaults.
-Use the Grid to get domain size: `x_max = G.Lx, y_max = G.Ly, z_max = G.Lz`
+Use the Grid to get domain size: `x_max = G.Lx, y_max = G.Ly, z_max = G.Lz` (depth).
+If you pass `z_min`, then `z_max` is treated as a coordinate (typically ≤ 0).
 """
 Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     # Spatial domain for particle initialization (x_max, y_max, z_max are REQUIRED)
@@ -62,7 +63,7 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     y_min::T = 0.0
     y_max::T           # REQUIRED - use G.Ly
     z_min::T = 0.0
-    z_max::T           # REQUIRED - use G.Lz
+    z_max::T           # REQUIRED - pass depth if z_min omitted, else coordinate
     
     # Particle distribution specification
     distribution_type::ParticleDistribution = UNIFORM_GRID
@@ -145,13 +146,14 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
 end
 
 """
-    particles_in_grid_3d(; x_max, y_max, z_max, nx, ny, nz, x_min=0, y_min=0, z_min=0, kwargs...)
+    particles_in_grid_3d(; x_max, y_max, z_max, nx, ny, nz, x_min=0, y_min=0, z_min=nothing, kwargs...)
 
 Create particles uniformly distributed in a 3D rectangular grid.
 
 # Arguments
 - `x_max, y_max, z_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly, G.Lz)
-- `x_min, y_min, z_min`: Minimum bounds (default: 0.0)
+- `x_min, y_min`: Minimum bounds (default: 0.0)
+- `z_min`: Minimum z (default: nothing → uses full depth with z ∈ [-z_max, 0])
 - `nx, ny, nz`: Number of particles in each direction
 
 # Example
@@ -160,17 +162,19 @@ Create particles uniformly distributed in a 3D rectangular grid.
 config = particles_in_grid_3d(x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, nx=10, ny=10, nz=10)
 
 # Custom subdomain
-config = particles_in_grid_3d(x_max=250e3, y_max=250e3, z_max=2000.0, nx=8, ny=8, nz=5)
+config = particles_in_grid_3d(x_max=250e3, y_max=250e3, z_max=-500.0, z_min=-2000.0, nx=8, ny=8, nz=5)
 ```
 """
 function particles_in_grid_3d(; x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
-                               x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
+                               x_min::Real=0.0, y_min::Real=0.0, z_min::Union{Real,Nothing}=nothing,
                                nx::Int=10, ny::Int=10, nz::Int=5,
                                precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
                                kwargs...) where T<:AbstractFloat
+    z_min_val = z_min === nothing ? -z_max : z_min
+    z_max_val = z_min === nothing ? 0.0 : z_max
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
-        z_min=T(z_min), z_max=T(z_max),
+        z_min=T(z_min_val), z_max=T(z_max_val),
         distribution_type=UNIFORM_GRID,
         nx_particles=nx, ny_particles=ny, nz_particles=nz;
         kwargs...
@@ -191,10 +195,10 @@ Create particles distributed in 2D grids at multiple z-levels.
 # Example
 ```julia
 # 3 layers at depths 1000m, 2000m, 3000m with 10×10 particles each
-config = particles_in_layers([1000.0, 2000.0, 3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+config = particles_in_layers([-1000.0, -2000.0, -3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Custom subdomain with 5 particles per side at each layer
-config = particles_in_layers([500.0, 1000.0, 1500.0]; x_max=250e3, y_max=250e3, nx=5, ny=5)
+config = particles_in_layers([-500.0, -1000.0, -1500.0]; x_max=250e3, y_max=250e3, nx=5, ny=5)
 ```
 """
 function particles_in_layers(z_levels::Vector{<:Real};
@@ -226,14 +230,15 @@ function particles_in_layers(z_levels::Vector{<:Real};
 end
 
 """
-    particles_random_3d(n; x_max, y_max, z_max, x_min=0, y_min=0, z_min=0, seed=1234, kwargs...)
+    particles_random_3d(n; x_max, y_max, z_max, x_min=0, y_min=0, z_min=nothing, seed=1234, kwargs...)
 
 Create randomly distributed particles in a 3D volume.
 
 # Arguments
 - `n`: Number of particles
 - `x_max, y_max, z_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly, G.Lz)
-- `x_min, y_min, z_min`: Minimum bounds (default: 0.0)
+- `x_min, y_min`: Minimum bounds (default: 0.0)
+- `z_min`: Minimum z (default: nothing → uses full depth with z ∈ [-z_max, 0])
 - `seed`: Random seed for reproducibility (default: 1234)
 
 # Example
@@ -242,19 +247,20 @@ Create randomly distributed particles in a 3D volume.
 config = particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)
 
 # 1000 random particles in a subdomain
-config = particles_random_3d(1000; x_max=250e3, y_max=250e3, z_max=2000.0)
+config = particles_random_3d(1000; x_max=250e3, y_max=250e3, z_max=-500.0, z_min=-2000.0)
 ```
 """
 function particles_random_3d(n::Int;
                             x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
-                            x_min::Real=0.0, y_min::Real=0.0, z_min::Real=0.0,
+                            x_min::Real=0.0, y_min::Real=0.0, z_min::Union{Real,Nothing}=nothing,
                             seed::Int=1234,
                             precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
                             kwargs...) where T<:AbstractFloat
-
+    z_min_val = z_min === nothing ? -z_max : z_min
+    z_max_val = z_min === nothing ? 0.0 : z_max
     return ParticleConfig3D{T}(
         x_min=T(x_min), x_max=T(x_max), y_min=T(y_min), y_max=T(y_max),
-        z_min=T(z_min), z_max=T(z_max),
+        z_min=T(z_min_val), z_max=T(z_max_val),
         distribution_type=RANDOM_3D,
         nx_particles=n, ny_particles=1, nz_particles=1,
         seed=seed;
@@ -314,14 +320,14 @@ Create particles distributed in a circular disk at a fixed z-level.
 
 # Example
 ```julia
-# 100 particles in a circle at z = π/2
-config = particles_in_circle(π/2; radius=1.0, n=100)
+# 100 particles in a circle at z = -π/2
+config = particles_in_circle(-π/2; radius=1.0, n=100)
 
 # Custom center and larger circle
-config = particles_in_circle(1.0; center=(2.0, 2.0), radius=2.0, n=200)
+config = particles_in_circle(-1.0; center=(2.0, 2.0), radius=2.0, n=200)
 
 # Random distribution
-config = particles_in_circle(π/4; radius=0.5, n=50, pattern=:random)
+config = particles_in_circle(-π/4; radius=0.5, n=50, pattern=:random)
 ```
 """
 function particles_in_circle(z_level::T;

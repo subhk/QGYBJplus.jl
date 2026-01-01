@@ -358,8 +358,8 @@ function set_surface_waves!(sim::Simulation;
 
     for k_local in axes(B_arr, 1)
         k_global = local_range[1][k_local]
-        # Depth from surface (z=Lz is surface, z=0 is bottom)
-        depth = G.Lz - G.z[k_global]
+        # Depth from surface (z=0 is surface, z=-Lz is bottom)
+        depth = -G.z[k_global]
         wave_profile = exp(-(depth^2) / (surface_depth^2))
 
         if uniform

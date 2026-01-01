@@ -275,14 +275,15 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
     dy = G.Ly / G.ny
     dz = G.Lz / G.nz
 
-    # Mid-depth for vertical decay (in domain coordinates)
+    # Mid-depth for vertical decay (depth coordinates)
     z_mid = G.Lz / 2
     sigma_z = G.Lz / 10  # Decay scale
 
     for k in 1:nz_local
         # Get global z-index for correct coordinate
         k_global = local_to_global(k, 1, Br)
-        z = (k_global - 1) * dz
+        z = -G.Lz + k_global * dz
+        depth = -z
 
         for j_local in 1:ny_local
             # Get global y-index
@@ -297,17 +298,17 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
                 # Use normalized coordinates for wave patterns
                 x_norm = 2π * x / G.Lx
                 y_norm = 2π * y / G.Ly
-                z_norm = 2π * z / G.Lz
+                z_norm = 2π * depth / G.Lz
 
                 # Example wave pattern with vertical decay centered at mid-depth
                 Br_arr[k, i_local, j_local] = amplitude * (
-                    sin(4*x_norm + z_norm) * cos(2*y_norm) * exp(-((z-z_mid)^2)/(2*sigma_z^2)) +
-                    0.3 * cos(2*x_norm) * sin(4*y_norm + 2*z_norm) * exp(-((z-z_mid)^2)/(2*(0.6*sigma_z)^2))
+                    sin(4*x_norm + z_norm) * cos(2*y_norm) * exp(-((depth - z_mid)^2)/(2*sigma_z^2)) +
+                    0.3 * cos(2*x_norm) * sin(4*y_norm + 2*z_norm) * exp(-((depth - z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
 
                 Bi_arr[k, i_local, j_local] = amplitude * 0.1 * (
-                    cos(4*x_norm + z_norm) * sin(2*y_norm) * exp(-((z-z_mid)^2)/(2*sigma_z^2)) +
-                    0.3 * sin(2*x_norm) * cos(4*y_norm + 2*z_norm) * exp(-((z-z_mid)^2)/(2*(0.6*sigma_z)^2))
+                    cos(4*x_norm + z_norm) * sin(2*y_norm) * exp(-((depth - z_mid)^2)/(2*sigma_z^2)) +
+                    0.3 * sin(2*x_norm) * cos(4*y_norm + 2*z_norm) * exp(-((depth - z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
             end
         end

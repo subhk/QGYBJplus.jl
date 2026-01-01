@@ -35,8 +35,8 @@ This is solved independently for each (kₓ, kᵧ) mode using a tridiagonal solv
 BOUNDARY CONDITIONS:
 -------------------
 The standard boundary conditions are:
-    ψ_z = 0 at z = 0 (bottom)
-    ψ_z = 0 at z = H (top)
+    ψ_z = 0 at z = -Lz (bottom)
+    ψ_z = 0 at z = 0 (top)
 
 These are Neumann conditions corresponding to no buoyancy flux through
 the boundaries.

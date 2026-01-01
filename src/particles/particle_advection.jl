@@ -809,9 +809,10 @@ function interpolate_velocity_advanced_local(x::T, y::T, z::T,
                                            tracker::ParticleTracker{T}) where T
     
     # Set up grid info and boundary conditions
+    z_min = -tracker.Lz
     grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                 Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz,
-                z0=tracker.dz)
+                z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz)
     
     boundary_conditions = (periodic_x=tracker.config.periodic_x,
                           periodic_y=tracker.config.periodic_y,
@@ -869,9 +870,10 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         Ly_ext = ny_ext * tracker.dy
 
         # Grid info uses extended domain lengths since we're interpolating in extended arrays
+        z_min = -tracker.Lz
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                     Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz,
-                    z0=tracker.dz)
+                    z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz)
 
         # For extended arrays, we don't use periodic BCs - halos handle cross-boundary data
         # This applies to BOTH x and y for 2D decomposition
@@ -923,8 +925,10 @@ function interpolate_velocity_local(x::T, y::T, z::T,
     # Handle periodic boundaries
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
-    z0 = tracker.dz
-    z_clamped = clamp(z, z0, tracker.Lz)
+    z_min = -tracker.Lz
+    z0 = z_min + tracker.dz
+    z_max = zero(T)
+    z_clamped = clamp(z, z0, z_max)
     
     # Convert to grid indices (0-based for interpolation)
     fx = x_periodic / tracker.dx
@@ -1371,17 +1375,17 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
             particles.y[i] = clamp(particles.y[i], 0, tracker.Ly)
         end
         
-        # Vertical boundaries
+        # Vertical boundaries (z ∈ [-Lz, 0])
         if config.reflect_z
-            if particles.z[i] < 0
+            if particles.z[i] > 0
                 particles.z[i] = -particles.z[i]
                 particles.w[i] = -particles.w[i]
-            elseif particles.z[i] > tracker.Lz
-                particles.z[i] = 2*tracker.Lz - particles.z[i]
+            elseif particles.z[i] < -tracker.Lz
+                particles.z[i] = -2*tracker.Lz - particles.z[i]
                 particles.w[i] = -particles.w[i]
             end
         else
-            particles.z[i] = clamp(particles.z[i], 0, tracker.Lz)
+            particles.z[i] = clamp(particles.z[i], -tracker.Lz, 0)
         end
     end
 end

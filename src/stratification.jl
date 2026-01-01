@@ -38,7 +38,7 @@ struct SkewedGaussian{T} <: StratificationProfile{T}
     N02::T    # Background N²
     N12::T    # Peak amplitude
     sigma::T  # Width parameter
-    z0::T     # Center position
+    z0::T     # Center depth (positive below surface)
     alpha::T  # Skewness parameter
 end
 
@@ -50,7 +50,7 @@ Hyperbolic tangent profile (pycnocline-like).
 struct TanhProfile{T} <: StratificationProfile{T}
     N_upper::T    # Upper ocean N
     N_lower::T   # Deep ocean N
-    z_pycno::T    # Pycnocline depth
+    z_pycno::T    # Pycnocline depth (positive below surface)
     width::T     # Transition width
 end
 
@@ -71,7 +71,7 @@ end
 Piecewise constant stratification.
 """
 struct PiecewiseProfile{T} <: StratificationProfile{T}
-    z_interfaces::Vector{T}  # Interface depths
+    z_interfaces::Vector{T}  # Interface depths (positive below surface)
     N_values::Vector{T}      # N values in each layer
 end
 
@@ -82,7 +82,7 @@ Stratification profile from file.
 """
 struct FileProfile{T} <: StratificationProfile{T}
     filename::String
-    z_data::Vector{T}
+    z_data::Vector{T}    # Depths (positive below surface)
     N2_data::Vector{T}
 end
 
@@ -167,7 +167,8 @@ function evaluate_N2(profile::SkewedGaussian{T}, z::Real) where T
     N02 = profile.N02
     N12 = profile.N12
 
-    N2 = N12 * exp(-((z - z0)^2) / (σ^2)) * (1 + erf(α * (z - z0) / (σ * sqrt(2.0)))) + N02
+    depth = -z
+    N2 = N12 * exp(-((depth - z0)^2) / (σ^2)) * (1 + erf(α * (depth - z0) / (σ * sqrt(2.0)))) + N02
 
     return max(N2, T(0.01) * N02)  # Ensure N² remains positive
 end
@@ -178,8 +179,9 @@ end
 Evaluate N² for tanh profile.
 """
 function evaluate_N2(profile::TanhProfile{T}, z::Real) where T
-    # Normalized height
-    ζ = (z - profile.z_pycno) / profile.width
+    # Normalized height (depth-based)
+    depth = -z
+    ζ = (depth - profile.z_pycno) / profile.width
     
     # Smooth transition between upper and deep ocean
     N_interp = profile.N_upper + (profile.N_lower - profile.N_upper) * 
@@ -194,8 +196,9 @@ end
 Evaluate N² for exponential profile.
 """  
 function evaluate_N2(profile::ExponentialProfile{T}, z::Real) where T
-    N_val = profile.N_deep + (profile.N_surface - profile.N_deep) * 
-            exp(-z / profile.scale_height)
+    depth = -z
+    N_val = profile.N_deep + (profile.N_surface - profile.N_deep) *
+            exp(-depth / profile.scale_height)
     return N_val^2
 end
 
@@ -205,9 +208,10 @@ end
 Evaluate N² for piecewise profile.
 """
 function evaluate_N2(profile::PiecewiseProfile{T}, z::Real) where T
-    # Find which layer z belongs to
+    # Find which layer depth belongs to
+    depth = -z
     for i in 1:(length(profile.z_interfaces)-1)
-        if profile.z_interfaces[i] <= z < profile.z_interfaces[i+1]
+        if profile.z_interfaces[i] <= depth < profile.z_interfaces[i+1]
             return profile.N_values[i]^2
         end
     end
@@ -222,24 +226,25 @@ end
 Evaluate N² for file-based profile using interpolation.
 """
 function evaluate_N2(profile::FileProfile{T}, z::Real) where T
+    depth = -z
     # Linear interpolation
-    if z <= profile.z_data[1]
+    if depth <= profile.z_data[1]
         return profile.N2_data[1]
-    elseif z >= profile.z_data[end]
+    elseif depth >= profile.z_data[end]
         return profile.N2_data[end]
     else
         # Find surrounding points
         for i in 1:(length(profile.z_data)-1)
-            if profile.z_data[i] <= z <= profile.z_data[i+1]
+            if profile.z_data[i] <= depth <= profile.z_data[i+1]
                 # Linear interpolation
-                α = (z - profile.z_data[i]) / (profile.z_data[i+1] - profile.z_data[i])
+                α = (depth - profile.z_data[i]) / (profile.z_data[i+1] - profile.z_data[i])
                 return (1-α) * profile.N2_data[i] + α * profile.N2_data[i+1]
             end
         end
     end
 
     # Should never reach here - indicates a logic error or malformed profile data
-    error("evaluate_N2: Failed to interpolate N² at z=$z. " *
+    error("evaluate_N2: Failed to interpolate N² at depth=$depth. " *
           "z_data range: [$(profile.z_data[1]), $(profile.z_data[end])]")
 end
 
@@ -355,7 +360,7 @@ Load stratification profile from NetCDF file.
 
 Uses `read_stratification_raw` to read both z coordinates and N² values
 without interpolation. The resulting FileProfile can then be evaluated
-at any z using linear interpolation.
+at any z (depth = -z) using linear interpolation.
 """
 function load_stratification_from_file(filename::String)
     T = Float64
@@ -372,7 +377,7 @@ end
 Create some standard stratification profiles for testing.
 
 # Arguments
-- `Lz`: Domain depth in meters (REQUIRED)
+- `Lz`: Domain depth in meters (REQUIRED, z ∈ [-Lz, 0])
 
 # Returns
 Dictionary of standard stratification profiles with keys:
@@ -397,7 +402,7 @@ function create_standard_profiles(Lz::Real)
     # Weak stratification
     profiles[:weak] = ConstantN{T}(0.2)
 
-    # Pycnocline-like (positions scaled by Lz)
+    # Pycnocline-like (depths scaled by Lz)
     profiles[:pycnocline] = TanhProfile{T}(0.01, 0.025, 0.6 * Lz, 0.05 * Lz)
 
     # Ocean-like (exponential, scale height relative to Lz)
@@ -405,7 +410,7 @@ function create_standard_profiles(Lz::Real)
 
     # Two-layer (interfaces scaled by Lz)
     profiles[:two_layer] = PiecewiseProfile{T}(
-        T[0.0, 0.5 * Lz, Lz],  # interfaces at 0, mid-depth, bottom
+        T[0.0, 0.5 * Lz, Lz],  # interfaces at surface, mid-depth, bottom
         T[0.01, 0.03]          # N values
     )
 
@@ -419,14 +424,14 @@ Generate data for plotting stratification profile.
 
 # Arguments
 - `profile`: Stratification profile to plot
-- `Lz`: Domain depth in meters (REQUIRED)
+- `Lz`: Domain depth in meters (REQUIRED, z ∈ [-Lz, 0])
 - `nz`: Number of points for plotting (default: 100)
 
 # Returns
 Tuple of (z_vals, N2_vals, N_vals) for plotting
 """
 function plot_stratification_profile(profile::StratificationProfile{T}, Lz::Real; nz::Int=100) where T
-    z_vals = LinRange(0, Lz, nz)
+    z_vals = LinRange(-Lz, 0, nz)
     N2_vals = [evaluate_N2(profile, z) for z in z_vals]
     N_vals = sqrt.(N2_vals)
 

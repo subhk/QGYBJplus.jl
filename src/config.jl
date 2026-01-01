@@ -60,7 +60,7 @@ Base.@kwdef struct StratificationConfig{T}
     # For tanh profile
     N_upper::T = 0.01   # Upper ocean N
     N_lower::T = 0.02  # Deep ocean N
-    z_pycno::T = 0.5    # Pycnocline depth (same units as domain z)
+    z_pycno::T = 0.5    # Pycnocline depth (positive below surface, same units as Lz)
     width::T = 0.1     # Transition width (same units as z)
     
     # From file

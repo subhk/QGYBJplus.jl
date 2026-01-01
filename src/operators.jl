@@ -307,7 +307,7 @@ Strong w occurs at:
 3. Transform w to physical space
 
 # Boundary Conditions
-w = 0 at z = 0 and z = Lz (rigid lid and bottom).
+w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 
 # Arguments
 - `S::State`: State with ψ (input) and w (output)

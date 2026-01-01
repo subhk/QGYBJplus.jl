@@ -81,7 +81,7 @@ G, S, plans, a = setup_model(par)
 
 # Create particle configuration (100 particles, default Euler integration)
 # NOTE: x_max, y_max are REQUIRED - use G.Lx, G.Ly from grid
-particle_config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+particle_config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Create and initialize particle tracker
 tracker = ParticleTracker(particle_config, G)
@@ -117,7 +117,7 @@ For more control, particles can be advected manually:
 ```julia
 # Create particle configuration
 # NOTE: x_max, y_max are REQUIRED - use G.Lx, G.Ly from grid
-particle_config = particles_in_box(2000.0;
+particle_config = particles_in_box(-2000.0;
     x_max=G.Lx, y_max=G.Ly,  # REQUIRED
     nx=10, ny=10,
     save_interval=0.1
@@ -147,7 +147,7 @@ Three integration schemes are available:
 ```
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:euler)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:euler)
 ```
 
 ### RK2 Midpoint Method (2nd order)
@@ -161,7 +161,7 @@ config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:eu
 ```
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk2)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk2)
 ```
 
 ### RK4 Classical Method (4th order)
@@ -176,7 +176,7 @@ config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk
 ```
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk4)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk4)
 ```
 
 | Method | Order | Velocity Evaluations/Step | Recommended Use |
@@ -195,7 +195,7 @@ Velocity must be interpolated from the grid to particle positions.
 - **Smoothness**: C⁰ continuous
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRILINEAR)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRILINEAR)
 ```
 
 ### Tricubic
@@ -204,7 +204,7 @@ config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=T
 - **Smoothness**: C¹ continuous
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRICUBIC)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRICUBIC)
 ```
 
 ### Quintic
@@ -213,14 +213,14 @@ config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=T
 - **Smoothness**: C⁴ continuous
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=QUINTIC)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=QUINTIC)
 ```
 
 ### Adaptive
 Automatically selects trilinear or tricubic based on local field smoothness.
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=ADAPTIVE)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=ADAPTIVE)
 ```
 
 | Method | Points | Error | Best For |
@@ -243,15 +243,17 @@ QGYBJ+.jl provides simple, intuitive constructors for initializing particles:
 | `particles_random_3d(n; ...)` | Random distribution in 3D volume |
 | `particles_custom(positions; ...)` | User-specified positions |
 
+Note: the vertical coordinate is `z ∈ [-Lz, 0]` with `z = 0` at the surface. Use negative `z` for a positive depth (e.g., depth 2000 m → `z = -2000.0`).
+
 ### Particles in a Box (2D at fixed z)
 
 ```julia
-# 100 particles (10×10) in a box at z = 2000m
+# 100 particles (10×10) in a box at z = -2000 m (depth 2000 m)
 # NOTE: x_max, y_max are REQUIRED
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Custom subdomain
-config = particles_in_box(2000.0;
+config = particles_in_box(-2000.0;
     x_min=100e3, x_max=400e3,  # subset of domain
     y_min=100e3, y_max=400e3,
     nx=20, ny=20               # 400 particles
@@ -261,11 +263,11 @@ config = particles_in_box(2000.0;
 ### Particles in a Circle (2D at fixed z)
 
 ```julia
-# 100 particles in a circle of radius 1.0 at z = π/2
-config = particles_in_circle(π/2; radius=1.0, n=100)
+# 100 particles in a circle of radius 1.0 at z = -π/2
+config = particles_in_circle(-π/2; radius=1.0, n=100)
 
 # Custom center and pattern
-config = particles_in_circle(1.0;
+config = particles_in_circle(-1.0;
     center=(2.0, 2.0),        # Circle center
     radius=1.5,
     n=200,
@@ -289,7 +291,7 @@ config = particles_in_grid_3d(; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, nx=10, ny=10
 config = particles_in_grid_3d(;
     x_min=100e3, x_max=400e3,
     y_min=100e3, y_max=400e3,
-    z_min=500.0, z_max=2500.0,
+    z_min=-2500.0, z_max=-500.0,
     nx=8, ny=8, nz=4
 )
 ```
@@ -299,10 +301,10 @@ config = particles_in_grid_3d(;
 ```julia
 # 300 particles at 3 z-levels (10×10 per level)
 # NOTE: x_max, y_max are REQUIRED
-config = particles_in_layers([1000.0, 2000.0, 3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+config = particles_in_layers([-1000.0, -2000.0, -3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Custom horizontal subdomain
-config = particles_in_layers([500.0, 1000.0, 1500.0, 2000.0];
+config = particles_in_layers([-500.0, -1000.0, -1500.0, -2000.0];
     x_min=100e3, x_max=400e3,
     y_min=100e3, y_max=400e3,
     nx=5, ny=5
@@ -320,7 +322,7 @@ config = particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)
 config = particles_random_3d(1000;
     x_min=100e3, x_max=400e3,
     y_min=100e3, y_max=400e3,
-    z_min=500.0, z_max=2500.0,
+    z_min=-2500.0, z_max=-500.0,
     seed=42
 )
 ```
@@ -330,10 +332,10 @@ config = particles_random_3d(1000;
 ```julia
 # Particles at specific (x, y, z) locations
 config = particles_custom([
-    (1.0, 1.0, 0.5),
-    (2.0, 2.0, 1.0),
-    (3.0, 1.5, 0.75),
-    (1.5, 3.0, 1.25)
+    (1.0, 1.0, -0.5),
+    (2.0, 2.0, -1.0),
+    (3.0, 1.5, -0.75),
+    (1.5, 3.0, -1.25)
 ])
 ```
 
@@ -349,18 +351,18 @@ y_new = mod(y, Ly)
 ### Vertical (Reflective)
 Particles bounce off top and bottom:
 ```julia
-if z < 0
+if z > 0
     z = -z
     w = -w  # Reverse vertical velocity
-elseif z > Lz
-    z = 2*Lz - z
+elseif z < -Lz
+    z = -2*Lz - z
     w = -w
 end
 ```
 
 Configure via:
 ```julia
-config = particles_in_box(2000.0;
+config = particles_in_box(-2000.0;
     x_max=G.Lx, y_max=G.Ly,
     periodic_x=true,
     periodic_y=true,
@@ -373,7 +375,7 @@ config = particles_in_box(2000.0;
 Start advecting particles after the flow has developed:
 
 ```julia
-config = particles_in_box(2000.0; x_max=G.Lx, y_max=G.Ly, particle_advec_time=100.0)  # Start at t=100.0
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, particle_advec_time=100.0)  # Start at t=100.0
 ```
 
 Particles remain stationary until `current_time >= particle_advec_time`.
@@ -384,7 +386,7 @@ Particles remain stationary until `current_time >= particle_advec_time`.
 
 Control how often positions are recorded:
 ```julia
-config = particles_in_box(2000.0;
+config = particles_in_box(-2000.0;
     x_max=G.Lx, y_max=G.Ly,
     save_interval=10.0,       # Save every 10.0 time units
     max_save_points=1000      # Max points per file

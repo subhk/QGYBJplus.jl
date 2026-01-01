@@ -33,21 +33,22 @@ function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_
         amp = exp(-(kₕ - initial_k)^2 / (2*amp_width))
         for k in 1:nz, i in 1:nx, j in 1:ny
             z = G.z[k]
+            depth = -z
             phase = phase_for(ikₓ, ikᵧ)
             # Horizontal phase: uses normalized coordinates (domain-independent)
             horiz_phase = ikₓ*(i-1)*2π/nx + ikᵧ*(j-1)*2π/ny + phase
             if linear_vert_structure == 1
                 # Linear in z around center of domain
                 z₀ = G.Lz / 2
-                ψᵣ[k, i, j] += (z - z₀) * amp * cos(horiz_phase)
+                ψᵣ[k, i, j] += (depth - z₀) * amp * cos(horiz_phase)
             elseif linear_vert_structure == 2
                 # Single vertical mode
                 kz = 2π / G.Lz
-                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*z)
+                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*depth)
             else
                 # QG-consistent: kz ~ kh (scaled to domain)
                 kz = kₕ * 2π / G.Lz
-                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*z)
+                ψᵣ[k, i, j] += amp * cos(horiz_phase + kz*depth)
             end
         end
     end

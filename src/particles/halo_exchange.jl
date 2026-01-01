@@ -754,8 +754,10 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     # Handle periodic boundaries using GLOBAL domain lengths
     x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
-    z0 = tracker.dz
-    z_clamped = clamp(z, z0, tracker.Lz)
+    z_min = -tracker.Lz
+    z0 = z_min + tracker.dz
+    z_max = zero(T)
+    z_clamped = clamp(z, z0, z_max)
 
     # Compute local domain start positions
     x_start = compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx

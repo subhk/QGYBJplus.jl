@@ -13,7 +13,7 @@ GRID STRUCTURE:
 The model uses a doubly-periodic horizontal domain with:
 - x ∈ [x0, x0+Lx) with nx points (default x0=0, use centered=true for x0=-Lx/2)
 - y ∈ [y0, y0+Ly) with ny points (default y0=0, use centered=true for y0=-Ly/2)
-- z ∈ (0, Lz] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
+- z ∈ [-Lz, 0] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
 
 SPECTRAL REPRESENTATION:
 ------------------------
@@ -128,7 +128,7 @@ Base.@kwdef mutable struct Grid{T, AT}
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
     #= Vertical grid (unstaggered) =#
-    z::Vector{T}           # Vertical levels z[k] ∈ (0, Lz], size nz
+    z::Vector{T}           # Vertical levels z[k] ∈ [-Lz, 0], size nz
     dz::Vector{T}          # Layer thicknesses: dz[k] = z[k+1] - z[k], size nz-1
 
     #= Spectral wavenumbers =#
@@ -147,7 +147,7 @@ Initialize the spatial grid and spectral wavenumbers from parameters.
 
 # Grid Setup
 - Horizontal: Uniform grid with spacing dx = Lx/nx, dy = Ly/ny
-- Vertical: Uniform grid from dz to Lz with spacing dz = Lz/nz
+- Vertical: Uniform grid from -Lz+dz to 0 with spacing dz = Lz/nz
 - Domain size (Lx, Ly, Lz) is REQUIRED - specify in meters (e.g., 500e3 for 500 km)
 
 # Wavenumber Arrays
@@ -182,15 +182,15 @@ function init_grid(par::QGParams)
     dx = par.Lx / nx
     dy = par.Ly / ny
 
-    #= Vertical grid: z ∈ (0, Lz]
-    z[k] ranges from dz to Lz with nz points
+    #= Vertical grid: z ∈ [-Lz, 0]
+    z[k] ranges from -Lz+dz to 0 with nz points
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
     if nz == 1
-        z = T[par.Lz]  # Single point at the top boundary
+        z = T[0.0]  # Single point at the surface
         dz = T[par.Lz]
     else
         dz_scalar = par.Lz / nz
-        z = T.(dz_scalar .* collect(1:nz))
+        z = T.(-par.Lz .+ dz_scalar .* collect(1:nz))
         dz = fill(T(dz_scalar), nz - 1)
     end
 
