@@ -812,7 +812,7 @@ function interpolate_velocity_advanced_local(x::T, y::T, z::T,
     z_min = -tracker.Lz
     grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                 Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz,
-                z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz)
+                z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz / 2)
     
     boundary_conditions = (periodic_x=tracker.config.periodic_x,
                           periodic_y=tracker.config.periodic_y,
@@ -873,7 +873,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         z_min = -tracker.Lz
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                     Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz,
-                    z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz)
+                    z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz / 2)
 
         # For extended arrays, we don't use periodic BCs - halos handle cross-boundary data
         # This applies to BOTH x and y for 2D decomposition
@@ -926,7 +926,7 @@ function interpolate_velocity_local(x::T, y::T, z::T,
     x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
     z_min = -tracker.Lz
-    z0 = z_min + tracker.dz
+    z0 = z_min + tracker.dz / 2
     z_max = zero(T)
     z_clamped = clamp(z, z0, z_max)
     

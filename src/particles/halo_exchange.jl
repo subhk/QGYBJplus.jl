@@ -755,7 +755,7 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
     y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
     z_min = -tracker.Lz
-    z0 = z_min + tracker.dz
+    z0 = z_min + tracker.dz / 2
     z_max = zero(T)
     z_clamped = clamp(z, z0, z_max)
 

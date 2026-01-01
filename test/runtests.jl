@@ -85,10 +85,10 @@ end
     G = init_grid(par)
     dz = TEST_Lz / par.nz
 
-    # Vertical grid: z ∈ [-Lz, 0] with surface at z=0 (oceanographic convention)
-    # z[1] = -Lz + dz (near bottom), z[end] = 0 (at surface)
-    @test isapprox(G.z[1], -TEST_Lz + dz; rtol=0.0, atol=10 * eps(dz))
-    @test isapprox(G.z[end], 0.0; rtol=0.0, atol=10 * eps(TEST_Lz))
+    # Vertical grid: z ∈ [-Lz, 0] with staggered (cell-centered) levels
+    # z[1] = -Lz + dz/2 (near bottom), z[end] = -dz/2 (near surface)
+    @test isapprox(G.z[1], -TEST_Lz + dz / 2; rtol=0.0, atol=10 * eps(dz))
+    @test isapprox(G.z[end], -dz / 2; rtol=0.0, atol=10 * eps(TEST_Lz))
     @test all(isapprox.(diff(G.z), dz; rtol=0.0, atol=10 * eps(dz)))
     @test all(isapprox.(G.dz, dz; rtol=0.0, atol=10 * eps(dz)))
 
@@ -354,7 +354,7 @@ end
     G, S, plans, a = setup_model(par)
 
     # Create a non-constant N² profile (exponential decay with depth)
-    N2_profile = [1.0 * exp(-G.z[k] / (TEST_Lz / 4)) for k in 1:par.nz]
+    N2_profile = [1.0 * exp(-(-G.z[k]) / (TEST_Lz / 4)) for k in 1:par.nz]
 
     # Set up a simple flow
     S.psi[8, 3, 3] = 1.0 + 0im

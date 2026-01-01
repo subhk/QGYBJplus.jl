@@ -13,7 +13,7 @@ GRID STRUCTURE:
 The model uses a doubly-periodic horizontal domain with:
 - x ∈ [x0, x0+Lx) with nx points (default x0=0, use centered=true for x0=-Lx/2)
 - y ∈ [y0, y0+Ly) with ny points (default y0=0, use centered=true for y0=-Ly/2)
-- z ∈ [-Lz, 0] with nz points (Lz in meters - REQUIRED, e.g., 4000.0 for 4km depth)
+- z ∈ [-Lz, 0] with nz staggered points (from -Lz+dz/2 to -dz/2)
 
 SPECTRAL REPRESENTATION:
 ------------------------
