@@ -75,6 +75,7 @@ dx, dy = grid.dx, grid.dy
 # Vertical levels (staggered grid: z runs from -Lz+dz/2 to -dz/2 with dz = Lz/nz)
 z = grid.z       # Vector of length nz
 dz = grid.dz     # Vector of length nz-1
+# Unstaggered (face) levels used for coefficients: z_face = z .- dz/2
 
 # Check if parallel
 is_parallel = grid.decomp !== nothing

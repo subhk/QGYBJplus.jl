@@ -355,7 +355,8 @@ end
     G, S, plans, a = setup_model(par)
 
     # Create a non-constant N² profile (exponential decay with depth)
-    N2_profile = [1.0 * exp(-(-G.z[k]) / (TEST_Lz / 4)) for k in 1:par.nz]
+    dz = G.Lz / G.nz
+    N2_profile = [1.0 * exp(-(-G.z[k] + dz / 2) / (TEST_Lz / 4)) for k in 1:par.nz]
 
     # Set up a simple flow
     S.psi[8, 3, 3] = 1.0 + 0im

@@ -281,7 +281,7 @@ Following the Fortran init_base_state routine:
 - rho = 1.0 (Boussinesq approximation)
 
 # Arguments
-- `N2_profile::Vector`: Buoyancy frequency squared N²(z) at each vertical level
+- `N2_profile::Vector`: Buoyancy frequency squared N²(z) on unstaggered (face) levels
 - `G::Grid`: Grid structure
 - `f0_sq::Real`: Coriolis parameter squared f² (default 1.0)
 
