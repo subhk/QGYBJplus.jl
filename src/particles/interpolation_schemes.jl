@@ -373,21 +373,23 @@ Original trilinear interpolation for comparison.
 function trilinear_interpolation(x::T, y::T, z::T,
                                 u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
                                 grid_info, boundary_conditions) where T
-    
+
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
-    
+    # z ∈ [-Lz, 0] with surface at z=0
+    z_min = -Lz
+    z_max = zero(T)
+
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
     z_clamped = clamp(z, z_min, z_max)
-    
-    # Convert to grid indices
+
+    # Convert to grid indices: z[k] = -Lz + k*dz, so k = (z + Lz) / dz
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = (z_clamped - z0) / dz
+    fz = (z_clamped + Lz) / dz
     
     ix = floor(Int, fx)
     iy = floor(Int, fy)
@@ -477,17 +479,19 @@ function quintic_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : zero(T)
+    # z ∈ [-Lz, 0] with surface at z=0
+    z_min = -Lz
+    z_max = zero(T)
 
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
     z_clamped = clamp(z, z_min, z_max)
 
-    # Convert to grid coordinates
+    # Convert to grid coordinates: z[k] = -Lz + k*dz, so k = (z + Lz) / dz
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = (z_clamped - z0) / dz
+    fz = (z_clamped + Lz) / dz
 
     # Get integer parts and fractional coordinates
     ix = floor(Int, fx)

@@ -627,7 +627,7 @@ The PV-streamfunction relationship is:
 In spectral space with finite differences in z:
     q = -kh² ψ + (1/dz²) [(ρ_u a_ell ρ_s⁻¹) (ψ[k+1] - 2ψ[k] + ψ[k-1])]
 
-with Neumann BC ∂ψ/∂z = 0 at boundaries.
+with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
 """
 function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
     nz = G.nz
