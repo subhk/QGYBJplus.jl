@@ -186,7 +186,7 @@ function main()
     end
 
     # Set up wave IC: surface-confined, horizontally uniform (k=0 mode only)
-    # Initial condition: u(t=0) = u0 exp(-z^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
+    # Initial condition: u(t=0) = u0 exp(-d^2/s^2), v(t=0) = 0 (d = -z, Eq. 4 in paper)
     # For horizontally uniform waves, we initialize B directly with the wave profile.
     if is_root; println("Setting up waves..."); end
     B_phys = QGYBJplus.allocate_fft_backward_dst(S.B, plans)

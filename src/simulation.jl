@@ -321,9 +321,10 @@ end
 Set up surface-confined near-inertial waves.
 
 The wave initial condition follows Asselin et al. (2020):
-    u(t=0) = u₀ exp(-z²/s²), v(t=0) = 0
+    u(t=0) = u₀ exp(-d²/s²), v(t=0) = 0
 
-where u₀ is the wave velocity amplitude and s is the surface layer depth.
+where d = -z is depth below the surface, u₀ is the wave velocity amplitude,
+and s is the surface layer depth.
 
 # Arguments
 - `sim`: Simulation object
@@ -421,8 +422,8 @@ Set up a localized wave packet in wavenumber space.
 - `amplitude`: Wave amplitude
 - `kx`, `ky`: Central wavenumbers
 - `sigma_k`: Wavenumber spread
-- `z_center`: Vertical center (default: Lz/2)
-- `z_width`: Vertical width (default: Lz/4)
+- `z_center`: Vertical center depth below surface (default: Lz/2)
+- `z_width`: Vertical width in depth units (default: Lz/4)
 """
 function set_wave_packet!(sim::Simulation;
     amplitude::Real,
