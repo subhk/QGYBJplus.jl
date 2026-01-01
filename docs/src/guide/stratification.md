@@ -244,8 +244,9 @@ near surface everywhere
 ```julia
 using Plots
 
-# Get grid depth coordinates (positive downward)
-depth = -G.z
+# Get grid depth coordinates (positive downward, unstaggered levels)
+dz = G.Lz / G.nz
+depth = -(G.z .- dz / 2)
 
 # Plot N² profile
 plot(N2_profile, depth,

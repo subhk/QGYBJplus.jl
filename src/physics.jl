@@ -419,7 +419,8 @@ Vector of length nz with N²(z_k) values on unstaggered levels.
 # Example
 ```julia
     N2 = N2_ut(par, G)
-    # For plotting: depth = -(G.z .- G.Lz / G.nz / 2) aligns with unstaggered levels
+    dz = G.Lz / G.nz
+    depth = -(G.z .- dz / 2)  # Aligns with unstaggered levels
 ```
 
 # Fortran Correspondence
