@@ -357,10 +357,12 @@ function set_surface_waves!(sim::Simulation;
     B_phys = allocate_fft_backward_dst(S.B, plans)
     B_arr = parent(B_phys)
 
+    dz = G.Lz / G.nz
     for k_local in axes(B_arr, 1)
         k_global = local_range[1][k_local]
-        # Depth from surface (z=0 is surface, z=-Lz is bottom)
-        depth = -G.z[k_global]
+        # Depth from surface (z=0 is surface, z=-Lz is bottom).
+        # Use a dz/2 shift so the top cell center corresponds to z=0.
+        depth = max(zero(eltype(G.z)), -G.z[k_global] - dz / 2)
         wave_profile = exp(-(depth^2) / (surface_depth^2))
 
         if uniform

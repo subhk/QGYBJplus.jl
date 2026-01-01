@@ -191,9 +191,10 @@ function main()
     if is_root; println("Setting up waves..."); end
     B_phys = QGYBJplus.allocate_fft_backward_dst(S.B, plans)
     B_phys_arr = parent(B_phys)
+    dz = G.Lz / G.nz
     for k_local in axes(B_phys_arr, 1)
         k_global = local_range_phys[1][k_local]
-        depth = -G.z[k_global]  # Distance from surface [m]
+        depth = max(0.0, -G.z[k_global] - dz / 2)  # Distance from surface [m]
         wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         wave_value = complex(u0_wave * wave_profile)
         B_phys_arr[k_local, :, :] .= wave_value
