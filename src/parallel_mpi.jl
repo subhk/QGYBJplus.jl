@@ -469,6 +469,7 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
     return Grid{T, typeof(kh2_pencil)}(
         nx, ny, nz,
         params.Lx, params.Ly, params.Lz,
+        params.x0, params.y0,  # Domain origin (centered=true gives -Lx/2, -Ly/2)
         dx, dy,
         z, dz,
         kx, ky,

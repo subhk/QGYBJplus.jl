@@ -121,6 +121,8 @@ Base.@kwdef mutable struct Grid{T, AT}
     Lx::T                  # Domain size in x [m] (REQUIRED)
     Ly::T                  # Domain size in y [m] (REQUIRED)
     Lz::T                  # Domain size in z [m] (REQUIRED)
+    x0::T                  # Domain origin in x [m] (0 = standard, -Lx/2 = centered)
+    y0::T                  # Domain origin in y [m] (0 = standard, -Ly/2 = centered)
     dx::T                  # Grid spacing in x: dx = Lx/nx
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
@@ -209,7 +211,11 @@ function init_grid(par::QGParams)
     # No MPI decomposition by default (serial mode)
     decomp = nothing
 
-    return Grid{T, typeof(kh2)}(nx, ny, nz, par.Lx, par.Ly, par.Lz, dx, dy, z, dz, kx, ky, kh2, decomp)
+    # Domain origin (use centered=true in default_params for x0=-Lx/2, y0=-Ly/2)
+    x0 = par.x0
+    y0 = par.y0
+
+    return Grid{T, typeof(kh2)}(nx, ny, nz, par.Lx, par.Ly, par.Lz, x0, y0, dx, dy, z, dz, kx, ky, kh2, decomp)
 end
 
 """

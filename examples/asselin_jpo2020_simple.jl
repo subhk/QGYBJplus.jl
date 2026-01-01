@@ -50,9 +50,11 @@ const k_dipole = sqrt(2) * π / Lx  # Dipole wavenumber
 # ============================================================================
 
 # Initialize simulation (handles all MPI setup automatically!)
+# centered=true gives domain x,y ∈ [-35km, +35km) matching Fig. 2 of paper
 sim = initialize_simulation(
     nx = 256, ny = 256, nz = 128,
     Lx = Lx, Ly = Ly, Lz = Lz,
+    centered = true,  # Center domain at origin: x,y ∈ [-Lx/2, Lx/2)
     f₀ = f₀, N² = N²,
     dt = dt, nt = nt,
     ybj_plus = true,

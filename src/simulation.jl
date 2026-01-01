@@ -135,6 +135,7 @@ function initialize_simulation(;
     # Grid parameters
     nx::Int, ny::Int, nz::Int,
     Lx::Real, Ly::Real, Lz::Real,
+    centered::Bool = false,  # Center domain at origin: x,y ∈ [-Lx/2, Lx/2)
     # Physical parameters
     f₀::Real = 1e-4,
     N²::Real = 1e-5,
@@ -177,6 +178,7 @@ function initialize_simulation(;
     params = default_params(
         nx = nx, ny = ny, nz = nz,
         Lx = T(Lx), Ly = T(Ly), Lz = T(Lz),
+        centered = centered,  # Center domain at origin if true
         dt = T(dt), nt = nt,
         f₀ = T(f₀), N² = T(N²),
         ybj_plus = ybj_plus,

@@ -105,6 +105,7 @@ function main()
 
     # Parameters matching Asselin et al. (2020)
     # Fully dimensional simulation with physical domain size
+    # Domain centered at origin: x,y ∈ [-35km, +35km) as in Fig. 2 of paper
     # Biharmonic (4th order) hyperdiffusion for waves
     # For meaningful damping at grid scale: λʷ = dt × ν × k_max⁴ ≈ 0.1
     # k_max = π×nx/Lx ≈ 5.7e-3 m⁻¹, k_max⁴ ≈ 1.1e-9 m⁻⁴
@@ -114,6 +115,7 @@ function main()
     par = QGYBJplus.default_params(
         nx = nx, ny = ny, nz = nz,
         Lx = Lx, Ly = Ly, Lz = Lz,  # Domain size [m]
+        centered = true,       # Center domain at origin: x,y ∈ [-Lx/2, Lx/2)
         dt = dt, nt = nt,
         f₀ = f₀,               # Coriolis parameter [s⁻¹]
         N² = N²,               # Buoyancy frequency squared [s⁻²]
@@ -146,16 +148,17 @@ function main()
     # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy) in rotated (x,y) coordinates
     # Grid is in cardinal (X,Y); transform via x=(X-Y)/√2, y=(X+Y)/√2 (Fig. 1)
     # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
+    # With centered=true, domain is X,Y ∈ [-35km, +35km) matching Fig. 2 of paper
     if is_root; println("\nSetting up dipole..."); end
     psi_phys = QGYBJplus.allocate_fft_backward_dst(S.psi, plans)
     psi_phys_arr = parent(psi_phys)
     for k_local in axes(psi_phys_arr, 1)
         for j_local in axes(psi_phys_arr, 3)
             j_global = local_range_phys[3][j_local]
-            Y = (j_global - 1) * G.dy - G.Ly / 2  # Centered Y (cardinal coords)
+            Y = G.y0 + (j_global - 1) * G.dy  # Y in cardinal coords (uses Grid origin)
             for i_local in axes(psi_phys_arr, 2)
                 i_global = local_range_phys[2][i_local]
-                X = (i_global - 1) * G.dx - G.Lx / 2  # Centered X (cardinal coords)
+                X = G.x0 + (i_global - 1) * G.dx  # X in cardinal coords (uses Grid origin)
                 # Transform to rotated (x,y) for dipole formula
                 x = (X - Y) / sqrt(2)
                 y = (X + Y) / sqrt(2)

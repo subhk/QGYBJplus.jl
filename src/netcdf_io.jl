@@ -252,8 +252,9 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
 
-        x_var[:] = collect(range(0, G.Lx - dx, length=G.nx))
-        y_var[:] = collect(range(0, G.Ly - dy, length=G.ny))
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
+        x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
+        y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
@@ -588,8 +589,9 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
 
-        x_var[:] = collect(range(0, G.Lx - dx, length=G.nx))
-        y_var[:] = collect(range(0, G.Ly - dy, length=G.ny))
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
+        x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
+        y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
@@ -1147,8 +1149,9 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
-        x_var[:] = collect(range(0, G.Lx - dx, length=G.nx))
-        y_var[:] = collect(range(0, G.Ly - dy, length=G.ny))
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
+        x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
+        y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z
 
         # Add coordinate attributes
@@ -1199,8 +1202,9 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
-        x_var[:] = collect(range(0, G.Lx - dx, length=G.nx))
-        y_var[:] = collect(range(0, G.Ly - dy, length=G.ny))
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
+        x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
+        y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z
 
         # Add coordinate attributes
