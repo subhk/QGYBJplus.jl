@@ -85,8 +85,10 @@ end
     G = init_grid(par)
     dz = TEST_Lz / par.nz
 
-    @test isapprox(G.z[1], dz; rtol=0.0, atol=10 * eps(dz))
-    @test isapprox(G.z[end], TEST_Lz; rtol=0.0, atol=10 * eps(TEST_Lz))
+    # Vertical grid: z ∈ [-Lz, 0] with surface at z=0 (oceanographic convention)
+    # z[1] = -Lz + dz (near bottom), z[end] = 0 (at surface)
+    @test isapprox(G.z[1], -TEST_Lz + dz; rtol=0.0, atol=10 * eps(dz))
+    @test isapprox(G.z[end], 0.0; rtol=0.0, atol=10 * eps(TEST_Lz))
     @test all(isapprox.(diff(G.z), dz; rtol=0.0, atol=10 * eps(dz)))
     @test all(isapprox.(G.dz, dz; rtol=0.0, atol=10 * eps(dz)))
 

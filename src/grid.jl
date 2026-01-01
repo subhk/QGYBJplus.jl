@@ -24,10 +24,10 @@ The wavenumber arrays follow FFTW conventions:
 
 VERTICAL DISCRETIZATION:
 ------------------------
-The vertical coordinate uses an unstaggered grid with second-order
-finite differences, matching the Fortran implementation:
-- z levels run from dz to Lz with nz equally-spaced points
-- z[k] = k × Lz/nz for k = 1, ..., nz (Julia 1-indexing)
+The vertical coordinate uses the standard oceanographic convention with
+z=0 at the surface and z=-Lz at the bottom:
+- z levels run from -Lz+dz to 0 with nz equally-spaced points
+- z[k] = -Lz + k × dz for k = 1, ..., nz (Julia 1-indexing)
 - Grid spacing: dz = Lz/nz
 - Staggered values (for derivatives) at z[k] - dz/2
 
@@ -182,15 +182,16 @@ function init_grid(par::QGParams)
     dx = par.Lx / nx
     dy = par.Ly / ny
 
-    #= Vertical grid: z ∈ (0, Lz]
-    z[k] ranges from dz to Lz with nz points
+    #= Vertical grid: z ∈ [-Lz, 0]
+    z[k] ranges from -Lz+dz to 0 with nz points
+    Surface at z=0, bottom at z=-Lz (standard oceanographic convention)
     Lz in meters (e.g., 4000.0 for 4 km depth) =#
     if nz == 1
-        z = T[par.Lz]  # Single point at the top boundary
+        z = T[0.0]  # Single point at the surface
         dz = T[par.Lz]
     else
         dz_scalar = par.Lz / nz
-        z = T.(dz_scalar .* collect(1:nz))
+        z = T.(-par.Lz .+ dz_scalar .* collect(1:nz))
         dz = fill(T(dz_scalar), nz - 1)
     end
 
