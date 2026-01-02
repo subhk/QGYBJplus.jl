@@ -21,6 +21,7 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
+            "Key Concepts" => "concepts.md",
             "Installation" => "getting_started.md",
             "Quick Start" => "quickstart.md",
             "Worked Example" => "worked_example.md",

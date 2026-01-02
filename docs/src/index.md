@@ -8,15 +8,33 @@ CurrentModule = QGYBJplus
 
 **QGYBJ+.jl** is a high-performance Julia implementation of the Quasi-Geostrophic Young-Ben Jelloul Plus (QG-YBJ+) model for simulating the interaction between near-inertial waves and mesoscale ocean eddies.
 
-!!! tip "New to QGYBJ+.jl?"
-    Start with the [Quick Start Tutorial](@ref quickstart) for a hands-on introduction.
+---
+
+## Start Here
+
+New to QGYBJ+.jl? Follow this learning path:
+
+| Step | Page | Time | What You'll Learn |
+|:-----|:-----|:-----|:------------------|
+| 1 | [Key Concepts](@ref concepts) | 15 min | What QG-YBJ+ models, why it matters, core terminology |
+| 2 | [Quick Start](@ref quickstart) | 5 min | Run your first simulation with copy-paste code |
+| 3 | [Worked Example](@ref worked_example) | 30 min | Build a real simulation step-by-step with explanations |
+
+---
 
 ## What This Model Does
 
 The ocean contains two important types of motion at different scales:
 
-1. **Mesoscale eddies** (~100 km): Long-lived rotating vortices that dominate ocean kinetic energy
-2. **Near-inertial waves** (~10 km): Wind-generated internal waves oscillating near the Coriolis frequency
+**Mesoscale Eddies** (~100 km scale)
+- Giant rotating vortices lasting weeks to months
+- Contain ~90% of ocean kinetic energy
+- Move slowly (~10 cm/s)
+
+**Near-Inertial Waves** (~10 km scale)
+- Wind-generated internal waves oscillating every ~17 hours
+- Key driver of ocean mixing
+- Propagate through the water column
 
 These two types of motion **interact strongly**: eddies refract and focus waves, while waves can feed energy back into the mean flow. QGYBJ+.jl simulates this coupled system using:
 
@@ -30,39 +48,39 @@ These two types of motion **interact strongly**: eddies refract and focus waves,
 |:--------|:------------|
 | **Spectral Methods** | Pseudo-spectral horizontal derivatives with FFTW |
 | **Vertical Solvers** | Efficient tridiagonal solvers for elliptic inversions |
-| **2D Pencil Decomposition** | Scalable MPI parallelization with PencilArrays/PencilFFTs |
-| **Dual Pencil Configurations** | Automatic xy-pencil ↔ z-pencil transposes for vertical operations |
+| **Two Time Steppers** | Leapfrog (explicit) or IMEX-CN (10x faster for waves) |
+| **MPI Parallel** | 2D pencil decomposition for large domains |
 | **Particle Tracking** | Lagrangian advection with multiple interpolation schemes |
 | **Flexible Physics** | Configurable stratification, dissipation, and wave feedback |
 | **NetCDF I/O** | Standard output format for analysis |
 
-## Quick Example
+## Minimal Example
 
 ```julia
 using QGYBJplus
 
-# Create configuration (Lx, Ly, Lz are REQUIRED)
+# Create configuration (domain size is REQUIRED)
 config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # 500km × 500km × 4km (required)
-    nx=64, ny=64, nz=32,             # Grid size
-    dt=0.001,                         # Time step
-    total_time=1.0,                   # Simulation duration
-    output_interval=100               # Output frequency
+    Lx = 500e3, Ly = 500e3, Lz = 4000.0,  # 500km × 500km × 4km
+    nx = 64, ny = 64, nz = 32,
+    dt = 0.001, total_time = 1.0
 )
 
 # Run simulation
 result = run_simple_simulation(config)
 
-# Access results
-psi = result.state.psi   # Streamfunction
-B = result.state.B       # Wave envelope
+# Check energy
+println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
 ```
 
-## Documentation Sections
+---
 
-### Getting Started
+## Documentation Guide
+
+### For Beginners
+- [Key Concepts](@ref concepts) - **Start here!** Core ideas without code
 - [Installation](@ref getting_started) - How to install QGYBJ+.jl
-- [Quick Start Tutorial](@ref quickstart) - Your first simulation in 5 minutes
+- [Quick Start](@ref quickstart) - Your first simulation in 5 minutes
 - [Worked Example](@ref worked_example) - Detailed walkthrough with explanations
 
 ### Physics & Theory
@@ -82,29 +100,41 @@ B = result.state.B       # Wave envelope
 - [Particle Advection](@ref particles) - Lagrangian tracking
 - [Performance Tips](@ref performance) - Optimization strategies
 
-### API Reference
+### Reference
 - [Core Types](@ref api-types) - QGParams, Grid, State
 - [Physics Functions](@ref api-physics) - Operators and solvers
-- [Full Index](@ref api-index) - Complete function listing and codebase structure
+- [Full Index](@ref api-index) - Complete function listing
+
+---
 
 ## Installation
-
-### Basic Installation
 
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
 ```
 
-### With MPI Support
-
+For MPI parallel support:
 ```julia
 Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
 ```
 
-### NetCDF Support
+See [Installation Guide](@ref getting_started) for detailed instructions.
 
-NCDatasets.jl is included as a dependency for NetCDF I/O functionality. No additional installation is required.
+---
+
+## How Simulations Work
+
+The typical simulation workflow is:
+
+1. **Configure** - Create `QGParams` with grid size, domain, physics options
+2. **Setup** - Initialize `Grid`, `State`, FFT plans, and elliptic coefficients
+3. **Run** - Time-step the prognostic fields (q, B) with inversions each step
+4. **Output** - Save fields and diagnostics to NetCDF files
+
+See [Worked Example](@ref worked_example) for a complete walkthrough.
+
+---
 
 ## Citation
 

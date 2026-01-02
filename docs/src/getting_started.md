@@ -206,3 +206,89 @@ See [API Reference](@ref api-index) for the complete module structure.
 - [Configuration Guide](@ref configuration) - All parameters explained
 - [MPI Parallelization](@ref parallel) - Scale to large domains
 - [Physics Overview](@ref physics-overview) - Understand the equations
+
+---
+
+## Troubleshooting
+
+### Installation Issues
+
+**Problem**: `Package not found` error
+```
+ERROR: Package QGYBJplus not found in registry
+```
+
+**Solution**: Install directly from GitHub:
+```julia
+using Pkg
+Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
+```
+
+**Problem**: MPI packages fail to install
+```
+ERROR: MPI.jl requires a working MPI installation
+```
+
+**Solution**: Install system MPI first:
+- **macOS**: `brew install open-mpi`
+- **Ubuntu**: `sudo apt install libopenmpi-dev openmpi-bin`
+- **HPC**: Load the MPI module: `module load openmpi`
+
+Then reinstall:
+```julia
+Pkg.build("MPI")
+```
+
+### Runtime Issues
+
+**Problem**: `MethodError: no method matching default_params(...)`
+
+**Solution**: Check that you're providing `Lx`, `Ly`, `Lz` (required):
+```julia
+# Wrong - missing domain size
+par = default_params(nx=64, ny=64, nz=32)
+
+# Correct - include domain size
+par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
+```
+
+**Problem**: Simulation blows up (NaN values)
+
+**Solutions**:
+1. Reduce time step: `dt = dt / 2`
+2. Increase hyperdiffusion: `νₕ₁ = νₕ₁ * 10`
+3. Check initial conditions for extreme values
+4. Use IMEX time stepping for wave-dominated problems
+
+**Problem**: Out of memory
+
+**Solutions**:
+1. Reduce grid size
+2. Use MPI parallelization for distributed memory
+3. Use Float32 precision: `default_params(..., T=Float32)`
+
+### Unicode Characters
+
+**Problem**: Can't type Greek letters like `f₀` or `ν`
+
+**Solution**: In Julia REPL, type the LaTeX name and press Tab:
+- `f\_0<Tab>` → `f₀`
+- `\nu<Tab>` → `ν`
+- `N\^2<Tab>` → `N²`
+
+Or use ASCII alternatives:
+```julia
+par = default_params(f0=1e-4, N2=1e-5, ...)  # Some functions accept ASCII
+```
+
+### Performance Issues
+
+**Problem**: Simulation is slow
+
+**Solutions**:
+1. Use IMEX time stepping (10x faster for waves)
+2. Run with multiple threads: `julia -t auto`
+3. Use MPI for large grids: `mpiexec -n 16 julia script.jl`
+4. Check you're not running in debug mode
+
+See [Performance Tips](@ref performance) for detailed optimization strategies.
