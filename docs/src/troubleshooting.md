@@ -1,82 +1,112 @@
-## Troubleshooting
+# [Troubleshooting](@id troubleshooting)
 
-### Package Instantiation Errors
+```@meta
+CurrentModule = QGYBJplus
+```
 
-- Symptom: `Package <X> is a direct dependency, but does not appear in the manifest`
-- Fix: run `Pkg.resolve(); Pkg.instantiate(); Pkg.precompile()` in the project.
+## Quick Diagnostic
 
-### Missing NCDatasets (NetCDF I/O)
+| Symptom | Check First |
+|:--------|:------------|
+| Won't run | Are `Lx`, `Ly`, `Lz` provided? (required) |
+| Blows up (NaN) | Is `dt` small enough? Try `dt/2` |
+| Wrong results | Check `ybj_plus=true` vs `false` |
+| Too slow | Use IMEX-CN instead of leapfrog |
+| Out of memory | Reduce grid size or use MPI |
 
-- Symptom: `NCDatasets not available. Install NCDatasets.jl or skip NetCDF I/O.`
-- Fix: `julia --project=. -e 'using Pkg; Pkg.add("NCDatasets")'`
-  - Alternatively, disable NetCDF I/O by setting `save_*` to `false` in `OutputConfig`.
+## Installation
 
-### FFT Issues on HPC/Clusters
-
-- Install system FFTW or let FFTW.jl download binaries automatically.
-- Ensure `using FFTW` works and that shared libraries are available in your environment.
-
-### MPI/Pencil Setup
-
-- Install MPI.jl and PencilArrays/PencilFFTs.
-- Launch with `mpiexec -n <N> julia --project=. your_script.jl` and pass `use_mpi=true` to `setup_simulation`.
-
-### Stability/Time Step
-
-- If you see blow‑ups or NaNs:
-  - Reduce `dt`
-  - Increase resolution
-  - Enable viscosity/hyperdiffusion (see parameters in `QGParams`)
-  - Start with `linear=true` to isolate linear dynamics
-
-### 2D MPI Decomposition Issues
-
-#### Segmentation Faults or Memory Corruption
-
-- **Symptom**: Crashes with "malloc(): invalid next size" or segfaults when using many MPI ranks
-- **Cause**: Spectral and physical arrays have different local dimensions in 2D decomposition
-
-Always get dimensions from the array you're iterating over:
-
+**Package not found**: Install from GitHub:
 ```julia
-# Get physical array dimensions after backward FFT
-phys_arr = allocate_fft_backward_dst(spectral_arr, plans)
-fft_backward!(phys_arr, spectral_arr, plans)
+Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
+```
+
+**MPI fails**: Install system MPI first:
+- macOS: `brew install open-mpi`
+- Ubuntu: `sudo apt install libopenmpi-dev openmpi-bin`
+- HPC: `module load openmpi`
+
+Then: `Pkg.build("MPI")`
+
+## Runtime Errors
+
+### Missing Domain Size
+```julia
+# Wrong - MethodError
+par = default_params(nx=64, ny=64, nz=32)
+
+# Correct
+par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
+```
+
+### Simulation Blows Up (NaN)
+
+1. **Reduce time step**: `dt = dt / 2`
+2. **Increase dissipation**: `νₕ₁ = 1e8, ilap1 = 2`
+3. **Use IMEX** for wave-dominated problems: `imex_cn_step!()` instead of `leapfrog_step!()`
+4. **Debug with linear mode**: `par = default_params(..., linear=true)`
+
+!!! tip "Wave CFL"
+    For YBJ+: `dt ≤ 2f₀/N²`. For ocean values: `dt ≤ 20s`.
+
+### Out of Memory
+
+- Reduce grid: `nx, ny, nz = 128, 128, 64`
+- Use MPI: `mpiexec -n 16 julia script.jl`
+- Use Float32: `par = default_params(..., T=Float32)`
+
+Memory: 256³ complex array ≈ 1 GB. Full simulation needs 5-10× this.
+
+## MPI Issues
+
+**Pencil topology mismatch**: Use `copy_state(S)` not `deepcopy(S)`:
+```julia
+Snm1 = copy_state(S)  # Correct
+```
+
+**Deadlock**: Ensure all ranks call collective operations. Debug with:
+```julia
+MPI.Barrier(comm)
+println("Rank $(MPI.Comm_rank(comm)) reached checkpoint")
+```
+
+**Segfaults**: Use actual array dimensions, not grid dimensions:
+```julia
 nz_phys, nx_phys, ny_phys = size(parent(phys_arr))
-for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-    phys_arr[k, i, j] = ...
-end
 ```
 
-#### Pencil Topology Mismatch Error
+## Unicode Characters
 
-- **Symptom**: `ArgumentError: pencil topologies must be the same`
-- **Cause**: Using `deepcopy(state)` instead of `copy_state(state)` for leapfrog time stepping
+Type LaTeX + Tab in Julia REPL:
 
-Use `copy_state(S)` instead of `deepcopy(S)` to preserve pencil topology.
+| Type | Get |
+|:-----|:----|
+| `f\_0<tab>` | `f₀` |
+| `\nu<tab>` | `ν` |
+| `N\^2<tab>` | `N²` |
 
-### Wave Dispersion CFL Constraint
+## Performance
 
-For the YBJ+ model, the wave dispersion term imposes a CFL-like constraint:
+1. Use IMEX time stepping (10× faster for waves)
+2. Run with threads: `julia -t auto script.jl`
+3. Use MPI for large grids
+4. Reduce output frequency
 
-```
-dt ≤ 2f₀/N²
-```
-
-For typical ocean parameters (f₀ = 10⁻⁴ s⁻¹, N² = 10⁻⁵ s⁻²), this gives dt ≤ 20s.
-If your simulation blows up rapidly, check this constraint.
-
-### Hyperdiffusion for Stability
-
-Add 4th order (biharmonic) hyperdiffusion to damp grid-scale noise:
+## Stability: Hyperdiffusion
 
 ```julia
 par = default_params(
-    Lx=70e3, Ly=70e3, Lz=3000.0,
-    nx=128, ny=128, nz=64,
-    νₕ₁ʷ = 1.0e7,  # Wave hyperdiffusion [m⁴/s]
-    ilap1w = 2,    # 4th order (biharmonic)
-    γ = 0.01       # Robert-Asselin filter (default: 1e-3)
+    ...,
+    νₕ₁ʷ = 1e7, ilap1w = 2,  # Biharmonic (recommended)
+    γ = 0.01                  # Stronger Robert-Asselin filter
 )
 ```
 
+Higher `ilap` = more scale-selective: `ilap=1` (∇²), `ilap=2` (∇⁴), `ilap=4` (∇⁸)
+
+## Still Stuck?
+
+[Open an issue](https://github.com/subhk/QGYBJplus.jl/issues) with:
+- Julia version, package versions
+- Minimal reproducible example
+- Full error message

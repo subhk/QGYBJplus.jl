@@ -4,226 +4,92 @@
 CurrentModule = QGYBJplus
 ```
 
-This tutorial will guide you through your first QGYBJ+.jl simulation in about 5 minutes.
+Run your first QGYBJ+.jl simulation in 5 minutes.
 
-## What We'll Build
-
-A simulation of near-inertial waves interacting with a turbulent eddy field:
-- 64×64×32 grid
-- Random initial streamfunction (eddies)
-- Random initial wave field
-- 1000 time steps
-
-## Step 1: Load the Package
-
-```julia
-using QGYBJplus
-```
-
-## Step 2: Create a Simple Configuration
-
-The easiest way to set up a simulation is with `create_simple_config`:
-
-```julia
-config = create_simple_config(
-    # Domain size (REQUIRED - in meters)
-    Lx = 500e3,   # 500 km
-    Ly = 500e3,   # 500 km
-    Lz = 4000.0,  # 4 km depth
-
-    # Grid dimensions
-    nx = 64,
-    ny = 64,
-    nz = 32,
-
-    # Time stepping
-    dt = 0.001,
-    total_time = 1.0,
-
-    # Output
-    output_interval = 100,
-    output_dir = "output"
-)
-```
-
-This creates a complete configuration with sensible defaults. Note that `Lx`, `Ly`, and `Lz` are **required** parameters - there are no default domain sizes.
-
-## Step 3: Run the Simulation
-
-```julia
-result = run_simple_simulation(config)
-```
-
-You'll see progress output:
-```
-Setting up QG-YBJ simulation...
-  Grid: 64 × 64 × 32
-  Time step: 0.001
-  Total steps: 1000
-Starting simulation...
-  Step 100/1000 (10.0%)
-  Step 200/1000 (20.0%)
-  ...
-Simulation complete!
-```
-
-## Step 4: Examine Results
-
-The result contains the final state and diagnostics:
-
-```julia
-# Access the final state
-state = result.state
-
-# Streamfunction (spectral space, complex)
-psi = state.psi  # Array{ComplexF64, 3} of size (64, 64, 32)
-
-# Wave envelope (spectral space, complex)
-B = state.B      # Array{ComplexF64, 3} of size (64, 64, 32)
-
-# Velocities (real space)
-u = state.u      # Zonal velocity
-v = state.v      # Meridional velocity
-```
-
-## Step 5: Compute Diagnostics
-
-```julia
-# Kinetic energy of the flow
-KE = flow_kinetic_energy(state.u, state.v)
-println("Kinetic Energy: $KE")
-
-# Wave energy
-E_B, E_A = wave_energy(state.B, state.A)
-println("Wave Energy (B): $E_B")
-println("Wave Energy (A): $E_A")
-```
-
-## Step 6: Visualize (Optional)
-
-If you have Plots.jl installed:
-
-```julia
-using Plots
-
-# Get plans for FFT
-G = result.grid
-plans = plan_transforms!(G)
-
-# Get a horizontal slice of vorticity
-zeta = slice_horizontal(state.psi, G, plans; k=G.nz)
-
-# Multiply by -kh² to get vorticity
-# (simplified - actual vorticity computation is more involved)
-
-heatmap(zeta, title="Surface Vorticity", aspect_ratio=1)
-```
-
-## Complete Script
-
-Here's the complete code:
+## Minimal Example
 
 ```julia
 using QGYBJplus
 
 # Configure (Lx, Ly, Lz are REQUIRED)
 config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # 500km × 500km × 4km
-    nx=64, ny=64, nz=32,
-    dt=0.001, total_time=1.0,
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size [m]
+    nx=64, ny=64, nz=32,             # Grid points
+    dt=0.001, total_time=1.0,        # Time stepping
     output_interval=100
 )
 
 # Run
 result = run_simple_simulation(config)
 
-# Analyze
-println("Final Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
-println("Final Wave Energy: ", wave_energy(result.state.B, result.state.A))
+# Check results
+println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
 ```
 
-## What's Next?
+## Step-by-Step Breakdown
 
-- [Worked Example](@ref worked_example): More detailed walkthrough
-- [Configuration](@ref configuration): Customize all parameters
-- [Physics Overview](@ref physics-overview): Understand the equations
-- [MPI Parallelization](@ref parallel): Scale to large domains
-
-## Common Customizations
-
-### Change Stratification
+### 1. Create Configuration
 
 ```julia
 config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size required
-    nx=64, ny=64, nz=32,
-    stratification_type = :skewed_gaussian,  # Realistic pycnocline
-    # Or use :constant_N for uniform stratification
+    Lx = 500e3,        # Domain length x [m] (REQUIRED)
+    Ly = 500e3,        # Domain length y [m] (REQUIRED)
+    Lz = 4000.0,       # Domain depth [m] (REQUIRED)
+    nx = 64, ny = 64, nz = 32,  # Grid dimensions
+    dt = 0.001,        # Time step
+    total_time = 1.0,  # Total simulation time
 )
 ```
 
-### Enable/Disable Physics
+!!! warning "Lx, Ly, Lz are required"
+    There are no default domain sizes. Omitting them causes a `MethodError`.
+
+### 2. Run Simulation
+
+```julia
+result = run_simple_simulation(config)
+```
+
+### 3. Access Results
+
+```julia
+state = result.state
+
+# Spectral fields (complex)
+state.psi    # Streamfunction
+state.B      # Wave envelope
+
+# Physical fields (real)
+state.u, state.v   # Velocities
+```
+
+### 4. Compute Diagnostics
+
+```julia
+KE = flow_kinetic_energy(state.u, state.v)
+E_B, E_A = wave_energy(state.B, state.A)
+```
+
+## Common Options
 
 ```julia
 config = create_simple_config(
     Lx=500e3, Ly=500e3, Lz=4000.0,
     nx=64, ny=64, nz=32,
 
-    # Disable wave feedback on mean flow
-    no_wave_feedback = true,
+    # Physics
+    ybj_plus = true,          # YBJ+ formulation (default)
+    linear = false,           # Disable nonlinear terms
+    inviscid = true,          # No dissipation
+    no_wave_feedback = true,  # One-way coupling
 
-    # Run inviscid
-    inviscid = true,
-
-    # Linear dynamics only (no advection)
-    linear = true,
+    # Stratification
+    stratification_type = :constant_N,  # or :skewed_gaussian
 )
 ```
 
-### Larger Domain
+## What's Next?
 
-```julia
-config = create_simple_config(
-    Lx=1000e3, Ly=1000e3, Lz=5000.0,  # 1000km × 1000km × 5km
-    nx=256, ny=256, nz=128,            # Larger grid
-    dt=0.0005,                          # Smaller time step for stability
-    total_time=10.0,
-)
-```
-
-!!! tip "Memory Consideration"
-    A 256×256×128 complex array uses about 1 GB of memory. For larger domains,
-    consider using [MPI parallelization](@ref parallel).
-
-## Parallel Mode (MPI)
-
-For large-scale simulations, use MPI with 2D pencil decomposition:
-
-```julia
-# run_parallel.jl
-using MPI, PencilArrays, PencilFFTs, QGYBJplus
-
-MPI.Init()
-mpi_config = QGYBJplus.setup_mpi_environment()
-
-# Setup distributed simulation (Lx, Ly, Lz are REQUIRED)
-params = default_params(
-    nx=256, ny=256, nz=128,
-    Lx=1000e3, Ly=1000e3, Lz=5000.0  # 1000km × 1000km × 5km
-)
-grid = QGYBJplus.init_mpi_grid(params, mpi_config)
-plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
-state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
-workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
-
-# ... run simulation ...
-
-MPI.Finalize()
-```
-
-Run with:
-```bash
-mpiexec -n 16 julia --project run_parallel.jl
-```
-
-See [MPI Parallelization](@ref parallel) for details on 2D pencil decomposition.
+- [Worked Example](@ref worked_example) - Detailed walkthrough
+- [Configuration](@ref configuration) - All parameters
+- [MPI Parallelization](@ref parallel) - Large-scale runs
