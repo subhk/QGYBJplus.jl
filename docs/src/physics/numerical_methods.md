@@ -393,7 +393,7 @@ invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
 
 ### Divergence Form (convol_waqg)
 
-For advection terms like ``J(\psi, q)``, QGYBJplusplus.jl uses the **divergence form**:
+For advection terms like ``J(\psi, q)``, QGYBJ+.jl uses the **divergence form**:
 
 ```math
 J(\psi, q) = \frac{\partial(uq)}{\partial x} + \frac{\partial(vq)}{\partial y} = ik_x \widehat{uq} + ik_y \widehat{vq}
