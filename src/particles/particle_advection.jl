@@ -216,6 +216,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     # Grid information
     nx::Int; ny::Int; nz::Int
     Lx::T; Ly::T; Lz::T
+    x0::T; y0::T
     dx::T; dy::T; dz::T
     
     # Velocity field workspace (real space)
@@ -310,6 +311,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             config, particles,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
+            grid.x0, grid.y0,
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
             u_field, v_field, w_field, plans,
             comm, rank, nprocs, is_parallel,
@@ -416,17 +418,17 @@ function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothi
     x_start = compute_start_index(grid.nx, px, rank_x)
     y_start = compute_start_index(grid.ny, py, rank_y)
 
-    # Convert to physical coordinates
+    # Convert to physical coordinates (respect domain origin)
     dx = grid.Lx / grid.nx
     dy = grid.Ly / grid.ny
-    x_start_phys = x_start * dx
-    x_end_phys = (x_start + nx_local) * dx
-    y_start_phys = y_start * dy
-    y_end_phys = (y_start + ny_local) * dy
+    x_start_phys = grid.x0 + x_start * dx
+    x_end_phys = grid.x0 + (x_start + nx_local) * dx
+    y_start_phys = grid.y0 + y_start * dy
+    y_end_phys = grid.y0 + (y_start + ny_local) * dy
 
     return (x_start=x_start_phys, x_end=x_end_phys,
             y_start=y_start_phys, y_end=y_end_phys,
-            z_start=0.0, z_end=grid.Lz,
+            z_start=-grid.Lz, z_end=zero(grid.Lz),
             nx_local=nx_local, ny_local=ny_local,
             px=px, py=py, rank_x=rank_x, rank_y=rank_y)
 end
@@ -818,9 +820,11 @@ function interpolate_velocity_advanced_local(x::T, y::T, z::T,
                           periodic_y=tracker.config.periodic_y,
                           periodic_z=false)
     
-    # Use advanced interpolation
+    # Use advanced interpolation (shift to domain-relative coordinates)
+    x_rel = x - tracker.x0
+    y_rel = y - tracker.y0
     u_interp, v_interp, w_interp = interpolate_velocity_advanced(
-        x, y, z,
+        x_rel, y_rel, z,
         tracker.u_field, tracker.v_field, tracker.w_field,
         grid_info, boundary_conditions,
         tracker.config.interpolation_method
@@ -863,6 +867,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         end
 
         hw = halo_info.halo_width
+        hy = halo_info.is_2d_decomposition ? halo_info.halo_width : 0
         nz_ext, nx_ext, ny_ext = size(halo_info.u_extended)
 
         # Extended domain lengths for the padded arrays
@@ -875,27 +880,26 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
                     Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz,
                     z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz / 2)
 
-        # For extended arrays, we don't use periodic BCs - halos handle cross-boundary data
-        # This applies to BOTH x and y for 2D decomposition
+        # For extended arrays, disable periodic BCs where halos handle cross-boundary data
         boundary_conditions = (periodic_x=false,
-                              periodic_y=false,
+                              periodic_y=halo_info.is_2d_decomposition ? false : halo_info.periodic_y,
                               periodic_z=false)
 
         # Convert global positions to extended array coordinates
         # Step 1: Apply periodic wrapping to global coordinates
-        x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
-        y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
+        x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
+        y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
 
         # Step 2: Compute local domain start positions (using HaloExchange functions)
-        x_start = compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
-        y_start = compute_start_index(halo_info.ny_global, halo_info.py, halo_info.rank_y) * tracker.dy
+        x_start = tracker.x0 + compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
+        y_start = tracker.y0 + compute_start_index(halo_info.ny_global, halo_info.py, halo_info.rank_y) * tracker.dy
 
         # Step 3: Convert to local coordinates relative to domain start
-        # Then add hw * dx/dy to shift into extended array coordinate system
+        # Then add hw/hy offsets to shift into extended array coordinate system
         # Extended array: [left_halo(hw) | local_data | right_halo(hw)]
         # Index 1 corresponds to position -hw*dx relative to local domain start
         x_local = x_periodic - x_start + hw * tracker.dx
-        y_local = y_periodic - y_start + hw * tracker.dy
+        y_local = y_periodic - y_start + hy * tracker.dy
 
         u_interp, v_interp, w_interp = interpolate_velocity_advanced(
             x_local, y_local, z,
@@ -922,17 +926,17 @@ Local velocity interpolation (fallback for compatibility).
 function interpolate_velocity_local(x::T, y::T, z::T, 
                                   tracker::ParticleTracker{T}) where T
     
-    # Handle periodic boundaries
-    x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
-    y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
+    # Handle periodic boundaries (shift to domain-relative coordinates)
+    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)
     z_clamped = clamp(z, z0, z_max)
     
     # Convert to grid indices (0-based for interpolation)
-    fx = x_periodic / tracker.dx
-    fy = y_periodic / tracker.dy  
+    fx = x_rel / tracker.dx
+    fy = y_rel / tracker.dy  
     fz = (z_clamped - z0) / tracker.dz
     
     # Get integer and fractional parts
@@ -1180,8 +1184,8 @@ Uses the same domain decomposition logic as compute_local_domain to ensure consi
 Handles uneven division where first `remainder` ranks get one extra grid point.
 """
 function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
-    x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
-    y_periodic = tracker.config.periodic_y ? mod(y, tracker.Ly) : y
+    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
 
     # Grid parameters
     nx = tracker.nx
@@ -1190,8 +1194,8 @@ function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
     dy = tracker.dy
 
     # Convert physical position to grid index (0-based)
-    ix = floor(Int, x_periodic / dx)
-    iy = floor(Int, y_periodic / dy)
+    ix = floor(Int, x_rel / dx)
+    iy = floor(Int, y_rel / dy)
     ix = clamp(ix, 0, nx - 1)
     iy = clamp(iy, 0, ny - 1)
 
@@ -1215,10 +1219,10 @@ Find which rank should own a particle at position x (1D decomposition fallback).
 """
 function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
     # Fallback for 1D decomposition in x
-    x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
+    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
     nx = tracker.nx
     dx = tracker.dx
-    ix = floor(Int, x_periodic / dx)
+    ix = floor(Int, x_rel / dx)
     ix = clamp(ix, 0, nx - 1)
 
     nprocs = tracker.nprocs
@@ -1364,15 +1368,15 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
     @inbounds for i in 1:particles.np
         # Horizontal boundaries
         if config.periodic_x
-            particles.x[i] = mod(particles.x[i], tracker.Lx)
+            particles.x[i] = tracker.x0 + mod(particles.x[i] - tracker.x0, tracker.Lx)
         else
-            particles.x[i] = clamp(particles.x[i], 0, tracker.Lx)
+            particles.x[i] = clamp(particles.x[i], tracker.x0, tracker.x0 + tracker.Lx)
         end
         
         if config.periodic_y
-            particles.y[i] = mod(particles.y[i], tracker.Ly)
+            particles.y[i] = tracker.y0 + mod(particles.y[i] - tracker.y0, tracker.Ly)
         else
-            particles.y[i] = clamp(particles.y[i], 0, tracker.Ly)
+            particles.y[i] = clamp(particles.y[i], tracker.y0, tracker.y0 + tracker.Ly)
         end
         
         # Vertical boundaries (z ∈ [-Lz, 0])

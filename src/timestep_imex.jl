@@ -435,7 +435,11 @@ function first_imex_step!(S::State, G::Grid, par::QGParams, plans, imex_ws::IMEX
     # Use half-step refraction state for AB2 history to stay consistent with Strang splitting
     apply_refraction_exact!(imex_ws.Bstar, S.B, S.psi, G, par, plans;
                             dt_fraction=0.5, dealias_mask=L)
-    convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, imex_ws.Bstar, G, plans; Lmask=L)
+    if par.linear
+        fill!(parent(imex_ws.nBk_prev), zero(eltype(imex_ws.nBk_prev)))
+    else
+        convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, imex_ws.Bstar, G, plans; Lmask=L)
+    end
 
     # Initialize q advection history for AB2
     tqk_prev_arr = parent(imex_ws.tqk_prev)
@@ -580,7 +584,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     #= Step 3: Apply physics switches =#
     if par.inviscid; imex_ws.dqk .= 0; end
-    if par.linear; imex_ws.nqk .= 0; imex_ws.nBk .= 0; end
+    if par.linear; imex_ws.nqk .= 0; end
     # Note: passive_scalar flag is handled in apply_refraction_exact!
 
     # Determine if dispersion is active (needed for IMEX implicit solve)
@@ -615,7 +619,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     # IMPORTANT: Compute B advection using the refraction-rotated state (B*).
     # This keeps the Strang split consistent and preserves second-order accuracy.
-    convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Bstar, G, plans; Lmask=L)
+    if par.linear
+        fill!(nBk_arr, zero(eltype(nBk_arr)))
+    else
+        convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Bstar, G, plans; Lmask=L)
+    end
 
     # IMPORTANT: We must compute A* = (L⁺)⁻¹B* for consistency.
     # Using A^n with B* breaks the relation A = (L⁺)⁻¹B that IMEX-CN relies on,

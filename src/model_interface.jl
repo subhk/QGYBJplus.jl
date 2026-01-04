@@ -124,6 +124,8 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         Lx = config.domain.Lx,
         Ly = config.domain.Ly,
         Lz = config.domain.Lz,
+        x0 = config.domain.x0,
+        y0 = config.domain.y0,
 
         dt = config.dt,
         nt = ceil(Int, config.total_time / config.dt),
@@ -430,16 +432,18 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     wave_PE = reduce_if_mpi(wave_PE_local, sim.parallel_config)
     wave_CE = reduce_if_mpi(wave_CE_local, sim.parallel_config)
 
-    # Record to energy diagnostics manager (will be written to diagnostic/ folder)
-    record_energies!(
-        sim.energy_diagnostics_manager,
-        sim.current_time,
-        wave_KE,
-        wave_PE,
-        wave_CE,
-        mean_flow_KE,
-        mean_flow_PE
-    )
+    # Record energies only on root to avoid concurrent NetCDF writes.
+    if sim.parallel_config === nothing || sim.parallel_config.is_root
+        record_energies!(
+            sim.energy_diagnostics_manager,
+            sim.current_time,
+            wave_KE,
+            wave_PE,
+            wave_CE,
+            mean_flow_KE,
+            mean_flow_PE
+        )
+    end
 
     # Store in diagnostics dict for backward compatibility
     diagnostics["mean_flow_kinetic_energy"] = mean_flow_KE
@@ -491,8 +495,14 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
     # Store in simulation object
     sim.diagnostics["step_$(sim.time_step)"] = diagnostics
 
-    # Write to legacy diagnostics file (for backward compatibility)
-    write_diagnostics_file(sim.output_manager, diagnostics, sim.current_time)
+    # Write to legacy diagnostics file on root only (serial NetCDF).
+    if sim.parallel_config === nothing || sim.parallel_config.is_root
+        write_diagnostics_file(sim.output_manager, diagnostics, sim.current_time)
+    else
+        # Keep counters/timestamps consistent across ranks.
+        sim.output_manager.diagnostics_counter += 1
+        sim.output_manager.last_diagnostics_output = sim.current_time
+    end
 end
 
 """
@@ -1056,9 +1066,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
 
     # Compute save intervals in steps
-    psi_save_steps = output_config !== nothing && output_config.psi_interval > 0 ?
+    psi_save_steps = output_config !== nothing && output_config.save_psi && output_config.psi_interval > 0 ?
                      max(1, round(Int, output_config.psi_interval / dt)) : 0
-    wave_save_steps = output_config !== nothing && output_config.wave_interval > 0 ?
+    wave_save_steps = output_config !== nothing && output_config.save_waves && output_config.wave_interval > 0 ?
                       max(1, round(Int, output_config.wave_interval / dt)) : 0
     # Print header
     timestepper_name = timestepper == :imex_cn ? "IMEX Crank-Nicolson" : "Leapfrog"
@@ -1403,6 +1413,8 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         Lx = config.domain.Lx,
         Ly = config.domain.Ly,
         Lz = config.domain.Lz,
+        x0 = config.domain.x0,
+        y0 = config.domain.y0,
 
         # Time stepping
         dt = config.dt,

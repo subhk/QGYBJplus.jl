@@ -389,10 +389,10 @@ function default_params(; nx=64, ny=64, nz=64,
     ilap2w > 0 || throw(ArgumentError("ilap2w must be positive (got ilap2w=$ilap2w)"))
 
     # Stratification type
-    stratification in (:constant_N, :skewed_gaussian, :tanh_profile, :from_file) ||
-        throw(ArgumentError("stratification must be :constant_N, :skewed_gaussian, :tanh_profile, or :from_file (got :$stratification)"))
+    stratification in (:constant_N, :skewed_gaussian, :tanh_profile, :from_file, :analytical, :function) ||
+        throw(ArgumentError("stratification must be :constant_N, :skewed_gaussian, :tanh_profile, :from_file, or :analytical (got :$stratification)"))
 
-    if stratification in (:tanh_profile, :from_file)
+    if stratification in (:tanh_profile, :from_file, :analytical, :function)
         @warn "default_params uses only constant or skewed_gaussian profiles. For stratification=$stratification, " *
               "provide N2_profile at runtime or use ModelConfig/StratificationConfig." maxlog=1
     end

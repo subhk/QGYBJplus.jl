@@ -1218,7 +1218,7 @@ end
 """
     parallel_initialize_fields!(state, grid, plans, config, mpi_config; params=nothing)
 
-Initialize fields with MPI support.
+Initialize fields with MPI support, including file-based initial conditions.
 """
 function parallel_initialize_fields!(state, grid, plans, config, mpi_config; params=nothing, N2_profile=nothing)
     if config.initial_conditions.psi_type == :random
@@ -1226,6 +1226,11 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
                              seed=config.initial_conditions.random_seed, seed_offset=0)
     elseif config.initial_conditions.psi_type == :analytical
         init_analytical_psi!(state.psi, grid, config.initial_conditions.psi_amplitude, plans)
+    elseif config.initial_conditions.psi_type == :from_file
+        state.psi .= read_initial_psi(config.initial_conditions.psi_filename, grid, plans;
+                                      parallel_config=mpi_config)
+    else
+        fill!(state.psi, zero(eltype(state.psi)))
     end
 
     if config.initial_conditions.wave_type == :random
@@ -1233,6 +1238,38 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
                                seed=config.initial_conditions.random_seed)
     elseif config.initial_conditions.wave_type == :analytical
         init_analytical_waves!(state.B, grid, config.initial_conditions.wave_amplitude, plans)
+    elseif config.initial_conditions.wave_type == :from_file
+        state.B .= read_initial_waves(config.initial_conditions.wave_filename, grid, plans;
+                                      parallel_config=mpi_config)
+    elseif config.initial_conditions.wave_type == :surface_waves
+        init_surface_waves!(
+            state.B, grid,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=config.initial_conditions.wave_profile
+        )
+    elseif config.initial_conditions.wave_type == :surface_exponential
+        init_surface_waves!(
+            state.B, grid,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=:exponential
+        )
+    elseif config.initial_conditions.wave_type == :surface_gaussian
+        init_surface_waves!(
+            state.B, grid,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=:gaussian
+        )
+    else
+        fill!(state.B, zero(eltype(state.B)))
     end
 
     # Compute q from ψ

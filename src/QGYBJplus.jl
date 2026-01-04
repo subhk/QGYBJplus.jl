@@ -152,7 +152,7 @@ export QGParams, Grid, State,
        compute_hyperdiff_coeff, compute_hyperdiff_params, dimensional_hyperdiff_params,
        invert_B_to_A!, invert_helmholtz!,
        jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
-       init_random_psi!, init_analytical_psi!, init_analytical_waves!,
+       init_random_psi!, init_analytical_psi!, init_analytical_waves!, init_surface_waves!,
        add_balanced_component!, compute_q_from_psi!, initialize_from_config,
         first_projection_step!, leapfrog_step!,
         # IMEX time stepping (unconditionally stable for dispersion)
@@ -171,7 +171,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        QGYBJSimulation, setup_simulation, run_simulation!,
        create_simple_config, run_simple_simulation, setup_model_with_config,
        OutputManager, write_state_file, read_initial_psi, read_initial_waves, read_stratification_profile, read_stratification_raw,
-       StratificationProfile, ConstantN, SkewedGaussian, TanhProfile,
+       StratificationProfile, ConstantN, SkewedGaussian, TanhProfile, AnalyticalProfile,
        create_stratification_profile, compute_stratification_profile,
        # Legacy I/O compatibility functions (now implemented in netcdf_io.jl)
        ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
@@ -205,7 +205,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
        # High-level Simulation API (simplified interface)
        Simulation, initialize_simulation, run!,
-       set_dipole_flow!, set_surface_waves!, set_random_flow!, set_wave_packet!,
+       set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
        is_root, nprocs, finalize_simulation!
 

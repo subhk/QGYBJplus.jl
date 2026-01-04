@@ -465,6 +465,8 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::DomainConfig{T}) where T
     print_box_row(io, "Lx", format_number(cfg.Lx), width; key_width)
     print_box_row(io, "Ly", format_number(cfg.Ly), width; key_width)
     print_box_row(io, "Lz", format_number(cfg.Lz), width; key_width)
+    print_box_row(io, "x0", format_number(cfg.x0), width; key_width)
+    print_box_row(io, "y0", format_number(cfg.y0), width; key_width)
 
     # Print physical size in km if values are large (likely in meters)
     if cfg.Lx > 1000 || cfg.Ly > 1000 || cfg.Lz > 100
@@ -509,6 +511,12 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::StratificationConfig{T}) whe
         print_box_row(io, "N lower", format_number(cfg.N_lower), width; key_width)
         print_box_row(io, "z pycno", format_number(cfg.z_pycno), width; key_width)
         print_box_row(io, "Width", format_number(cfg.width), width; key_width)
+    elseif cfg.type == :analytical || cfg.type == :function
+        if cfg.N2_func !== nothing
+            print_box_row(io, "N²(z)", "function", width; key_width)
+        else
+            print_box_row(io, "N(z)", "function", width; key_width)
+        end
     elseif cfg.type == :from_file && cfg.filename !== nothing
         print_box_row(io, "File", cfg.filename, width; key_width)
     end
@@ -542,6 +550,14 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::InitialConditionConfig{T}) w
     print_box_row(io, "Amplitude", format_number(cfg.wave_amplitude), width; key_width)
     if cfg.wave_filename !== nothing
         print_box_row(io, "File", cfg.wave_filename, width; key_width)
+    end
+    if cfg.wave_type in (:surface_waves, :surface_exponential, :surface_gaussian)
+        effective_profile = cfg.wave_type == :surface_exponential ? :exponential :
+                           cfg.wave_type == :surface_gaussian ? :gaussian :
+                           cfg.wave_profile
+        print_box_row(io, "Profile", string(effective_profile), width; key_width)
+        print_box_row(io, "Surface depth", format_number(cfg.wave_surface_depth), width; key_width)
+        print_box_row(io, "Uniform", string(cfg.wave_uniform), width; key_width)
     end
 
     print_box_row(io, "Random seed", format_number(cfg.random_seed), width; key_width)

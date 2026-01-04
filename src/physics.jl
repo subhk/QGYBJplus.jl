@@ -451,7 +451,8 @@ function N2_ut(par::QGParams, G::Grid)
             N2[k] = N12*exp(-((depth - d0)^2)/(σ^2))*(1 + erf(α*(depth - d0)/(σ*sqrt(2.0)))) + N02
         end
 
-    elseif par.stratification === :tanh_profile || par.stratification === :from_file
+    elseif par.stratification === :tanh_profile || par.stratification === :from_file ||
+           par.stratification === :analytical || par.stratification === :function
         @warn "N2_ut: stratification=$(par.stratification) requires an external N² profile. " *
               "Falling back to constant N²=$(par.N²). Use compute_stratification_profile or load a profile instead." maxlog=1
         @inbounds fill!(N2, par.N²)

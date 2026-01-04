@@ -513,3 +513,15 @@ par = default_params(
 )
 G, S, plans, a_ell, N2_profile = setup_model_with_profile(par)
 ```
+
+### Use an Analytical N(z) Profile
+
+```julia
+a = 0.01    # s^-1
+b = -2.0e-6 # s^-1 m^-1
+@inline N(z) = a + b * z  # z is negative below the surface
+
+domain = create_domain_config(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz)
+strat = create_stratification_config(type=:analytical, N_func=N)
+sim = setup_simulation(domain, strat)
+```

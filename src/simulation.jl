@@ -4,7 +4,8 @@ High-level Simulation API for QG-YBJ model.
 Provides a simplified interface that hides MPI complexity from users:
 - `Simulation` struct wraps all components (grid, state, plans, etc.)
 - `initialize_simulation()` handles all MPI setup automatically
-- `set_dipole_flow!()`, `set_surface_waves!()` for common initial conditions
+- `set_mean_flow!()`, `set_surface_waves!()` for common initial conditions
+- `set_exponential_surface_waves!()` for exponential vertical decay
 - `run!()` for time integration
 
 # Example
@@ -20,7 +21,14 @@ sim = initialize_simulation(
 )
 
 # Set initial conditions
-set_dipole_flow!(sim; amplitude=0.335, k=sqrt(2)*π/70e3)
+κ = sqrt(2) * π / 70e3
+U = 0.335
+dipole = (x, y, z) -> begin
+    x_rot = (x - y) / sqrt(2)
+    y_rot = (x + y) / sqrt(2)
+    (U / κ) * sin(κ * x_rot) * cos(κ * y_rot)
+end
+set_mean_flow!(sim; psi_func=dipole)
 set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)
 
 # Run simulation
@@ -218,105 +226,93 @@ end
 =#
 
 """
-    set_dipole_flow!(sim::Simulation; amplitude, k=nothing, rotated=true)
+    set_mean_flow!(sim::Simulation; psi_func, method=:function, amplitude=1.0,
+                   spectral_slope=-3.0, seed=0)
 
-Set up a barotropic dipole flow (eddy).
+Set up the balanced mean flow from an analytical streamfunction or random noise.
 
-The dipole streamfunction follows Asselin et al. (2020):
-    ψ = (U/κ) sin(κx) cos(κy)
+For `method=:function`, `psi_func(x, y, z)` should return ψ in m²/s at the
+cell centers. Coordinates respect the grid origin (`x0`, `y0`) and use `G.z`
+for vertical levels. This works in MPI because each rank fills only its local
+slab before the FFT.
 
-where U is the velocity amplitude and κ is the dipole wavenumber.
-
-The domain origin is determined by the Grid's `x0`, `y0` fields, which are set via
-`centered=true` in `initialize_simulation()` or `default_params()`.
+For `method=:random`, a deterministic MPI-safe random spectrum is generated.
 
 # Arguments
 - `sim`: Simulation object
-- `amplitude`: Flow velocity scale U [m/s]
-- `k`: Dipole wavenumber κ [rad/m]. Default: sqrt(2)π/Lx
-- `rotated`: Use rotated coordinates x=(X-Y)/√2, y=(X+Y)/√2 (default: true)
+- `psi_func`: Function returning ψ(x, y, z) when `method=:function`
+- `method`: `:function` or `:random` (alias `:analytical` for `:function`)
+- `amplitude`: Random-field amplitude (used for `:random`)
+- `spectral_slope`: Spectral slope for random field (default: -3)
+- `seed`: Random seed (default: 0)
 
 # Example
 ```julia
-sim = initialize_simulation(nx=256, ny=256, nz=128, Lx=70e3, Ly=70e3, Lz=2000.0,
-                            centered=true, ...)  # Domain x,y ∈ [-35km, +35km)
-set_dipole_flow!(sim; amplitude=0.335)  # U = 33.5 cm/s
+κ = sqrt(2) * π / Lx
+U = 0.335
+dipole = (x, y, z) -> begin
+    x_rot = (x - y) / sqrt(2)
+    y_rot = (x + y) / sqrt(2)
+    (U / κ) * sin(κ * x_rot) * cos(κ * y_rot)
+end
+set_mean_flow!(sim; psi_func=dipole)
+set_mean_flow!(sim; method=:random, amplitude=0.1, spectral_slope=-3.0, seed=42)
 ```
 """
-function set_dipole_flow!(sim::Simulation;
-    amplitude::Real,
-    k::Union{Real, Nothing} = nothing,
-    rotated::Bool = true)
+function set_mean_flow!(sim::Simulation;
+    psi_func = nothing,
+    method::Symbol = :function,
+    amplitude::Real = 1.0,
+    spectral_slope::Real = -3.0,
+    seed::Int = 0)
 
     G = sim.grid
     S = sim.state
     plans = sim.plans
 
-    # Default wavenumber: sqrt(2)π/Lx
-    κ = k === nothing ? sqrt(2) * π / G.Lx : k
-    psi0 = amplitude / κ  # Streamfunction amplitude [m²/s]
+    if method == :function || method == :analytical
+        psi_func === nothing && throw(ArgumentError("psi_func must be provided when method=:function"))
 
-    if sim.mpi_config.is_root
-        println("Setting dipole flow: U = $(amplitude) m/s, κ = $(κ) rad/m")
-    end
+        if sim.mpi_config.is_root
+            println("Setting mean flow from analytical ψ(x, y, z)")
+        end
 
-    # Get local ranges
-    local_range = get_local_range_physical(plans)
+        local_range = get_local_range_physical(plans)
+        psi_phys = allocate_fft_backward_dst(S.psi, plans)
+        psi_arr = parent(psi_phys)
+        T = eltype(psi_arr)
 
-    # Allocate physical-space array
-    psi_phys = allocate_fft_backward_dst(S.psi, plans)
-    psi_arr = parent(psi_phys)
-
-    for k_local in axes(psi_arr, 1)
-        for j_local in axes(psi_arr, 3)
-            j_global = local_range[3][j_local]
-            # Use Grid origin (x0, y0) for domain centering
-            Y = G.y0 + (j_global - 1) * G.dy
-
-            for i_local in axes(psi_arr, 2)
-                i_global = local_range[2][i_local]
-                # Use Grid origin (x0, y0) for domain centering
-                X = G.x0 + (i_global - 1) * G.dx
-
-                # Coordinates for streamfunction
-                if rotated
-                    # Rotated coordinates for dipole formula
-                    x = (X - Y) / sqrt(2)
-                    y = (X + Y) / sqrt(2)
-                else
-                    x = X
-                    y = Y
+        for k_local in axes(psi_arr, 1)
+            k_global = local_range[1][k_local]
+            z = G.z[k_global]
+            for j_local in axes(psi_arr, 3)
+                j_global = local_range[3][j_local]
+                y = G.y0 + (j_global - 1) * G.dy
+                for i_local in axes(psi_arr, 2)
+                    i_global = local_range[2][i_local]
+                    x = G.x0 + (i_global - 1) * G.dx
+                    psi_arr[k_local, i_local, j_local] = T(psi_func(x, y, z))
                 end
-
-                psi_arr[k_local, i_local, j_local] = complex(psi0 * sin(κ * x) * cos(κ * y))
             end
         end
-    end
 
-    # Transform to spectral space
-    fft_forward!(S.psi, psi_phys, plans)
-
-    # Compute vorticity q = ∇²ψ (in spectral: q̂ = -kh² × ψ̂)
-    local_range_spec = get_local_range_spectral(plans)
-    q_arr = parent(S.q)
-    psi_spec_arr = parent(S.psi)
-
-    for k_local in axes(q_arr, 1)
-        for j_local in axes(q_arr, 3)
-            j_global = local_range_spec[3][j_local]
-            for i_local in axes(q_arr, 2)
-                i_global = local_range_spec[2][i_local]
-                kh2 = G.kx[i_global]^2 + G.ky[j_global]^2
-                q_arr[k_local, i_local, j_local] = -kh2 * psi_spec_arr[k_local, i_local, j_local]
-            end
+        fft_forward!(S.psi, psi_phys, plans)
+    elseif method == :random
+        if sim.mpi_config.is_root
+            println("Setting random mean flow: amplitude = $(amplitude), slope = $(spectral_slope), seed = $(seed)")
         end
+        init_mpi_random_psi!(S.psi, G, amplitude; slope=spectral_slope, seed=seed, seed_offset=0)
+    else
+        throw(ArgumentError("Unknown method=$method. Use :function or :random."))
     end
+
+    add_balanced_component!(S, G, sim.params, sim.plans; N2_profile=sim.N2_profile)
 
     return sim
 end
 
 """
-    set_surface_waves!(sim::Simulation; amplitude, surface_depth, uniform=true)
+    set_surface_waves!(sim::Simulation; amplitude, surface_depth, uniform=true, profile=:gaussian)
 
 Set up surface-confined near-inertial waves.
 
@@ -329,26 +325,30 @@ and s is the surface layer depth.
 # Arguments
 - `sim`: Simulation object
 - `amplitude`: Wave velocity amplitude u₀ [m/s]
-- `surface_depth`: Surface layer depth s [m]
+- `surface_depth`: Surface layer depth s [m] (used as e-folding depth for :exponential)
 - `uniform`: Horizontally uniform waves (default: true)
+- `profile`: Vertical decay profile (:gaussian or :exponential, default: :gaussian)
 
 # Example
 ```julia
 set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)  # u₀ = 10 cm/s
+set_surface_waves!(sim; amplitude=0.10, surface_depth=50.0, profile=:exponential)
 ```
 """
 function set_surface_waves!(sim::Simulation;
     amplitude::Real,
     surface_depth::Real,
-    uniform::Bool = true)
+    uniform::Bool = true,
+    profile::Symbol = :gaussian)
 
     G = sim.grid
     S = sim.state
     plans = sim.plans
 
     if sim.mpi_config.is_root
-        println("Setting surface waves: u₀ = $(amplitude) m/s, s = $(surface_depth) m")
+        println("Setting surface waves: u₀ = $(amplitude) m/s, s = $(surface_depth) m, profile=$(profile)")
     end
+    surface_depth > 0 || throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
 
     # Get local ranges
     local_range = get_local_range_physical(plans)
@@ -356,21 +356,28 @@ function set_surface_waves!(sim::Simulation;
     # Allocate physical-space array
     B_phys = allocate_fft_backward_dst(S.B, plans)
     B_arr = parent(B_phys)
+    T = eltype(B_arr)
 
     dz = G.Lz / G.nz
     for k_local in axes(B_arr, 1)
         k_global = local_range[1][k_local]
         # Depth from surface (z=0 is surface, z=-Lz is bottom).
         # Use a dz/2 shift so the top cell center corresponds to z=0.
-        depth = max(zero(eltype(G.z)), -G.z[k_global] - dz / 2)
-        wave_profile = exp(-(depth^2) / (surface_depth^2))
+        depth = max(zero(T), -G.z[k_global] - dz / 2)
+        wave_profile = if profile == :gaussian
+            exp(-(depth^2) / (surface_depth^2))
+        elseif profile == :exponential
+            exp(-depth / surface_depth)
+        else
+            throw(ArgumentError("Unknown profile=$profile. Use :gaussian or :exponential."))
+        end
 
         if uniform
             # Horizontally uniform waves
-            B_arr[k_local, :, :] .= complex(amplitude * wave_profile)
+            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         else
             # Could add horizontal structure here
-            B_arr[k_local, :, :] .= complex(amplitude * wave_profile)
+            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         end
     end
 
@@ -381,37 +388,20 @@ function set_surface_waves!(sim::Simulation;
 end
 
 """
-    set_random_flow!(sim::Simulation; amplitude, spectral_slope=-3.0, seed=42)
+    set_exponential_surface_waves!(sim::Simulation; amplitude, efold_depth, uniform=true)
 
-Set up a random turbulent flow with specified spectral slope.
-
-# Arguments
-- `sim`: Simulation object
-- `amplitude`: RMS velocity amplitude [m/s]
-- `spectral_slope`: Energy spectrum slope (default: -3 for 2D turbulence)
-- `seed`: Random seed for reproducibility
-
-# Example
-```julia
-set_random_flow!(sim; amplitude=0.1, spectral_slope=-3.0)
-```
+Convenience wrapper for exponentially decaying, horizontally uniform surface waves.
+Uses `profile=:exponential` in `set_surface_waves!`.
 """
-function set_random_flow!(sim::Simulation;
+function set_exponential_surface_waves!(sim::Simulation;
     amplitude::Real,
-    spectral_slope::Real = -3.0,
-    seed::Int = 42)
-
-    if sim.mpi_config.is_root
-        println("Setting random flow: amplitude = $(amplitude) m/s, slope = $(spectral_slope)")
-    end
-
-    init_random_psi!(sim.state.psi, sim.grid, amplitude; slope=spectral_slope)
-
-    # Compute q from ψ for consistency
-    add_balanced_component!(sim.state, sim.grid, sim.params, sim.plans;
-                           N2_profile=sim.N2_profile)
-
-    return sim
+    efold_depth::Real,
+    uniform::Bool = true)
+    return set_surface_waves!(sim;
+        amplitude=amplitude,
+        surface_depth=efold_depth,
+        uniform=uniform,
+        profile=:exponential)
 end
 
 """

@@ -8,6 +8,7 @@ Provides various stratification profiles including:
 - Exponential profiles
 - Piecewise profiles
 - Custom profiles from files
+- Analytical N(z) or N²(z) profiles
 """
 
 using SpecialFunctions: erf
@@ -87,17 +88,28 @@ struct FileProfile{T} <: StratificationProfile{T}
 end
 
 """
+    AnalyticalProfile{T} <: StratificationProfile{T}
+
+Analytical stratification profile from a user-provided function.
+"""
+struct AnalyticalProfile{T, F} <: StratificationProfile{T}
+    N_func::F
+    is_N2::Bool
+end
+
+"""
     create_stratification_profile(config)
 
 Create stratification profile from configuration.
 
 # Arguments
 - `config`: Configuration object with fields:
-  - `type::Symbol`: One of `:constant_N`, `:skewed_gaussian`, `:tanh_profile`, `:from_file`
+  - `type::Symbol`: One of `:constant_N`, `:skewed_gaussian`, `:tanh_profile`, `:from_file`, `:analytical`
   - For `:constant_N`: `N0` (buoyancy frequency)
   - For `:skewed_gaussian`: `N02_sg`, `N12_sg`, `sigma_sg`, `z0_sg`, `alpha_sg`
   - For `:tanh_profile`: `N_upper`, `N_lower`, `z_pycno`, `width`
   - For `:from_file`: `filename` (path to NetCDF file)
+  - For `:analytical`: `N_func` (N(z)) or `N2_func` (N²(z))
 
 # Returns
 A `StratificationProfile` subtype appropriate for the configuration.
@@ -130,6 +142,15 @@ function create_stratification_profile(config)
             error("Filename required for stratification type :from_file")
         end
         return load_stratification_from_file(config.filename)
+
+    elseif config.type == :analytical || config.type == :function
+        if !isnothing(config.N2_func)
+            return AnalyticalProfile{T, typeof(config.N2_func)}(config.N2_func, true)
+        elseif !isnothing(config.N_func)
+            return AnalyticalProfile{T, typeof(config.N_func)}(config.N_func, false)
+        else
+            error("Provide N_func or N2_func for stratification type :$(config.type)")
+        end
         
     else
         error("Unknown stratification type: $(config.type)")
@@ -218,6 +239,20 @@ function evaluate_N2(profile::PiecewiseProfile{T}, z::Real) where T
     
     # Default to last layer if outside bounds
     return profile.N_values[end]^2
+end
+
+"""
+    evaluate_N2(profile::AnalyticalProfile, z::Real)
+
+Evaluate N² for an analytical profile.
+"""
+function evaluate_N2(profile::AnalyticalProfile{T}, z::Real) where T
+    val = profile.N_func(z)
+    if profile.is_N2
+        return max(T(val), zero(T))
+    else
+        return max(T(val)^2, zero(T))
+    end
 end
 
 """

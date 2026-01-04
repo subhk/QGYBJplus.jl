@@ -20,7 +20,8 @@ import PencilArrays: PencilArray
 const _allocate_fft_dst = allocate_fft_backward_dst
 
 """
-    initialize_from_config(config::ModelConfig, G::Grid, S::State, plans; params=nothing, N2_profile=nothing)
+    initialize_from_config(config::ModelConfig, G::Grid, S::State, plans;
+                           params=nothing, N2_profile=nothing, parallel_config=nothing)
 
 Initialize model state from configuration.
 
@@ -35,8 +36,10 @@ wipe out the user-provided initial conditions.
 - `plans`: FFT plans
 - `params`: QGParams (optional). If provided, q is computed from ψ for consistency.
 - `N2_profile`: Optional N²(z) profile for variable stratification.
+- `parallel_config`: MPIConfig for parallel file I/O when using `:from_file`.
 """
-function initialize_from_config(config, G::Grid, S::State, plans; params=nothing, N2_profile=nothing)
+function initialize_from_config(config, G::Grid, S::State, plans;
+                                params=nothing, N2_profile=nothing, parallel_config=nothing)
     @info "Initializing model fields from configuration"
 
     # Set random seed for reproducibility
@@ -48,7 +51,8 @@ function initialize_from_config(config, G::Grid, S::State, plans; params=nothing
     elseif config.initial_conditions.psi_type == :random
         init_random_psi!(S.psi, G, config.initial_conditions.psi_amplitude)
     elseif config.initial_conditions.psi_type == :from_file
-        S.psi .= read_initial_psi(config.initial_conditions.psi_filename, G, plans)
+        S.psi .= read_initial_psi(config.initial_conditions.psi_filename, G, plans;
+                                  parallel_config=parallel_config)
     else
         # Zero initialization (type-safe)
         fill!(S.psi, zero(eltype(S.psi)))
@@ -60,7 +64,35 @@ function initialize_from_config(config, G::Grid, S::State, plans; params=nothing
     elseif config.initial_conditions.wave_type == :random
         init_random_waves!(S.B, G, config.initial_conditions.wave_amplitude)
     elseif config.initial_conditions.wave_type == :from_file
-        S.B .= read_initial_waves(config.initial_conditions.wave_filename, G, plans)
+        S.B .= read_initial_waves(config.initial_conditions.wave_filename, G, plans;
+                                  parallel_config=parallel_config)
+    elseif config.initial_conditions.wave_type == :surface_waves
+        init_surface_waves!(
+            S.B, G,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=config.initial_conditions.wave_profile
+        )
+    elseif config.initial_conditions.wave_type == :surface_exponential
+        init_surface_waves!(
+            S.B, G,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=:exponential
+        )
+    elseif config.initial_conditions.wave_type == :surface_gaussian
+        init_surface_waves!(
+            S.B, G,
+            config.initial_conditions.wave_amplitude,
+            config.initial_conditions.wave_surface_depth,
+            plans;
+            uniform=config.initial_conditions.wave_uniform,
+            profile=:gaussian
+        )
     else
         # Zero initialization (type-safe)
         fill!(S.B, zero(eltype(S.B)))
@@ -322,6 +354,55 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
 
     # Combine real and imaginary parts
     Bk .= Brk .+ im .* Bik
+end
+
+"""
+    init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans; uniform=true, profile=:gaussian)
+
+Initialize horizontally uniform surface waves with a specified vertical decay profile.
+
+# Arguments
+- `Bk`: Spectral field to populate (output)
+- `G::Grid`: Grid structure
+- `amplitude::Real`: Wave velocity amplitude
+- `surface_depth::Real`: E-folding depth [m]
+- `plans`: FFT plans for forward transform
+- `uniform`: Horizontally uniform waves (default: true)
+- `profile`: Vertical decay profile (:gaussian or :exponential)
+"""
+function init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans;
+                             uniform::Bool=true, profile::Symbol=:gaussian)
+    surface_depth > 0 || throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
+
+    # Initialize in real space with LOCAL dimensions (input pencil for MPI)
+    B_phys = _allocate_fft_dst(Bk, plans)
+    B_arr = parent(B_phys)
+    T = eltype(B_arr)
+
+    dz = G.Lz / G.nz
+    for k_local in axes(B_arr, 1)
+        k_global = local_to_global(k_local, 1, B_phys)
+        # Depth from surface (z=0 is surface, z=-Lz is bottom).
+        # Use a dz/2 shift so the top cell center corresponds to z=0.
+        depth = max(zero(T), -G.z[k_global] - dz / 2)
+        wave_profile = if profile == :gaussian
+            exp(-(depth^2) / (surface_depth^2))
+        elseif profile == :exponential
+            exp(-depth / surface_depth)
+        else
+            throw(ArgumentError("Unknown profile=$profile. Use :gaussian or :exponential."))
+        end
+
+        if uniform
+            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+        else
+            # Placeholder for future horizontal structure.
+            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+        end
+    end
+
+    # Transform to spectral space
+    fft_forward!(Bk, B_phys, plans)
 end
 
 """

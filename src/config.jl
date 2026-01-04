@@ -15,6 +15,7 @@ Configuration for computational domain.
 # Fields
 - `nx, ny, nz`: Grid resolution (default: 64)
 - `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no default)
+- `x0, y0`: Domain origin (default: 0.0)
 
 # Example
 ```julia
@@ -31,6 +32,10 @@ Base.@kwdef struct DomainConfig{T}
     Lx::T
     Ly::T
     Lz::T
+
+    # Domain origin (default: 0, use -Lx/2 or -Ly/2 for centered domains)
+    x0::T = 0.0
+    y0::T = 0.0
 end
 
 """
@@ -43,9 +48,10 @@ Configuration for background stratification.
 - `:skewed_gaussian` - Realistic pycnocline with skewed Gaussian N² profile
 - `:tanh_profile` - Tanh transition between upper and lower N values
 - `:from_file` - Load N² profile from NetCDF file
+- `:analytical` (alias `:function`) - User-specified analytic N(z) or N²(z)
 """
 Base.@kwdef struct StratificationConfig{T}
-    type::Symbol = :constant_N  # Supported: :constant_N, :skewed_gaussian
+    type::Symbol = :constant_N  # Supported: :constant_N, :skewed_gaussian, :tanh_profile, :from_file, :analytical
     
     # For constant N
     N0::T = 1.0
@@ -65,12 +71,25 @@ Base.@kwdef struct StratificationConfig{T}
     
     # From file
     filename::Union{String,Nothing} = nothing
+
+    # Analytical profile
+    N_func::Union{Nothing, Function} = nothing   # N(z) in s^-1
+    N2_func::Union{Nothing, Function} = nothing  # N²(z) in s^-2
 end
 
 """
     InitialConditionConfig
 
 Configuration for initial conditions.
+
+# Wave types
+- `:zero` - No waves (default)
+- `:analytical` - Analytic wave pattern
+- `:random` - Random wave spectrum
+- `:from_file` - Read waves from NetCDF
+- `:surface_waves` - Surface-confined waves with configurable vertical profile
+- `:surface_exponential` - Exponentially decaying surface waves (convenience alias)
+- `:surface_gaussian` - Gaussian-decaying surface waves (convenience alias)
 """
 Base.@kwdef struct InitialConditionConfig{T}
     # Stream function initialization
@@ -79,10 +98,15 @@ Base.@kwdef struct InitialConditionConfig{T}
     psi_amplitude::T = 1.0
     
     # Wave field (L+A) initialization  
-    wave_type::Symbol = :zero  # :zero, :analytical, :from_file, :random
+    wave_type::Symbol = :zero  # :zero, :analytical, :from_file, :random, :surface_waves
     wave_filename::Union{String,Nothing} = nothing
     wave_amplitude::T = 1e-3
-    
+
+    # Surface wave initialization (used when wave_type is surface waves)
+    wave_surface_depth::T = 30.0      # e-folding depth [m]
+    wave_profile::Symbol = :gaussian  # :gaussian or :exponential
+    wave_uniform::Bool = true         # Horizontally uniform waves
+
     # Random seed for reproducibility
     random_seed::Int = 1234
 end
@@ -178,6 +202,7 @@ Create a domain configuration with user-friendly parameters.
 # Arguments
 - `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no defaults)
 - `nx, ny, nz`: Grid resolution (default: 64)
+- `x0, y0`: Domain origin (default: 0.0)
 
 # Examples
 ```julia
@@ -215,6 +240,10 @@ strat = create_stratification_config(:skewed_gaussian)
 
 # From file
 # strat = create_stratification_config(:from_file, filename="N2_profile.nc")
+
+# Analytical N(z)
+# N_func = z -> 0.01 - 2e-6 * z
+# strat = create_stratification_config(:analytical, N_func=N_func)
 ```
 
 See [`StratificationConfig`](@ref) for details on supported types.
@@ -248,6 +277,13 @@ init = create_initial_condition_config(
     psi_filename="psi_initial.nc",
     wave_type=:from_file, 
     wave_filename="wave_initial.nc"
+)
+
+# Exponentially decaying surface waves
+init = create_initial_condition_config(
+    wave_type=:surface_exponential,
+    wave_amplitude=0.1,
+    wave_surface_depth=50.0
 )
 ```
 """
@@ -348,15 +384,45 @@ function validate_config(config::ModelConfig)
     end
 
     # Stratification validation
-    supported_stratifications = (:constant_N, :skewed_gaussian, :tanh_profile, :from_file)
+    supported_stratifications = (:constant_N, :skewed_gaussian, :tanh_profile, :from_file, :analytical, :function)
     if config.stratification.type ∉ supported_stratifications
         push!(errors, "Unknown stratification type :$(config.stratification.type). " *
                      "Supported types: $(supported_stratifications)")
     end
 
+    # Wave type validation
+    supported_wave_types = (:zero, :analytical, :random, :from_file,
+                            :surface_waves, :surface_exponential, :surface_gaussian)
+    if config.initial_conditions.wave_type ∉ supported_wave_types
+        push!(errors, "Unknown wave_type :$(config.initial_conditions.wave_type). " *
+                      "Supported types: $(supported_wave_types)")
+    end
+
+    if config.initial_conditions.wave_type in (:surface_waves, :surface_exponential, :surface_gaussian)
+        if config.initial_conditions.wave_surface_depth <= 0
+            push!(errors, "wave_surface_depth must be positive for surface waves " *
+                          "(got $(config.initial_conditions.wave_surface_depth))")
+        end
+        if config.initial_conditions.wave_type == :surface_waves
+            if config.initial_conditions.wave_profile ∉ (:gaussian, :exponential)
+                push!(errors, "wave_profile must be :gaussian or :exponential for surface_waves " *
+                              "(got $(config.initial_conditions.wave_profile))")
+            end
+        end
+    end
+
     # N0 validation for constant_N
     if config.stratification.type == :constant_N && config.stratification.N0 <= 0
         push!(errors, "Stratification N0 must be positive for constant_N (got N0=$(config.stratification.N0))")
+    end
+
+    if config.stratification.type in (:analytical, :function)
+        if isnothing(config.stratification.N_func) && isnothing(config.stratification.N2_func)
+            push!(errors, "Provide N_func or N2_func for stratification type :$(config.stratification.type)")
+        end
+        if !isnothing(config.stratification.N_func) && !isnothing(config.stratification.N2_func)
+            push!(warnings, "Both N_func and N2_func are set; N2_func will take precedence")
+        end
     end
 
     # File existence checks
@@ -453,6 +519,7 @@ function print_config_summary(config::ModelConfig)
     println("Domain:")
     println("  Grid: $(config.domain.nx) × $(config.domain.ny) × $(config.domain.nz)")
     println("  Size: $(config.domain.Lx) × $(config.domain.Ly) × $(config.domain.Lz)")
+    println("  Origin: ($(config.domain.x0), $(config.domain.y0))")
     # Print physical size in km if values are large (likely in meters)
     if config.domain.Lx > 1000 || config.domain.Ly > 1000 || config.domain.Lz > 100
         println("  Physical: $(config.domain.Lx/1000) × $(config.domain.Ly/1000) × $(config.domain.Lz/1000) km")
@@ -463,6 +530,12 @@ function print_config_summary(config::ModelConfig)
     println("  Type: $(config.stratification.type)")
     if config.stratification.type == :constant_N
         println("  N₀: $(config.stratification.N0)")
+    elseif config.stratification.type in (:analytical, :function)
+        if !isnothing(config.stratification.N2_func)
+            println("  Analytical N²(z): provided")
+        else
+            println("  Analytical N(z): provided")
+        end
     elseif config.stratification.type == :from_file
         println("  File: $(config.stratification.filename)")
     end
@@ -471,6 +544,14 @@ function print_config_summary(config::ModelConfig)
     println("Initial Conditions:")
     println("  Psi: $(config.initial_conditions.psi_type)")
     println("  Waves: $(config.initial_conditions.wave_type)")
+    if config.initial_conditions.wave_type in (:surface_waves, :surface_exponential, :surface_gaussian)
+        effective_profile = config.initial_conditions.wave_type == :surface_exponential ? :exponential :
+                           config.initial_conditions.wave_type == :surface_gaussian ? :gaussian :
+                           config.initial_conditions.wave_profile
+        println("  Wave profile: $(effective_profile)")
+        println("  Wave surface depth: $(config.initial_conditions.wave_surface_depth)")
+        println("  Wave uniform: $(config.initial_conditions.wave_uniform)")
+    end
     println()
     
     println("Parameters:")

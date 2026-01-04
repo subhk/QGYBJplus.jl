@@ -93,6 +93,25 @@ strat = create_stratification_config(type=:constant_N)
 sim = setup_simulation(domain, strat; initial_conditions=init_config)
 ```
 
+### Exponentially Decaying Surface Waves (Config)
+
+```julia
+using QGYBJplus
+
+init_config = create_initial_condition_config(
+    psi_type=:analytical,
+    wave_type=:surface_exponential,
+    wave_amplitude=0.1,      # u₀ [m/s]
+    wave_surface_depth=50.0, # e-folding depth [m]
+    wave_uniform=true
+)
+
+domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
+strat = create_stratification_config(type=:constant_N)
+
+sim = setup_simulation(domain, strat; initial_conditions=init_config)
+```
+
 ## From Data Files
 
 ### From NetCDF
@@ -115,6 +134,27 @@ S.B .= B_init
 compute_q_from_psi!(S, G, plans, a_ell)
 compute_velocities!(S, G, plans)
 ```
+
+### From NetCDF with MPI
+
+For MPI runs, prefer the config-based path so rank 0 reads and the field is
+scattered automatically:
+
+```julia
+using QGYBJplus
+
+init_config = create_initial_condition_config(
+    psi_type=:from_file,
+    psi_filename="initial_conditions.nc"
+)
+
+domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
+strat = create_stratification_config(type=:constant_N)
+
+sim = setup_simulation(domain, strat; initial_conditions=init_config)
+```
+
+Run with `mpirun -n 4 julia --project your_script.jl` to enable MPI.
 
 ### Using ncread Functions
 

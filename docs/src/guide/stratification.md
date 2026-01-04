@@ -106,6 +106,36 @@ G, S, plans, a_ell, N2_profile = setup_model_with_profile(par)
 # N2_profile is now available for vertical velocity computation, etc.
 ```
 
+### Analytical N(z) Example (Linear)
+
+You can pass a custom analytic `N(z)` or `N²(z)` directly:
+
+```julia
+using QGYBJplus
+
+a = 0.01    # s^-1
+b = -2.0e-6 # s^-1 m^-1
+@inline N(z) = a + b * z  # z is negative below the surface
+
+domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
+strat = create_stratification_config(
+    type=:analytical,
+    N_func=N
+)
+
+sim = setup_simulation(domain, strat)
+```
+
+This corresponds to:
+
+```math
+N(z) = a + b z
+```
+
+Use `N2_func` instead if you want to specify `N²(z)` directly.
+
+When running with MPI, define `N_func` in the same script so each rank sees the function.
+
 ### Using the High-Level API
 
 The `QGYBJSimulation` API handles stratification automatically:
@@ -162,6 +192,10 @@ profile = PiecewiseProfile{Float64}(
     [0.0, 2000.0, 4000.0],  # z_interfaces (depths below surface)
     [0.01, 0.03]            # N values in each layer
 )
+
+# Analytical profile from N(z)
+N_func = z -> 0.01 - 2e-6 * z
+profile = AnalyticalProfile{Float64}(N_func, false)  # false => N(z), true => N²(z)
 ```
 
 ### Evaluating Profiles on the Grid

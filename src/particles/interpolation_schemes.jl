@@ -164,19 +164,19 @@ function tricubic_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    # z ∈ [-Lz, 0] with surface at z=0
-    z_min = -Lz
-    z_max = zero(T)
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
 
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z_min, z_max)
+    z_clamped = clamp(z, z0, z_max)
 
-    # Convert to grid coordinates: z[k] = -Lz + k*dz, so k = (z + Lz) / dz
+    # Convert to grid coordinates: z[k] = z0 + (k-1)*dz for cell centers
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = (z_clamped + Lz) / dz
+    fz = (z_clamped - z0) / dz
     
     # Get integer parts and fractional coordinates
     ix = floor(Int, fx)
@@ -298,7 +298,9 @@ function adaptive_interpolation(x::T, y::T, z::T,
                                grid_info, boundary_conditions) where T
     
     # Estimate local smoothness using finite differences
-    smoothness = estimate_field_smoothness(x, y, z, u_field, v_field, w_field, grid_info)
+    smoothness = estimate_field_smoothness(
+        x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions
+    )
     
     # Choose interpolation method based on smoothness
     if smoothness > 0.1  # Rough field - use trilinear for stability
@@ -313,21 +315,23 @@ Estimate local field smoothness using second derivatives.
 """
 function estimate_field_smoothness(x::T, y::T, z::T,
                                   u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                                  grid_info) where T
+                                  grid_info, boundary_conditions) where T
 
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
-    Lz = grid_info.Lz
-    # z ∈ [-Lz, 0] with surface at z=0
-    z_min = -Lz
-    z_max = zero(T)
+    Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
+
+    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
+    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
 
     # Convert to grid indices
-    ix_raw = round(Int, x / dx)
-    iy_raw = round(Int, y / dy)
-    z_clamped = clamp(z, z_min, z_max)
-    # z[k] = -Lz + k*dz, so k = (z + Lz) / dz
-    iz_raw = round(Int, (z_clamped + Lz) / dz)
+    ix_raw = round(Int, x_periodic / dx) + 1
+    iy_raw = round(Int, y_periodic / dy) + 1
+    z_clamped = clamp(z, z0, z_max)
+    iz_raw = round(Int, (z_clamped - z0) / dz) + 1
 
     ix = nx >= 3 ? clamp(ix_raw, 2, nx - 1) : clamp(ix_raw, 1, nx)
     iy = ny >= 3 ? clamp(iy_raw, 2, ny - 1) : clamp(iy_raw, 1, ny)
@@ -377,19 +381,19 @@ function trilinear_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    # z ∈ [-Lz, 0] with surface at z=0
-    z_min = -Lz
-    z_max = zero(T)
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
 
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z_min, z_max)
+    z_clamped = clamp(z, z0, z_max)
 
-    # Convert to grid indices: z[k] = -Lz + k*dz, so k = (z + Lz) / dz
+    # Convert to grid indices: z[k] = z0 + (k-1)*dz for cell centers
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = (z_clamped + Lz) / dz
+    fz = (z_clamped - z0) / dz
     
     ix = floor(Int, fx)
     iy = floor(Int, fy)
@@ -479,19 +483,19 @@ function quintic_interpolation(x::T, y::T, z::T,
     nz, nx, ny = size(u_field)
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
     Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    # z ∈ [-Lz, 0] with surface at z=0
-    z_min = -Lz
-    z_max = zero(T)
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
+    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
+    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
 
     # Handle periodic boundaries
     x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
     y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z_min, z_max)
+    z_clamped = clamp(z, z0, z_max)
 
-    # Convert to grid coordinates: z[k] = -Lz + k*dz, so k = (z + Lz) / dz
+    # Convert to grid coordinates: z[k] = z0 + (k-1)*dz for cell centers
     fx = x_periodic / dx
     fy = y_periodic / dy
-    fz = (z_clamped + Lz) / dz
+    fz = (z_clamped - z0) / dz
 
     # Get integer parts and fractional coordinates
     ix = floor(Int, fx)

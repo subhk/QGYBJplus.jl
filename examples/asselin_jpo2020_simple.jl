@@ -66,7 +66,12 @@ sim = initialize_simulation(
 )
 
 # Set initial conditions with simple high-level functions
-set_dipole_flow!(sim; amplitude=U0_flow, k=k_dipole)
+dipole = (x, y, z) -> begin
+    x_rot = (x - y) / sqrt(2)
+    y_rot = (x + y) / sqrt(2)
+    (U0_flow / k_dipole) * sin(k_dipole * x_rot) * cos(k_dipole * y_rot)
+end
+set_mean_flow!(sim; psi_func=dipole)
 set_surface_waves!(sim; amplitude=u0_wave, surface_depth=surface_depth)
 
 # Run simulation

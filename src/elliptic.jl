@@ -891,8 +891,16 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
     # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
 
-    ρᵤₜ = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
-    ρₛₜ = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
+    ρᵤₜ = if par !== nothing && isdefined(PARENT, :rho_ut)
+        PARENT.rho_ut(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+    ρₛₜ = if par !== nothing && isdefined(PARENT, :rho_st)
+        PARENT.rho_st(par, G)
+    else
+        ones(eltype(a), nz)
+    end
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhsᵣ = zeros(eltype(a), nz)
@@ -1040,8 +1048,16 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
 
-    r_ut = isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
-    r_st = isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
+    r_ut = if par !== nothing && isdefined(PARENT, :rho_ut)
+        PARENT.rho_ut(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+    r_st = if par !== nothing && isdefined(PARENT, :rho_st)
+        PARENT.rho_st(par, G)
+    else
+        ones(eltype(a), nz)
+    end
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs_r = zeros(eltype(a), nz)

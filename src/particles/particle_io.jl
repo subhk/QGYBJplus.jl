@@ -38,7 +38,7 @@ end
 
 function _gatherv_vector(sendbuf, counts::Vector{Cint}, comm::MPI.Comm; root::Int=0)
     if MPI.Comm_rank(comm) == root
-        recvbuf = similar(sendbuf, sum(counts))
+        recvbuf = similar(sendbuf, Int(sum(counts)))
         MPI.Gatherv!(sendbuf, MPI.VBuffer(recvbuf, counts), comm; root=root)
         return recvbuf
     end
@@ -759,13 +759,16 @@ Write summary file listing all snapshot files.
 """
 function write_snapshot_summary!(manager::ParticleOutputManager, tracker::ParticleTracker)
     summary_file = joinpath(manager.particle_dir, "$(manager.file_prefix)_summary.txt")
+    np_global = tracker.is_parallel && tracker.comm !== nothing ?
+                MPI.Allreduce(tracker.particles.np, +, tracker.comm) :
+                tracker.particles.np
 
     try
         open(summary_file, "w") do f
             println(f, "QG-YBJ Particle Snapshot Summary")
             println(f, "================================")
             println(f, "Created: $(now())")
-            println(f, "Number of particles: $(tracker.particles.np)")
+            println(f, "Number of particles: $np_global")
             println(f, "Number of snapshots: $(manager.save_count)")
             println(f, "Output directory: $(manager.particle_dir)")
             println(f, "")
@@ -935,11 +938,11 @@ function _write_particle_trajectories_arrays(filename::String,
             time_var.attrib["long_name"] = "time"
 
             x_var.attrib["units"] = "nondimensional"
-            x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+            x_var.attrib["long_name"] = "x position (horizontal)"
             y_var.attrib["units"] = "nondimensional"
-            y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+            y_var.attrib["long_name"] = "y position (horizontal)"
             z_var.attrib["units"] = "nondimensional"
-            z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+            z_var.attrib["long_name"] = "z position (vertical)"
 
             # Global attributes
             ds.attrib["title"] = "QG-YBJ Particle Trajectories"
@@ -1116,11 +1119,11 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             particle_var.attrib["long_name"] = "particle identifier"
 
             x_var.attrib["units"] = "nondimensional"
-            x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+            x_var.attrib["long_name"] = "x position (horizontal)"
             y_var.attrib["units"] = "nondimensional"
-            y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+            y_var.attrib["long_name"] = "y position (horizontal)"
             z_var.attrib["units"] = "nondimensional"
-            z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+            z_var.attrib["long_name"] = "z position (vertical)"
 
             u_var.attrib["units"] = "nondimensional/time"
             u_var.attrib["long_name"] = "x velocity"
@@ -1191,11 +1194,11 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 time_var.attrib["long_name"] = "time"
 
                 x_var.attrib["units"] = "nondimensional"
-                x_var.attrib["long_name"] = "x position (horizontal, nondimensional [0, Lx))"
+                x_var.attrib["long_name"] = "x position (horizontal)"
                 y_var.attrib["units"] = "nondimensional"
-                y_var.attrib["long_name"] = "y position (horizontal, nondimensional [0, Ly))"
+                y_var.attrib["long_name"] = "y position (horizontal)"
                 z_var.attrib["units"] = "nondimensional"
-                z_var.attrib["long_name"] = "z position (vertical, nondimensional [0, 2π])"
+                z_var.attrib["long_name"] = "z position (vertical)"
 
                 u_var.attrib["units"] = "nondimensional/time"
                 u_var.attrib["long_name"] = "x velocity"

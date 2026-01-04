@@ -748,9 +748,9 @@ function _read_initial_psi_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"]
-            nz_file = ds.dim["z"]
+            nx_file = length(ds.dim["x"])
+            ny_file = length(ds.dim["y"])
+            nz_file = length(ds.dim["z"])
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -843,9 +843,9 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"]
-            nz_file = ds.dim["z"]
+            nx_file = length(ds.dim["x"])
+            ny_file = length(ds.dim["y"])
+            nz_file = length(ds.dim["z"])
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -921,7 +921,7 @@ function read_stratification_raw(filename::String)
             z_data = Array(ds["z"][:])
         elseif haskey(ds.dim, "z")
             # If no z variable, create uniform grid
-            nz_file = ds.dim["z"]
+            nz_file = length(ds.dim["z"])
             z_data = collect(range(0.0, 1.0, length=nz_file))
             @warn "No 'z' variable found, using normalized coordinates [0, 1]"
         else
@@ -962,7 +962,7 @@ function read_stratification_profile(filename::String, nz::Int)
         z_file = nothing
 
         if haskey(ds.dim, "z")
-            nz_file = ds.dim["z"]
+            nz_file = length(ds.dim["z"])
             # Try to read z coordinates from file
             if haskey(ds, "z")
                 z_file = Array(ds["z"][:])

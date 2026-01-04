@@ -31,11 +31,11 @@ function _parallel_local_domain(tracker)
     return nothing
 end
 
-function _within_local_domain(x, y, local_domain, Lx, Ly)
+function _within_local_domain(x, y, local_domain, x_max_global, y_max_global)
     in_x = x >= local_domain.x_start &&
-           (x < local_domain.x_end || (x == local_domain.x_end && local_domain.x_end == Lx))
+           (x < local_domain.x_end || (x == local_domain.x_end && local_domain.x_end == x_max_global))
     in_y = y >= local_domain.y_start &&
-           (y < local_domain.y_end || (y == local_domain.y_end && local_domain.y_end == Ly))
+           (y < local_domain.y_end || (y == local_domain.y_end && local_domain.y_end == y_max_global))
     return in_x && in_y
 end
 
@@ -721,9 +721,9 @@ function initialize_custom_positions!(tracker, config::ParticleConfig3D{T}) wher
     if local_domain !== nothing
         keep = Int[]
         for i in 1:n_particles
-            x = config.periodic_x ? mod(config.custom_x[i], tracker.Lx) : config.custom_x[i]
-            y = config.periodic_y ? mod(config.custom_y[i], tracker.Ly) : config.custom_y[i]
-            if _within_local_domain(x, y, local_domain, tracker.Lx, tracker.Ly)
+            x = config.periodic_x ? tracker.x0 + mod(config.custom_x[i] - tracker.x0, tracker.Lx) : config.custom_x[i]
+            y = config.periodic_y ? tracker.y0 + mod(config.custom_y[i] - tracker.y0, tracker.Ly) : config.custom_y[i]
+            if _within_local_domain(x, y, local_domain, tracker.x0 + tracker.Lx, tracker.y0 + tracker.Ly)
                 push!(keep, i)
             end
         end
@@ -794,9 +794,9 @@ function initialize_random_positions!(tracker, config::ParticleConfig3D{T}) wher
     if local_domain !== nothing
         keep = Int[]
         for i in 1:n_particles
-            x = config.periodic_x ? mod(xs[i], tracker.Lx) : xs[i]
-            y = config.periodic_y ? mod(ys[i], tracker.Ly) : ys[i]
-            if _within_local_domain(x, y, local_domain, tracker.Lx, tracker.Ly)
+            x = config.periodic_x ? tracker.x0 + mod(xs[i] - tracker.x0, tracker.Lx) : xs[i]
+            y = config.periodic_y ? tracker.y0 + mod(ys[i] - tracker.y0, tracker.Ly) : ys[i]
+            if _within_local_domain(x, y, local_domain, tracker.x0 + tracker.Lx, tracker.y0 + tracker.Ly)
                 push!(keep, i)
             end
         end

@@ -51,7 +51,7 @@ Information about halo regions for MPI communication in 2D decomposition.
 
 # Fields
 - `halo_width`: Number of ghost cells on each side (depends on interpolation scheme)
-- `u_extended, v_extended, w_extended`: Extended velocity arrays including halos in x AND y
+- `u_extended, v_extended, w_extended`: Extended velocity arrays (x halos always; y halos only for 2D)
 - `local_start, local_end`: Indices of local domain within extended arrays
 - `neighbors`: Array of 8 neighbor ranks [W, E, S, N, SW, SE, NW, NE], -1 if none
 - `nx_global, ny_global, nz_global`: Global domain dimensions
@@ -66,8 +66,8 @@ mutable struct HaloInfo{T<:AbstractFloat}
     # Halo width (number of ghost cells on each side)
     halo_width::Int
 
-    # Extended arrays including halos in BOTH x and y directions
-    # Layout: (nz_local, nx_local + 2*hw, ny_local + 2*hw)
+    # Extended arrays including halos in x and (optionally) y
+    # Layout: (nz_local, nx_local + 2*hw, ny_local + 2*hw_y)
     u_extended::Array{T,3}
     v_extended::Array{T,3}
     w_extended::Array{T,3}
@@ -166,6 +166,7 @@ mutable struct HaloInfo{T<:AbstractFloat}
 
         # Determine if this is 1D or 2D decomposition
         is_2d_decomposition = py > 1
+        halo_width_y = is_2d_decomposition ? halo_width : 0
 
         # Get LOCAL grid dimensions
         if local_dims !== nothing
@@ -177,9 +178,9 @@ mutable struct HaloInfo{T<:AbstractFloat}
             nz_local = nz_global  # z is never decomposed for particles
         end
 
-        # Extended grid dimensions (local + 2*halo_width in BOTH x and y)
+        # Extended grid dimensions (local + 2*halo_width in x, and y only for 2D)
         nx_ext = nx_local + 2 * halo_width
-        ny_ext = ny_local + 2 * halo_width
+        ny_ext = ny_local + 2 * halo_width_y
         nz_ext = nz_local
 
         # Create extended arrays
@@ -188,8 +189,8 @@ mutable struct HaloInfo{T<:AbstractFloat}
         w_extended = zeros(T, nz_ext, nx_ext, ny_ext)
 
         # Local domain indices in extended array (1-based)
-        local_start = (1, halo_width + 1, halo_width + 1)
-        local_end = (nz_local, halo_width + nx_local, halo_width + ny_local)
+        local_start = (1, halo_width + 1, halo_width_y + 1)
+        local_end = (nz_local, halo_width + nx_local, halo_width_y + ny_local)
 
         # Determine all 8 neighbors
         neighbors = compute_neighbors_2d(rank_x, rank_y, px, py, periodic_x, periodic_y)
@@ -202,15 +203,15 @@ mutable struct HaloInfo{T<:AbstractFloat}
         recv_west = Vector{T}(undef, x_buffer_size)
         recv_east = Vector{T}(undef, x_buffer_size)
 
-        # Y-direction buffers: nx_local × halo_width × nz_local × 3 components
-        y_buffer_size = nx_local * halo_width * nz_local * 3
+        # Y-direction buffers: nx_local × halo_width_y × nz_local × 3 components
+        y_buffer_size = nx_local * halo_width_y * nz_local * 3
         send_south = Vector{T}(undef, y_buffer_size)
         send_north = Vector{T}(undef, y_buffer_size)
         recv_south = Vector{T}(undef, y_buffer_size)
         recv_north = Vector{T}(undef, y_buffer_size)
 
-        # Corner buffers: halo_width × halo_width × nz_local × 3 components
-        corner_buffer_size = halo_width * halo_width * nz_local * 3
+        # Corner buffers: halo_width × halo_width_y × nz_local × 3 components
+        corner_buffer_size = halo_width * halo_width_y * nz_local * 3
         send_sw = Vector{T}(undef, corner_buffer_size)
         send_se = Vector{T}(undef, corner_buffer_size)
         send_nw = Vector{T}(undef, corner_buffer_size)
@@ -745,33 +746,34 @@ Supports both 1D and 2D MPI decomposition.
 
 Uses trilinear interpolation with:
 - X-direction: halo data handles cross-boundary interpolation
-- Y-direction: halo data handles cross-boundary interpolation (2D decomposition)
+- Y-direction: halo data handles cross-boundary interpolation for 2D; periodic wrapping for 1D
 - Z-direction: clamping to [1, nz] (vertical boundaries are not periodic)
 """
 function interpolate_velocity_with_halos(x::T, y::T, z::T,
                                        tracker, halo_info::HaloInfo{T}) where T
 
     # Handle periodic boundaries using GLOBAL domain lengths
-    x_periodic = halo_info.periodic_x ? mod(x, tracker.Lx) : x
-    y_periodic = halo_info.periodic_y ? mod(y, tracker.Ly) : y
+    x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
+    y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)
     z_clamped = clamp(z, z0, z_max)
 
     # Compute local domain start positions
-    x_start = compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
-    y_start = compute_start_index(halo_info.ny_global, halo_info.py, halo_info.rank_y) * tracker.dy
+    x_start = tracker.x0 + compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
+    y_start = tracker.y0 + compute_start_index(halo_info.ny_global, halo_info.py, halo_info.rank_y) * tracker.dy
 
     # Convert to local domain coordinates
     x_local = x_periodic - x_start
     y_local = y_periodic - y_start
 
     hw = halo_info.halo_width
+    hy = halo_info.is_2d_decomposition ? halo_info.halo_width : 0
 
     # Convert to extended grid indices (accounting for halo offset)
     fx = x_local / tracker.dx + hw + 1  # +1 for 1-based indexing
-    fy = y_local / tracker.dy + hw + 1
+    fy = y_local / tracker.dy + hy + 1
     fz = (z_clamped - z0) / tracker.dz + 1
 
     # Get integer and fractional parts
@@ -789,8 +791,13 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     # Clamp indices to extended array bounds (halos handle boundary data)
     ix1 = max(1, min(nx_ext, ix))
     ix2 = max(1, min(nx_ext, ix + 1))
-    iy1 = max(1, min(ny_ext, iy))
-    iy2 = max(1, min(ny_ext, iy + 1))
+    if !halo_info.is_2d_decomposition && halo_info.periodic_y
+        iy1 = mod(iy - 1, ny_ext) + 1
+        iy2 = mod(iy, ny_ext) + 1
+    else
+        iy1 = max(1, min(ny_ext, iy))
+        iy2 = max(1, min(ny_ext, iy + 1))
+    end
     iz1 = max(1, min(nz_ext, iz))
     iz2 = max(1, min(nz_ext, iz + 1))
 
