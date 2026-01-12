@@ -52,6 +52,22 @@ using LinearAlgebra
 
 const IMEX_KH2_EPS = 1e-12
 
+function _prefilter_spectral!(dst, src, G::Grid, Lmask)
+    nx, ny = G.nx, G.ny
+    src_arr = parent(src)
+    dst_arr = parent(dst)
+    nz_local, nx_local, ny_local = size(src_arr)
+
+    use_inline_dealias = isnothing(Lmask)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, src)
+        j_global = local_to_global(j_local, 3, src)
+        keep = use_inline_dealias ? is_dealiased(i_global, j_global, nx, ny) : Lmask[i_global, j_global]
+        dst_arr[k, i_local, j_local] = keep ? src_arr[k, i_local, j_local] : zero(eltype(dst_arr))
+    end
+    return dst
+end
+
 """
     IMEXThreadLocal
 
@@ -237,14 +253,20 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
-        ζk_arr[k, i_local, j_local] = -kₕ² * ψ_arr[k, i_local, j_local]
+        if should_keep(i_global, j_global)
+            ζk_arr[k, i_local, j_local] = -kₕ² * ψ_arr[k, i_local, j_local]
+        else
+            ζk_arr[k, i_local, j_local] = 0
+        end
     end
 
     # Transform to physical space
     ζ_phys = allocate_fft_backward_dst(ζk, plans)
     B_phys = allocate_fft_backward_dst(Bk_in, plans)
     fft_backward!(ζ_phys, ζk, plans)
-    fft_backward!(B_phys, Bk_in, plans)
+    Bk_f = similar(Bk_in)
+    _prefilter_spectral!(Bk_f, Bk_in, G, dealias_mask)
+    fft_backward!(B_phys, Bk_f, plans)
 
     ζ_phys_arr = parent(ζ_phys)
     B_phys_arr = parent(B_phys)

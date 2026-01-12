@@ -172,6 +172,29 @@ create_particle_config(::Type{T}=Float32; kwargs...) where T = ParticleConfig{T}
 include("particle_config.jl")
 using .EnhancedParticleConfig
 
+create_particle_config_3d(::Type{T}=Float32; kwargs...) where {T<:AbstractFloat} =
+    ParticleConfig3D{T}(; kwargs...)
+
+create_uniform_3d_grid(; kwargs...) = particles_in_grid_3d(; kwargs...)
+create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
+                       z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
+    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
+                         z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
+create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
+                       z_min::Real, z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
+    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
+                         z_min=z_min, z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
+
+create_layered_distribution(z_levels::Vector{<:Real}; kwargs...) =
+    particles_in_layers(z_levels; kwargs...)
+create_layered_distribution(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
+                            z_levels::Vector{<:Real}, nx::Int, ny::Int; kwargs...) =
+    particles_in_layers(z_levels; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
+                        nx=nx, ny=ny, kwargs...)
+
+create_random_3d_distribution(n::Int; kwargs...) = particles_random_3d(n; kwargs...)
+create_custom_distribution(positions; kwargs...) = particles_custom(positions; kwargs...)
+
 """
 Particle state including positions, global IDs, velocities, and trajectory history.
 """
@@ -465,6 +488,8 @@ function initialize_particles!(tracker::ParticleTracker{T},
     
     # Use 3D initialization
     initialize_particles_3d!(tracker, config)
+
+    tracker.config = EnhancedParticleConfig.convert_to_basic_config(config)
     
     # Save initial state
     save_particle_state!(tracker)

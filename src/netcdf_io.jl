@@ -228,8 +228,13 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         zeta_k = similar(S.psi)
         zeta_k_arr = parent(zeta_k)
         psi_k_arr = parent(S.psi)
-        @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
-            zeta_k_arr[k, i, j] = -G.kh2[i, j] * psi_k_arr[k, i, j]
+        kx = G.kx
+        ky = G.ky
+        @inbounds for j in 1:G.ny, i in 1:G.nx
+            k2 = kx[i]^2 + ky[j]^2
+            for k in 1:G.nz
+                zeta_k_arr[k, i, j] = -k2 * psi_k_arr[k, i, j]
+            end
         end
         zeta_r = _allocate_fft_dst(zeta_k, plans)
         fft_backward!(zeta_r, zeta_k, plans)
@@ -565,8 +570,13 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     zeta_r = nothing
     if write_vorticity && gathered_psi !== nothing
         zeta_k = zeros(complex_type, G.nz, G.nx, G.ny)
-        @inbounds for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
-            zeta_k[k, i, j] = -G.kh2[i, j] * gathered_psi[k, i, j]
+        kx = G.kx
+        ky = G.ky
+        @inbounds for j in 1:G.ny, i in 1:G.nx
+            k2 = kx[i]^2 + ky[j]^2
+            for k in 1:G.nz
+                zeta_k[k, i, j] = -k2 * gathered_psi[k, i, j]
+            end
         end
         zeta_r = zeros(complex_type, G.nz, G.nx, G.ny)
         fft_backward!(zeta_r, zeta_k, temp_plans)

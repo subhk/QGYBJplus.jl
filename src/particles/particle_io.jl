@@ -957,7 +957,7 @@ function _write_particle_trajectories_arrays(filename::String,
 
             # Add user metadata
             for (key, value) in metadata
-                ds.attrib[key] = value
+                ds.attrib[string(key)] = value
             end
         end
 
@@ -1315,6 +1315,12 @@ function write_particle_trajectories_by_zlevel(base_filename::String, tracker::P
                                               metadata::Dict=Dict())
     particles = tracker.particles
 
+    if tracker.is_parallel && tracker.comm !== nothing
+        return _write_particle_trajectories_by_zlevel_parallel(
+            base_filename, tracker; z_tolerance=z_tolerance, metadata=metadata
+        )
+    end
+
     if isempty(particles.x_history)
         @warn "No particle history to save"
         return Dict()
@@ -1370,6 +1376,114 @@ function write_particle_trajectories_by_zlevel(base_filename::String, tracker::P
 
         # Write trajectories for this z-level
         write_particle_trajectories(filename, subset_tracker; metadata=level_metadata)
+
+        output_files[z_level] = filename
+    end
+
+    println("Successfully saved $(length(output_files)) z-level files")
+
+    return output_files
+end
+
+function _write_particle_trajectories_by_zlevel_parallel(base_filename::String,
+                                                         tracker::ParticleTracker{T};
+                                                         z_tolerance::Float64=1e-6,
+                                                         metadata::Dict=Dict()) where T
+    particles = tracker.particles
+    comm = tracker.comm
+
+    has_history = !isempty(particles.x_history)
+    has_any = MPI.Allreduce(has_history ? 1 : 0, +, comm)
+    if has_any == 0
+        if tracker.rank == 0
+            @warn "No particle history to save"
+        end
+        return Dict{Float64,String}()
+    end
+
+    ntime = length(particles.time_history)
+    x_series = Vector{Vector{T}}(undef, tracker.rank == 0 ? ntime : 0)
+    y_series = Vector{Vector{T}}(undef, tracker.rank == 0 ? ntime : 0)
+    z_series = Vector{Vector{T}}(undef, tracker.rank == 0 ? ntime : 0)
+    ids_global = nothing
+
+    for t_idx in 1:ntime
+        ids_local = t_idx <= length(particles.id_history) ? particles.id_history[t_idx] : particles.id
+        data = _gather_particle_positions(tracker, ids_local,
+                                          particles.x_history[t_idx],
+                                          particles.y_history[t_idx],
+                                          particles.z_history[t_idx])
+        if tracker.rank == 0
+            if ids_global === nothing
+                ids_global = data.ids
+            elseif ids_global != data.ids
+                @warn "Particle ID ordering changed at time index $t_idx; updating output ordering"
+                ids_global = data.ids
+            end
+            x_series[t_idx] = data.x
+            y_series[t_idx] = data.y
+            z_series[t_idx] = data.z
+        end
+    end
+
+    if tracker.rank != 0
+        return Dict{Float64,String}()
+    end
+
+    initial_z = z_series[1]
+    z_groups = Dict{Float64, Vector{Int}}()
+
+    for (i, z) in enumerate(initial_z)
+        group_z = nothing
+        for existing_z in keys(z_groups)
+            if abs(z - existing_z) <= z_tolerance
+                group_z = existing_z
+                break
+            end
+        end
+
+        if group_z === nothing
+            group_z = z
+            z_groups[group_z] = Int[]
+        end
+
+        push!(z_groups[group_z], i)
+    end
+
+    println("Found $(length(z_groups)) distinct z-levels:")
+    for (z, indices) in z_groups
+        println("  z = $(round(z, digits=3)): $(length(indices)) particles")
+    end
+
+    output_files = Dict{Float64, String}()
+    ids_all = ids_global === nothing ? Int[] : ids_global
+
+    for (z_level, particle_indices) in z_groups
+        z_str = replace(string(round(z_level, digits=3)), "." => "p")
+        filename = "$(base_filename)_z$(z_str).nc"
+
+        println("Saving z=$(round(z_level, digits=3)) to $filename")
+
+        ids_subset = ids_all[particle_indices]
+        x_subset = [x_series[t_idx][particle_indices] for t_idx in 1:ntime]
+        y_subset = [y_series[t_idx][particle_indices] for t_idx in 1:ntime]
+        z_subset = [z_series[t_idx][particle_indices] for t_idx in 1:ntime]
+
+        level_metadata = copy(metadata)
+        level_metadata["z_level"] = z_level
+        level_metadata["num_particles"] = length(particle_indices)
+        level_metadata["particle_indices"] = particle_indices
+
+        _write_particle_trajectories_arrays(
+            filename,
+            ids_subset,
+            particles.time_history,
+            x_subset,
+            y_subset,
+            z_subset,
+            tracker.config;
+            metadata=level_metadata
+        )
 
         output_files[z_level] = filename
     end

@@ -58,6 +58,23 @@ const PARENT = Base.parentmodule(@__MODULE__)
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
+# Prefilter spectral inputs to the 2/3 mask before nonlinear products.
+function _prefilter_spectral!(dst, src, G::Grid, Lmask)
+    nx, ny = G.nx, G.ny
+    src_arr = parent(src)
+    dst_arr = parent(dst)
+    nz_local, nx_local, ny_local = size(src_arr)
+
+    use_inline_dealias = isnothing(Lmask)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, src)
+        j_global = local_to_global(j_local, 3, src)
+        keep = use_inline_dealias ? PARENT.is_dealiased(i_global, j_global, nx, ny) : Lmask[i_global, j_global]
+        dst_arr[k, i_local, j_local] = keep ? src_arr[k, i_local, j_local] : zero(eltype(dst_arr))
+    end
+    return dst
+end
+
 #=
 ================================================================================
                         JACOBIAN OPERATOR
@@ -144,10 +161,17 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
 
-        φₓ_arr[k, i_local, j_local] = im*kₓ*φ_arr[k, i_local, j_local]   # φ̂ₓ = ikₓ φ̂
-        φᵧ_arr[k, i_local, j_local] = im*kᵧ*φ_arr[k, i_local, j_local]   # φ̂ᵧ = ikᵧ φ̂
-        χₓ_arr[k, i_local, j_local] = im*kₓ*χ_arr[k, i_local, j_local]   # χ̂ₓ = ikₓ χ̂
-        χᵧ_arr[k, i_local, j_local] = im*kᵧ*χ_arr[k, i_local, j_local]   # χ̂ᵧ = ikᵧ χ̂
+        if should_keep(i_global, j_global)
+            φₓ_arr[k, i_local, j_local] = im*kₓ*φ_arr[k, i_local, j_local]   # φ̂ₓ = ikₓ φ̂
+            φᵧ_arr[k, i_local, j_local] = im*kᵧ*φ_arr[k, i_local, j_local]   # φ̂ᵧ = ikᵧ φ̂
+            χₓ_arr[k, i_local, j_local] = im*kₓ*χ_arr[k, i_local, j_local]   # χ̂ₓ = ikₓ χ̂
+            χᵧ_arr[k, i_local, j_local] = im*kᵧ*χ_arr[k, i_local, j_local]   # χ̂ᵧ = ikᵧ χ̂
+        else
+            φₓ_arr[k, i_local, j_local] = 0
+            φᵧ_arr[k, i_local, j_local] = 0
+            χₓ_arr[k, i_local, j_local] = 0
+            χᵧ_arr[k, i_local, j_local] = 0
+        end
     end
 
     #= Step 2: Transform derivatives to real space =#
@@ -278,9 +302,16 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     BRᵣ = _allocate_fft_dst(BRk, plans)
     BIᵣ = _allocate_fft_dst(BIk, plans)
 
-    fft_backward!(qᵣ,  qk,  plans)
-    fft_backward!(BRᵣ, BRk, plans)
-    fft_backward!(BIᵣ, BIk, plans)
+    qk_f  = similar(qk)
+    BRk_f = similar(BRk)
+    BIk_f = similar(BIk)
+    _prefilter_spectral!(qk_f,  qk,  G, Lmask)
+    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
+    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
+
+    fft_backward!(qᵣ,  qk_f,  plans)
+    fft_backward!(BRᵣ, BRk_f, plans)
+    fft_backward!(BIᵣ, BIk_f, plans)
 
     qᵣ_arr = parent(qᵣ); BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
 
@@ -384,7 +415,9 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     χᵣ = _allocate_fft_dst(χk, plans)
-    fft_backward!(χᵣ, χk, plans)
+    χk_f = similar(χk)
+    _prefilter_spectral!(χk_f, χk, G, Lmask)
+    fft_backward!(χᵣ, χk_f, plans)
     χᵣ_arr = parent(χᵣ)
 
     uterm_r = _allocate_fft_dst(χk, plans)
@@ -511,16 +544,25 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
-        ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
+        if should_keep(i_global, j_global)
+            ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
+        else
+            ζₖ_arr[k, i_local, j_local] = 0
+        end
     end
 
     #= Transform to real space =#
     ζᵣ = _allocate_fft_dst(ζₖ, plans)
     BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
 
+    BRk_f = similar(BRk)
+    BIk_f = similar(BIk)
+    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
+    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
+
     fft_backward!(ζᵣ, ζₖ, plans)
-    fft_backward!(BRᵣ, BRk, plans)
-    fft_backward!(BIᵣ, BIk, plans)
+    fft_backward!(BRᵣ, BRk_f, plans)
+    fft_backward!(BIᵣ, BIk_f, plans)
 
     ζᵣ_arr = parent(ζᵣ)
     BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
@@ -583,13 +625,19 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
-        ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
+        if should_keep(i_global, j_global)
+            ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
+        else
+            ζₖ_arr[k, i_local, j_local] = 0
+        end
     end
 
     ζᵣ = _allocate_fft_dst(ζₖ, plans)
     Bᵣ = _allocate_fft_dst(Bk, plans)
+    Bk_f = similar(Bk)
+    _prefilter_spectral!(Bk_f, Bk, G, Lmask)
     fft_backward!(ζᵣ, ζₖ, plans)
-    fft_backward!(Bᵣ, Bk, plans)
+    fft_backward!(Bᵣ, Bk_f, plans)
 
     ζᵣ_arr = parent(ζᵣ)
     Bᵣ_arr = parent(Bᵣ)
@@ -683,13 +731,20 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
-    BRk_arr = parent(BRk); BIk_arr = parent(BIk)
     qʷₖ_arr = parent(qʷₖ)
-    nz_local, nx_local, ny_local = size(BRk_arr)
 
     # Dealiasing: use inline check for efficiency when Lmask not provided
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
+
+    # Prefilter inputs to avoid aliasing when upstream fields are not masked
+    BRk_f = similar(BRk)
+    BIk_f = similar(BIk)
+    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
+    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
+
+    BRk_arr = parent(BRk_f); BIk_arr = parent(BIk_f)
+    nz_local, nx_local, ny_local = size(BRk_arr)
 
     #= Compute derivatives of BR and BI =#
     BRₓₖ = similar(BRk); BRᵧₖ = similar(BRk)
@@ -698,8 +753,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BIₓₖ_arr = parent(BIₓₖ); BIᵧₖ_arr = parent(BIᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, BRk)
-        j_global = local_to_global(j_local, 3, BRk)
+        i_global = local_to_global(i_local, 2, BRk_f)
+        j_global = local_to_global(j_local, 3, BRk_f)
       
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -735,8 +790,8 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
 
     #= Compute |B|² = BR² + BI² for the ∇²|B|² term =#
     BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
-    fft_backward!(BRᵣ, BRk, plans)
-    fft_backward!(BIᵣ, BIk, plans)
+    fft_backward!(BRᵣ, BRk_f, plans)
+    fft_backward!(BIᵣ, BIk_f, plans)
 
     BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
     mag² = _allocate_fft_dst(BRk, plans)
@@ -789,8 +844,13 @@ Compute wave feedback directly from complex B without spectral BR/BI splitting.
 function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
-    Bk_arr = parent(Bk)
     qʷₖ_arr = parent(qʷₖ)
+
+    # Prefilter inputs to avoid aliasing when upstream fields are not masked
+    Bk_f = similar(Bk)
+    _prefilter_spectral!(Bk_f, Bk, G, Lmask)
+
+    Bk_arr = parent(Bk_f)
     nz_local, nx_local, ny_local = size(Bk_arr)
 
     use_inline_dealias = isnothing(Lmask)
@@ -801,8 +861,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, Bk)
-        j_global = local_to_global(j_local, 3, Bk)
+        i_global = local_to_global(i_local, 2, Bk_f)
+        j_global = local_to_global(j_local, 3, Bk_f)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
         Bₓₖ_arr[k, i_local, j_local] = im*kₓ*Bk_arr[k, i_local, j_local]
@@ -813,7 +873,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     Bᵣ = _allocate_fft_dst(Bk, plans)
     Bₓᵣ = _allocate_fft_dst(Bₓₖ, plans)
     Bᵧᵣ = _allocate_fft_dst(Bᵧₖ, plans)
-    fft_backward!(Bᵣ, Bk, plans)
+    fft_backward!(Bᵣ, Bk_f, plans)
     fft_backward!(Bₓᵣ, Bₓₖ, plans)
     fft_backward!(Bᵧᵣ, Bᵧₖ, plans)
 

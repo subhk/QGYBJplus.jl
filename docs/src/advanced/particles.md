@@ -280,6 +280,8 @@ config = particles_in_circle(-1.0;
 - `:rings` - Concentric rings
 - `:random` - Uniform random within disk
 
+Single-level distributions (like `particles_in_circle` and `particles_custom`) can use `z_min == z_max`.
+
 ### Particles in a 3D Grid
 
 ```julia

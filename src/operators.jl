@@ -736,10 +736,6 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Get underlying arrays
     w_arr = parent(S.w)
-    nz_local, nx_local, ny_local = size(w_arr)
-
-    # Verify z is fully local
-    @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
 
     # Get parameters - need f and N² profile
     if params !== nothing && hasfield(typeof(params), :f₀)
@@ -780,12 +776,13 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         end
         invert_B_to_A!(S, G, params, a_vec)
     end
-    Aₖ = S.A
-    Aₖ_arr = parent(Aₖ)
-
     # Step 2: Compute vertical derivative A_z using finite differences
     Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
     Aₖ_z_arr = parent(Aₖ_z)
+    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
+
+    # Verify z is fully local on the spectral pencil (MPI input/output pencils can differ)
+    @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
 
     # Step 3: Compute horizontal derivatives of A_z
     dAz_dxₖ = similar(Aₖ_z)
@@ -794,7 +791,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
     # Compute derivatives for k = 1:(nz-1) where A_z is defined
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:(nz-1), j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, dAz_dxₖ)
         j_global = local_to_global(j_local, 3, dAz_dxₖ)
         ikₓ = im * G.kx[i_global]
@@ -805,7 +802,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
     # Without this, the uninitialized data can inject NaNs/noise into the transform.
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for j_local in 1:ny_spec, i_local in 1:nx_spec
         dAz_dxₖ_arr[nz, i_local, j_local] = 0
         dAz_dyₖ_arr[nz, i_local, j_local] = 0
     end
@@ -826,10 +823,13 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
     dAz_dy_phys_arr = parent(dAz_dy_phys)
+    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
+
+    @assert size(w_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils for w and FFT output must match"
 
     # Compute w in physical space
     # w = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
         k_out = k + 1  # Shift to match output grid
         N²ₗ = N2_profile[k_out]
 
@@ -844,7 +844,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     end
 
     # Apply boundary conditions: w = 0 at top and bottom
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
         w_arr[1, i_local, j_local] = 0.0
         if nz > 1
             w_arr[nz, i_local, j_local] = 0.0

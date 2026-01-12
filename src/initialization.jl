@@ -42,6 +42,13 @@ function initialize_from_config(config, G::Grid, S::State, plans;
                                 params=nothing, N2_profile=nothing, parallel_config=nothing)
     @info "Initializing model fields from configuration"
 
+    if G.decomp !== nothing
+        parallel_config !== nothing || error("initialize_from_config requires parallel_config for MPI grids. " *
+                                             "Use parallel_initialize_fields! or pass the MPIConfig used to create the grid.")
+        parallel_initialize_fields!(S, G, plans, config, parallel_config; params=params, N2_profile=N2_profile)
+        return
+    end
+
     # Set random seed for reproducibility
     Random.seed!(config.initial_conditions.random_seed)
 
@@ -191,6 +198,11 @@ This function enforces these constraints to ensure IFFT produces real output.
 """
 function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
     @info "Initializing random stream function (amplitude=$amplitude, slope=$slope)"
+
+    if psik isa PencilArray
+        error("init_random_psi! does not support PencilArray. " *
+              "Use init_mpi_random_psi! or parallel_initialize_fields! for MPI runs.")
+    end
 
     nx, ny, nz = G.nx, G.ny, G.nz
     kx_max = nx ÷ 2
@@ -413,9 +425,14 @@ Initialize wave field with random amplitudes and phases.
 function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
     @info "Initializing random wave field (amplitude=$amplitude, slope=$slope)"
     
+    if Bk isa PencilArray
+        error("init_random_waves! does not support PencilArray. " *
+              "Use parallel_initialize_fields! for MPI runs.")
+    end
+
     # Generate random phases for real and imaginary parts
-    phases_r = 2π * rand(Float64, G.nz, G.nx÷2+1, G.ny)
-    phases_i = 2π * rand(Float64, G.nz, G.nx÷2+1, G.ny)
+    phases_r = 2π * rand(Float64, G.nz, G.nx, G.ny)
+    phases_i = 2π * rand(Float64, G.nz, G.nx, G.ny)
     
     fill!(Bk, zero(eltype(Bk)))
     
@@ -429,8 +446,8 @@ function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
         for j in 1:G.ny
             ky = j <= ky_max ? j-1 : j-1-G.ny
             
-            for i in 1:(G.nx÷2+1)
-                kx = i-1
+            for i in 1:G.nx
+                kx = i <= kx_max ? i - 1 : i - 1 - G.nx
                 
                 if kx == 0 && ky == 0
                     continue  # Skip mean mode
@@ -511,6 +528,8 @@ end
     compute_energy_spectrum(field, G::Grid)
 
 Compute horizontal energy spectrum E(k) from a spectral field.
+
+In MPI mode, this computes the local contribution only (no MPI reduction).
 """
 function compute_energy_spectrum(field, G::Grid)
     kx_max = G.nx ÷ 2
@@ -519,18 +538,20 @@ function compute_energy_spectrum(field, G::Grid)
     
     spectrum = zeros(Float64, k_max)
     count = zeros(Int, k_max)
-    
-    for k in 1:size(field, 1)
-        for j in 1:size(field, 3)
-            ky = j <= ky_max ? j-1 : j-1-G.ny
 
-            for i in 1:size(field, 2)
-                kx = i-1
-                
+    field_arr = parent(field)
+    for k in axes(field_arr, 1)
+        for j_local in axes(field_arr, 3)
+            j_global = local_to_global(j_local, 3, field)
+            ky = j_global <= ky_max ? j_global - 1 : j_global - 1 - G.ny
+
+            for i_local in axes(field_arr, 2)
+                i_global = local_to_global(i_local, 2, field)
+                kx = i_global <= kx_max ? i_global - 1 : i_global - 1 - G.nx
+
                 k_total = round(Int, sqrt(Float64(kx^2 + ky^2)))
-                
                 if 1 <= k_total <= k_max
-                    spectrum[k_total] += abs2(field[k, i, j])
+                    spectrum[k_total] += abs2(field_arr[k, i_local, j_local])
                     count[k_total] += 1
                 end
             end
@@ -575,7 +596,7 @@ end
 Create a localized wave packet in spectral space.
 """
 function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real)
-    field = zeros(ComplexF64, G.nz, G.nx÷2+1, G.ny)
+    field = zeros(ComplexF64, G.nz, G.nx, G.ny)
     
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
@@ -586,8 +607,8 @@ function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitud
         for j in 1:G.ny
             ky = j <= ky_max ? j-1 : j-1-G.ny
             
-            for i in 1:(G.nx÷2+1)
-                kx = i-1
+            for i in 1:G.nx
+                kx = i <= kx_max ? i - 1 : i - 1 - G.nx
                 
                 # Gaussian envelope in wavenumber space
                 k_dist2 = (kx - kx0)^2 + (ky - ky0)^2

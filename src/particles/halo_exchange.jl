@@ -166,7 +166,6 @@ mutable struct HaloInfo{T<:AbstractFloat}
 
         # Determine if this is 1D or 2D decomposition
         is_2d_decomposition = py > 1
-        halo_width_y = is_2d_decomposition ? halo_width : 0
 
         # Get LOCAL grid dimensions
         if local_dims !== nothing
@@ -177,6 +176,17 @@ mutable struct HaloInfo{T<:AbstractFloat}
             ny_local = compute_local_size(ny_global, py, rank_y)
             nz_local = nz_global  # z is never decomposed for particles
         end
+
+        max_halo = is_2d_decomposition ? min(nx_local, ny_local) : nx_local
+        if max_halo < 1
+            error("Local domain too small for halo exchange (nx_local=$nx_local, ny_local=$ny_local).")
+        elseif halo_width < 1
+            error("Halo width must be >= 1 (got $halo_width).")
+        elseif halo_width > max_halo
+            @warn "Halo width $halo_width exceeds local grid size (nx_local=$nx_local, ny_local=$ny_local); clamping to $max_halo."
+            halo_width = max_halo
+        end
+        halo_width_y = is_2d_decomposition ? halo_width : 0
 
         # Extended grid dimensions (local + 2*halo_width in x, and y only for 2D)
         nx_ext = nx_local + 2 * halo_width

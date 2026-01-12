@@ -75,7 +75,7 @@ initialize_particles_3d!
 | `particles_random_3d(n; x_max, y_max, z_max, ...)` | Random 3D | `particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)` |
 | `particles_custom(pos; ...)` | Custom positions | `particles_custom([(1.0,1.0,-0.5), ...])` |
 
-Note: `z` is in `[-Lz, 0]` with `z = 0` at the surface. If `z_min` is omitted, `z_max` is treated as a positive depth (e.g., `z_max=G.Lz` gives the full depth).
+Note: `z` is in `[-Lz, 0]` with `z = 0` at the surface. If `z_min` is omitted, `z_max` is treated as a positive depth (e.g., `z_max=G.Lz` gives the full depth). Single-level distributions (e.g., `particles_in_circle` or `particles_custom`) can use `z_min == z_max`.
 
 ## Usage Example
 

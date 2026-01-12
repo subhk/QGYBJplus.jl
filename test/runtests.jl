@@ -151,7 +151,7 @@ end
     base_cfg = ParticleConfig{Float64}(x_max=G.Lx, y_max=G.Ly, z_level=0.0)
     tracker = ParticleTracker(base_cfg, G)
 
-    z_levels = [1000.0, 3000.0]
+    z_levels = [-1000.0, -3000.0]
     per_level = [6, 10]
     cfg3d = particles_in_layers(z_levels; x_max=G.Lx, y_max=G.Ly, nx=4, ny=4,
                                 particles_per_level=per_level, precision=Float64)

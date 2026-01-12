@@ -713,11 +713,11 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         return dstk
     end
 
-    if bot_bc !== nothing && is_parallel_array(bot_bc)
-        @assert size(parent(bot_bc)) == (nx_local, ny_local) "bot_bc local size must match (nx_local, ny_local)"
-    end
-    if top_bc !== nothing && is_parallel_array(top_bc)
-        @assert size(parent(top_bc)) == (nx_local, ny_local) "top_bc local size must match (nx_local, ny_local)"
+    if (bot_bc !== nothing && is_parallel_array(bot_bc)) || (top_bc !== nothing && is_parallel_array(top_bc))
+        @warn "invert_helmholtz!: boundary conditions are not supported for 2D decomposition " *
+              "when bc arrays are distributed. Ignoring bot_bc/top_bc." maxlog=1
+        bot_bc = nothing
+        top_bc = nothing
     end
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0

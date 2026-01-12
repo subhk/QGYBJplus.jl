@@ -993,6 +993,21 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          diagnostics_interval::Int=0,
                          timestepper::Symbol=:leapfrog)
 
+    # Setup parallel config if not provided (for I/O)
+    # MPI is required, so use the mpi_config directly
+    if parallel_config === nothing && mpi_config !== nothing
+        parallel_config = mpi_config
+    elseif parallel_config === nothing
+        # If no config provided at all, setup MPI environment
+        parallel_config = setup_mpi_environment()
+    end
+
+    if G.decomp !== nothing && mpi_config === nothing
+        mpi_config = parallel_config
+    elseif G.decomp === nothing
+        mpi_config = nothing
+    end
+
     # Determine if running in MPI mode
     is_mpi = mpi_config !== nothing
     is_root = !is_mpi || mpi_config.is_root
@@ -1002,15 +1017,6 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     # For serial mode, workspace=nothing is fine (arrays allocated on demand)
     if workspace === nothing && is_mpi
         workspace = init_mpi_workspace(G, mpi_config)
-    end
-
-    # Setup parallel config if not provided (for I/O)
-    # MPI is required, so use the mpi_config directly
-    if parallel_config === nothing && mpi_config !== nothing
-        parallel_config = mpi_config
-    elseif parallel_config === nothing
-        # If no config provided at all, setup MPI environment
-        parallel_config = setup_mpi_environment()
     end
 
     # Compute coefficients
@@ -1273,8 +1279,14 @@ Check for early termination conditions (blow-up, etc.).
 """
 function check_termination_conditions(sim::QGYBJSimulation{T}) where T
     # Check for NaNs or Infs
-    if any(x -> !isfinite(x), sim.state.psi) || any(x -> !isfinite(x), sim.state.B)
-        @error "NaN or Inf detected in solution"
+    psi_arr = parent(sim.state.psi)
+    B_arr = parent(sim.state.B)
+    local_bad = any(x -> !isfinite(x), psi_arr) || any(x -> !isfinite(x), B_arr)
+    bad_count = reduce_sum_if_mpi(local_bad ? 1 : 0, sim.parallel_config)
+    if bad_count > 0
+        if sim.parallel_config === nothing || sim.parallel_config.is_root
+            @error "NaN or Inf detected in solution"
+        end
         return true
     end
 
@@ -1284,8 +1296,12 @@ function check_termination_conditions(sim::QGYBJSimulation{T}) where T
     fft_backward!(psir_complex, sim.state.psi, sim.plans)
     psir = real.(parent(psir_complex))
 
-    if maximum(abs, psir) > 1e10
-        @error "Solution appears to be blowing up (max |psi| = $(maximum(abs, psir)))"
+    local_max = maximum(abs, psir)
+    global_max = reduce_max_if_mpi(local_max, sim.parallel_config)
+    if global_max > 1e10
+        if sim.parallel_config === nothing || sim.parallel_config.is_root
+            @error "Solution appears to be blowing up (max |psi| = $global_max)"
+        end
         return true
     end
 

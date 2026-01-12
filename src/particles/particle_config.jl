@@ -55,6 +55,7 @@ Enhanced particle configuration supporting 3D distributions.
 Domain bounds (x_max, y_max, z_max) are REQUIRED - no defaults.
 Use the Grid to get domain size: `x_max = G.Lx, y_max = G.Ly, z_max = G.Lz` (depth).
 If you pass `z_min`, then `z_max` is treated as a coordinate (typically ≤ 0).
+Single-level distributions can use `z_min == z_max`.
 """
 Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     # Spatial domain for particle initialization (x_max, y_max, z_max are REQUIRED)
@@ -111,9 +112,14 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
                                 seed) where T
         
         # Basic validation
-        @assert x_max > x_min "x_max must be greater than x_min"
-        @assert y_max > y_min "y_max must be greater than y_min"
-        @assert z_max > z_min "z_max must be greater than z_min"
+        if distribution_type == CUSTOM
+            @assert x_max ≥ x_min "x_max must be greater than or equal to x_min"
+            @assert y_max ≥ y_min "y_max must be greater than or equal to y_min"
+        else
+            @assert x_max > x_min "x_max must be greater than x_min"
+            @assert y_max > y_min "y_max must be greater than y_min"
+        end
+        @assert z_max ≥ z_min "z_max must be greater than or equal to z_min"
         @assert nx_particles > 0 "nx_particles must be positive"
         @assert ny_particles > 0 "ny_particles must be positive"
         @assert nz_particles > 0 "nz_particles must be positive"
