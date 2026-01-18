@@ -17,7 +17,6 @@ makedocs(
         sidebar_sitename = true,
         collapselevel = 2,
         size_threshold = 500_000,  # 500KB limit for individual pages
-        highlights = ["yaml", "julia", "bash", "python"],
     ),
     pages = [
         "Home" => "index.md",
