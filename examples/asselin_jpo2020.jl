@@ -215,8 +215,8 @@ function main()
         save_diagnostics = false
     )
 
-    # Compute diagnostics interval in steps
-    # diag_steps = max(1, round(Int, diag_interval_IP * T_inertial / dt))
+    # Compute diagnostics interval in steps for progress printing
+    diag_steps = max(1, round(Int, diag_interval_IP * T_inertial / dt))
 
     # Run simulation - all time-stepping handled automatically
     # This handles: state management, initial projection step,
@@ -228,7 +228,7 @@ function main()
         workspace = workspace,
         N2_profile = N2_profile,  # Pass stratification profile for consistent physics
         print_progress = is_root,
-        diagnostics_interval = 10, #diag_steps,
+        diagnostics_interval = diag_steps,
         timestepper = TIMESTEPPER  # :leapfrog or :imex_cn
     )
 
