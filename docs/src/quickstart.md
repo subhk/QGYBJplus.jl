@@ -66,8 +66,11 @@ state.u, state.v   # Velocities
 ### 4. Compute Diagnostics
 
 ```julia
+# Mean flow kinetic energy
 KE = flow_kinetic_energy(state.u, state.v)
-E_B, E_A = wave_energy(state.B, state.A)
+
+# Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
+WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 ```
 
 ## Common Options

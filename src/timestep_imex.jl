@@ -14,20 +14,20 @@ where A = (L⁺)⁻¹·B (elliptic inversion).
 SECOND-ORDER SCHEME: STRANG SPLITTING + IMEX-CNAB
 -------------------------------------------------
 Step 1: First half-refraction (Strang)
-    B* = B^n × exp(+i·(dt/2)·ζ/2)
+    B* = B^n × exp(-i·(dt/2)·ζ/2)
 
 Step 2: IMEX-CNAB for advection + dispersion
     - EXPLICIT (AB2): (3/2)N^n - (1/2)N^{n-1}  where N = -J(ψ,B*) and
       B* is the half-refraction state
-    - IMPLICIT (CN):  (1/2)[L(B*) + L(B^{n+1})]  where L(B) = i·αdisp·kₕ²·A
+    - IMPLICIT (CN):  (1/2)[L(B*) + L(B^{n+1})]  where L(B) = i·(f/2)·kₕ²·A
 
 Step 3: Second half-refraction (Strang)
-    B^{n+1} = B** × exp(+i·(dt/2)·ζ/2)
+    B^{n+1} = B** × exp(-i·(dt/2)·ζ/2)
 
 The refraction term is handled exactly via integrating factor:
-    dB/dt = +(i/2)ζB  →  B(t) = B(0)·exp(+i·ζ·t/2)
+    dB/dt = -(i/2)ζB  →  B(t) = B(0)·exp(-i·ζ·t/2)
 
-This is energy-preserving since |exp(+i·ζ·t/2)| = 1.
+This is energy-preserving since |exp(-i·ζ·t/2)| = 1.
 
 TEMPORAL ACCURACY:
 -----------------
@@ -197,10 +197,10 @@ end
 
 Apply exact refraction using integrating factor (operator splitting).
 
-Solves: dB/dt = +(i/2)ζB  exactly over time `dt_fraction * par.dt`.
-Solution: B(Δt) = B(0) × exp(+i·Δt·ζ/2)
+Solves: dB/dt = -(i/2)ζB  exactly over time `dt_fraction * par.dt`.
+Solution: B(Δt) = B(0) × exp(-i·Δt·ζ/2)
 
-This is energy-preserving since |exp(+i·Δt·ζ/2)| = 1 for real ζ.
+This is energy-preserving since |exp(-i·Δt·ζ/2)| = 1 for real ζ.
 
 # Arguments
 - `Bk_out`: Output wave envelope in spectral space
@@ -272,11 +272,12 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
     B_phys_arr = parent(B_phys)
     nz_phys, nx_phys, ny_phys = size(ζ_phys_arr)
 
-    # Apply exact integrating factor: B* = B × exp(+i·dt·ζ/2)
-    # The factor exp(+i·dt·ζ/2) has magnitude 1 since ζ is real, ensuring energy conservation
+    # Apply exact integrating factor: B* = B × exp(-i·dt·ζ/2)
+    # From YBJ+ equation (1.4): refraction term is -(i/2)ζB, so solution is B(t) = B(0)·exp(-iζt/2)
+    # The factor exp(-i·dt·ζ/2) has magnitude 1 since ζ is real, ensuring energy conservation
     @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         ζ_val = real(ζ_phys_arr[k, i, j])  # Vorticity is real
-        phase_factor = exp(+im * dt * ζ_val / 2)
+        phase_factor = exp(-im * dt * ζ_val / 2)
         B_phys_arr[k, i, j] *= phase_factor
     end
 
@@ -727,28 +728,16 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
 
     #= Step 5: IMEX Crank-Nicolson for B equation =#
-    # IMPORTANT: For IMEX-CN to be consistent, the implicit and explicit parts
-    # must use the SAME αdisp profile. Use N²(z) when provided; otherwise derive
-    # αdisp from a_ell to stay consistent with the elliptic operator.
-    #
-    # The dispersion coefficient αdisp = N²/(2f₀) appears in the dispersion term:
-    #   ∂B/∂t = ... + i·αdisp·kₕ²·A
+    # From YBJ+ equation (1.4): dispersion term is +i(f/2)kₕ²A
+    # The dispersion coefficient αdisp = f/2 is CONSTANT (independent of N²)
+    # per Asselin & Young (2019)
     αdisp_profile = imex_ws.αdisp_profile
     if length(αdisp_profile) != nz
         resize!(αdisp_profile, nz)
     end
     T = eltype(αdisp_profile)
-    if N2_profile !== nothing && length(N2_profile) == nz
-        inv_two_f0 = T(1) / (T(2) * T(par.f₀))
-        @inbounds for k in 1:nz
-            αdisp_profile[k] = T(N2_profile[k]) * inv_two_f0
-        end
-    else
-        half_f0 = T(par.f₀) / T(2)
-        @inbounds for k in 1:nz
-            αdisp_profile[k] = half_f0 / a[k]
-        end
-    end
+    αdisp_const = T(par.f₀) / T(2)
+    fill!(αdisp_profile, αdisp_const)
 
     # Density weights (default to unity for Boussinesq)
     r_ut = imex_ws.r_ut

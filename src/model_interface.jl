@@ -508,12 +508,11 @@ end
 """
     compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams; N2_profile=nothing) -> (WKE, WPE, WCE)
 
-Compute detailed wave energy components following the Fortran wave_energy routine:
-- WKE: Wave kinetic energy from |B|²
+Compute detailed wave energy components per YBJ+ paper:
+- WKE: Wave kinetic energy = (1/2)|LA|² per equation (4.7)
+       where LA = B + (kh²/4)×A in spectral space
 - WPE: Wave potential energy from |C|² where C = ∂A/∂z
 - WCE: Wave correction energy from |A|² (YBJ+ higher-order term)
-
-Matches the Fortran `wave_energy` subroutine in QG_YBJp/diagnostics.f90.
 
 # Keyword Arguments
 - `N2_profile`: Optional N²(z) profile for variable stratification. When provided,
@@ -565,12 +564,19 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             A_k = A_arr[k, i_local, j_local]
             C_k = C_arr[k, i_local, j_local]
 
-            # Split B into real/imag parts for proper energy calculation
+            # Split B and A into real/imag parts for proper energy calculation
             BR = real(B_k)
             BI = imag(B_k)
+            AR = real(A_k)
+            AI = imag(A_k)
 
-            # WKE: |BR|² + |BI|² (wave kinetic energy)
-            wke_contrib = BR^2 + BI^2
+            # WKE per equation (4.7): (1/2)|LA|²
+            # LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA and Δ→-kh²)
+            # The factor of 1/2 is included in norm_factor below
+            kh2_over_4 = kh2 / T(4)
+            LA_r = BR + kh2_over_4 * AR
+            LA_i = BI + kh2_over_4 * AI
+            wke_contrib = LA_r^2 + LA_i^2
             WKE_level += wke_contrib
 
             # WPE: (0.5/a_ell) × kh² × |C|² (wave potential energy)
@@ -581,8 +587,6 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             WPE_level += wpe_contrib
 
             # WCE: (1/8) × (1/a_ell²) × kh⁴ × |A|² (wave correction energy, YBJ+)
-            AR = real(A_k)
-            AI = imag(A_k)
             wce_contrib = (T(1)/T(8)) * (T(1) / max(a_ell^2, eps(T))) * kh2^2 * (AR^2 + AI^2)
             WCE_level += wce_contrib
 
@@ -791,20 +795,22 @@ end
 """
     compute_wave_energy(state::State, grid::Grid, plans)
 
-Compute wave energy from the YBJ+ wave envelope B.
+Compute wave kinetic energy per YBJ+ equation (4.7).
 
-Wave energy is computed as:
-    WE = (1/2) ∑_{kx,ky,z} |B|²
+Wave kinetic energy is computed as:
+    WKE = (1/2) ∑_{kx,ky,z} |LA|²
 
-with proper dealiasing correction.
+where LA = B + (kh²/4)×A in spectral space (since B = L⁺A and Δ → -kh²).
+
+This matches equation (4.7) from the YBJ+ paper exactly.
 
 # Arguments
-- `state::State`: Current model state with B (wave envelope)
-- `grid::Grid`: Grid structure
+- `state::State`: Current model state with B (wave envelope) and A (wave amplitude)
+- `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
 
 # Returns
-Domain-integrated wave energy (scalar).
+Domain-integrated wave kinetic energy (scalar).
 """
 function compute_wave_energy(state::State, grid::Grid, plans)
     T = eltype(real(state.B[1]))
@@ -813,6 +819,7 @@ function compute_wave_energy(state::State, grid::Grid, plans)
     ny = grid.ny
 
     B_arr = parent(state.B)
+    A_arr = parent(state.A)
     nz_local, nx_local, ny_local = size(B_arr)
 
     WE = T(0)
@@ -822,24 +829,30 @@ function compute_wave_energy(state::State, grid::Grid, plans)
         WE_zero_mode = T(0)
 
         for j_local in 1:ny_local, i_local in 1:nx_local
-            B_k = B_arr[k, i_local, j_local]
-            energy_mode = abs2(B_k)
-            WE_level += energy_mode
-
-            # Track zero mode
             i_global = local_to_global(i_local, 2, state.B)
             j_global = local_to_global(j_local, 3, state.B)
 
             kx_val = grid.kx[min(i_global, length(grid.kx))]
-
             ky_val = grid.ky[min(j_global, length(grid.ky))]
+            kh2 = kx_val^2 + ky_val^2
 
+            B_k = B_arr[k, i_local, j_local]
+            A_k = A_arr[k, i_local, j_local]
+
+            # WKE per equation (4.7): (1/2)|LA|²
+            # LA = B + (kh²/4)×A in spectral space
+            kh2_over_4 = kh2 / T(4)
+            LA = B_k + kh2_over_4 * A_k
+            energy_mode = abs2(LA)
+            WE_level += energy_mode
+
+            # Track zero mode (at kh=0, LA = B)
             if kx_val == 0 && ky_val == 0
                 WE_zero_mode = energy_mode
             end
         end
 
-        # Dealiasing correction
+        # Dealiasing correction: subtract half the kh=0 mode contribution
         WE_level -= T(0.5) * WE_zero_mode
         WE += WE_level
     end

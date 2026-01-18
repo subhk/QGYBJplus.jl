@@ -41,17 +41,25 @@ E_flow = flow_total_energy(state, grid, params)
 
 ### Wave Energy
 
+The wave kinetic energy is computed per YBJ+ equation (4.7):
+
 ```math
-E_{wave} = \frac{1}{2}\int |A|^2 \, dV
+\text{WKE} = \frac{1}{2}\int |LA|^2 \, dV
 ```
+
+where ``LA = B + (k_h^2/4)A`` in spectral space (since ``B = L^+A = LA - (k_h^2/4)A``).
 
 ```julia
-E_B, E_A = wave_energy(state.B, state.A)
+# Detailed wave energy components
+WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
+
+# Simple wave kinetic energy
+WE = compute_wave_energy(state, grid, plans)
 ```
 
-!!! note
-    ``E_B`` and ``E_A`` differ because the ``L^+`` operator is not unitary.
-    ``E_A`` is the physical wave energy.
+!!! note "Physical interpretation"
+    WKE uses ``|LA|^2`` (not ``|B|^2``) to match the YBJ+ paper's definition.
+    The evolved variable ``B = L^+A`` differs from ``LA`` by a horizontal correction term.
 
 ## Energy Diagnostics Output Files
 
@@ -75,15 +83,18 @@ output_dir/
 
 ### Wave Kinetic Energy (WKE)
 
-The wave kinetic energy is computed from the wave envelope ``B = B_R + iB_I``:
+The wave kinetic energy is computed per YBJ+ equation (4.7):
 
 ```math
-\text{WKE} = \frac{1}{2} \sum_{k_x, k_y, z} \left( |B_R|^2 + |B_I|^2 \right) - \frac{1}{2} |B(k_h=0)|^2
+\text{WKE} = \frac{1}{2} \sum_{k_x, k_y, z} |LA|^2 - \text{(dealiasing correction)}
 ```
 
-where the second term is the dealiasing correction (2/3 rule).
+where ``LA = B + (k_h^2/4)A`` in spectral space. This relationship comes from:
+- ``B = L^+ A = LA + \frac{1}{4}\Delta A``
+- In spectral space: ``\Delta \rightarrow -k_h^2``, so ``B = LA - (k_h^2/4)A``
+- Therefore: ``LA = B + (k_h^2/4)A``
 
-**Physical interpretation**: WKE represents the kinetic energy contained in the near-inertial wave field, analogous to ``\frac{1}{2}(u_w^2 + v_w^2)`` for wave velocities.
+**Physical interpretation**: WKE represents the kinetic energy contained in the near-inertial wave field, computed from the wave variable ``LA`` (not the evolved envelope ``B = L^+A``). This ensures consistency with the energy budget in the YBJ+ formulation.
 
 ### Wave Potential Energy (WPE)
 

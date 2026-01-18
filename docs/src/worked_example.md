@@ -294,15 +294,16 @@ for step in 1:nt
 
         # Compute energies
         KE = flow_kinetic_energy(Sn.u, Sn.v)
-        E_B, E_A = wave_energy(Sn.B, Sn.A)
+        # Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
+        WKE, WPE, WCE = compute_detailed_wave_energy(Sn, G, par)
 
         # Store for later analysis
         push!(times, time_IP)
-        push!(wave_energies, E_A)
+        push!(wave_energies, WKE)
         push!(flow_energies, KE)
 
-        @printf("  t = %.2f IP | Flow KE = %.4e | Wave E = %.4e\n",
-                time_IP, KE, E_A)
+        @printf("  t = %.2f IP | Flow KE = %.4e | Wave KE = %.4e\n",
+                time_IP, KE, WKE)
     end
 end
 

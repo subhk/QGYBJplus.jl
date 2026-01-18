@@ -5,7 +5,8 @@
 
 This script reads NetCDF state files and computes spatial KE fields:
   - Flow KE(x,y,z): (1/2)(u² + v²) where u = -∂ψ/∂y, v = ∂ψ/∂x
-  - Wave KE(x,y,z): (1/2)(LAr² + LAi²)
+  - Wave KE(x,y,z): (1/2)|LA|² per YBJ+ equation (4.7)
+                    where LA = B + (kh²/4)×A in spectral space
 
 USAGE:
 ------
@@ -107,15 +108,50 @@ function compute_flow_ke(psi::Array{T,3}, kx::Vector, ky::Vector) where T
 end
 
 """
-    compute_wave_ke(LAr, LAi)
+    compute_wave_ke(Br, Bi, Ar, Ai, kx, ky)
 
-Compute spatial wave kinetic energy field from wave envelope.
+Compute spatial wave kinetic energy field per YBJ+ equation (4.7).
 
-Wave KE(x,y,z) = (1/2)|B|² = (1/2)(LAr² + LAi²)
-where B = LAr + i*LAi is the wave envelope
+Wave KE(x,y,z) = (1/2)|LA|²
+
+where LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA and Δ→-kh²).
+
+# Arguments
+- `Br, Bi`: Real and imaginary parts of wave envelope B in physical space
+- `Ar, Ai`: Real and imaginary parts of wave amplitude A in physical space
+- `kx, ky`: Wavenumber arrays
+
+# Returns
+Spatial wave kinetic energy field (1/2)|LA|²
 """
-function compute_wave_ke(LAr::Array{T,3}, LAi::Array{T,3}) where T
-    ke = 0.5 .* (LAr.^2 .+ LAi.^2)
+function compute_wave_ke(Br::Array{T,3}, Bi::Array{T,3},
+                         Ar::Array{T,3}, Ai::Array{T,3},
+                         kx::Vector, ky::Vector) where T
+    nz, nx, ny = size(Br)
+
+    # FFT to spectral space (2D horizontal)
+    B_hat = fft(complex.(Br, Bi), (2,3))
+    A_hat = fft(complex.(Ar, Ai), (2,3))
+
+    # Compute LA = B + (kh²/4)×A in spectral space
+    LA_hat = similar(B_hat)
+    for k in 1:nz
+        for j in 1:ny
+            for i in 1:nx
+                kh2 = kx[i]^2 + ky[j]^2
+                kh2_over_4 = kh2 / 4.0
+                LA_hat[k, i, j] = B_hat[k, i, j] + kh2_over_4 * A_hat[k, i, j]
+            end
+        end
+    end
+
+    # Back to physical space
+    LA = ifft(LA_hat, (2,3))
+    LA_r = real.(LA)
+    LA_i = imag.(LA)
+
+    # WKE = (1/2)|LA|²
+    ke = 0.5 .* (LA_r.^2 .+ LA_i.^2)
     return ke
 end
 
@@ -133,19 +169,34 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
     y = Array(ds_in["y"][:])
     z = Array(ds_in["z"][:])
     psi_xyz = Array(ds_in["psi"][:,:,:])
-    LAr_xyz = Array(ds_in["LAr"][:,:,:])
-    LAi_xyz = Array(ds_in["LAi"][:,:,:])
+    Br_xyz = Array(ds_in["LAr"][:,:,:])  # B = L⁺A (wave envelope)
+    Bi_xyz = Array(ds_in["LAi"][:,:,:])
+
+    # Read A (wave amplitude) if available - needed for correct WKE per equation (4.7)
+    has_A = haskey(ds_in, "Ar") && haskey(ds_in, "Ai")
+    Ar_xyz = has_A ? Array(ds_in["Ar"][:,:,:]) : nothing
+    Ai_xyz = has_A ? Array(ds_in["Ai"][:,:,:]) : nothing
 
     close(ds_in)
 
     # Convert to internal (z, x, y) order for spectral derivatives
     psi = permutedims(psi_xyz, (3, 1, 2))
-    LAr = permutedims(LAr_xyz, (3, 1, 2))
-    LAi = permutedims(LAi_xyz, (3, 1, 2))
+    Br = permutedims(Br_xyz, (3, 1, 2))
+    Bi = permutedims(Bi_xyz, (3, 1, 2))
+    Ar = has_A ? permutedims(Ar_xyz, (3, 1, 2)) : nothing
+    Ai = has_A ? permutedims(Ai_xyz, (3, 1, 2)) : nothing
 
     # Compute spatial KE fields
     flow_ke, u, v = compute_flow_ke(psi, kx, ky)
-    wave_ke = compute_wave_ke(LAr, LAi)
+
+    # Compute wave KE per equation (4.7): WKE = (1/2)|LA|²
+    if has_A
+        wave_ke = compute_wave_ke(Br, Bi, Ar, Ai, kx, ky)
+    else
+        # Fallback for old files without A: use |B|² ≈ |LA|² (approximation)
+        @warn "Wave amplitude A not found in $input_file. Using |B|² approximation for WKE." maxlog=1
+        wave_ke = 0.5 .* (Br.^2 .+ Bi.^2)
+    end
     total_ke = flow_ke .+ wave_ke
 
     # Convert back to file order (x, y, z)
@@ -190,8 +241,8 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
         wave_ke_var = defVar(ds, "wave_KE", Float64, ("x", "y", "z"))
         wave_ke_var[:,:,:] = wave_ke_xyz
         wave_ke_var.attrib["units"] = "m²/s²"
-        wave_ke_var.attrib["long_name"] = "wave kinetic energy"
-        wave_ke_var.attrib["formula"] = "KE = (1/2)(LAr² + LAi²)"
+        wave_ke_var.attrib["long_name"] = "wave kinetic energy per YBJ+ equation (4.7)"
+        wave_ke_var.attrib["formula"] = "KE = (1/2)|LA|² where LA = B + (kh²/4)×A"
 
         # Total KE field
         total_ke_var = defVar(ds, "total_KE", Float64, ("x", "y", "z"))
@@ -210,10 +261,11 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
         v_var.attrib["long_name"] = "meridional velocity (v = ∂ψ/∂x)"
 
         # Global attributes
-        ds.attrib["title"] = "QG-YBJ Kinetic Energy Fields"
+        ds.attrib["title"] = "QG-YBJ+ Kinetic Energy Fields"
         ds.attrib["source_file"] = basename(input_file)
         ds.attrib["flow_KE_formula"] = "KE_flow = (1/2)|∇ψ|² = (1/2)(u² + v²)"
-        ds.attrib["wave_KE_formula"] = "KE_wave = (1/2)|B|² = (1/2)(LAr² + LAi²)"
+        ds.attrib["wave_KE_formula"] = "KE_wave = (1/2)|LA|² per YBJ+ equation (4.7)"
+        ds.attrib["note"] = "LA = B + (kh²/4)×A in spectral space, where B = L⁺A is the wave envelope"
     end
 end
 
@@ -281,12 +333,13 @@ function main()
         println("")
         println("Computes spatial KE fields from NetCDF state files.")
         println("")
-        println("Input:  state0001.nc, state0002.nc, ... (containing psi, LAr, LAi)")
+        println("Input:  state0001.nc, state0002.nc, ... (containing psi, LAr, LAi, Ar, Ai)")
         println("Output: energy0001.nc, energy0002.nc, ... (containing flow_KE, wave_KE, u, v)")
         println("")
         println("Variables in output files:")
         println("  flow_KE(x,y,z) = (1/2)(u² + v²)    [geostrophic KE]")
-        println("  wave_KE(x,y,z) = (1/2)(LAr² + LAi²) [wave KE]")
+        println("  wave_KE(x,y,z) = (1/2)|LA|²        [wave KE per YBJ+ eq. 4.7]")
+        println("                   where LA = B + (kh²/4)×A in spectral space")
         println("  total_KE(x,y,z) = flow_KE + wave_KE")
         println("  u(x,y,z) = -∂ψ/∂y                  [zonal velocity]")
         println("  v(x,y,z) = ∂ψ/∂x                   [meridional velocity]")

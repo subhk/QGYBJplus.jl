@@ -57,12 +57,17 @@ close_output!(output_config)
 
 | Variable | Description | Dimensions |
 |:---------|:------------|:-----------|
-| `psi` | Streamfunction (spectral) | (kx, ky, z, t) |
-| `B` | Wave envelope (spectral) | (kx, ky, z, t) |
+| `psi` | Streamfunction (physical) | (x, y, z, t) |
+| `LAr`, `LAi` | Wave envelope B = L⁺A real/imag parts (physical) | (x, y, z, t) |
+| `Ar`, `Ai` | Wave amplitude A real/imag parts (physical) | (x, y, z, t) |
 | `q` | Potential vorticity (spectral) | (kx, ky, z, t) |
-| `A` | Wave amplitude (spectral) | (kx, ky, z, t) |
 | `u`, `v` | Velocities (physical) | (x, y, z, t) |
 | `energy` | Domain-integrated energy | (t) |
+
+!!! note "Wave field naming"
+    - `LAr`, `LAi`: Real and imaginary parts of the wave envelope ``B = L^+ A``
+    - `Ar`, `Ai`: Real and imaginary parts of the wave amplitude ``A``
+    - Both are needed to compute wave kinetic energy per equation (4.7): ``\text{WKE} = \frac{1}{2}|LA|^2`` where ``LA = B + (k_h^2/4)A``
 
 ### Custom Variables
 

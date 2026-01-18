@@ -190,20 +190,39 @@ where ``m`` is the vertical wavenumber.
 
 ## Wave Energy
 
-### Definition
+### Wave Kinetic Energy (Equation 4.7)
+
+The wave kinetic energy (WKE) is defined per YBJ+ equation (4.7):
 
 ```math
-E_{wave} = \frac{1}{2}\int |A|^2 \, dV
+\text{WKE} = \frac{1}{2} \int |LA|^2 \, dV
 ```
+
+where ``L = \partial_z (f_0^2/N^2) \partial_z`` is the vertical operator.
+
+Since the evolved variable is ``B = L^+ A`` where ``L^+ = L + \frac{1}{4}\Delta``, we compute ``LA`` from:
+
+```math
+LA = B + \frac{k_h^2}{4} A \quad \text{(in spectral space)}
+```
+
+This uses the relationship ``B = LA + \frac{1}{4}\Delta A = LA - \frac{k_h^2}{4}A``.
 
 ### Computation
 
 ```julia
-E_B, E_A = wave_energy(state.B, state.A)
+# Detailed wave energy components (WKE, WPE, WCE)
+WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
+
+# Simple wave energy (returns WKE)
+WE = compute_wave_energy(state, grid, plans)
 ```
 
-!!! note
-    ``E_B \neq E_A`` in general because the L⁺ operator is not unitary.
+!!! note "Physical interpretation"
+    WKE represents the kinetic energy of the near-inertial wave field, computed from the
+    proper wave variable ``LA`` rather than the evolved envelope ``B = L^+A``. The YBJ+ paper
+    notes that the difference between ``|LA|^2`` and ``|B|^2`` is typically small, but using
+    the correct formula ensures energy budget consistency.
 
 ## Implementation Details
 

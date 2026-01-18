@@ -217,9 +217,12 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
     # For wave field B: transform full complex B to physical space as needed
     # B = BR + i*BI where BR, BI are real fields in physical space
     Br = nothing
+    Ar = nothing
     if write_waves
         Br = _allocate_fft_dst(S.B, plans)
-        fft_backward!(Br, S.B, plans)  # Full complex IFFT
+        fft_backward!(Br, S.B, plans)  # Full complex IFFT for B (wave envelope)
+        Ar = _allocate_fft_dst(S.A, plans)
+        fft_backward!(Ar, S.A, plans)  # Full complex IFFT for A (wave amplitude)
     end
 
     # Optional vorticity field (computed from spectral psi)
@@ -283,20 +286,34 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Wave fields (L+A real and imaginary parts)
-        # Extract real and imag parts of the PHYSICAL field Br (already normalized)
+        # Wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
+        # Extract real and imag parts of the PHYSICAL fields (already normalized)
         if write_waves
+            # B = L⁺A (wave envelope)
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
             Br_arr = parent(Br)
-            LAr_var[:,:,:] = _to_xyz(real.(Br_arr))  # Real part of physical wave field
-            LAi_var[:,:,:] = _to_xyz(imag.(Br_arr))  # Imaginary part of physical wave field
+            LAr_var[:,:,:] = _to_xyz(real.(Br_arr))  # Real part of B
+            LAi_var[:,:,:] = _to_xyz(imag.(Br_arr))  # Imaginary part of B
 
-            LAr_var.attrib["units"] = "wave amplitude"
-            LAr_var.attrib["long_name"] = "L+A real part"
-            LAi_var.attrib["units"] = "wave amplitude"
-            LAi_var.attrib["long_name"] = "L+A imaginary part"
+            LAr_var.attrib["units"] = "m/s"
+            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
+            LAi_var.attrib["units"] = "m/s"
+            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
+
+            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
+            Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
+            Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
+
+            Ar_arr = parent(Ar)
+            Ar_var[:,:,:] = _to_xyz(real.(Ar_arr))  # Real part of A
+            Ai_var[:,:,:] = _to_xyz(imag.(Ar_arr))  # Imaginary part of A
+
+            Ar_var.attrib["units"] = "m/s"
+            Ar_var.attrib["long_name"] = "wave amplitude A real part"
+            Ai_var.attrib["units"] = "m/s"
+            Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
         end
         
         # Horizontal velocities (if requested)
@@ -506,6 +523,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     # Use GC.@preserve to prevent premature garbage collection during MPI communication
     gathered_psi = nothing
     gathered_B = nothing
+    gathered_A = nothing
     gathered_u = nothing
     gathered_v = nothing
     gathered_w = nothing
@@ -513,6 +531,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     GC.@preserve S begin
         gathered_psi = gather_psi ? QGYBJplus.gather_to_root(S.psi, G, parallel_config) : nothing
         gathered_B = gather_waves ? QGYBJplus.gather_to_root(S.B, G, parallel_config) : nothing
+        gathered_A = gather_waves ? QGYBJplus.gather_to_root(S.A, G, parallel_config) : nothing
 
         gathered_u = gather_velocities ? QGYBJplus.gather_to_root(S.u, G, parallel_config) : nothing
         gathered_v = gather_velocities ? QGYBJplus.gather_to_root(S.v, G, parallel_config) : nothing
@@ -520,7 +539,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     end
 
     # Create tuple with gathered arrays (only meaningful on rank 0)
-    return (psi=gathered_psi, B=gathered_B, u=gathered_u, v=gathered_v, w=gathered_w)
+    return (psi=gathered_psi, B=gathered_B, A=gathered_A, u=gathered_u, v=gathered_v, w=gathered_w)
 end
 
 """
@@ -533,6 +552,7 @@ Write gathered state from rank 0.
 The gathered_state should be a named tuple with fields:
 - `psi`: Gathered streamfunction array (spectral, nz×nx×ny)
 - `B`: Gathered wave envelope array (spectral, nz×nx×ny)
+- `A`: Gathered wave amplitude array (spectral, nz×nx×ny)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
                                    params=nothing, write_psi=true, write_waves=true,
@@ -542,6 +562,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     # Extract gathered fields
     gathered_psi = gathered_state.psi
     gathered_B = gathered_state.B
+    gathered_A = hasproperty(gathered_state, :A) ? gathered_state.A : nothing
     gathered_u = hasproperty(gathered_state, :u) ? gathered_state.u : nothing
     gathered_v = hasproperty(gathered_state, :v) ? gathered_state.v : nothing
     gathered_w = hasproperty(gathered_state, :w) ? gathered_state.w : nothing
@@ -562,9 +583,14 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     end
 
     Br = nothing
+    Ar = nothing
     if write_waves && gathered_B !== nothing
         Br = zeros(complex_type, G.nz, G.nx, G.ny)
-        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT
+        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT for B (wave envelope)
+        if gathered_A !== nothing
+            Ar = zeros(complex_type, G.nz, G.nx, G.ny)
+            fft_backward!(Ar, gathered_A, temp_plans)  # Full complex IFFT for A (wave amplitude)
+        end
     end
 
     zeta_r = nothing
@@ -623,19 +649,34 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Write wave fields (L+A real and imaginary parts)
-        # Extract real and imag parts of the PHYSICAL field (already normalized)
+        # Write wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
+        # Extract real and imag parts of the PHYSICAL fields (already normalized)
         if write_waves && gathered_B !== nothing
+            # B = L⁺A (wave envelope)
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of physical wave field
-            LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of physical wave field
+            LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of B
+            LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of B
 
-            LAr_var.attrib["units"] = "wave amplitude"
-            LAr_var.attrib["long_name"] = "L+A real part"
-            LAi_var.attrib["units"] = "wave amplitude"
-            LAi_var.attrib["long_name"] = "L+A imaginary part"
+            LAr_var.attrib["units"] = "m/s"
+            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
+            LAi_var.attrib["units"] = "m/s"
+            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
+
+            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
+            if Ar !== nothing
+                Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
+                Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
+
+                Ar_var[:,:,:] = _to_xyz(real.(parent(Ar)))  # Real part of A
+                Ai_var[:,:,:] = _to_xyz(imag.(parent(Ar)))  # Imaginary part of A
+
+                Ar_var.attrib["units"] = "m/s"
+                Ar_var.attrib["long_name"] = "wave amplitude A real part"
+                Ai_var.attrib["units"] = "m/s"
+                Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
+            end
         end
 
         if write_velocities && gathered_u !== nothing && gathered_v !== nothing

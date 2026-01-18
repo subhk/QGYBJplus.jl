@@ -771,10 +771,13 @@ Compute physically accurate wave energies in spectral space with dealiasing.
 # Physical Background (matches Fortran wave_energy)
 Three components of wave energy:
 
-1. **Wave Kinetic Energy (WKE)**:
-   WKE = Σₖ (|BRₖ|² + |BIₖ|²) - 0.5×(kh=0 mode)
+1. **Wave Kinetic Energy (WKE)** - per YBJ+ equation (4.7):
+   WKE = (1/2) × Σₖ |LAₖ|²
 
-   This is the envelope-based kinetic energy, analogous to KE ~ ∫(u² + v²)dV.
+   where LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA
+   and Δ → -kh² in spectral space).
+
+   This matches equation (4.7) from YBJ+ paper exactly.
 
 2. **Wave Potential Energy (WPE)**:
    WPE = Σₖ (0.5/(ρ₂×a_ell)) × kh² × (|CRₖ|² + |CIₖ|²)
@@ -863,8 +866,13 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
                 kᵧ = G.ky[j_global]
                 kₕ² = kₓ^2 + kᵧ^2
 
-                # WKE: |BR|² + |BI|²
-                wke_k += abs2(BR_arr[k, i, j]) + abs2(BI_arr[k, i, j])
+                # WKE per equation (4.7): (1/2)|LA|²
+                # LA = B + (kh²/4)×A in spectral space
+                # Since B = L⁺A = LA + (1/4)ΔA and Δ → -kh²
+                kh2_over_4 = kₕ² / 4.0
+                LA_r = BR_arr[k, i, j] + kh2_over_4 * AR_arr[k, i, j]
+                LA_i = BI_arr[k, i, j] + kh2_over_4 * AI_arr[k, i, j]
+                wke_k += 0.5 * (abs2(LA_r) + abs2(LA_i))
 
                 # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
                 wpe_k += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
@@ -874,11 +882,13 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
             end
         end
 
-        # Dealiasing correction for WKE: subtract half the kh=0 mode
+        # Dealiasing correction for WKE: subtract half the kh=0 mode contribution
         # The kh=0 mode is at global index (1,1)
+        # At kh=0: LA = B (since kₕ²/4 = 0), so WKE contribution = 0.5×|B|²
+        # We subtract half of this: 0.5 × 0.5×|B|² = 0.25×|B|²
         if local_to_global(1, 2, BR) == 1 && local_to_global(1, 3, BR) == 1
             # This process owns the (1,1) mode
-            wke_k -= 0.5 * (abs2(BR_arr[k, 1, 1]) + abs2(BI_arr[k, 1, 1]))
+            wke_k -= 0.25 * (abs2(BR_arr[k, 1, 1]) + abs2(BI_arr[k, 1, 1]))
         end
 
         WKE_local += wke_k

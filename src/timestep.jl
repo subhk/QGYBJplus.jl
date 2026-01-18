@@ -355,18 +355,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     end
     dqk_arr = parent(dqk)
 
-    # Precompute dispersion coefficients for each vertical level
-    # αdisp(z) = N²(z) / (2f₀) - uses N² profile when available
+    # Precompute dispersion coefficient: αdisp = f₀/2
+    # From YBJ+ equation (1.4): dispersion term is +i(f/2)kₕ²A
+    # This is CONSTANT (independent of N²) per Asselin & Young (2019)
     αdisp_profile = Vector{Float64}(undef, nz)
-    if N2_profile !== nothing && length(N2_profile) == nz
-        for k_level in 1:nz
-            αdisp_profile[k_level] = N2_profile[k_level] / (2.0 * par.f₀)
-        end
-    else
-        # Fallback to constant N² from params
-        αdisp_const = par.N² / (2.0 * par.f₀)
-        fill!(αdisp_profile, αdisp_const)
-    end
+    αdisp_const = par.f₀ / 2.0
+    fill!(αdisp_profile, αdisp_const)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
@@ -392,15 +386,15 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
             end
 
             if par.ybj_plus
-                #= Update B (wave envelope)
-                ∂B/∂t + J(ψ,B) = i(kₕ²·N²/(2f))A + (i/2)ζ·B =#
+                #= Update B (wave envelope) - YBJ+ equation (1.4) from Asselin & Young (2019)
+                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
                 k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
                 B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
-                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] + 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
+                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
             else
-                #= Update B (wave envelope)
-                In terms of real/imaginary parts (with αdisp = N²/(2f)):
+                #= Update B (wave envelope) - Normal YBJ
+                In terms of real/imaginary parts (with αdisp = f/2):
                     ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI - (1/2)ζ·BI
                     ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR + (1/2)ζ·BR =#
                 k_global = local_to_global(k, 1, S.q)
@@ -695,18 +689,12 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     end
     dqk_arr = parent(dqk)
 
-    # Precompute dispersion coefficients for each vertical level
-    # αdisp(z) = N²(z) / (2f₀) - uses N² profile when available
+    # Precompute dispersion coefficient: αdisp = f₀/2
+    # From YBJ+ equation (1.4): dispersion term is +i(f/2)kₕ²A
+    # This is CONSTANT (independent of N²) per Asselin & Young (2019)
     αdisp_profile = Vector{Float64}(undef, nz)
-    if N2_profile !== nothing && length(N2_profile) == nz
-        for k_level in 1:nz
-            αdisp_profile[k_level] = N2_profile[k_level] / (2.0 * par.f₀)
-        end
-    else
-        # Fallback to constant N² from params
-        αdisp_const = par.N² / (2.0 * par.f₀)
-        fill!(αdisp_profile, αdisp_const)
-    end
+    αdisp_const = par.f₀ / 2.0
+    fill!(αdisp_profile, αdisp_const)
 
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         # Get global indices for wavenumber lookup
@@ -732,13 +720,13 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             end
 
             if par.ybj_plus
-                #= Update B (complex)
-                ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A + (i/2)ζ·B =#
+                #= Update B (complex) - YBJ+ equation (1.4) from Asselin & Young (2019)
+                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
                 k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
                 Btemp_arr[k, i, j] = Bnm1_arr[k, i, j]*exp(-2λʷ) +
                                2*par.dt*( -nBk_arr[k, i, j] +
-                                          im*αdisp*kₕ²*An_arr[k, i, j] +
+                                          im*αdisp*kₕ²*An_arr[k, i, j] -
                                           0.5im*rBk_arr[k, i, j] )*exp(-λʷ)
             else
                 #= Update B (real and imaginary parts)
