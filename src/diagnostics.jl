@@ -768,16 +768,17 @@ end
 
 Compute physically accurate wave energies in spectral space with dealiasing.
 
-# Physical Background (matches Fortran wave_energy)
+# Physical Background (matches YBJ+ paper)
 Three components of wave energy:
 
 1. **Wave Kinetic Energy (WKE)** - per YBJ+ equation (4.7):
    WKE = (1/2) × Σₖ |LAₖ|²
 
-   where LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA
-   and Δ → -kh² in spectral space).
+   where LA is computed directly using the L operator from equation (1.3):
+   L = ∂_z(f²/N² × ∂_z)
 
-   This matches equation (4.7) from YBJ+ paper exactly.
+   So LA = ∂_z(a(z) × C) where a(z) = f²/N² and C = ∂A/∂z.
+   This is discretized as: LA[k] = (a[k]×C[k] - a[k-1]×C[k-1]) / Δz
 
 2. **Wave Potential Energy (WPE)**:
    WPE = Σₖ (0.5/(ρ₂×a_ell)) × kh² × (|CRₖ|² + |CIₖ|²)
@@ -791,9 +792,10 @@ Three components of wave energy:
 
 # Algorithm
 1. Loop over all spectral modes with dealiasing mask L
-2. Accumulate |B|², kh²|C|²/(ρ₂×a_ell), kh⁴|A|²/(8×a_ell²)
-3. Apply dealiasing correction: subtract half the kh=0 mode from WKE
-4. Integrate over z (sum local, divide by nz)
+2. Compute LA = ∂_z(a×C) using finite differences for each (i,j) mode
+3. Accumulate |LA|², kh²|C|²/(ρ₂×a_ell), kh⁴|A|²/(8×a_ell²)
+4. Apply dealiasing correction: subtract half the kh=0 mode from WKE
+5. Integrate over z (sum local, divide by nz)
 
 # Arguments
 - `BR, BI`: Real and imaginary parts of wave envelope B (spectral)
@@ -842,58 +844,100 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         ones(Float64, nz)
     end
 
-    # Accumulate energy at each vertical level
+    # Grid spacing for vertical derivative
+    Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
+
+    # Accumulate energy
     WKE_local = 0.0
     WPE_local = 0.0
     WCE_local = 0.0
 
-    @inbounds for k in 1:nz_local
-        # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, BR)
-        a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-        ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
+    # For WKE, we need to compute LA = ∂_z(a(z) × C) using equation (1.3) of YBJ+
+    # where L = ∂_z(f²/N² × ∂_z) and C = ∂A/∂z
+    # Discretization: LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+    # This requires looping over (i,j) modes first, then computing LA across z levels
 
-        wke_k = 0.0
-        wpe_k = 0.0
-        wce_k = 0.0
+    @inbounds for j in 1:ny_local, i in 1:nx_local
+        i_global = local_to_global(i, 2, BR)
+        j_global = local_to_global(j, 3, BR)
 
-        for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, BR)
-            j_global = local_to_global(j, 3, BR)
+        if !L[i_global, j_global]
+            continue
+        end
 
-            if L[i_global, j_global]
-                kₓ = G.kx[i_global]
-                kᵧ = G.ky[j_global]
-                kₕ² = kₓ^2 + kᵧ^2
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
 
-                # WKE per equation (4.7): (1/2)|LA|²
-                # LA = B + (kh²/4)×A in spectral space
-                # Since B = L⁺A = LA + (1/4)ΔA and Δ → -kh²
-                kh2_over_4 = kₕ² / 4.0
-                LA_r = BR_arr[k, i, j] + kh2_over_4 * AR_arr[k, i, j]
-                LA_i = BI_arr[k, i, j] + kh2_over_4 * AI_arr[k, i, j]
-                wke_k += 0.5 * (abs2(LA_r) + abs2(LA_i))
+        # Compute LA = ∂_z(a × C) for this (i,j) mode across all z levels
+        # Using the L operator from equation (1.3): L = ∂_z(f²/N² × ∂_z)
+        for k in 1:nz_local
+            k_global = local_to_global(k, 1, BR)
+            a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
+            ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
-                # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
-                wpe_k += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
-
-                # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
-                wce_k += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
+            # Compute LA = ∂_z(a × C) using finite differences
+            # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+            # C is defined at staggered points: C[k] represents derivative between k and k+1
+            if nz == 1
+                # Single layer: LA = 0 (no vertical structure)
+                LA_r = 0.0
+                LA_i = 0.0
+            elseif k_global == 1
+                # Bottom boundary: use one-sided difference
+                # LA[1] = a[1] × C[1] / Δz (assuming a[0]×C[0] = 0 from BC)
+                LA_r = a_ell_k * CR_arr[k, i, j] / Δz
+                LA_i = a_ell_k * CI_arr[k, i, j] / Δz
+            elseif k_global == nz
+                # Top boundary: use one-sided difference
+                # LA[nz] = -a[nz-1] × C[nz-1] / Δz (since C[nz] = 0 from BC)
+                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
+                LA_r = -a_ell_km1 * CR_arr[k-1, i, j] / Δz
+                LA_i = -a_ell_km1 * CI_arr[k-1, i, j] / Δz
+            else
+                # Interior: centered difference
+                # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
+                LA_r = (a_ell_k * CR_arr[k, i, j] - a_ell_km1 * CR_arr[k-1, i, j]) / Δz
+                LA_i = (a_ell_k * CI_arr[k, i, j] - a_ell_km1 * CI_arr[k-1, i, j]) / Δz
             end
-        end
 
-        # Dealiasing correction for WKE: subtract half the kh=0 mode contribution
-        # The kh=0 mode is at global index (1,1)
-        # At kh=0: LA = B (since kₕ²/4 = 0), so WKE contribution = 0.5×|B|²
-        # We subtract half of this: 0.5 × 0.5×|B|² = 0.25×|B|²
-        if local_to_global(1, 2, BR) == 1 && local_to_global(1, 3, BR) == 1
-            # This process owns the (1,1) mode
-            wke_k -= 0.25 * (abs2(BR_arr[k, 1, 1]) + abs2(BI_arr[k, 1, 1]))
-        end
+            # WKE per equation (4.7): (1/2)|LA|²
+            WKE_local += 0.5 * (abs2(LA_r) + abs2(LA_i))
 
-        WKE_local += wke_k
-        WPE_local += wpe_k
-        WCE_local += wce_k
+            # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
+            WPE_local += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
+
+            # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
+            WCE_local += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
+        end
+    end
+
+    # Dealiasing correction for WKE: subtract half the kh=0 mode contribution
+    # At kh=0, we still need to compute LA using the L operator
+    if local_to_global(1, 2, BR) == 1 && local_to_global(1, 3, BR) == 1
+        wke_zero = 0.0
+        for k in 1:nz_local
+            k_global = local_to_global(k, 1, BR)
+            a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
+            if nz == 1
+                LA_r = 0.0
+                LA_i = 0.0
+            elseif k_global == 1
+                LA_r = a_ell_k * CR_arr[k, 1, 1] / Δz
+                LA_i = a_ell_k * CI_arr[k, 1, 1] / Δz
+            elseif k_global == nz
+                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
+                LA_r = -a_ell_km1 * CR_arr[k-1, 1, 1] / Δz
+                LA_i = -a_ell_km1 * CI_arr[k-1, 1, 1] / Δz
+            else
+                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
+                LA_r = (a_ell_k * CR_arr[k, 1, 1] - a_ell_km1 * CR_arr[k-1, 1, 1]) / Δz
+                LA_i = (a_ell_k * CI_arr[k, 1, 1] - a_ell_km1 * CI_arr[k-1, 1, 1]) / Δz
+            end
+            wke_zero += 0.5 * (abs2(LA_r) + abs2(LA_i))
+        end
+        WKE_local -= 0.5 * wke_zero / nz
     end
 
     # Normalize by nz (vertical integration)

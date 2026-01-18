@@ -198,15 +198,19 @@ The wave kinetic energy (WKE) is defined per YBJ+ equation (4.7):
 \text{WKE} = \frac{1}{2} \int |LA|^2 \, dV
 ```
 
-where ``L = \partial_z (f_0^2/N^2) \partial_z`` is the vertical operator.
-
-Since the evolved variable is ``B = L^+ A`` where ``L^+ = L + \frac{1}{4}\Delta``, we compute ``LA`` from:
+where ``L`` is the vertical operator from equation (1.3):
 
 ```math
-LA = B + \frac{k_h^2}{4} A \quad \text{(in spectral space)}
+L = \partial_z \left( \frac{f_0^2}{N^2} \partial_z \right)
 ```
 
-This uses the relationship ``B = LA + \frac{1}{4}\Delta A = LA - \frac{k_h^2}{4}A``.
+``LA`` is computed directly by applying the L operator to A:
+
+```math
+LA = \partial_z \left( a(z) \times C \right)
+```
+
+where ``a(z) = f_0^2/N^2`` and ``C = \partial A/\partial z``.
 
 ### Computation
 
@@ -215,14 +219,13 @@ This uses the relationship ``B = LA + \frac{1}{4}\Delta A = LA - \frac{k_h^2}{4}
 WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 
 # Simple wave energy (returns WKE)
-WE = compute_wave_energy(state, grid, plans)
+WE = compute_wave_energy(state, grid, plans; params=params)
 ```
 
 !!! note "Physical interpretation"
-    WKE represents the kinetic energy of the near-inertial wave field, computed from the
-    proper wave variable ``LA`` rather than the evolved envelope ``B = L^+A``. The YBJ+ paper
-    notes that the difference between ``|LA|^2`` and ``|B|^2`` is typically small, but using
-    the correct formula ensures energy budget consistency.
+    WKE represents the kinetic energy of the near-inertial wave field, computed by
+    applying the L operator directly to the wave amplitude A. This matches the
+    YBJ+ paper's definition in equation (4.7).
 
 ## Implementation Details
 

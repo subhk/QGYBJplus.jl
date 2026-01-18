@@ -47,19 +47,25 @@ The wave kinetic energy is computed per YBJ+ equation (4.7):
 \text{WKE} = \frac{1}{2}\int |LA|^2 \, dV
 ```
 
-where ``LA = B + (k_h^2/4)A`` in spectral space (since ``B = L^+A = LA - (k_h^2/4)A``).
+where ``LA`` is computed directly using the L operator from equation (1.3):
+
+```math
+L = \partial_z \left( \frac{f^2}{N^2} \partial_z \right)
+```
+
+So ``LA = \partial_z(a(z) \times C)`` where ``a(z) = f^2/N^2`` and ``C = \partial A/\partial z``.
 
 ```julia
 # Detailed wave energy components
 WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 
 # Simple wave kinetic energy
-WE = compute_wave_energy(state, grid, plans)
+WE = compute_wave_energy(state, grid, plans; params=params)
 ```
 
 !!! note "Physical interpretation"
-    WKE uses ``|LA|^2`` (not ``|B|^2``) to match the YBJ+ paper's definition.
-    The evolved variable ``B = L^+A`` differs from ``LA`` by a horizontal correction term.
+    WKE uses ``|LA|^2`` where LA is computed by applying the vertical operator L
+    directly to the wave amplitude A. This matches the YBJ+ paper's definition.
 
 ## Energy Diagnostics Output Files
 

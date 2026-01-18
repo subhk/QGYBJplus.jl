@@ -510,7 +510,8 @@ end
 
 Compute detailed wave energy components per YBJ+ paper:
 - WKE: Wave kinetic energy = (1/2)|LA|² per equation (4.7)
-       where LA = B + (kh²/4)×A in spectral space
+       where LA = ∂_z(a(z) × C) using the L operator from equation (1.3)
+       with a(z) = f²/N² and C = ∂A/∂z
 - WPE: Wave potential energy from |C|² where C = ∂A/∂z
 - WCE: Wave correction energy from |A|² (YBJ+ higher-order term)
 
@@ -527,6 +528,13 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     a_ell_const = params.f₀^2 / N2_safe  # Elliptic coefficient (constant stratification)
     use_profile = N2_profile !== nothing && length(N2_profile) == nz
 
+    # Build a_ell profile
+    a_ell_arr = if use_profile
+        [params.f₀^2 / max(N2_profile[k], eps(T)) for k in 1:nz]
+    else
+        fill(a_ell_const, nz)
+    end
+
     # Get arrays
     B_arr = parent(state.B)
     A_arr = parent(state.A)
@@ -534,75 +542,100 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
 
     nz_local, nx_local, ny_local = size(B_arr)
 
+    # Grid spacing for vertical derivative
+    Δz = nz > 1 ? abs(grid.z[2] - grid.z[1]) : T(1)
+
     WKE = T(0)
     WPE = T(0)
     WCE = T(0)
 
-    for k in 1:nz_local
-        WKE_level = T(0)
-        WPE_level = T(0)
-        WCE_level = T(0)
-        WKE_zero = T(0)
-        k_global = use_profile ? local_to_global(k, 1, state.B) : k
-        a_ell = a_ell_const
-        if use_profile
-            N2_k = N2_profile[min(k_global, length(N2_profile))]
-            a_ell = params.f₀^2 / max(N2_k, eps(T))
-        end
+    # For WKE, compute LA = ∂_z(a × C) using the L operator from equation (1.3)
+    # Loop over (i,j) modes first, then compute LA across z levels
+    for j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, state.B)
+        j_global = local_to_global(j_local, 3, state.B)
 
-        for j_local in 1:ny_local, i_local in 1:nx_local
-            # Get wavenumbers
-            i_global = local_to_global(i_local, 2, state.B)
-            j_global = local_to_global(j_local, 3, state.B)
+        kx_val = grid.kx[min(i_global, length(grid.kx))]
+        ky_val = grid.ky[min(j_global, length(grid.ky))]
+        kh2 = kx_val^2 + ky_val^2
 
-            kx_val = grid.kx[min(i_global, length(grid.kx))]
+        for k in 1:nz_local
+            k_global = local_to_global(k, 1, state.B)
+            a_ell = a_ell_arr[min(k_global, nz)]
 
-            ky_val = grid.ky[min(j_global, length(grid.ky))]
-            kh2 = kx_val^2 + ky_val^2
-
-            B_k = B_arr[k, i_local, j_local]
-            A_k = A_arr[k, i_local, j_local]
             C_k = C_arr[k, i_local, j_local]
-
-            # Split B and A into real/imag parts for proper energy calculation
-            BR = real(B_k)
-            BI = imag(B_k)
+            A_k = A_arr[k, i_local, j_local]
+            CR = real(C_k)
+            CI = imag(C_k)
             AR = real(A_k)
             AI = imag(A_k)
 
-            # WKE per equation (4.7): (1/2)|LA|²
-            # LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA and Δ→-kh²)
-            # The factor of 1/2 is included in norm_factor below
-            kh2_over_4 = kh2 / T(4)
-            LA_r = BR + kh2_over_4 * AR
-            LA_i = BI + kh2_over_4 * AI
-            wke_contrib = LA_r^2 + LA_i^2
-            WKE_level += wke_contrib
-
-            # WPE: (0.5/a_ell) × kh² × |C|² (wave potential energy)
-            # C = ∂A/∂z, represents vertical wave structure
-            CR = real(C_k)
-            CI = imag(C_k)
-            wpe_contrib = (T(0.5) / max(a_ell, eps(T))) * kh2 * (CR^2 + CI^2)
-            WPE_level += wpe_contrib
-
-            # WCE: (1/8) × (1/a_ell²) × kh⁴ × |A|² (wave correction energy, YBJ+)
-            wce_contrib = (T(1)/T(8)) * (T(1) / max(a_ell^2, eps(T))) * kh2^2 * (AR^2 + AI^2)
-            WCE_level += wce_contrib
-
-            # Track zero mode for dealiasing correction
-            if kx_val == 0 && ky_val == 0
-                WKE_zero = wke_contrib
+            # Compute LA = ∂_z(a × C) using finite differences
+            # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+            if nz == 1
+                LA_r = T(0)
+                LA_i = T(0)
+            elseif k_global == 1
+                # Bottom boundary
+                LA_r = a_ell * CR / Δz
+                LA_i = a_ell * CI / Δz
+            elseif k_global == nz
+                # Top boundary
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                CR_km1 = real(C_arr[k-1, i_local, j_local])
+                CI_km1 = imag(C_arr[k-1, i_local, j_local])
+                LA_r = -a_ell_km1 * CR_km1 / Δz
+                LA_i = -a_ell_km1 * CI_km1 / Δz
+            else
+                # Interior
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                CR_km1 = real(C_arr[k-1, i_local, j_local])
+                CI_km1 = imag(C_arr[k-1, i_local, j_local])
+                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
             end
+
+            # WKE contribution (factor of 0.5 in norm_factor)
+            WKE += LA_r^2 + LA_i^2
+
+            # WPE: (0.5/a_ell) × kh² × |C|²
+            WPE += (T(0.5) / max(a_ell, eps(T))) * kh2 * (CR^2 + CI^2)
+
+            # WCE: (1/8) × (1/a_ell²) × kh⁴ × |A|²
+            WCE += (T(1)/T(8)) * (T(1) / max(a_ell^2, eps(T))) * kh2^2 * (AR^2 + AI^2)
         end
-
-        # Dealiasing correction for WKE
-        WKE_level -= T(0.5) * WKE_zero
-
-        WKE += WKE_level
-        WPE += WPE_level
-        WCE += WCE_level
     end
+
+    # Dealiasing correction for WKE at kh=0 mode
+    wke_zero = T(0)
+    for k in 1:nz_local
+        k_global = local_to_global(k, 1, state.B)
+        a_ell = a_ell_arr[min(k_global, nz)]
+        CR = real(C_arr[k, 1, 1])
+        CI = imag(C_arr[k, 1, 1])
+
+        if nz == 1
+            LA_r = T(0)
+            LA_i = T(0)
+        elseif k_global == 1
+            LA_r = a_ell * CR / Δz
+            LA_i = a_ell * CI / Δz
+        elseif k_global == nz
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            CR_km1 = real(C_arr[k-1, 1, 1])
+            CI_km1 = imag(C_arr[k-1, 1, 1])
+            LA_r = -a_ell_km1 * CR_km1 / Δz
+            LA_i = -a_ell_km1 * CI_km1 / Δz
+        else
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            CR_km1 = real(C_arr[k-1, 1, 1])
+            CI_km1 = imag(C_arr[k-1, 1, 1])
+            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+        end
+        wke_zero += LA_r^2 + LA_i^2
+    end
+    WKE -= T(0.5) * wke_zero
 
     # Normalize by grid size
     norm_factor = T(0.5) / (nx * ny * nz)
@@ -793,69 +826,110 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
 end
 
 """
-    compute_wave_energy(state::State, grid::Grid, plans)
+    compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
 
 Compute wave kinetic energy per YBJ+ equation (4.7).
 
 Wave kinetic energy is computed as:
     WKE = (1/2) ∑_{kx,ky,z} |LA|²
 
-where LA = B + (kh²/4)×A in spectral space (since B = L⁺A and Δ → -kh²).
-
-This matches equation (4.7) from the YBJ+ paper exactly.
+where LA = ∂_z(a(z) × C) using the L operator from equation (1.3),
+with a(z) = f²/N² and C = ∂A/∂z.
 
 # Arguments
-- `state::State`: Current model state with B (wave envelope) and A (wave amplitude)
+- `state::State`: Current model state with B, A, and C fields
 - `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
+- `params`: Optional QGParams for stratification (uses constant N² if not provided)
 
 # Returns
 Domain-integrated wave kinetic energy (scalar).
 """
-function compute_wave_energy(state::State, grid::Grid, plans)
+function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
     T = eltype(real(state.B[1]))
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
 
-    B_arr = parent(state.B)
-    A_arr = parent(state.A)
-    nz_local, nx_local, ny_local = size(B_arr)
+    # Get elliptic coefficient a = f²/N²
+    a_ell_const = if params !== nothing
+        params.f₀^2 / max(params.N², eps(T))
+    else
+        T(1)  # Default to 1 if no params
+    end
+    a_ell_arr = fill(a_ell_const, nz)
+
+    C_arr = parent(state.C)
+    nz_local, nx_local, ny_local = size(C_arr)
+
+    # Grid spacing for vertical derivative
+    Δz = nz > 1 ? abs(grid.z[2] - grid.z[1]) : T(1)
 
     WE = T(0)
 
-    for k in 1:nz_local
-        WE_level = T(0)
-        WE_zero_mode = T(0)
+    # Compute LA = ∂_z(a × C) for each mode
+    for j_local in 1:ny_local, i_local in 1:nx_local
+        for k in 1:nz_local
+            k_global = local_to_global(k, 1, state.C)
+            a_ell = a_ell_arr[min(k_global, nz)]
+            CR = real(C_arr[k, i_local, j_local])
+            CI = imag(C_arr[k, i_local, j_local])
 
-        for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global(i_local, 2, state.B)
-            j_global = local_to_global(j_local, 3, state.B)
-
-            kx_val = grid.kx[min(i_global, length(grid.kx))]
-            ky_val = grid.ky[min(j_global, length(grid.ky))]
-            kh2 = kx_val^2 + ky_val^2
-
-            B_k = B_arr[k, i_local, j_local]
-            A_k = A_arr[k, i_local, j_local]
-
-            # WKE per equation (4.7): (1/2)|LA|²
-            # LA = B + (kh²/4)×A in spectral space
-            kh2_over_4 = kh2 / T(4)
-            LA = B_k + kh2_over_4 * A_k
-            energy_mode = abs2(LA)
-            WE_level += energy_mode
-
-            # Track zero mode (at kh=0, LA = B)
-            if kx_val == 0 && ky_val == 0
-                WE_zero_mode = energy_mode
+            # Compute LA = ∂_z(a × C) using finite differences
+            if nz == 1
+                LA_r = T(0)
+                LA_i = T(0)
+            elseif k_global == 1
+                LA_r = a_ell * CR / Δz
+                LA_i = a_ell * CI / Δz
+            elseif k_global == nz
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                CR_km1 = real(C_arr[k-1, i_local, j_local])
+                CI_km1 = imag(C_arr[k-1, i_local, j_local])
+                LA_r = -a_ell_km1 * CR_km1 / Δz
+                LA_i = -a_ell_km1 * CI_km1 / Δz
+            else
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                CR_km1 = real(C_arr[k-1, i_local, j_local])
+                CI_km1 = imag(C_arr[k-1, i_local, j_local])
+                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
             end
-        end
 
-        # Dealiasing correction: subtract half the kh=0 mode contribution
-        WE_level -= T(0.5) * WE_zero_mode
-        WE += WE_level
+            WE += LA_r^2 + LA_i^2
+        end
     end
+
+    # Dealiasing correction for kh=0 mode
+    wke_zero = T(0)
+    for k in 1:nz_local
+        k_global = local_to_global(k, 1, state.C)
+        a_ell = a_ell_arr[min(k_global, nz)]
+        CR = real(C_arr[k, 1, 1])
+        CI = imag(C_arr[k, 1, 1])
+
+        if nz == 1
+            LA_r = T(0)
+            LA_i = T(0)
+        elseif k_global == 1
+            LA_r = a_ell * CR / Δz
+            LA_i = a_ell * CI / Δz
+        elseif k_global == nz
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            CR_km1 = real(C_arr[k-1, 1, 1])
+            CI_km1 = imag(C_arr[k-1, 1, 1])
+            LA_r = -a_ell_km1 * CR_km1 / Δz
+            LA_i = -a_ell_km1 * CI_km1 / Δz
+        else
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            CR_km1 = real(C_arr[k-1, 1, 1])
+            CI_km1 = imag(C_arr[k-1, 1, 1])
+            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+        end
+        wke_zero += LA_r^2 + LA_i^2
+    end
+    WE -= T(0.5) * wke_zero
 
     WE *= T(0.5) / (nx * ny * nz)
     return WE
