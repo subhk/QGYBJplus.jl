@@ -351,12 +351,28 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
         end
         
+        # Write a_ell (f²/N² profile) - needed for proper WKE calculation using L operator
+        # For constant N², compute a_ell = f₀²/N² at cell centers (length nz)
+        # This matches the convention in physics.jl:a_ell_ut
+        if !isnothing(params) && G.nz > 1
+            f0_sq = params.f₀^2
+            N2_val = params.N²
+            if N2_val > 0
+                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
+                a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
+                a_ell_var[:] = a_ell_arr
+                a_ell_var.attrib["units"] = "s²"
+                a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
+                a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
+            end
+        end
+
         # Global attributes
         ds.attrib["title"] = "QG-YBJ Model State"
         ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
         ds.attrib["file_counter"] = manager.psi_counter
-        
+
         # Add parameter information if provided
         if !isnothing(params)
             ds.attrib["nx"] = params.nx
@@ -706,6 +722,22 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
+        end
+
+        # Write a_ell (f²/N² profile) - needed for proper WKE calculation using L operator
+        # For constant N², compute a_ell = f₀²/N² at cell centers (length nz)
+        # This matches the convention in physics.jl:a_ell_ut
+        if params !== nothing && G.nz > 1
+            f0_sq = params.f₀^2
+            N2_val = params.N²
+            if N2_val > 0
+                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
+                a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
+                a_ell_var[:] = a_ell_arr
+                a_ell_var.attrib["units"] = "s²"
+                a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
+                a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
+            end
         end
 
         # Global attributes

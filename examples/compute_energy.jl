@@ -6,7 +6,8 @@
 This script reads NetCDF state files and computes spatial KE fields:
   - Flow KE(x,y,z): (1/2)(u² + v²) where u = -∂ψ/∂y, v = ∂ψ/∂x
   - Wave KE(x,y,z): (1/2)|LA|² per YBJ+ equation (4.7)
-                    where LA = B + (kh²/4)×A in spectral space
+                    where L = ∂_z(f²/N² × ∂_z) from equation (1.3)
+                    and LA = ∂_z(a(z) × C) with a(z) = f²/N², C = ∂A/∂z
 
 USAGE:
 ------
@@ -108,47 +109,86 @@ function compute_flow_ke(psi::Array{T,3}, kx::Vector, ky::Vector) where T
 end
 
 """
-    compute_wave_ke(Br, Bi, Ar, Ai, kx, ky)
+    compute_wave_ke(Ar, Ai, a_ell, Δz)
 
 Compute spatial wave kinetic energy field per YBJ+ equation (4.7).
 
 Wave KE(x,y,z) = (1/2)|LA|²
 
-where LA = B + (kh²/4)×A in spectral space (since B = L⁺A = LA + (1/4)ΔA and Δ→-kh²).
+where L = ∂_z(f²/N² × ∂_z) from equation (1.3), computed as:
+  LA = ∂_z(a(z) × C)  where a(z) = f²/N² and C = ∂A/∂z
+
+This matches the discretization in src/diagnostics.jl:wave_energy_spectral:
+  1. C[k] = (A[k+1] - A[k]) / Δz  for k = 1:nz-1, C[nz] = 0 (Neumann BC)
+  2. LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+  3. Boundary: LA[1] = a[1] × C[1] / Δz, LA[nz] = -a[nz-1] × C[nz-1] / Δz
 
 # Arguments
-- `Br, Bi`: Real and imaginary parts of wave envelope B in physical space
-- `Ar, Ai`: Real and imaginary parts of wave amplitude A in physical space
-- `kx, ky`: Wavenumber arrays
+- `Ar, Ai`: Real and imaginary parts of wave amplitude A in physical space (nz, nx, ny)
+- `a_ell`: Array of f²/N² values at cell centers (length nz). a_ell[k] is used for interface k.
+- `Δz`: Vertical grid spacing
 
 # Returns
 Spatial wave kinetic energy field (1/2)|LA|²
 """
-function compute_wave_ke(Br::Array{T,3}, Bi::Array{T,3},
-                         Ar::Array{T,3}, Ai::Array{T,3},
-                         kx::Vector, ky::Vector) where T
-    nz, nx, ny = size(Br)
+function compute_wave_ke(Ar::Array{T,3}, Ai::Array{T,3},
+                         a_ell::Vector, Δz::Real) where T
+    nz, nx, ny = size(Ar)
 
-    # FFT to spectral space (2D horizontal)
-    B_hat = fft(complex.(Br, Bi), (2,3))
-    A_hat = fft(complex.(Ar, Ai), (2,3))
+    # Initialize LA arrays
+    LA_r = zeros(T, nz, nx, ny)
+    LA_i = zeros(T, nz, nx, ny)
 
-    # Compute LA = B + (kh²/4)×A in spectral space
-    LA_hat = similar(B_hat)
-    for k in 1:nz
-        for j in 1:ny
-            for i in 1:nx
-                kh2 = kx[i]^2 + ky[j]^2
-                kh2_over_4 = kh2 / 4.0
-                LA_hat[k, i, j] = B_hat[k, i, j] + kh2_over_4 * A_hat[k, i, j]
+    if nz == 1
+        # Single layer: LA = 0
+        return 0.5 .* (LA_r.^2 .+ LA_i.^2)
+    end
+
+    # Step 1: Pre-compute C = ∂A/∂z at interfaces (matches elliptic.jl)
+    # C[k] = (A[k+1] - A[k]) / Δz for k = 1:nz-1
+    # C[nz] = 0 (Neumann BC at bottom)
+    CR = zeros(T, nz, nx, ny)
+    CI = zeros(T, nz, nx, ny)
+
+    for j in 1:ny
+        for i in 1:nx
+            for k in 1:nz-1
+                CR[k, i, j] = (Ar[k+1, i, j] - Ar[k, i, j]) / Δz
+                CI[k, i, j] = (Ai[k+1, i, j] - Ai[k, i, j]) / Δz
             end
+            CR[nz, i, j] = 0.0  # Neumann BC
+            CI[nz, i, j] = 0.0
         end
     end
 
-    # Back to physical space
-    LA = ifft(LA_hat, (2,3))
-    LA_r = real.(LA)
-    LA_i = imag.(LA)
+    # Step 2: Compute LA = ∂_z(a × C) (matches diagnostics.jl:wave_energy_spectral)
+    # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+    for j in 1:ny
+        for i in 1:nx
+            for k in 1:nz
+                # Get a_ell values (with bounds checking matching main code)
+                a_ell_k = k <= length(a_ell) ? a_ell[k] : a_ell[end]
+
+                if k == 1
+                    # Bottom boundary: LA[1] = a[1] × C[1] / Δz
+                    # (assuming a[0] × C[0] = 0 from BC)
+                    LA_r[k, i, j] = a_ell_k * CR[k, i, j] / Δz
+                    LA_i[k, i, j] = a_ell_k * CI[k, i, j] / Δz
+                elseif k == nz
+                    # Top boundary: LA[nz] = -a[nz-1] × C[nz-1] / Δz
+                    # (since C[nz] = 0 from BC)
+                    a_ell_km1 = (k - 1) <= length(a_ell) ? a_ell[k - 1] : a_ell[end]
+                    LA_r[k, i, j] = -a_ell_km1 * CR[k-1, i, j] / Δz
+                    LA_i[k, i, j] = -a_ell_km1 * CI[k-1, i, j] / Δz
+                else
+                    # Interior: LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+                    a_ell_km1 = (k - 1) <= length(a_ell) ? a_ell[k - 1] : a_ell[end]
+                    LA_r[k, i, j] = (a_ell_k * CR[k, i, j] - a_ell_km1 * CR[k-1, i, j]) / Δz
+                    LA_i[k, i, j] = (a_ell_k * CI[k, i, j] - a_ell_km1 * CI[k-1, i, j]) / Δz
+                end
+            end
+        end
+    end
 
     # WKE = (1/2)|LA|²
     ke = 0.5 .* (LA_r.^2 .+ LA_i.^2)
@@ -177,6 +217,14 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
     Ar_xyz = has_A ? Array(ds_in["Ar"][:,:,:]) : nothing
     Ai_xyz = has_A ? Array(ds_in["Ai"][:,:,:]) : nothing
 
+    # Read a_ell (f²/N² profile) if available - needed for L operator computation
+    has_a_ell = haskey(ds_in, "a_ell")
+    a_ell = has_a_ell ? Array(ds_in["a_ell"][:]) : nothing
+
+    # Compute Δz from z coordinates
+    nz = length(z)
+    Δz = nz > 1 ? abs(z[2] - z[1]) : 1.0
+
     close(ds_in)
 
     # Convert to internal (z, x, y) order for spectral derivatives
@@ -190,8 +238,15 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
     flow_ke, u, v = compute_flow_ke(psi, kx, ky)
 
     # Compute wave KE per equation (4.7): WKE = (1/2)|LA|²
-    if has_A
-        wave_ke = compute_wave_ke(Br, Bi, Ar, Ai, kx, ky)
+    # where L = ∂_z(f²/N² × ∂_z) from equation (1.3)
+    if has_A && has_a_ell
+        wave_ke = compute_wave_ke(Ar, Ai, a_ell, Δz)
+    elseif has_A
+        # Fallback: use constant a_ell = 1.0 (assumes f²/N² = 1)
+        # a_ell has length nz (cell-centered values)
+        @warn "a_ell not found in $input_file. Using constant a_ell=1.0 approximation for WKE." maxlog=1
+        a_ell_approx = ones(size(Ar, 1))
+        wave_ke = compute_wave_ke(Ar, Ai, a_ell_approx, Δz)
     else
         # Fallback for old files without A: use |B|² ≈ |LA|² (approximation)
         @warn "Wave amplitude A not found in $input_file. Using |B|² approximation for WKE." maxlog=1
@@ -242,7 +297,7 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
         wave_ke_var[:,:,:] = wave_ke_xyz
         wave_ke_var.attrib["units"] = "m²/s²"
         wave_ke_var.attrib["long_name"] = "wave kinetic energy per YBJ+ equation (4.7)"
-        wave_ke_var.attrib["formula"] = "KE = (1/2)|LA|² where LA = B + (kh²/4)×A"
+        wave_ke_var.attrib["formula"] = "KE = (1/2)|LA|² where L = ∂_z(f²/N² × ∂_z)"
 
         # Total KE field
         total_ke_var = defVar(ds, "total_KE", Float64, ("x", "y", "z"))
@@ -265,7 +320,7 @@ function process_and_save(input_file::String, output_file::String, kx::Vector, k
         ds.attrib["source_file"] = basename(input_file)
         ds.attrib["flow_KE_formula"] = "KE_flow = (1/2)|∇ψ|² = (1/2)(u² + v²)"
         ds.attrib["wave_KE_formula"] = "KE_wave = (1/2)|LA|² per YBJ+ equation (4.7)"
-        ds.attrib["note"] = "LA = B + (kh²/4)×A in spectral space, where B = L⁺A is the wave envelope"
+        ds.attrib["note"] = "LA computed using L = ∂_z(f²/N² × ∂_z) from equation (1.3)"
     end
 end
 
@@ -333,13 +388,15 @@ function main()
         println("")
         println("Computes spatial KE fields from NetCDF state files.")
         println("")
-        println("Input:  state0001.nc, state0002.nc, ... (containing psi, LAr, LAi, Ar, Ai)")
+        println("Input:  state0001.nc, state0002.nc, ... (containing psi, LAr, LAi, Ar, Ai, a_ell)")
+        println("        - a_ell: f²/N² at cell centers (length nz), used for L operator")
         println("Output: energy0001.nc, energy0002.nc, ... (containing flow_KE, wave_KE, u, v)")
         println("")
         println("Variables in output files:")
         println("  flow_KE(x,y,z) = (1/2)(u² + v²)    [geostrophic KE]")
         println("  wave_KE(x,y,z) = (1/2)|LA|²        [wave KE per YBJ+ eq. 4.7]")
-        println("                   where LA = B + (kh²/4)×A in spectral space")
+        println("                   where L = ∂_z(f²/N² × ∂_z) from eq. (1.3)")
+        println("                   LA[k] = (a[k]×C[k] - a[k-1]×C[k-1])/Δz, C = ∂A/∂z")
         println("  total_KE(x,y,z) = flow_KE + wave_KE")
         println("  u(x,y,z) = -∂ψ/∂y                  [zonal velocity]")
         println("  v(x,y,z) = ∂ψ/∂x                   [meridional velocity]")
