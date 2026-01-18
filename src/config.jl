@@ -246,7 +246,7 @@ strat = create_stratification_config(:skewed_gaussian)
 # strat = create_stratification_config(:analytical, N_func=N_func)
 ```
 
-See [`StratificationConfig`](@ref) for details on supported types.
+See `StratificationConfig` for details on supported types.
 """
 function create_stratification_config(type::Symbol; kwargs...)
     T = Float64

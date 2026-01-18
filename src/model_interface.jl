@@ -1067,7 +1067,7 @@ S_final = run_simulation!(S, G, par, plans;
                           timestepper=:imex_cn)
 ```
 
-See also: [`OutputConfig`](@ref), [`leapfrog_step!`](@ref), [`imex_cn_step!`](@ref)
+See also: `OutputConfig`, `leapfrog_step!`, `imex_cn_step!`
 """
 function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          output_config::Union{OutputConfig,Nothing}=nothing,

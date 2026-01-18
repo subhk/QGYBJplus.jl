@@ -96,7 +96,7 @@ For the skewed Gaussian N²(z) profile:
 par = default_params(nx=128, ny=128, nz=64, Lx=500e3, Ly=500e3, Lz=4000.0, dt=0.001, nt=10000)
 ```
 
-See also: [`default_params`](@ref), [`with_density_profiles`](@ref)
+See also: `default_params`, `with_density_profiles`
 """
 Base.@kwdef mutable struct QGParams{T}
     #= ====================================================================

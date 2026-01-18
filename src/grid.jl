@@ -566,7 +566,7 @@ S = init_state(G)
 init_random_psi!(S, G, par, plans)
 ```
 
-See also: [`State`](@ref), [`init_random_psi!`](@ref)
+See also: `State`, `init_random_psi!`
 """
 function init_state(G::Grid; T=Float64)
     # Allocate spectral (complex) fields
