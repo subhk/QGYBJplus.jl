@@ -6,7 +6,13 @@ CurrentModule = QGYBJplus
 
 Run your first QGYBJ+.jl simulation in 5 minutes.
 
+---
+
 ## Minimal Example
+
+```@raw html
+<div class="quickstart-card">
+```
 
 ```julia
 using QGYBJplus
@@ -26,9 +32,15 @@ result = run_simple_simulation(config)
 println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
 ```
 
+```@raw html
+</div>
+```
+
+---
+
 ## Step-by-Step Breakdown
 
-### 1. Create Configuration
+### Step 1: Create Configuration
 
 ```julia
 config = create_simple_config(
@@ -41,58 +53,130 @@ config = create_simple_config(
 )
 ```
 
-!!! warning "Lx, Ly, Lz are required"
-    There are no default domain sizes. Omitting them causes a `MethodError`.
+!!! warning "Domain size is required"
+    There are no default values for `Lx`, `Ly`, `Lz`. Omitting them causes a `MethodError`.
 
-### 2. Run Simulation
+### Step 2: Run Simulation
 
 ```julia
 result = run_simple_simulation(config)
 ```
 
-### 3. Access Results
+This returns a `Simulation` object containing:
+- `result.state` — Final state with all fields
+- `result.grid` — Grid information
+- `result.params` — Simulation parameters
+
+### Step 3: Access Results
 
 ```julia
 state = result.state
 
-# Spectral fields (complex)
+# Spectral fields (complex, in Fourier space)
 state.psi    # Streamfunction
 state.B      # Wave envelope
+state.A      # Wave amplitude (diagnosed from B)
+state.C      # Vertical derivative of A
 
-# Physical fields (real)
-state.u, state.v   # Velocities
+# Physical fields (real, in physical space)
+state.u      # Zonal velocity
+state.v      # Meridional velocity
+state.w      # Vertical velocity
 ```
 
-### 4. Compute Diagnostics
+### Step 4: Compute Diagnostics
 
 ```julia
 # Mean flow kinetic energy
 KE = flow_kinetic_energy(state.u, state.v)
 
-# Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
-WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
+# Wave energy components per YBJ+ equation (4.7)
+WKE, WPE, WCE = compute_detailed_wave_energy(state, result.grid, result.params)
+
+# Simple wave energy
+WE_B, WE_A = wave_energy(state.B, state.A)
 ```
 
-## Common Options
+---
+
+## Common Configuration Options
+
+```@raw html
+<div class="feature-grid">
+<div class="feature-card">
+    <h3>Physics Options</h3>
+    <p>Control the physical model behavior</p>
+</div>
+<div class="feature-card">
+    <h3>Stratification</h3>
+    <p>Choose ocean density profile</p>
+</div>
+</div>
+```
 
 ```julia
 config = create_simple_config(
     Lx=500e3, Ly=500e3, Lz=4000.0,
     nx=64, ny=64, nz=32,
 
-    # Physics
+    # Physics options
     ybj_plus = true,          # YBJ+ formulation (default)
-    linear = false,           # Disable nonlinear terms
-    inviscid = true,          # No dissipation
-    no_wave_feedback = true,  # One-way coupling
+    linear = false,           # Set true to disable nonlinear terms
+    inviscid = true,          # Set true for no dissipation
+    no_wave_feedback = true,  # Set true for one-way coupling (eddies → waves only)
 
     # Stratification
     stratification_type = :constant_N,  # or :skewed_gaussian
 )
 ```
 
+| Option | Default | Description |
+|:-------|:--------|:------------|
+| `ybj_plus` | `true` | Use YBJ+ formulation (recommended) |
+| `linear` | `false` | Disable nonlinear advection terms |
+| `inviscid` | `false` | Disable all dissipation |
+| `no_wave_feedback` | `false` | Disable wave feedback on mean flow |
+| `stratification_type` | `:constant_N` | Ocean density profile type |
+
+---
+
+## Output Files
+
+By default, simulations save to `./output_simple/`:
+
+```
+output_simple/
+├── state0001.nc          # Field snapshots
+├── state0002.nc
+└── diagnostic/           # Energy time series
+    ├── wave_KE.nc
+    ├── mean_flow_KE.nc
+    └── total_energy.nc
+```
+
+---
+
 ## What's Next?
 
-- [Worked Example](@ref worked_example) - Detailed walkthrough
-- [Configuration](@ref configuration) - All parameters
-- [MPI Parallelization](@ref parallel) - Large-scale runs
+```@raw html
+<div class="learning-path">
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../worked_example/">Worked Example</a></strong> — Detailed step-by-step walkthrough
+    </div>
+</div>
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../guide/configuration/">Configuration Guide</a></strong> — All available parameters
+    </div>
+</div>
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../advanced/parallel/">MPI Parallelization</a></strong> — Run large-scale simulations
+    </div>
+</div>
+</div>
+```

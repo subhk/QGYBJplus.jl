@@ -41,11 +41,11 @@ mpiexec -n 16 julia --project parallel_run.jl
 
 ## Requirements
 
-```julia
-Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
-```
+MPI parallel packages (MPI.jl, PencilArrays.jl, PencilFFTs.jl) are included as dependencies and installed automatically with QGYBJ+.jl.
 
-System MPI required: `brew install open-mpi` (macOS) or `apt install libopenmpi-dev` (Ubuntu).
+**System MPI library required:**
+- **macOS**: `brew install open-mpi`
+- **Ubuntu**: `apt install libopenmpi-dev`
 
 ## Scaling
 

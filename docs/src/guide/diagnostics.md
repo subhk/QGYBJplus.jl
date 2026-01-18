@@ -20,23 +20,19 @@ KE = \frac{1}{2}\int (u^2 + v^2) \, dV
 KE = flow_kinetic_energy(state.u, state.v)
 ```
 
-### Flow Potential Energy
+### Flow Potential Energy (Spectral)
 
-Available potential energy:
+Available potential energy computed in spectral space with proper dealiasing:
 
 ```math
 PE = \frac{1}{2}\int \frac{f_0^2}{N^2}\left(\frac{\partial\psi}{\partial z}\right)^2 dV
 ```
 
 ```julia
-PE = flow_potential_energy(state.psi, grid, params)
-```
-
-### Total Flow Energy
-
-```julia
-E_flow = flow_total_energy(state, grid, params)
-# Equivalent to: KE + PE
+# Compute buoyancy field first (b = ∂ψ/∂z)
+bk = similar(state.psi)
+# ... compute vertical derivative ...
+PE = flow_potential_energy_spectral(bk, grid, params)
 ```
 
 ### Wave Energy
@@ -61,6 +57,9 @@ WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 
 # Simple wave kinetic energy
 WE = compute_wave_energy(state, grid, plans; params=params)
+
+# Basic wave energy from B and A fields
+WE_B, WE_A = wave_energy(state.B, state.A)
 ```
 
 !!! note "Physical interpretation"
@@ -255,96 +254,25 @@ dE_rel = (E[end] - E[1]) / E[1]
 println("Relative energy change: $(dE_rel)")
 
 if abs(dE_rel) < 1e-6
-    println("✓ Energy well conserved")
+    println("Energy well conserved")
 else
-    println("⚠ Check time step or dissipation settings")
+    println("Check time step or dissipation settings")
 end
 ```
 
-## Enstrophy
+## MPI-Aware Energy Functions
 
-### Relative Enstrophy
-
-```math
-Z_{\zeta} = \frac{1}{2}\int \zeta^2 \, dV
-```
-
-where ``\zeta = \nabla^2\psi`` is relative vorticity.
+For parallel simulations, use the global reduction versions:
 
 ```julia
-Z_rel = relative_enstrophy(state.psi, grid)
-```
+# Physical-space energy with MPI reduction
+KE = flow_kinetic_energy_global(state.u, state.v, mpi_config)
+WE_B, WE_A = wave_energy_global(state.B, state.A, mpi_config)
 
-### Potential Enstrophy
-
-```math
-Z_q = \frac{1}{2}\int q^2 \, dV
-```
-
-```julia
-Z_pot = potential_enstrophy(state.q, grid)
-```
-
-## Spectral Diagnostics
-
-### Energy Spectra
-
-Compute 1D energy spectrum:
-
-```julia
-# Horizontal wavenumber spectrum
-k, E_k = horizontal_energy_spectrum(state.psi, grid)
-
-# Plot
-using Plots
-plot(k, E_k, xscale=:log10, yscale=:log10,
-    xlabel="k", ylabel="E(k)", label="Energy")
-plot!(k, 0.1 .* k.^(-3), label="k⁻³", linestyle=:dash)
-```
-
-### Vertical Spectra
-
-```julia
-# Vertical mode decomposition
-m, E_m = vertical_energy_spectrum(state.psi, grid, params)
-```
-
-### 2D Spectrum
-
-```julia
-# 2D spectrum E(kx, ky)
-E_2d = compute_2d_spectrum(state.psi, grid)
-heatmap(log10.(E_2d), xlabel="kx", ylabel="ky")
-```
-
-## Vorticity Statistics
-
-### Vorticity Field
-
-```julia
-# Compute vorticity
-zeta = compute_vorticity(state.psi, grid, plans)
-```
-
-### Statistics
-
-```julia
-# Mean, variance, skewness, kurtosis
-stats = vorticity_statistics(zeta)
-
-println("Mean: $(stats.mean)")
-println("Variance: $(stats.variance)")
-println("Skewness: $(stats.skewness)")
-println("Kurtosis: $(stats.kurtosis)")
-```
-
-### PDF
-
-```julia
-# Probability density function
-bins, pdf = vorticity_pdf(zeta; nbins=100)
-
-plot(bins, pdf, xlabel="ζ", ylabel="P(ζ)")
+# Spectral energy with MPI reduction
+KE_spectral = flow_kinetic_energy_spectral_global(uk, vk, grid, params; mpi_config=mpi_config)
+PE_spectral = flow_potential_energy_spectral_global(bk, grid, params; mpi_config=mpi_config)
+WKE, WPE, WCE = wave_energy_spectral_global(BR, BI, AR, AI, CR, CI, grid, params; mpi_config=mpi_config)
 ```
 
 ## Wave Diagnostics
@@ -359,91 +287,52 @@ A2 = abs2.(state.A)
 A_max = maximum(sqrt.(A2))
 
 # Volume-averaged amplitude
+using Statistics
 A_rms = sqrt(mean(A2))
 ```
 
-### Wave Fluxes
+### Wave Velocities
 
-Energy flux in vertical:
-
-```julia
-# Vertical wave energy flux
-Fz = compute_wave_energy_flux_z(state.A, grid, params)
-```
-
-### Wave Polarization
-
-Horizontal wave velocity components:
+Compute wave-induced velocities (in-place):
 
 ```julia
-u_wave, v_wave = compute_wave_velocities(state.A, grid, plans)
-
-# Polarization (should be ~1 for pure inertial oscillation)
-polarization = mean(abs2.(u_wave) ./ abs2.(v_wave))
+# Updates state.u, state.v with wave velocities
+compute_wave_velocities!(state, grid; plans=plans, params=params, compute_w=true)
 ```
 
 ## Omega Equation
 
-Compute ageostrophic vertical velocity:
+The omega equation computes ageostrophic vertical velocity:
 
-```julia
-# Solve omega equation
-w = compute_omega(state.psi, grid, params, plans)
-
-# Maximum vertical velocity
-w_max = maximum(abs.(w))
-```
-
-The omega equation:
 ```math
 \nabla^2 w + \frac{f_0^2}{N^2}\frac{\partial^2 w}{\partial z^2} = \frac{2f_0}{N^2}J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
 ```
 
-## Eddy Identification
-
-### Vortex Cores
-
-Identify coherent vortices:
+Use `omega_eqn_rhs!` to compute the right-hand side:
 
 ```julia
-# Okubo-Weiss parameter
-OW = compute_okubo_weiss(state.psi, grid, plans)
-
-# Vortex cores: OW < 0
-vortex_mask = OW .< -threshold
-```
-
-### Eddy Census
-
-```julia
-# Count and characterize eddies
-eddies = identify_eddies(state.psi, grid;
-    threshold = 0.1,
-    min_radius = 3  # grid points
-)
-
-println("Found $(length(eddies)) eddies")
-for e in eddies
-    println("  Radius: $(e.radius), Intensity: $(e.intensity)")
-end
+# Compute omega equation RHS
+omega_eqn_rhs!(rhs, state.psi, grid, params, plans)
 ```
 
 ## Time Series Analysis
 
-### Recording Diagnostics
+### Recording Diagnostics Manually
 
 ```julia
-# Initialize time series storage
-ts = DiagnosticsTimeSeries()
+# Initialize storage arrays
+time_series = Float64[]
+KE_series = Float64[]
+WKE_series = Float64[]
 
 for step = 1:nsteps
-    timestep!(state, ...)
+    # ... time stepping code ...
 
     # Record diagnostics
-    push!(ts.time, step * dt)
-    push!(ts.KE, flow_kinetic_energy(state.u, state.v))
-    push!(ts.PE, flow_potential_energy(state.psi, grid, params))
-    push!(ts.WE, wave_energy(state.B, state.A)[2])
+    push!(time_series, step * dt)
+    push!(KE_series, flow_kinetic_energy(state.u, state.v))
+    WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
+    push!(WKE_series, WKE)
 end
 ```
 
@@ -451,7 +340,7 @@ end
 
 ```julia
 # Total energy should be conserved (inviscid)
-E_total = ts.KE .+ ts.PE .+ ts.WE
+E_total = KE_series .+ WKE_series
 
 # Check conservation
 dE = (E_total[end] - E_total[1]) / E_total[1]
@@ -462,121 +351,30 @@ if abs(dE) > 1e-6
 end
 ```
 
-### Growth Rates
+## Diagnostic Output Example
 
 ```julia
-# Compute growth rate from time series
-using Statistics
-
-# Linear fit in log space
-log_E = log.(ts.KE)
-t = ts.time
-
-growth_rate = (log_E[end] - log_E[1]) / (t[end] - t[1])
-println("KE growth rate: $growth_rate")
-```
-
-## Budget Analysis
-
-### Energy Budget
-
-```julia
-# Compute all energy budget terms
-budget = energy_budget(state, state_old, grid, params, dt)
-
-println("dKE/dt = $(budget.dKE_dt)")
-println("Advection: $(budget.advection)")
-println("Dissipation: $(budget.dissipation)")
-println("Wave feedback: $(budget.wave_feedback)")
-println("Residual: $(budget.residual)")
-```
-
-### Enstrophy Budget
-
-```julia
-budget_Z = enstrophy_budget(state, grid, params)
-```
-
-## Spatial Averaging
-
-### Horizontal Mean
-
-```julia
-# Average over horizontal domain
-psi_z = horizontal_mean(state.psi, grid)  # Function of z only
-```
-
-### Vertical Mean
-
-```julia
-# Depth-averaged field
-psi_xy = vertical_mean(state.psi, grid)  # Function of x, y only
-```
-
-### Zonal Mean
-
-```julia
-# Average over x (zonal direction)
-psi_yz = zonal_mean(state.psi, grid)
-```
-
-## Correlation Functions
-
-### Autocorrelation
-
-```julia
-# Spatial autocorrelation of vorticity
-lag, R = spatial_autocorrelation(zeta, grid; direction=:x)
-
-# Integral length scale
-L_int = sum(R .* diff([0; lag])) / R[1]
-```
-
-### Cross-Correlation
-
-```julia
-# Correlation between wave amplitude and vorticity
-R_wave_zeta = cross_correlation(abs.(state.A), zeta, grid)
-```
-
-## Diagnostic Output
-
-### Comprehensive Diagnostics
-
-```julia
-function compute_all_diagnostics(state, grid, params, plans)
+function compute_diagnostics(state, grid, params)
     diag = Dict{String, Any}()
 
     # Energy
     diag["KE"] = flow_kinetic_energy(state.u, state.v)
-    diag["PE"] = flow_potential_energy(state.psi, grid, params)
+    diag["WKE"], diag["WPE"], diag["WCE"] = compute_detailed_wave_energy(state, grid, params)
     diag["WE_B"], diag["WE_A"] = wave_energy(state.B, state.A)
 
-    # Enstrophy
-    diag["Z_rel"] = relative_enstrophy(state.psi, grid)
-    diag["Z_pot"] = potential_enstrophy(state.q, grid)
-
     # Extrema
-    zeta = compute_vorticity(state.psi, grid, plans)
-    diag["zeta_max"] = maximum(zeta)
-    diag["zeta_min"] = minimum(zeta)
     diag["A_max"] = maximum(abs.(state.A))
+    diag["psi_max"] = maximum(abs.(state.psi))
 
     return diag
 end
-```
 
-### Formatted Output
-
-```julia
 function print_diagnostics(diag, step, time)
     println("=" ^ 60)
     println("Step: $step, Time: $(round(time, digits=4))")
     println("-" ^ 60)
     println("  KE = $(round(diag["KE"], sigdigits=6))")
-    println("  PE = $(round(diag["PE"], sigdigits=6))")
-    println("  WE = $(round(diag["WE_A"], sigdigits=6))")
-    println("  ζ_max = $(round(diag["zeta_max"], sigdigits=4))")
+    println("  WKE = $(round(diag["WKE"], sigdigits=6))")
     println("  |A|_max = $(round(diag["A_max"], sigdigits=4))")
     println("=" ^ 60)
 end
@@ -586,9 +384,12 @@ end
 
 See the [Physics API Reference](../api/physics.md) for complete documentation of diagnostic functions:
 - `flow_kinetic_energy` - Mean flow kinetic energy
-- `wave_energy` - Wave energy diagnostics
+- `flow_kinetic_energy_spectral` - Spectral kinetic energy with dealiasing
+- `flow_potential_energy_spectral` - Spectral potential energy
+- `wave_energy` - Basic wave energy from B and A fields
+- `wave_energy_spectral` - Spectral wave energy components
+- `compute_detailed_wave_energy` - Detailed WKE, WPE, WCE computation
+- `compute_wave_energy` - Simple wave energy computation
 - `flow_kinetic_energy_global` / `wave_energy_global` - MPI-aware global reductions
 - `omega_eqn_rhs!` - Omega equation RHS computation
 - `EnergyDiagnosticsManager` - Automatic energy output to separate files
-
-Additional diagnostic utilities are available through the model interface.

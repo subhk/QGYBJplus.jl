@@ -18,13 +18,13 @@ cd QGYBJ+.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
 
-### MPI Support (Optional)
+### MPI Support
 
-```julia
-Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
-```
+MPI parallel packages (MPI.jl, PencilArrays.jl, PencilFFTs.jl) are included as dependencies and installed automatically.
 
-Requires system MPI: `brew install open-mpi` (macOS) or `apt install libopenmpi-dev` (Ubuntu).
+To run MPI simulations, you need a system MPI library:
+- **macOS**: `brew install open-mpi`
+- **Ubuntu**: `apt install libopenmpi-dev`
 
 ## Quick Example
 
