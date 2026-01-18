@@ -1104,6 +1104,33 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     B_phys = _allocate_fft_dst(S.B, plans)
     A_phys = _allocate_fft_dst(S.A, plans)
 
+    report_step = function(state::State, step::Int, current_time)
+        if diagnostics_interval > 0 && step % diagnostics_interval == 0
+            max_u = reduce_max_if_mpi(maximum(abs, parent(state.u)), mpi_config)
+            max_v = reduce_max_if_mpi(maximum(abs, parent(state.v)), mpi_config)
+            max_vel = max(max_u, max_v)
+
+            fft_backward!(B_phys, state.B, plans)
+            fft_backward!(A_phys, state.A, plans)
+            max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
+            max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
+
+            if is_root && print_progress
+                @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
+                        step, current_time, max_vel, max_B, max_A)
+            end
+        end
+
+        if output_manager !== nothing
+            write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
+            write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
+            if write_psi || write_waves
+                write_state_file(output_manager, state, G, plans, current_time, parallel_config;
+                                 params=par, write_psi=write_psi, write_waves=write_waves)
+            end
+        end
+    end
+
     # Print initial diagnostics (step 0)
     # Note: All processes must participate in MPI reductions, so compute on all
     if is_mpi || print_progress
@@ -1152,36 +1179,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
             current_time = step * dt
 
-            # Diagnostics output
-            # Note: All processes must participate in MPI reductions
-            if diagnostics_interval > 0 && step % diagnostics_interval == 0
-                # Velocities u, v are already in physical space
-                max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
-                max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
-                max_vel = max(max_u, max_v)
-
-                # Transform B and A to physical space for meaningful diagnostics
-                fft_backward!(B_phys, Sn.B, plans)
-                fft_backward!(A_phys, Sn.A, plans)
-                max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
-                max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
-
-                # Print diagnostics (only on root)
-                if is_root && print_progress
-                    @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
-                            step, current_time, max_vel, max_B, max_A)
-                end
-            end
-
-            # Save state (allow distinct ψ/waves intervals)
-            if output_manager !== nothing
-                write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
-                write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
-                if write_psi || write_waves
-                    write_state_file(output_manager, Sn, G, plans, current_time, parallel_config;
-                                     params=par, write_psi=write_psi, write_waves=write_waves)
-                end
-            end
+            report_step(Sn, step, current_time)
         end
 
         # Copy final state back to S
@@ -1206,43 +1204,14 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         Sn = copy_state(S)
         Snp1 = copy_state(S)
 
-        # Time integration loop
         for step in 1:nt
-            # IMEX Crank-Nicolson step
             imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws;
                           a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
-            # Swap states: (n) ← (n+1)
             Sn, Snp1 = Snp1, Sn
 
             current_time = step * dt
-
-            # Diagnostics output
-            if diagnostics_interval > 0 && step % diagnostics_interval == 0
-                max_u = reduce_max_if_mpi(maximum(abs, parent(Sn.u)), mpi_config)
-                max_v = reduce_max_if_mpi(maximum(abs, parent(Sn.v)), mpi_config)
-                max_vel = max(max_u, max_v)
-
-                fft_backward!(B_phys, Sn.B, plans)
-                fft_backward!(A_phys, Sn.A, plans)
-                max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
-                max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
-
-                if is_root && print_progress
-                    @printf("%8d  %10.2e  %12.4e  %12.4e  %12.4e\n",
-                            step, current_time, max_vel, max_B, max_A)
-                end
-            end
-
-            # Save state (allow distinct ψ/waves intervals)
-            if output_manager !== nothing
-                write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
-                write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
-                if write_psi || write_waves
-                    write_state_file(output_manager, Sn, G, plans, current_time, parallel_config;
-                                     params=par, write_psi=write_psi, write_waves=write_waves)
-                end
-            end
+            report_step(Sn, step, current_time)
         end
 
         # Copy final state back to S
