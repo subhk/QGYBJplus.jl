@@ -7,14 +7,14 @@ Second-order IMEX (Implicit-Explicit) time stepping for YBJ+ equation with
 Strang operator splitting and Adams-Bashforth 2 for advection.
 
 The YBJ+ equation for B:
-    ∂B/∂t + J(ψ,B) + (i/2)ζB = i·αdisp·kₕ²·A
+    ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A + (i/2)ζB
 
 where A = (L⁺)⁻¹·B (elliptic inversion).
 
 SECOND-ORDER SCHEME: STRANG SPLITTING + IMEX-CNAB
 -------------------------------------------------
 Step 1: First half-refraction (Strang)
-    B* = B^n × exp(-i·(dt/2)·ζ/2)
+    B* = B^n × exp(+i·(dt/2)·ζ/2)
 
 Step 2: IMEX-CNAB for advection + dispersion
     - EXPLICIT (AB2): (3/2)N^n - (1/2)N^{n-1}  where N = -J(ψ,B*) and
@@ -22,12 +22,12 @@ Step 2: IMEX-CNAB for advection + dispersion
     - IMPLICIT (CN):  (1/2)[L(B*) + L(B^{n+1})]  where L(B) = i·αdisp·kₕ²·A
 
 Step 3: Second half-refraction (Strang)
-    B^{n+1} = B** × exp(-i·(dt/2)·ζ/2)
+    B^{n+1} = B** × exp(+i·(dt/2)·ζ/2)
 
 The refraction term is handled exactly via integrating factor:
-    dB/dt = -(i/2)ζB  →  B(t) = B(0)·exp(-i·ζ·t/2)
+    dB/dt = +(i/2)ζB  →  B(t) = B(0)·exp(+i·ζ·t/2)
 
-This is energy-preserving since |exp(-i·ζ·t/2)| = 1.
+This is energy-preserving since |exp(+i·ζ·t/2)| = 1.
 
 TEMPORAL ACCURACY:
 -----------------
@@ -197,10 +197,10 @@ end
 
 Apply exact refraction using integrating factor (operator splitting).
 
-Solves: dB/dt = -(i/2)ζB  exactly over time `dt_fraction * par.dt`.
-Solution: B(Δt) = B(0) × exp(-i·Δt·ζ/2)
+Solves: dB/dt = +(i/2)ζB  exactly over time `dt_fraction * par.dt`.
+Solution: B(Δt) = B(0) × exp(+i·Δt·ζ/2)
 
-This is energy-preserving since |exp(-i·Δt·ζ/2)| = 1 for real ζ.
+This is energy-preserving since |exp(+i·Δt·ζ/2)| = 1 for real ζ.
 
 # Arguments
 - `Bk_out`: Output wave envelope in spectral space
@@ -272,11 +272,11 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
     B_phys_arr = parent(B_phys)
     nz_phys, nx_phys, ny_phys = size(ζ_phys_arr)
 
-    # Apply exact integrating factor: B* = B × exp(-i·dt·ζ/2)
-    # The factor exp(-i·dt·ζ/2) has magnitude 1 since ζ is real, ensuring energy conservation
+    # Apply exact integrating factor: B* = B × exp(+i·dt·ζ/2)
+    # The factor exp(+i·dt·ζ/2) has magnitude 1 since ζ is real, ensuring energy conservation
     @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         ζ_val = real(ζ_phys_arr[k, i, j])  # Vorticity is real
-        phase_factor = exp(-im * dt * ζ_val / 2)
+        phase_factor = exp(+im * dt * ζ_val / 2)
         B_phys_arr[k, i, j] *= phase_factor
     end
 
