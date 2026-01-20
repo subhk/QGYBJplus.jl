@@ -732,11 +732,12 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid;
                                 params=nothing, N2_profile=nothing) where T
     # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
+    # Skip w computation entirely when use_3d_advection=false for better performance
     # Pass params and N2_profile to ensure consistent stratification handling
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
                               params=params,
-                              compute_w=true,
+                              compute_w=tracker.config.use_3d_advection,
                               use_ybj_w=tracker.config.use_ybj_w,
                               N2_profile=N2_profile)
 
@@ -1058,17 +1059,20 @@ where (u,v,w) is the interpolated velocity at the current particle position.
 """
 function advect_euler!(tracker::ParticleTracker{T}, dt::T) where T
     particles = tracker.particles
-    
+    use_3d = tracker.config.use_3d_advection
+
     @inbounds for i in 1:particles.np
         x, y, z = particles.x[i], particles.y[i], particles.z[i]
-        
+
         u, v, w = interpolate_velocity_at_position(x, y, z, tracker)
-        
+
         # Euler timestep: x = x + dt*u
         particles.x[i] = x + dt * u
         particles.y[i] = y + dt * v
-        particles.z[i] = z + dt * w
-        
+        if use_3d
+            particles.z[i] = z + dt * w
+        end
+
         particles.u[i] = u
         particles.v[i] = v
         particles.w[i] = w
@@ -1077,26 +1081,29 @@ end
 
 function advect_rk2!(tracker::ParticleTracker{T}, dt::T) where T
     particles = tracker.particles
-    
+    use_3d = tracker.config.use_3d_advection
+
     @inbounds for i in 1:particles.np
         x0, y0, z0 = particles.x[i], particles.y[i], particles.z[i]
-        
+
         # First stage
         u1, v1, w1 = interpolate_velocity_at_position(x0, y0, z0, tracker)
-        
-        # Midpoint
+
+        # Midpoint (z stays fixed if 2D advection)
         x_mid = x0 + 0.5 * dt * u1
         y_mid = y0 + 0.5 * dt * v1
-        z_mid = z0 + 0.5 * dt * w1
-        
+        z_mid = use_3d ? z0 + 0.5 * dt * w1 : z0
+
         # Second stage
         u2, v2, w2 = interpolate_velocity_at_position(x_mid, y_mid, z_mid, tracker)
-        
+
         # Final update
         particles.x[i] = x0 + dt * u2
         particles.y[i] = y0 + dt * v2
-        particles.z[i] = z0 + dt * w2
-        
+        if use_3d
+            particles.z[i] = z0 + dt * w2
+        end
+
         particles.u[i] = u2
         particles.v[i] = v2
         particles.w[i] = w2
@@ -1105,36 +1112,39 @@ end
 
 function advect_rk4!(tracker::ParticleTracker{T}, dt::T) where T
     particles = tracker.particles
-    
+    use_3d = tracker.config.use_3d_advection
+
     @inbounds for i in 1:particles.np
         x0, y0, z0 = particles.x[i], particles.y[i], particles.z[i]
-        
+
         # Stage 1
         u1, v1, w1 = interpolate_velocity_at_position(x0, y0, z0, tracker)
-        
-        # Stage 2
+
+        # Stage 2 (z stays fixed if 2D advection)
         x_temp = x0 + 0.5 * dt * u1
         y_temp = y0 + 0.5 * dt * v1
-        z_temp = z0 + 0.5 * dt * w1
+        z_temp = use_3d ? z0 + 0.5 * dt * w1 : z0
         u2, v2, w2 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-        
+
         # Stage 3
         x_temp = x0 + 0.5 * dt * u2
         y_temp = y0 + 0.5 * dt * v2
-        z_temp = z0 + 0.5 * dt * w2
+        z_temp = use_3d ? z0 + 0.5 * dt * w2 : z0
         u3, v3, w3 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-        
+
         # Stage 4
         x_temp = x0 + dt * u3
         y_temp = y0 + dt * v3
-        z_temp = z0 + dt * w3
+        z_temp = use_3d ? z0 + dt * w3 : z0
         u4, v4, w4 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-        
+
         # Final update
         particles.x[i] = x0 + dt * (u1 + 2*u2 + 2*u3 + u4) / 6
         particles.y[i] = y0 + dt * (v1 + 2*v2 + 2*v3 + v4) / 6
-        particles.z[i] = z0 + dt * (w1 + 2*w2 + 2*w3 + w4) / 6
-        
+        if use_3d
+            particles.z[i] = z0 + dt * (w1 + 2*w2 + 2*w3 + w4) / 6
+        end
+
         particles.u[i] = (u1 + 2*u2 + 2*u3 + u4) / 6
         particles.v[i] = (v1 + 2*v2 + 2*v3 + v4) / 6
         particles.w[i] = (w1 + 2*w2 + 2*w3 + w4) / 6

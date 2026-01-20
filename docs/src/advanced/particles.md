@@ -261,6 +261,48 @@ w_{total} &= w_{QG} + w_S
 
 ---
 
+### Advection Options
+
+The particle advection behavior can be controlled via `ParticleConfig` options:
+
+#### 2D vs 3D Advection (`use_3d_advection`)
+
+| Setting | Behavior |
+|:--------|:---------|
+| `use_3d_advection = true` (default) | Full 3D advection with vertical velocity |
+| `use_3d_advection = false` | **Horizontal-only advection at constant z** |
+
+When `use_3d_advection = false`:
+- The vertical velocity ``w`` is **not computed** (skipped in `compute_total_velocities!`)
+- The ``dz/dt = w`` time stepping is **skipped** in the advection loop
+- Particles remain at their initial depth levels
+
+This provides a **performance benefit** since vertical velocity computation (omega equation, vertical Stokes drift) is expensive. Useful for:
+- Tracking particles on specific isopycnal surfaces
+- Studying horizontal dispersion without vertical mixing
+- Comparing with drifter observations at fixed depths
+
+**Example:**
+```julia
+# Create configuration for 2D horizontal advection only
+config = ParticleConfig(
+    z_level = -500.0,           # Initial depth (particles stay here)
+    use_3d_advection = false,   # Disable vertical advection
+    # ... other options
+)
+```
+
+#### Vertical Velocity Source (`use_ybj_w`)
+
+| Setting | Vertical velocity source |
+|:--------|:-------------------------|
+| `use_ybj_w = false` (default) | QG omega equation: ``w_{QG}`` |
+| `use_ybj_w = true` | YBJ wave-induced: ``w_{YBJ}`` |
+
+This option only affects `w_{QG}` in the total velocity; Stokes drift ``w_S`` is always included when `use_3d_advection = true`.
+
+---
+
 ### Implementation Notes
 
 1. **Order of operations**: QG velocities are computed first, then wave velocity and Stokes drift are **added** in-place
