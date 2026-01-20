@@ -397,14 +397,15 @@ This section explains how particles obtain the combined QG flow and wave Stokes 
 
 Particles are advected by the **total velocity field**:
 ```
-u_total = u_QG + u_Stokes
-v_total = v_QG + v_Stokes
+u_total = u_QG + u_wave + u_Stokes
+v_total = v_QG + v_wave + v_Stokes
 w_total = w_QG + w_Stokes
 ```
 
 where:
 - **QG velocities**: Geostrophic flow from streamfunction ψ, vertical from omega equation
-- **Stokes drift**: Wave-induced drift from near-inertial wave amplitude A
+- **Wave velocity**: Backrotated wave orbital velocity Re(LA), Im(LA) from YBJ+ equation
+- **Stokes drift**: Wave-induced drift from full Jacobian (Wagner & Young 2016)
 
 ### Data Flow Diagram
 
@@ -436,20 +437,22 @@ where:
 │  │   └───────────────────────────────────────────────────────────────────────┘ │ │
 │  │                               ↓                                             │ │
 │  │   ┌───────────────────────────────────────────────────────────────────────┐ │ │
-│  │   │ compute_wave_velocities!(S, G) → Wave Stokes drift (ADDS to QG)       │ │ │
+│  │   │ compute_wave_velocities!(S, G) → Wave velocity + Stokes drift         │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   From wave amplitude A = |A|·e^{iφ}:                                 │ │ │
-│  │   │     ∂A/∂x, ∂A/∂y in spectral: i·kₓ·Â, i·kᵧ·Â                         │ │ │
-│  │   │     ∂A/∂z from S.C (computed by invert_B_to_A!)                       │ │ │
+│  │   │   WAVE VELOCITY (Asselin & Young 2019, eq 1.2):                       │ │ │
+│  │   │     LA = B + (k_h²/4)·A  in spectral space (YBJ+ relation)           │ │ │
+│  │   │     u_wave = Re(LA), v_wave = Im(LA)                                  │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   Transform to physical space, then:                                  │ │ │
-│  │   │     u_S = Im[A*·∂A/∂x] = |A|²·∂φ/∂x  (phase gradient × intensity)    │ │ │
-│  │   │     v_S = Im[A*·∂A/∂y] = |A|²·∂φ/∂y                                   │ │ │
-│  │   │     w_S = -2·Im(K₀)/f₀  (Wagner & Young 2016, eq 3.19-3.20)          │ │ │
+│  │   │   HORIZONTAL STOKES DRIFT (Wagner & Young 2016, eq 3.16a, 3.18):     │ │ │
+│  │   │     J₀ = (LA)*·∂_{s*}(LA) - (f₀²/N²)·(∂_{s*}A_z*)·∂_z(LA)           │ │ │
+│  │   │     u_S = Im(J₀)/f₀,  v_S = -Re(J₀)/f₀                               │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   State.u += u_S  →  State.u = u_QG + u_S (TOTAL)                     │ │ │
-│  │   │   State.v += v_S  →  State.v = v_QG + v_S (TOTAL)                     │ │ │
-│  │   │   State.w += w_S  →  State.w = w_QG + w_S (TOTAL)                     │ │ │
+│  │   │   VERTICAL STOKES DRIFT (Wagner & Young 2016, eq 3.19-3.20):         │ │ │
+│  │   │     w_S = -2·Im(K₀)/f₀  where K₀ = M*_z·M_{ss*} - M*_{s*}·M_{sz}    │ │ │
+│  │   │                                                                       │ │ │
+│  │   │   State.u += u_wave + u_S  →  u_QG + u_wave + u_S (TOTAL)            │ │ │
+│  │   │   State.v += v_wave + v_S  →  v_QG + v_wave + v_S (TOTAL)            │ │ │
+│  │   │   State.w += w_S           →  w_QG + w_S (TOTAL)                      │ │ │
 │  │   └───────────────────────────────────────────────────────────────────────┘ │ │
 │  └─────────────────────────────────────────────────────────────────────────────┘ │
 │                                ↓                                                 │

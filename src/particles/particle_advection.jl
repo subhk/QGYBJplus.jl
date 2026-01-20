@@ -1361,33 +1361,33 @@ Add received particles to local collection.
 """
 function add_received_particles!(tracker::ParticleTracker{T}) where T
     particles = tracker.particles
-    
-    for i in 1:tracker.nprocs
-        rank_data = tracker.recv_buffers[i]
-        rank_ids = tracker.recv_buffers_id[i]
+
+    for r in 1:tracker.nprocs
+        rank_data = tracker.recv_buffers[r]
+        rank_ids = tracker.recv_buffers_id[r]
         if !isempty(rank_data)
             n_new = length(rank_data) ÷ 6
             @assert length(rank_ids) == n_new "Received particle ids do not match data length"
-            
-            for i in 1:n_new
-                idx = (i-1) * 6
+
+            for p in 1:n_new
+                idx = (p - 1) * 6
                 push!(particles.x, rank_data[idx + 1])
                 push!(particles.y, rank_data[idx + 2])
                 push!(particles.z, rank_data[idx + 3])
                 push!(particles.u, rank_data[idx + 4])
                 push!(particles.v, rank_data[idx + 5])
                 push!(particles.w, rank_data[idx + 6])
-                push!(particles.id, rank_ids[i])
+                push!(particles.id, rank_ids[p])
             end
-            
+
             particles.np += n_new
         end
     end
-    
+
     # Clear receive buffers
-    for i in 1:tracker.nprocs
-        empty!(tracker.recv_buffers[i])
-        empty!(tracker.recv_buffers_id[i])
+    for r in 1:tracker.nprocs
+        empty!(tracker.recv_buffers[r])
+        empty!(tracker.recv_buffers_id[r])
     end
 end
 

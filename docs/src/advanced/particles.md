@@ -17,69 +17,264 @@ Particle tracking allows you to:
 
 ## Physics of Particle Advection
 
+In QG-YBJ+ dynamics, Lagrangian particles experience velocities from both the balanced (geostrophic) flow and near-inertial waves. Understanding the complete velocity field is essential for accurate particle tracking.
+
+### Complex Coordinate Notation
+
+Before diving into the physics, we introduce the complex coordinate notation used throughout:
+
+| Symbol | Definition | Description |
+|:-------|:-----------|:------------|
+| ``s`` | ``x + iy`` | Complex horizontal coordinate |
+| ``s^*`` | ``x - iy`` | Complex conjugate coordinate |
+| ``\partial_s`` | ``\frac{1}{2}(\partial_x - i\partial_y)`` | Complex derivative |
+| ``\partial_{s^*}`` | ``\frac{1}{2}(\partial_x + i\partial_y)`` | Conjugate complex derivative |
+| ``\tilde{z}`` | Stretched vertical coordinate | ``d\tilde{z} = (N/f_0) dz`` |
+
+This notation simplifies the wave equations and makes the underlying structure more apparent.
+
 ### Total Velocity Field
 
-In QG-YBJ+ dynamics, particles are advected by the **total velocity field** consisting of:
+Particles are advected by the **total velocity field**:
 
-**1. Geostrophic Flow** (from streamfunction ψ):
+```math
+\mathbf{u}_{total} = \mathbf{u}_{QG} + \mathbf{u}_{wave} + \mathbf{u}_{Stokes}
+```
+
+Each component has distinct physical origins:
+
+| Component | Physical Origin | Typical Magnitude |
+|:----------|:----------------|:------------------|
+| ``\mathbf{u}_{QG}`` | Geostrophic balance | O(0.1-1 m/s) |
+| ``\mathbf{u}_{wave}`` | Near-inertial wave orbital motion | O(0.01-0.1 m/s) |
+| ``\mathbf{u}_{Stokes}`` | Wave-induced Lagrangian drift | O(0.001-0.01 m/s) |
+
+---
+
+### 1. Geostrophic Flow (QG Velocities)
+
+**Physical interpretation**: The geostrophic flow arises from the balance between pressure gradient and Coriolis forces. It represents the large-scale, slowly-evolving background flow.
+
+#### Horizontal Geostrophic Velocities
+
+From geostrophic balance ``f\mathbf{u} = -\nabla p / \rho_0`` and the streamfunction definition:
 ```math
 u_{QG} = -\frac{\partial \psi}{\partial y}, \quad v_{QG} = \frac{\partial \psi}{\partial x}
 ```
 
-**2. Wave-Induced Stokes Drift** (from wave amplitude A):
+**Spectral space implementation**:
+```math
+\hat{u}_{QG} = -i k_y \hat{\psi}, \quad \hat{v}_{QG} = i k_x \hat{\psi}
+```
+where ``k_x, k_y`` are the horizontal wavenumbers.
 
-*Horizontal Stokes Drift* (Xie & Vanneste 2015):
+#### Vertical QG Velocity (Omega Equation)
+
+The ageostrophic vertical velocity maintains thermal wind balance as the flow evolves. It satisfies the **omega equation**:
 ```math
-u_S = \text{Im}\left[A^* \frac{\partial A}{\partial x}\right] = |A|^2 \frac{\partial \phi}{\partial x}
-```
-```math
-v_S = \text{Im}\left[A^* \frac{\partial A}{\partial y}\right] = |A|^2 \frac{\partial \phi}{\partial y}
+N^2 \nabla_H^2 w_{QG} + f_0^2 \frac{\partial^2 w_{QG}}{\partial z^2} = 2 f_0 \, J\left(\psi_z, \nabla_H^2 \psi\right)
 ```
 
-*Vertical Stokes Drift* (Wagner & Young 2016, eq. 3.19-3.20):
+or equivalently (dividing by ``N^2``):
 ```math
-if_0 w^S = K_0^* - K_0 = -2i \, \text{Im}(K_0)
+\nabla_H^2 w_{QG} + \frac{f_0^2}{N^2} \frac{\partial^2 w_{QG}}{\partial z^2} = \frac{2 f_0}{N^2} \, J\left(\psi_z, \nabla_H^2 \psi\right)
 ```
-where ``K_0`` is the Jacobian:
+
+where ``J(a,b) = a_x b_y - a_y b_x`` is the Jacobian operator.
+
+**Physical interpretation**: The RHS represents vorticity advection by the thermal wind shear. Where this is non-zero, vertical motion is required to maintain balance.
+
+**Numerical solution**: In spectral space, this becomes a tridiagonal system at each ``(k_x, k_y)``:
+```math
+-k_h^2 \hat{w} + \frac{f_0^2}{N^2} \frac{\partial^2 \hat{w}}{\partial z^2} = \widehat{\text{RHS}}
+```
+solved with boundary conditions ``w = 0`` at ``z = 0`` (surface) and ``z = -H`` (bottom).
+
+---
+
+### 2. Wave Velocity (Near-Inertial Oscillations)
+
+**Physical interpretation**: Near-inertial waves are oscillatory motions at frequencies close to the local Coriolis frequency ``f_0``. The wave velocity represents the direct orbital motion of fluid parcels due to these waves.
+
+#### YBJ+ Wave Velocity Formulation
+
+Following Asselin & Young (2019), the horizontal wave velocity is:
+```math
+u + iv = e^{-if_0 t} \, LA
+```
+
+where ``LA`` is the **backrotated wave velocity amplitude** (removing the inertial oscillation).
+
+**The ``L`` operator**: The vertical operator ``L`` is defined as:
+```math
+L = \partial_z \left(\frac{f_0^2}{N^2}\right) \partial_z
+```
+
+For constant ``N^2``, this simplifies to ``L = (f_0^2/N^2) \partial_{zz}``.
+
+**YBJ+ relation**: The evolved variable ``B`` relates to the wave amplitude ``A`` via:
+```math
+B = L^+ A = \left(L + \frac{1}{4}\Delta_H\right) A
+```
+
+where ``\Delta_H = \partial_{xx} + \partial_{yy}`` is the horizontal Laplacian.
+
+**Computing ``LA`` from ``B`` and ``A``**:
+
+Rearranging: ``LA = B - \frac{1}{4}\Delta_H A``
+
+In **spectral space** (where ``\Delta_H \to -k_h^2``):
+```math
+\widehat{LA} = \hat{B} + \frac{k_h^2}{4} \hat{A}
+```
+
+**Wave velocity components**:
+```math
+u_{wave} = \text{Re}(LA), \quad v_{wave} = \text{Im}(LA)
+```
+
+**Physical interpretation**: ``LA`` represents the phase-averaged (backrotated) wave velocity. The real part gives the zonal component, the imaginary part gives the meridional component.
+
+---
+
+### 3. Wave-Induced Stokes Drift
+
+**Physical interpretation**: Even though waves are oscillatory with zero Eulerian mean velocity, particles experience a net **Lagrangian drift** in the direction of wave propagation. This is the Stokes drift, arising from the correlation between particle displacement and velocity gradients.
+
+#### Horizontal Stokes Drift (Wagner & Young 2016, eq. 3.16a-3.18)
+
+The horizontal Stokes drift velocity is given by the complex velocity:
+```math
+U^S = u_S + i v_S
+```
+
+From eq. (3.18), this satisfies:
+```math
+i f_0 U^S = J_0
+```
+
+where ``J_0`` is the **horizontal Jacobian**:
+```math
+J_0 = \frac{\partial(M^*, M_{\tilde{z}})}{\partial(\tilde{z}, s^*)} = (LA)^* \partial_{s^*}(LA) - M^*_{s^*} \cdot (M_{\tilde{z}})_{\tilde{z}}
+```
+
+**Expanded form** using ``M = (f_0^2/N^2) A_z`` and ``M_{\tilde{z}} = LA``:
+```math
+J_0 = (LA)^* \partial_{s^*}(LA) - \frac{f_0^2}{N^2} (\partial_{s^*} A_z^*) \cdot \partial_z(LA)
+```
+
+**Extracting real velocities** from ``U^S = J_0 / (i f_0) = -i J_0 / f_0``:
+```math
+u_S = \frac{\text{Im}(J_0)}{f_0}, \quad v_S = -\frac{\text{Re}(J_0)}{f_0}
+```
+
+**Two-term structure**:
+- **First term** ``(LA)^* \partial_{s^*}(LA)``: Primary Stokes drift from wave velocity gradients
+- **Second term** ``-(f_0^2/N^2)(\partial_{s^*} A_z^*) \partial_z(LA)``: Correction from vertical structure of wave envelope
+
+**Spectral space computation** of ``\partial_{s^*}``:
+```math
+\partial_{s^*} = \frac{1}{2}(\partial_x + i\partial_y) \quad \Rightarrow \quad \widehat{\partial_{s^*} f} = \frac{1}{2}(i k_x - k_y) \hat{f}
+```
+
+#### Vertical Stokes Drift (Wagner & Young 2016, eq. 3.19-3.20)
+
+The vertical Stokes drift satisfies:
+```math
+i f_0 w^S = K_0^* - K_0 = -2i \, \text{Im}(K_0)
+```
+
+Therefore:
+```math
+w_S = -\frac{2 \, \text{Im}(K_0)}{f_0}
+```
+
+**The ``K_0`` Jacobian**:
 ```math
 K_0 = \frac{\partial(M^*, M_s)}{\partial(\tilde{z}, s^*)} = M^*_z \cdot M_{ss^*} - M^*_{s^*} \cdot M_{sz}
 ```
-with ``M = (f_0^2/N^2) A_z``. The individual terms are:
-- ``M^*_z = a_z A_z^* + a A_{zz}^*`` where ``a = f_0^2/N^2``
-- ``M_{ss^*} = \frac{a}{4} \nabla_H^2 A_z``
-- ``M^*_{s^*} = a (A_{zs})^*``
-- ``M_{sz} = a_z A_{zs} + a A_{zzs}``
 
-giving ``w_S = -2 \, \text{Im}(K_0)/f_0``.
+where ``M = a \cdot A_z`` with ``a = f_0^2/N^2``.
 
-The horizontal Stokes drifts use the simpler form ``u_S = \text{Im}[A^* \partial A/\partial x]``, ``v_S = \text{Im}[A^* \partial A/\partial y]``.
+**Detailed expansion of each term**:
 
-**3. QG Vertical Velocity** (from omega equation):
+| Term | Expression | Computation |
+|:-----|:-----------|:------------|
+| ``M^*_z`` | ``\partial_z(a A_z^*)`` | ``a_z A_z^* + a A_{zz}^*`` |
+| ``M_{ss^*}`` | ``\partial_s \partial_{s^*}(a A_z)`` | ``\frac{a}{4} \nabla_H^2 A_z`` |
+| ``M^*_{s^*}`` | ``\partial_{s^*}(a A_z^*)`` | ``a (\partial_{s^*} A_z)^* = a (A_{zs})^*`` |
+| ``M_{sz}`` | ``\partial_s \partial_z(a A_z)`` | ``a_z A_{zs} + a A_{zzs}`` |
+
+where:
+- ``a_z = \partial_z(f_0^2/N^2)`` captures stratification variations
+- ``A_{zs} = \partial_s(A_z) = \frac{1}{2}(\partial_x - i\partial_y) A_z``
+- ``A_{zzs} = \partial_s(A_{zz})``
+
+**Spectral space computation**:
+- ``\nabla_H^2 A_z \to -k_h^2 \hat{A}_z``
+- ``A_{zs} \to \frac{1}{2}(i k_x + k_y) \hat{A}_z``
+- Vertical derivatives use finite differences
+
+---
+
+### 4. Alternative: YBJ Vertical Velocity
+
+For some applications, an alternative formulation of wave-induced vertical velocity is available (Asselin & Young 2019, eq. 2.10):
 ```math
-\nabla^2 w_{QG} + \frac{f^2}{N^2}\frac{\partial^2 w_{QG}}{\partial z^2} = \frac{2f}{N^2}\,J(\psi_z, \nabla^2\psi)
+w_0 = -\frac{f_0^2}{N^2} A_{zs} \, e^{-i f_0 t} + \text{c.c.}
 ```
 
-**4. YBJ Vertical Velocity** (alternative wave-induced formulation):
+**Expanded form** (separating oscillating components):
 ```math
-w_{YBJ} = -\frac{f^2}{N^2}\left[\left(\frac{\partial A}{\partial x}\right)_z - i\left(\frac{\partial A}{\partial y}\right)_z\right] + \text{c.c.}
+w = -\frac{f_0^2}{N^2} \left[\cos(f_0 t) \cdot w_{cos} + \sin(f_0 t) \cdot w_{sin}\right]
 ```
-This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this wave-induced vertical velocity is used instead of solving the QG omega equation.
 
-### Total Velocity
+where:
+```math
+w_{cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z)
+```
+```math
+w_{sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
+```
+
+This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this replaces the QG omega equation solution.
+
+---
+
+### Total Velocity Summary
 
 The complete velocity used for particle advection is:
-```math
-u_{total} = u_{QG} + u_{Stokes}
-```
-```math
-v_{total} = v_{QG} + v_{Stokes}
-```
-```math
-w_{total} = w_{QG} + w_{Stokes}
-```
-where $w_{QG}$ comes from the omega equation (or $w_{YBJ}$ if `use_ybj_w=true`).
 
-This includes both horizontal and **vertical Stokes drift**, ensuring particles are correctly advected by the full wave-induced velocity field.
+```math
+\boxed{
+\begin{aligned}
+u_{total} &= u_{QG} + u_{wave} + u_S \\
+v_{total} &= v_{QG} + v_{wave} + v_S \\
+w_{total} &= w_{QG} + w_S
+\end{aligned}
+}
+```
+
+| Component | Horizontal | Vertical |
+|:----------|:-----------|:---------|
+| **QG** | ``-\psi_y, +\psi_x`` | Omega equation |
+| **Wave** | ``\text{Re}(LA), \text{Im}(LA)`` | (included in QG or YBJ) |
+| **Stokes** | ``\text{Im}(J_0)/f_0, -\text{Re}(J_0)/f_0`` | ``-2\text{Im}(K_0)/f_0`` |
+
+---
+
+### Implementation Notes
+
+1. **Order of operations**: QG velocities are computed first, then wave velocity and Stokes drift are **added** in-place
+2. **Spectral vs physical space**: Derivatives are computed in spectral space; products (Jacobians) are computed in physical space
+3. **Vertical derivatives**: Use second-order finite differences with one-sided stencils at boundaries
+4. **Stratification profile**: The code supports both constant ``N^2`` and depth-varying ``N^2(z)``
+
+### References
+
+- **Asselin, O. & Young, W. R.** (2019). Penetration of wind-generated near-inertial waves into a turbulent ocean. *J. Fluid Mech.*, 876, 428-448.
+- **Wagner, G. L. & Young, W. R.** (2016). A three-component model for the coupled evolution of near-inertial waves, quasi-geostrophic flow and the near-inertial second harmonic. *J. Fluid Mech.*, 802, 806-837.
+- **Xie, J.-H. & Vanneste, J.** (2015). A generalised-Lagrangian-mean model of the interactions between near-inertial waves and mean flow. *J. Fluid Mech.*, 774, 143-169.
 
 ## Quick Start
 
