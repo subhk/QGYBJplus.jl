@@ -135,6 +135,28 @@ u_{wave} = \text{Re}(LA), \quad v_{wave} = \text{Im}(LA)
 
 **Physical interpretation**: ``LA`` represents the phase-averaged (backrotated) wave velocity. The real part gives the zonal component, the imaginary part gives the meridional component.
 
+#### YBJ Vertical Velocity
+
+The wave-induced vertical velocity follows from Asselin & Young (2019, eq. 2.10):
+```math
+w_0 = -\frac{f_0^2}{N^2} A_{zs} \, e^{-i f_0 t} + \text{c.c.}
+```
+
+**Expanded form** (separating oscillating components):
+```math
+w = -\frac{f_0^2}{N^2} \left[\cos(f_0 t) \cdot w_{cos} + \sin(f_0 t) \cdot w_{sin}\right]
+```
+
+where:
+```math
+w_{cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z)
+```
+```math
+w_{sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
+```
+
+This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this wave-induced vertical velocity replaces the QG omega equation solution for ``w_{QG}``.
+
 ---
 
 ### 3. Wave-Induced Stokes Drift
@@ -214,30 +236,6 @@ where:
 - ``\nabla_H^2 A_z \to -k_h^2 \hat{A}_z``
 - ``A_{zs} \to \frac{1}{2}(i k_x + k_y) \hat{A}_z``
 - Vertical derivatives use finite differences
-
----
-
-### 4. Alternative: YBJ Vertical Velocity
-
-For some applications, an alternative formulation of wave-induced vertical velocity is available (Asselin & Young 2019, eq. 2.10):
-```math
-w_0 = -\frac{f_0^2}{N^2} A_{zs} \, e^{-i f_0 t} + \text{c.c.}
-```
-
-**Expanded form** (separating oscillating components):
-```math
-w = -\frac{f_0^2}{N^2} \left[\cos(f_0 t) \cdot w_{cos} + \sin(f_0 t) \cdot w_{sin}\right]
-```
-
-where:
-```math
-w_{cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z)
-```
-```math
-w_{sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
-```
-
-This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this replaces the QG omega equation solution.
 
 ---
 
