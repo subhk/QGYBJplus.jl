@@ -155,8 +155,6 @@ w_{cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z)
 w_{sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
 ```
 
-This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this wave-induced vertical velocity replaces the QG omega equation solution for ``w_{QG}``.
-
 ---
 
 ### 3. Wave-Induced Stokes Drift
