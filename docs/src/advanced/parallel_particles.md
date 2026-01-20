@@ -340,8 +340,9 @@ end
 │  │   • Solve omega equation for w (tridiagonal in z):                     │  │
 │  │       ∇²w + (f²/N²)∂²w/∂z² = (2f/N²)·J(ψ_z, ∇²ψ)                       │  │
 │  │                                                                        │  │
-│  │   • Add wave Stokes drift (horizontal + vertical):                     │  │
-│  │       u += Im[A*·∂A/∂x],  v += Im[A*·∂A/∂y],  w += Im[A*·∂A/∂z]        │  │
+│  │   • Add wave velocity + Stokes drift (full Jacobian):                  │  │
+│  │       u += Re(LA) + Im(J₀)/f₀,  v += Im(LA) - Re(J₀)/f₀               │  │
+│  │       w += -2·Im(K₀)/f₀  (Wagner & Young 2016, eq. 3.16a-3.20)        │  │
 │  │                                                                        │  │
 │  │   • Exchange velocity halos (MPI non-blocking)                         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │ 
@@ -532,11 +533,15 @@ The wave amplitude `A` and its derivatives come from the simulation state:
 | `State.A` | Spectral | Wave amplitude Â(kₓ, kᵧ, z) |
 | `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_B_to_A!`) |
 
-The Stokes drift computation:
-1. Computes ∂A/∂x, ∂A/∂y in spectral space: `i·kₓ·Â`, `i·kᵧ·Â`
-2. Transforms A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
-3. Computes `Im[A* · ∂A/∂(x,y,z)]` pointwise in physical space
-4. Adds result to existing QG velocities
+The wave velocity and Stokes drift computation (Wagner & Young 2016, eq. 3.16a-3.20):
+1. Computes LA = B + (k_h²/4)A in spectral space (wave velocity)
+2. Computes ∂_{s*}(LA), ∂_{s*}(A_z*), ∂_z(LA) in spectral space
+3. For vertical Stokes: computes A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}
+4. Transforms all fields to physical space
+5. Computes wave velocity: u_wave = Re(LA), v_wave = Im(LA)
+6. Computes horizontal Stokes via full Jacobian J₀: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
+7. Computes vertical Stokes via K₀: w_S = -2·Im(K₀)/f₀
+8. Adds all contributions to existing QG velocities
 
 #### 4. Halo Exchange Enables Cross-Boundary Interpolation
 
@@ -556,7 +561,7 @@ advect_particles!(tracker, state, grid, dt)
   └─→ update_velocity_fields!(tracker, state, grid)
         ├─→ compute_total_velocities!(state, grid)
         │     ├─→ compute_velocities!()      # QG: u,v from ψ; w from omega eqn
-        │     └─→ compute_wave_velocities!() # Stokes: Im[A*·∇A] added to u,v,w
+        │     └─→ compute_wave_velocities!() # Wave velocity + Stokes drift (J₀, K₀)
         ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL total velocity
         └─→ exchange_velocity_halos!()          # Fill halos from neighbors
   └─→ advect_euler!/advect_rk2!/advect_rk4!()

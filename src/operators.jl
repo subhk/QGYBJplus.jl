@@ -68,21 +68,43 @@ where:
 This represents vertical motion induced by wave envelope modulation, oscillating
 at the inertial frequency f.
 
-WAVE-INDUCED STOKES DRIFT:
---------------------------
-Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
-from near-inertial waves is computed from the wave velocity LA (not amplitude A):
+WAVE VELOCITY AND STOKES DRIFT:
+-------------------------------
+Near-inertial waves contribute to particle advection through two mechanisms:
 
-    u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
-    v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
-    w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
+1. WAVE VELOCITY (Asselin & Young 2019, eq. 1.2):
+   The backrotated wave velocity is LA, where L = ∂_z(f²/N²)∂_z:
+       u_wave = Re(LA)
+       v_wave = Im(LA)
 
-where LA = |LA|e^{iφ} is the wave velocity amplitude and φ is the wave phase.
-This drift is in the direction of wave propagation (phase gradient).
-These wave corrections are important for Lagrangian particle advection.
+   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
+   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
 
-The wave velocity LA is computed from the YBJ+ relation: LA = B + (k_h²/4)A
-where B is the evolved variable and A is the wave amplitude.
+2. STOKES DRIFT (Wagner & Young 2016, eq. 3.16a-3.20):
+   The horizontal Stokes drift uses the full Jacobian form:
+
+       J₀ = (LA)* ∂_{s*}(LA) - (f₀²/N²)(∂_{s*} A_z*) ∂_z(LA)
+
+   where ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative.
+
+   From eq. (3.18): if₀ U^S = J₀, giving:
+       u_S = Im(J₀)/f₀
+       v_S = -Re(J₀)/f₀
+
+   The vertical Stokes drift (eq. 3.19-3.20) uses:
+       K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}   where M = (f₀²/N²)A_z
+       w_S = -2·Im(K₀)/f₀
+
+   with:
+       M*_z = a_z·A_z* + a·A_{zz}*     (a = f₀²/N², a_z = ∂_z(f₀²/N²))
+       M_{ss*} = (a/4)·Δ_H(A_z)
+       M*_{s*} = a·(A_{zs})*
+       M_{sz} = a_z·A_{zs} + a·A_{zzs}
+
+The total velocity for particle advection is:
+    u_total = u_QG + u_wave + u_S
+    v_total = v_QG + v_wave + v_S
+    w_total = w_QG + w_S
 
 SPECTRAL DIFFERENTIATION:
 -------------------------
@@ -1066,17 +1088,24 @@ For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA.
 In spectral space: LA = B + (k_h²/4)A
 
 # Wave-Induced Stokes Drift
-Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
-is computed from the wave velocity LA (not amplitude A):
-```
-u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
-v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
-w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
-```
+Following Wagner & Young (2016) equations (3.16a)-(3.20), the Stokes drift
+uses the full Jacobian formulation:
 
-where LA = |LA|e^{iφ} is the wave velocity and φ is the wave phase.
-Particles drift in the direction of wave propagation (phase gradient).
-The drift magnitude scales with wave velocity intensity |LA|².
+Horizontal Stokes drift (eq. 3.16a, 3.18):
+```
+J₀ = (LA)* ∂_{s*}(LA) - (f₀²/N²)(∂_{s*} A_z*) ∂_z(LA)
+u_S = Im(J₀)/f₀
+v_S = -Re(J₀)/f₀
+```
+where ∂_{s*} = (1/2)(∂_x + i∂_y).
+
+Vertical Stokes drift (eq. 3.19-3.20):
+```
+K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}   where M = (f₀²/N²)A_z
+w_S = -2·Im(K₀)/f₀
+```
+with M*_z = a_z·A_z* + a·A_{zz}*, M_{ss*} = (a/4)·Δ_H(A_z),
+M*_{s*} = a·(A_{zs})*, M_{sz} = a_z·A_{zs} + a·A_{zzs}, and a = f₀²/N².
 
 # Usage
 For Lagrangian particle advection, always use this function rather than
