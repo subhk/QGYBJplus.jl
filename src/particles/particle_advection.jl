@@ -2,17 +2,25 @@
 Unified particle advection module for QG-YBJ simulations.
 
 This module provides Lagrangian particle tracking that automatically handles
-both serial and parallel execution. Particles are advected using the TOTAL 
-velocity field (QG + wave velocities) with options for vertical velocity from either 
+both serial and parallel execution. Particles are advected using the TOTAL
+velocity field (QG + wave velocities) with options for vertical velocity from either
 QG omega equation or YBJ formulation.
 
 Total velocity field includes:
 - QG velocities: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
-- Wave velocities: u_wave, v_wave from Stokes drift and wave corrections
+- Wave velocities: u_wave = Re(LA), v_wave = Im(LA) from YBJ+ eq (1.2)
+  where L = ∂_z(f²/N²)∂_z and LA = B + (k_h²/4)A in spectral space
+- Horizontal Stokes drift from Wagner & Young (2016) equation (3.16a):
+  Full Jacobian form: J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
+  where ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative.
+  From eq (3.18): if₀ U^S = J₀, so u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
+- Vertical Stokes drift from Wagner & Young (2016) eq (3.19)-(3.20):
+  if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
+  Expanding: K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}, giving w_S = -2·Im(K₀)/f₀
 - Vertical velocity: w from QG omega equation or YBJ w₀ formulation
 
 The system automatically detects MPI availability and handles:
-- Domain decomposition and particle migration  
+- Domain decomposition and particle migration
 - Periodic boundary conditions
 - Distributed I/O
 - Load balancing

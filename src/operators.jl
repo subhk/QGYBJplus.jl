@@ -48,27 +48,41 @@ to maintain geostrophic balance as the flow evolves.
 
 YBJ VERTICAL VELOCITY:
 ----------------------
-For wave-induced vertical motion (equation 4 in YBJ papers):
+For wave-induced vertical motion, following Asselin & Young (2019) equation (2.10):
 
-    w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
+    w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
 
 where:
 - A is the wave amplitude (recovered from B via L⁺A = B)
-- A_z = ∂A/∂z is the vertical derivative
-- c.c. ensures real result
+- A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) is the complex horizontal derivative
+- The complex coordinate s = x + iy, so ∂_s = (1/2)(∂_x - i∂_y)
+- e^{-ift} is the inertial oscillation factor
+- c.c. denotes complex conjugate (ensures real result)
 
-This represents vertical motion induced by wave envelope modulation.
+Expanding this gives the oscillating vertical velocity:
+    w = -(f²/N²) * [cos(ft)·w_cos + sin(ft)·w_sin]
+where:
+    w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y)
+    w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
+
+This represents vertical motion induced by wave envelope modulation, oscillating
+at the inertial frequency f.
 
 WAVE-INDUCED STOKES DRIFT:
 --------------------------
-Following Xie & Vanneste (2015), the Stokes drift from near-inertial waves:
+Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
+from near-inertial waves is computed from the wave velocity LA (not amplitude A):
 
-    u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
-    v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
-    w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
+    u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
+    v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
+    w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
 
-where φ is the wave phase. This drift is in the direction of wave propagation.
+where LA = |LA|e^{iφ} is the wave velocity amplitude and φ is the wave phase.
+This drift is in the direction of wave propagation (phase gradient).
 These wave corrections are important for Lagrangian particle advection.
+
+The wave velocity LA is computed from the YBJ+ relation: LA = B + (k_h²/4)A
+where B is the evolved variable and A is the wave amplitude.
 
 SPECTRAL DIFFERENTIATION:
 -------------------------
@@ -651,28 +665,35 @@ Wave-induced vertical motion from the YBJ+ formulation.
 =#
 
 """
-    compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
+    compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
 
 Compute vertical velocity from near-inertial wave envelope using YBJ+ formulation.
 
 # Physical Background
 Near-inertial waves induce vertical motion through the modulation of their
-envelope. The YBJ vertical velocity (equation 4 in Asselin & Young 2019):
+envelope. Following Asselin & Young (2019) equation (2.10):
 
 ```
-w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
+w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
 ```
 
 where:
 - A is the true wave amplitude (recovered from evolved B via L⁺A = B)
-- A_z = ∂A/∂z is the vertical derivative
-- c.c. denotes complex conjugate (ensures real result)
+- A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) is the complex horizontal derivative
+- The complex derivative uses s = x + iy, so ∂_s = (1/2)(∂_x - i∂_y)
+- c.c. denotes complex conjugate
+
+Expanding this gives:
+```
+w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
+```
 
 # Physical Interpretation
 This represents vertical motion induced by:
 - Horizontal gradients in the wave envelope's vertical structure
 - Wave packet propagation and refraction
 - Strong w occurs where wave amplitude varies both horizontally and vertically
+- The velocity oscillates at inertial frequency f
 
 # Algorithm
 1. **A Recovery**: Solve L⁺A = B using invert_B_to_A!
@@ -685,7 +706,7 @@ This represents vertical motion induced by:
 3. **Horizontal Gradients**: Compute ∂(A_z)/∂x, ∂(A_z)/∂y
    - Spectral differentiation: multiply by i kₓ, i kᵧ
 
-4. **Combine**: Apply YBJ formula with c.c. for real result
+4. **Combine**: Apply equation (2.10) with oscillating e^{-ift} factor
 
 # Arguments
 - `S::State`: State with B (input) and w (output)
@@ -697,6 +718,8 @@ This represents vertical motion induced by:
 - `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
   Use this when A/C were already computed in the timestep with the correct stratification.
   Default: false (re-inverts for safety).
+- `t::Real`: Current time for computing the oscillating velocity e^{-ift}.
+  If not provided (default), computes only the cosine component (t=0 snapshot).
 
 # Fortran Correspondence
 Matches YBJ vertical velocity computation in the Fortran implementation.
@@ -708,8 +731,11 @@ stratification, this will give inconsistent results. For runs with nonuniform N�
 either:
 1. Pass `skip_inversion=true` and ensure A/C are already computed correctly
 2. Pass the exact same N2_profile that was used in the timestep
+
+# References
+- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
 """
-function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
+function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
@@ -723,15 +749,15 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
 
     if need_transpose
-        _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)
+        _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
     else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion)
+        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion)
+function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -808,13 +834,18 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     end
 
     # Step 4: Compute YBJ vertical velocity in PHYSICAL space
-    # w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-    #   = -(f²/N²) * 2 * Re[(∂A/∂x)_z - i(∂A/∂y)_z]
-    #   = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
+    # From Asselin & Young (2019) equation (2.10):
+    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
     #
-    # Previous code incorrectly computed complex_term + conj(complex_term) in spectral
-    # space, which gives 2*Re(C_k) for each mode k rather than the IFFT of the real-space
-    # expression. Must transform derivatives to physical space first, then combine.
+    # where A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) = (1/2)[(∂A_z/∂x) - i(∂A_z/∂y)]
+    #
+    # Expanding A_{zs} = A_r + i*A_i where:
+    #   A_r = (1/2)[Re(∂A_z/∂x) + Im(∂A_z/∂y)]  (real part of A_{zs})
+    #   A_i = (1/2)[Im(∂A_z/∂x) - Re(∂A_z/∂y)]  (imaginary part of A_{zs})
+    #
+    # The full oscillating velocity is:
+    #   w = -(f²/N²) * 2 * Re(A_{zs} * e^{-ift})
+    #     = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
     dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
@@ -827,20 +858,33 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 
     @assert size(w_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils for w and FFT output must match"
 
-    # Compute w in physical space
-    # w = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
+    # Compute oscillation factors if time is provided
+    if t !== nothing
+        cos_ft = cos(f * t)
+        sin_ft = sin(f * t)
+    else
+        # If no time provided, use t=0 (cosine term only)
+        cos_ft = 1.0
+        sin_ft = 0.0
+    end
+
+    # Compute w in physical space using equation (2.10)
     @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
         k_out = k + 1  # Shift to match output grid
         N²ₗ = N2_profile[k_out]
+        ybj_factor = -(f^2) / N²ₗ
 
-        # YBJ formula in physical space
-        ybj_factor = -2.0 * (f^2) / N²ₗ
-        # complex_term + c.c. = 2*Re(complex_term) where complex_term = dA_dx - i*dA_dy
-        # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
-        w_arr[k_out, i_local, j_local] = ybj_factor * (
-            real(dAz_dx_phys_arr[k, i_local, j_local]) +
-            imag(dAz_dy_phys_arr[k, i_local, j_local])
-        )
+        # Get derivatives in physical space
+        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
+        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
+
+        # Cosine coefficient: Re(∂A_z/∂x) + Im(∂A_z/∂y)
+        w_cos = real(dAz_dx) + imag(dAz_dy)
+        # Sine coefficient: Im(∂A_z/∂x) - Re(∂A_z/∂y)
+        w_sin = imag(dAz_dx) - real(dAz_dy)
+
+        # Full oscillating velocity from eq (2.10)
+        w_arr[k_out, i_local, j_local] = ybj_factor * (cos_ft * w_cos + sin_ft * w_sin)
     end
 
     # Apply boundary conditions: w = 0 at top and bottom
@@ -853,7 +897,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 end
 
 # 2D decomposition version with transposes
-function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion)
+function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get parameters
@@ -928,10 +972,13 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     end
 
     # Compute YBJ vertical velocity in PHYSICAL space (2D decomposition version)
-    # w = -(f²/N²)[(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-    #   = -(f²/N²) * 2 * [Re(∂A/∂x)_z + Im(∂A/∂y)_z]
+    # From Asselin & Young (2019) equation (2.10):
+    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
     #
-    # Must transform derivatives to physical space first, then combine.
+    # where A_{zs} = (1/2)[(∂A_z/∂x) - i(∂A_z/∂y)]
+    #
+    # Full formula:
+    #   w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
     dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
@@ -943,17 +990,34 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     w_arr = parent(S.w)
 
-    # Compute w in physical space
+    # Compute oscillation factors if time is provided
+    if t !== nothing
+        cos_ft = cos(f * t)
+        sin_ft = sin(f * t)
+    else
+        # If no time provided, use t=0 (cosine term only)
+        cos_ft = 1.0
+        sin_ft = 0.0
+    end
+
+    # Compute w in physical space using equation (2.10)
     nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
     @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
         k_out = k + 1
         N²ₗ = N2_profile[k_out]
-        ybj_factor = -2.0 * (f^2) / N²ₗ
-        # Re(dA_dx - i*dA_dy) = Re(dA_dx) + Im(dA_dy)
-        w_arr[k_out, i_local, j_local] = ybj_factor * (
-            real(dAz_dx_phys_arr[k, i_local, j_local]) +
-            imag(dAz_dy_phys_arr[k, i_local, j_local])
-        )
+        ybj_factor = -(f^2) / N²ₗ
+
+        # Get derivatives in physical space
+        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
+        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
+
+        # Cosine coefficient: Re(∂A_z/∂x) + Im(∂A_z/∂y)
+        w_cos = real(dAz_dx) + imag(dAz_dy)
+        # Sine coefficient: Im(∂A_z/∂x) - Re(∂A_z/∂y)
+        w_sin = imag(dAz_dx) - real(dAz_dy)
+
+        # Full oscillating velocity from eq (2.10)
+        w_arr[k_out, i_local, j_local] = ybj_factor * (cos_ft * w_cos + sin_ft * w_sin)
     end
 
     # Apply boundary conditions
@@ -975,39 +1039,51 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
 
 Compute the TOTAL velocity field for Lagrangian particle advection.
 
 # Physical Background
 In QG-YBJ+ dynamics, a particle is advected by:
 1. **Geostrophic flow**: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
-2. **Wave-induced drift**: Stokes drift from near-inertial waves
+2. **Wave velocity**: From YBJ+ equation (1.2): u + iv = e^{-ift} LA
+3. **Wave-induced Stokes drift**: Second-order drift from near-inertial waves
 
 The total velocity is:
 ```
-u_total = u_QG + u_wave
-v_total = v_QG + v_wave
-w_total = w (from omega equation or YBJ)
+u_total = u_QG + u_wave + u_S
+v_total = v_QG + v_wave + v_S
+w_total = w_QG + w_S (from omega equation or YBJ, plus vertical Stokes drift)
 ```
+
+# Wave Velocity (Asselin & Young 2019, eq. 1.2)
+The backrotated wave velocity is LA, where L = ∂_z(f²/N²)∂_z:
+```
+u_wave = Re(LA)
+v_wave = Im(LA)
+```
+For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA.
+In spectral space: LA = B + (k_h²/4)A
 
 # Wave-Induced Stokes Drift
-Following Xie & Vanneste (2015), the Stokes drift from the wave envelope:
+Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
+is computed from the wave velocity LA (not amplitude A):
 ```
-u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
-v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
-w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
+u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
+v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
+w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
 ```
 
-where φ is the wave phase. Particles drift in the direction of wave propagation.
-The drift magnitude scales with wave intensity |A|².
+where LA = |LA|e^{iφ} is the wave velocity and φ is the wave phase.
+Particles drift in the direction of wave propagation (phase gradient).
+The drift magnitude scales with wave velocity intensity |LA|².
 
 # Usage
 For Lagrangian particle advection, always use this function rather than
 `compute_velocities!` to include wave effects.
 
 # Arguments
-- `S::State`: State with ψ, A (input) and u, v, w (output)
+- `S::State`: State with ψ, A, B (input) and u, v, w (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters
@@ -1016,16 +1092,18 @@ For Lagrangian particle advection, always use this function rather than
 - `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS
+- `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
 
 # Returns
 Modified State with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
     # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
     compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace, dealias_mask=dealias_mask)
 
-    # Add wave-induced velocities (respecting compute_w for vertical component)
-    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w)
+    # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
+    # Pass N2_profile for the second term in the Jacobian (f²/N²)
+    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, include_wave_velocity=include_wave_velocity, N2_profile=N2_profile)
 
     return S
 end
@@ -1040,63 +1118,88 @@ propagation. This is the Stokes drift correction.
 =#
 
 """
-    compute_wave_velocities!(S, G; plans=nothing, params=nothing, compute_w=true)
+    compute_wave_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
 
-Compute wave-induced Stokes drift velocities and add to existing QG velocities.
+Compute wave velocities and Stokes drift, adding them to existing QG velocities.
 
 # Physical Background
-Near-inertial waves induce a net Lagrangian drift (Stokes drift) due to the
-correlation between wave orbital velocity and wave-induced displacement.
+Near-inertial waves contribute to particle advection through two mechanisms:
 
-Following Xie & Vanneste (2015) and the GLM framework, the Stokes drift for
-NIWs with complex amplitude A is:
+1. **Wave velocity**: Following Asselin & Young (2019) YBJ+ equation (1.2):
+   u + iv = e^{-ift} L A
+   where L = ∂_z(f²/N²)∂_z is the vertical operator.
 
-```
-u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x
-v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
-w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z
-```
+   The backrotated velocity (phase-averaged) is LA:
+   - u_wave = Re(LA)
+   - v_wave = Im(LA)
 
-where φ is the wave phase (A = |A|e^{iφ}).
+   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
+   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
+
+2. **Stokes drift**: Following Wagner & Young (2016) equation (3.16a), the
+   horizontal Stokes drift is computed from the full Jacobian:
+
+   J₀ = ∂(M*, M_z̃)/∂(z̃, s*) = (LA)* ∂_{s*}(LA) - M*_{s*} (M_z̃)_{z̃}
+
+   where:
+   - M = (f²/N²) A_z is the "buoyancy action"
+   - M_z̃ = LA is the wave velocity
+   - ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative
+   - s* = x - iy is the complex conjugate horizontal coordinate
+
+   The full form (expanding M*_{s*} = (f²/N²) ∂_{s*}(A_z*)):
+   J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
+
+   From equation (3.18): if₀ U^S = J₀, so:
+   - u_S = Im(J₀)/f₀
+   - v_S = -Re(J₀)/f₀
+
+   For vertical Stokes drift, equation (3.19)-(3.20) gives the full Jacobian form:
+   - if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
+   - Expanding: K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
+   - With: M*_z = a_z·A_z* + a·A_{zz}*, M_{ss*} = a·(1/4)Δ_H(A_z),
+           M*_{s*} = a·(A_{zs})*, M_{sz} = a_z·A_{zs} + a·A_{zzs}
+   - Where a = f₀²/N² and a_z = ∂_z(f₀²/N²)
+   - Final: w^S = -2·Im(K₀)/f₀
 
 # Physical Interpretation
-- The Stokes drift is proportional to the phase gradient weighted by wave intensity
-- Particles drift in the direction of wave propagation (phase gradient)
-- For a plane wave: drift is in the direction the wave travels
-- For standing waves: drift depends on local phase structure
-- Important for Lagrangian transport in NIW-active regions
-
-# Mathematical Note
-Writing A* ∂A/∂x = Re[...] + i Im[...]:
-- Re[A* ∂A/∂x] = |A| ∂|A|/∂x = (1/2) ∂|A|²/∂x (amplitude gradient)
-- Im[A* ∂A/∂x] = |A|² ∂φ/∂x (phase gradient × intensity)
-
-The Stokes drift uses the imaginary part (phase gradient), not the real part.
+- Wave velocity: Direct advection by the wave orbital motion (from backrotated velocity LA)
+- Stokes drift: Net drift in the direction of wave propagation
+- The second term in J₀ accounts for vertical structure of the wave envelope
+- Both contributions are important for accurate Lagrangian transport
 
 # Algorithm
-1. Compute horizontal gradients: ∂A/∂x, ∂A/∂y in spectral space
-2. Use S.C = A_z = ∂A/∂z (computed by invert_B_to_A!)
-3. Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
-4. Compute Stokes drift: u_S, v_S, w_S = Im[A* ∂A/∂(x,y,z)]
-5. Add to existing u, v, w fields (in-place modification)
+1. Compute LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
+2. Compute ∂_{s*}(LA) = (1/2)(∂_x + i∂_y)(LA) in spectral space
+3. Compute ∂_{s*}(A_z*) = conj((1/2)(∂_x - i∂_y)(A_z)) using A_z = S.C
+4. Compute ∂_z(LA) using finite differences
+5. For vertical Stokes drift: compute A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z profile
+6. Transform all fields to physical space
+7. Compute wave velocity: u_w, v_w = Re(LA), Im(LA)
+8. Compute full Jacobian: J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
+9. Extract horizontal Stokes drift: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
+10. Compute K₀ and extract vertical Stokes drift: w_S = -2·Im(K₀)/f₀
+11. Add contributions to existing u, v, w fields (in-place modification)
 
 # Arguments
-- `S::State`: State with A, C (input) and u, v, w modified (output)
+- `S::State`: State with A, B, C (input) and u, v, w modified (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
-- `params`: Model parameters
+- `params`: Model parameters (requires f₀ for Stokes drift normalization, N² for stratification)
 - `compute_w::Bool`: If true (default), compute and add vertical wave Stokes drift
+- `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
+- `N2_profile::Vector`: Optional N²(z) profile for Jacobian second term (default: constant from params)
 
 # Note
 This function modifies u, v, w in-place by adding wave contributions.
 Call after compute_velocities! to get total velocity.
-S.C must contain A_z (set by invert_B_to_A!) before calling this function.
 
 # References
+- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (1.2)
+- Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
-- Wagner & Young (2016), J. Fluid Mech. 802, 806-837
 """
-function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true)
+function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1104,74 +1207,305 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     v_arr = parent(S.v)
     w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
-    # S.C = A_z = ∂A/∂z is already computed by invert_B_to_A!
+    Bₖ_arr = parent(S.B)
+    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_B_to_A!
     nz_local, nx_local, ny_local = size(Aₖ_arr)
+
+    # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
+    f₀ = if params !== nothing && hasfield(typeof(params), :f₀)
+        params.f₀
+    else
+        1.0  # Default fallback
+    end
+
+    # Get N² value from params (default to 1.0 if not available)
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile - use provided profile, or create constant profile from params.N²
+    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     # Set up plans if needed
     if plans === nothing
         plans = plan_transforms!(G)
     end
 
-    # Compute horizontal derivatives of A: ∂A/∂x, ∂A/∂y in spectral space
-    dA_dxₖ = similar(S.A)
-    dA_dyₖ = similar(S.A)
-    dA_dxₖ_arr = parent(dA_dxₖ)
-    dA_dyₖ_arr = parent(dA_dyₖ)
+    # Compute LA, ∂_{s*}(LA), and ∂_{s*}(A_z) in spectral space
+    # YBJ+ relation: B = L⁺A = LA + (1/4)ΔA, so LA = B - (1/4)ΔA
+    # In spectral space: Δ → -k_h², so LA = B + (k_h²/4)A
+    #
+    # ∂_{s*} = (1/2)(∂_x + i∂_y), so in spectral space:
+    # ∂_{s*} → (1/2)(ikₓ + i·ikᵧ) = (i/2)(kₓ - kᵧ)... wait, let me recalculate
+    # Actually: ∂_{s*}f → (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (i/2)(kₓ + i kᵧ) f̂ = (i/2) k* f̂
+    # where k* = kₓ + i kᵧ is the complex wavenumber conjugate
+    LAₖ = similar(S.A)
+    dLA_ds_conjₖ = similar(S.A)  # ∂_{s*}(LA)
+    dAz_ds_conjₖ = similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
+    LAₖ_arr = parent(LAₖ)
+    dLA_ds_conjₖ_arr = parent(dLA_ds_conjₖ)
+    dAz_ds_conjₖ_arr = parent(dAz_ds_conjₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, dA_dxₖ)
-        j_global = local_to_global(j_local, 3, dA_dxₖ)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        dA_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_arr[k, i_local, j_local]
-        dA_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_arr[k, i_local, j_local]
+        i_global = local_to_global(i_local, 2, LAₖ)
+        j_global = local_to_global(j_local, 3, LAₖ)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+
+        # Wave velocity from eq (1.2): u + iv = e^{-ift} LA
+        # LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
+        LA_val = Bₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
+        LAₖ_arr[k, i_local, j_local] = LA_val
+
+        # Complex derivative: ∂_{s*} = (1/2)(∂_x + i∂_y)
+        # In spectral space: ∂_{s*} f̂ = (1/2)(ikₓ + i²kᵧ) f̂ = (i/2)(kₓ - kᵧ)...
+        # Wait: ∂_{s*} = (1/2)(∂_x + i∂_y), so
+        # ∂_{s*} f → (1/2)(ikₓ + i·ikᵧ) f̂ = (1/2)(ikₓ - kᵧ) f̂
+        # Let's define: ds_conj_factor = (1/2)(ikₓ - kᵧ) = (i/2)(kₓ + ikᵧ)
+        # No wait, that's wrong too. Let me be more careful:
+        # ∂/∂s* = (1/2)(∂/∂x + i ∂/∂y)
+        # Applied to f: ∂f/∂s* = (1/2)(∂f/∂x + i ∂f/∂y)
+        # In spectral: = (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (1/2)(ikₓ + i²kᵧ) f̂ = (1/2)(ikₓ - kᵧ) f̂
+        ds_conj_factor = 0.5 * (im * kₓ - kᵧ)  # = (1/2)(ikₓ - kᵧ)
+        dLA_ds_conjₖ_arr[k, i_local, j_local] = ds_conj_factor * LA_val
+
+        # Horizontal derivative of A_z for second Jacobian term
+        # Need ∂_{s*}(A_z*) = conj(∂_{s}(A_z)) where ∂_s = (1/2)(∂_x - i∂_y)
+        # But it's easier: ∂_{s*}(A_z*) = (∂_{s*}(A_z))* where we use complex conj
+        # Actually: ∂_{s*}(A_z*) = (1/2)(∂_x(A_z*) + i∂_y(A_z*))
+        #                       = (1/2)(∂_x(A_z)* + i∂_y(A_z)*)  [derivatives of real coords are linear]
+        #                       = ((1/2)(∂_x(A_z) - i∂_y(A_z)))*  [factor out conj]
+        #                       = (∂_s(A_z))*
+        # where ∂_s = (1/2)(∂_x - i∂_y) is the other complex derivative
+        # In spectral: ∂_s f̂ = (1/2)(ikₓ - i·ikᵧ) f̂ = (1/2)(ikₓ + kᵧ) f̂
+        ds_factor = 0.5 * (im * kₓ + kᵧ)  # = (1/2)(ikₓ + kᵧ)
+        Az_val = Aₖ_z_arr[k, i_local, j_local]
+        dAz_ds_conjₖ_arr[k, i_local, j_local] = ds_factor * Az_val  # Will take conj later
     end
 
-    # Transform A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
-    # The Stokes drift formula u_S = Im[A* ∂A/∂x] is a product of fields
+    # For vertical Stokes drift (eq 3.19-3.20), we need additional derivatives:
+    # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz} where M = (f₀²/N²)A_z
+    # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
+
+    # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z
+    Aₖ_zz = similar(S.A)
+    Aₖ_zz_arr = parent(Aₖ_zz)
+    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
+
+    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+        for k in 2:(nz_local-1)
+            # Centered difference for A_{zz}
+            Aₖ_zz_arr[k, i_local, j_local] = (Aₖ_z_arr[k+1, i_local, j_local] - 2*Aₖ_z_arr[k, i_local, j_local] + Aₖ_z_arr[k-1, i_local, j_local]) / (Δz^2)
+        end
+        # One-sided at boundaries (second-order forward/backward)
+        if nz_local >= 3
+            Aₖ_zz_arr[1, i_local, j_local] = (Aₖ_z_arr[3, i_local, j_local] - 2*Aₖ_z_arr[2, i_local, j_local] + Aₖ_z_arr[1, i_local, j_local]) / (Δz^2)
+            Aₖ_zz_arr[nz_local, i_local, j_local] = (Aₖ_z_arr[nz_local, i_local, j_local] - 2*Aₖ_z_arr[nz_local-1, i_local, j_local] + Aₖ_z_arr[nz_local-2, i_local, j_local]) / (Δz^2)
+        elseif nz_local == 2
+            Aₖ_zz_arr[1, i_local, j_local] = 0.0
+            Aₖ_zz_arr[2, i_local, j_local] = 0.0
+        else
+            Aₖ_zz_arr[1, i_local, j_local] = 0.0
+        end
+    end
+
+    # Compute horizontal Laplacian Δ_H(A_z) and A_{zs}, A_{zzs} in spectral space
+    # Δ_H(A_z) = -k_h² · Â_z in spectral space
+    # A_{zs} = ∂_s(A_z) = (1/2)(ikₓ + kᵧ) · Â_z  [already computed as dAz_ds_conjₖ]
+    # A_{zzs} = ∂_s(A_{zz}) = (1/2)(ikₓ + kᵧ) · Â_{zz}
+    Δ_H_Azₖ = similar(S.A)
+    A_zzsₖ = similar(S.A)
+    Δ_H_Azₖ_arr = parent(Δ_H_Azₖ)
+    A_zzsₖ_arr = parent(A_zzsₖ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, Δ_H_Azₖ)
+        j_global = local_to_global(j_local, 3, Δ_H_Azₖ)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+
+        Az_val = Aₖ_z_arr[k, i_local, j_local]
+        Azz_val = Aₖ_zz_arr[k, i_local, j_local]
+
+        # Horizontal Laplacian: Δ_H → -k_h² in spectral space
+        Δ_H_Azₖ_arr[k, i_local, j_local] = -kₕ² * Az_val
+
+        # ∂_s(A_{zz}) in spectral space: ∂_s → (1/2)(ikₓ + kᵧ)
+        ds_factor = 0.5 * (im * kₓ + kᵧ)
+        A_zzsₖ_arr[k, i_local, j_local] = ds_factor * Azz_val
+    end
+
+    # Compute a_z = ∂_z(f₀²/N²) profile
+    # a = f₀²/N², so a_z = -f₀² · (∂N²/∂z) / N⁴
+    a_profile = similar(N2_profile_local)
+    a_z_profile = similar(N2_profile_local)
+    for k in 1:nz
+        a_profile[k] = f₀² / N2_profile_local[k]
+    end
+    # Compute a_z using finite differences
+    for k in 2:(nz-1)
+        a_z_profile[k] = (a_profile[k+1] - a_profile[k-1]) / (2 * Δz)
+    end
+    if nz >= 2
+        a_z_profile[1] = (a_profile[2] - a_profile[1]) / Δz
+        a_z_profile[nz] = (a_profile[nz] - a_profile[nz-1]) / Δz
+    else
+        a_z_profile[1] = 0.0
+    end
+
+    # Compute vertical derivative of LA using finite differences
+    # ∂(LA)/∂z for full Jacobian and vertical Stokes drift
+    dLA_dzₖ = similar(S.A)
+    dLA_dzₖ_arr = parent(dLA_dzₖ)
+    # Note: Δz already computed above for A_{zz}
+
+    # Second-order centered differences for interior, one-sided at boundaries
+    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+        for k in 2:(nz_local-1)
+            # Centered difference
+            dLA_dzₖ_arr[k, i_local, j_local] = (LAₖ_arr[k+1, i_local, j_local] - LAₖ_arr[k-1, i_local, j_local]) / (2 * Δz)
+        end
+        # One-sided at boundaries
+        if nz_local >= 2
+            dLA_dzₖ_arr[1, i_local, j_local] = (LAₖ_arr[2, i_local, j_local] - LAₖ_arr[1, i_local, j_local]) / Δz
+            dLA_dzₖ_arr[nz_local, i_local, j_local] = (LAₖ_arr[nz_local, i_local, j_local] - LAₖ_arr[nz_local-1, i_local, j_local]) / Δz
+        else
+            dLA_dzₖ_arr[1, i_local, j_local] = 0.0
+        end
+    end
+
+    # Transform all fields to physical space
+    # The Jacobian J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA) is a product of fields
     # and MUST be computed in physical space, not spectral space
-    Aᵣ = _allocate_fft_dst(S.A, plans)
-    dA_dxᵣ = _allocate_fft_dst(dA_dxₖ, plans)
-    dA_dyᵣ = _allocate_fft_dst(dA_dyₖ, plans)
-    dA_dzᵣ = _allocate_fft_dst(S.C, plans)
+    LAᵣ = _allocate_fft_dst(LAₖ, plans)
+    dLA_ds_conjᵣ = _allocate_fft_dst(dLA_ds_conjₖ, plans)
+    dAz_ds_conjᵣ = _allocate_fft_dst(dAz_ds_conjₖ, plans)
+    dLA_dzᵣ = _allocate_fft_dst(dLA_dzₖ, plans)
 
-    fft_backward!(Aᵣ, S.A, plans)
-    fft_backward!(dA_dxᵣ, dA_dxₖ, plans)
-    fft_backward!(dA_dyᵣ, dA_dyₖ, plans)
-    fft_backward!(dA_dzᵣ, S.C, plans)  # S.C = A_z in spectral space
+    fft_backward!(LAᵣ, LAₖ, plans)
+    fft_backward!(dLA_ds_conjᵣ, dLA_ds_conjₖ, plans)
+    fft_backward!(dAz_ds_conjᵣ, dAz_ds_conjₖ, plans)
+    fft_backward!(dLA_dzᵣ, dLA_dzₖ, plans)
 
-    Aᵣ_arr = parent(Aᵣ)
-    dA_dxᵣ_arr = parent(dA_dxᵣ)
-    dA_dyᵣ_arr = parent(dA_dyᵣ)
-    dA_dzᵣ_arr = parent(dA_dzᵣ)
+    # Transform additional fields for vertical Stokes drift (eq 3.19-3.20)
+    Azᵣ = _allocate_fft_dst(S.C, plans)  # A_z in physical space
+    Azzᵣ = _allocate_fft_dst(Aₖ_zz, plans)  # A_{zz} in physical space
+    Δ_H_Azᵣ = _allocate_fft_dst(Δ_H_Azₖ, plans)  # Δ_H(A_z) in physical space
+    A_zzsᵣ = _allocate_fft_dst(A_zzsₖ, plans)  # A_{zzs} in physical space
 
-    # Compute Stokes drift in physical space:
-    # u_S = Im[A* ∂A/∂x] = |A|² ∂φ/∂x (phase gradient × intensity)
-    # v_S = Im[A* ∂A/∂y] = |A|² ∂φ/∂y
-    # w_S = Im[A* ∂A/∂z] = |A|² ∂φ/∂z (vertical Stokes drift)
+    fft_backward!(Azᵣ, S.C, plans)
+    fft_backward!(Azzᵣ, Aₖ_zz, plans)
+    fft_backward!(Δ_H_Azᵣ, Δ_H_Azₖ, plans)
+    fft_backward!(A_zzsᵣ, A_zzsₖ, plans)
+
+    LAᵣ_arr = parent(LAᵣ)
+    dLA_ds_conjᵣ_arr = parent(dLA_ds_conjᵣ)
+    dAz_ds_conjᵣ_arr = parent(dAz_ds_conjᵣ)
+    dLA_dzᵣ_arr = parent(dLA_dzᵣ)
+    Azᵣ_arr = parent(Azᵣ)
+    Azzᵣ_arr = parent(Azzᵣ)
+    Δ_H_Azᵣ_arr = parent(Δ_H_Azᵣ)
+    A_zzsᵣ_arr = parent(A_zzsᵣ)
+
+    # Compute wave velocity and Stokes drift in physical space
+    # Following Wagner & Young (2016) equation (3.16a):
+    #   J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
     #
-    # This is the correct Stokes drift formula from Xie & Vanneste (2015).
-    # Note: fft_backward! is normalized, so Aᵣ and derivatives are in physical space
+    # From equation (3.18): if₀ U^S = J₀, so:
+    #   u_S = Im(J₀)/f₀
+    #   v_S = -Re(J₀)/f₀
+    #
+    # For vertical Stokes drift from eq (3.19)-(3.20):
+    #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
+    #   This expands to: w^S = -2·Im(K₀)/f₀
+    inv_f₀ = 1.0 / f₀
+    f₀² = f₀^2
 
-    # Add Stokes drift to existing QG velocities directly in physical space
-    nz_phys, nx_phys, ny_phys = size(Aᵣ_arr)
+    # Add wave velocity and Stokes drift to existing QG velocities in physical space
+    nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        A_phys = Aᵣ_arr[k, i_local, j_local]
-        dAdx_phys = dA_dxᵣ_arr[k, i_local, j_local]
-        dAdy_phys = dA_dyᵣ_arr[k, i_local, j_local]
+        LA_phys = LAᵣ_arr[k, i_local, j_local]
+        dLA_ds_conj_phys = dLA_ds_conjᵣ_arr[k, i_local, j_local]
+        dAz_ds_phys = dAz_ds_conjᵣ_arr[k, i_local, j_local]  # This is ∂_s(A_z), need conj for ∂_{s*}(A_z*)
+        dLA_dz_phys = dLA_dzᵣ_arr[k, i_local, j_local]
+        N²ₖ = N2_profile_local[k]
 
-        # Stokes drift: (u,v)_S = Im[conj(A) * ∂A/∂(x,y)] = |A|² ∂φ/∂(x,y)
-        # This represents particle drift in the direction of wave propagation
-        u_stokes = imag(conj(A_phys) * dAdx_phys)
-        v_stokes = imag(conj(A_phys) * dAdy_phys)
+        # Wave velocity from YBJ+ eq (1.2): u + iv = e^{-ift} LA
+        # Backrotated velocity (phase-averaged): (u,v)_wave = (Re(LA), Im(LA))
+        if include_wave_velocity
+            u_arr[k, i_local, j_local] += real(LA_phys)
+            v_arr[k, i_local, j_local] += imag(LA_phys)
+        end
+
+        # Full Jacobian from Wagner & Young (2016) eq (3.16a):
+        # J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
+        #
+        # First term: (LA)* ∂_{s*}(LA)
+        term1 = conj(LA_phys) * dLA_ds_conj_phys
+
+        # Second term: (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
+        # where ∂_{s*}(A_z*) = conj(∂_s(A_z))
+        dAz_ds_conj_phys = conj(dAz_ds_phys)  # ∂_{s*}(A_z*) = (∂_s(A_z))*
+        term2 = (f₀² / N²ₖ) * dAz_ds_conj_phys * dLA_dz_phys
+
+        # Full Jacobian
+        J₀ = term1 - term2
+
+        # Stokes drift from eq (3.18): if₀ U^S = J₀
+        # U^S = u_S + i v_S = J₀ / (if₀) = -i J₀ / f₀
+        # So: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
+        u_stokes = inv_f₀ * imag(J₀)
+        v_stokes = -inv_f₀ * real(J₀)
 
         u_arr[k, i_local, j_local] += u_stokes
         v_arr[k, i_local, j_local] += v_stokes
 
         # Only add vertical Stokes drift if compute_w is requested
+        # Following Wagner & Young (2016) equation (3.19)-(3.20):
+        #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
+        #   Since K₀* - K₀ = -2i·Im(K₀), we have: w^S = -2·Im(K₀)/f₀
+        #
+        # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
+        # where:
+        #   M = a·A_z with a = f₀²/N²
+        #   M*_z = a_z·A_z* + a·A_{zz}*
+        #   M_{ss*} = a·(1/4)Δ_H(A_z)
+        #   M*_{s*} = a·(A_{zs})*
+        #   M_{sz} = a_z·A_{zs} + a·A_{zzs}
         if compute_w
-            dAdz_phys = dA_dzᵣ_arr[k, i_local, j_local]
-            w_stokes = imag(conj(A_phys) * dAdz_phys)
+            # Get local field values
+            Az_phys = Azᵣ_arr[k, i_local, j_local]
+            Azz_phys = Azzᵣ_arr[k, i_local, j_local]
+            Δ_H_Az_phys = Δ_H_Azᵣ_arr[k, i_local, j_local]
+            Azs_phys = dAz_ds_phys  # Already computed: ∂_s(A_z)
+            Azzs_phys = A_zzsᵣ_arr[k, i_local, j_local]
+
+            # Get stratification factors
+            aₖ = a_profile[k]  # f₀²/N²
+            a_zₖ = a_z_profile[k]  # ∂_z(f₀²/N²)
+
+            # Compute K₀ components
+            # M*_z = a_z·A_z* + a·A_{zz}*
+            M_star_z = a_zₖ * conj(Az_phys) + aₖ * conj(Azz_phys)
+
+            # M_{ss*} = a·(1/4)Δ_H(A_z)
+            M_ss_star = aₖ * 0.25 * Δ_H_Az_phys
+
+            # M*_{s*} = a·(A_{zs})*
+            M_star_s_star = aₖ * conj(Azs_phys)
+
+            # M_{sz} = a_z·A_{zs} + a·A_{zzs}
+            M_sz = a_zₖ * Azs_phys + aₖ * Azzs_phys
+
+            # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
+            K₀ = M_star_z * M_ss_star - M_star_s_star * M_sz
+
+            # w^S = -2·Im(K₀)/f₀
+            w_stokes = -2.0 * inv_f₀ * imag(K₀)
             w_arr[k, i_local, j_local] += w_stokes
         end
     end

@@ -445,7 +445,7 @@ where:
 │  │   │   Transform to physical space, then:                                  │ │ │
 │  │   │     u_S = Im[A*·∂A/∂x] = |A|²·∂φ/∂x  (phase gradient × intensity)    │ │ │
 │  │   │     v_S = Im[A*·∂A/∂y] = |A|²·∂φ/∂y                                   │ │ │
-│  │   │     w_S = Im[A*·∂A/∂z] = |A|²·∂φ/∂z                                   │ │ │
+│  │   │     w_S = -2·Im(K₀)/f₀  (Wagner & Young 2016, eq 3.19-3.20)          │ │ │
 │  │   │                                                                       │ │ │
 │  │   │   State.u += u_S  →  State.u = u_QG + u_S (TOTAL)                     │ │ │
 │  │   │   State.v += v_S  →  State.v = v_QG + v_S (TOTAL)                     │ │ │

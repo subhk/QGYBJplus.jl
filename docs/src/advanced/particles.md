@@ -36,14 +36,23 @@ u_S = \text{Im}\left[A^* \frac{\partial A}{\partial x}\right] = |A|^2 \frac{\par
 v_S = \text{Im}\left[A^* \frac{\partial A}{\partial y}\right] = |A|^2 \frac{\partial \phi}{\partial y}
 ```
 
-*Vertical Stokes Drift:*
+*Vertical Stokes Drift* (Wagner & Young 2016, eq. 3.19-3.20):
 ```math
-w_S = \text{Im}\left[A^* \frac{\partial A}{\partial z}\right] = |A|^2 \frac{\partial \phi}{\partial z}
+if_0 w^S = K_0^* - K_0 = -2i \, \text{Im}(K_0)
 ```
+where ``K_0`` is the Jacobian:
+```math
+K_0 = \frac{\partial(M^*, M_s)}{\partial(\tilde{z}, s^*)} = M^*_z \cdot M_{ss^*} - M^*_{s^*} \cdot M_{sz}
+```
+with ``M = (f_0^2/N^2) A_z``. The individual terms are:
+- ``M^*_z = a_z A_z^* + a A_{zz}^*`` where ``a = f_0^2/N^2``
+- ``M_{ss^*} = \frac{a}{4} \nabla_H^2 A_z``
+- ``M^*_{s^*} = a (A_{zs})^*``
+- ``M_{sz} = a_z A_{zs} + a A_{zzs}``
 
-where ``\phi`` is the wave phase (``A = |A|e^{i\phi}``). The Stokes drift represents particle drift in the direction of wave propagation (phase gradient), weighted by wave intensity.
+giving ``w_S = -2 \, \text{Im}(K_0)/f_0``.
 
-The vertical derivative ∂A/∂z is computed by `invert_B_to_A!` and stored in `S.C`.
+The horizontal Stokes drifts use the simpler form ``u_S = \text{Im}[A^* \partial A/\partial x]``, ``v_S = \text{Im}[A^* \partial A/\partial y]``.
 
 **3. QG Vertical Velocity** (from omega equation):
 ```math
