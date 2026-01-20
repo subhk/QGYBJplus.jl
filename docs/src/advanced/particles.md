@@ -69,9 +69,15 @@ This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this wave-i
 
 The complete velocity used for particle advection is:
 ```math
-\mathbf{u}_{total} = (u_{QG} + u_{wave},\; v_{QG} + v_{wave},\; w + w_{wave})
+u_{total} = u_{QG} + u_{Stokes}
 ```
-where $w$ is either $w_{QG}$ (from omega equation) or $w_{YBJ}$ (wave-induced) depending on the `use_ybj_w` setting.
+```math
+v_{total} = v_{QG} + v_{Stokes}
+```
+```math
+w_{total} = w_{QG} + w_{Stokes}
+```
+where $w_{QG}$ comes from the omega equation (or $w_{YBJ}$ if `use_ybj_w=true`).
 
 This includes both horizontal and **vertical Stokes drift**, ensuring particles are correctly advected by the full wave-induced velocity field.
 
