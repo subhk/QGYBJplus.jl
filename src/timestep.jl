@@ -393,18 +393,18 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
                                    + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
             else
-                #= Update B (wave envelope) - Normal YBJ
+                #= Update B (wave envelope) - Normal YBJ (PDF Eq. 45-46)
                 In terms of real/imaginary parts (with αdisp = f/2):
-                    ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI - (1/2)ζ·BI
-                    ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR + (1/2)ζ·BR =#
+                    ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
+                    ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
                 k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
                 BRnew = ( BRok_arr[k, i, j] - par.dt*nBRk_arr[k, i, j]
                           - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
-                          - par.dt*0.5*rBIk_arr[k, i, j] ) * exp(-λʷ)
+                          + par.dt*0.5*rBIk_arr[k, i, j] ) * exp(-λʷ)
                 BInew = ( BIok_arr[k, i, j] - par.dt*nBIk_arr[k, i, j]
                           + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
-                          + par.dt*0.5*rBRk_arr[k, i, j] ) * exp(-λʷ)
+                          - par.dt*0.5*rBRk_arr[k, i, j] ) * exp(-λʷ)
 
                 # Recombine into complex B
                 B_arr[k, i, j] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
@@ -729,18 +729,18 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
                                           im*αdisp*kₕ²*An_arr[k, i, j] -
                                           0.5im*rBk_arr[k, i, j] )*exp(-λʷ)
             else
-                #= Update B (real and imaginary parts)
-                BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI + (1/2)ζ·BI]×e^(-λdt)
-                BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR - (1/2)ζ·BR]×e^(-λdt) =#
+                #= Update B (real and imaginary parts) - PDF Eq. 45-46
+                BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
+                BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
                 k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
                 BRtemp_arr[k, i, j] = Complex(real(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
                                2*par.dt*( nBRk_arr[k, i, j] +
-                                          αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) +
+                                          αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) -
                                           0.5*rBIk_arr[k, i, j] )*exp(-λʷ)
                 BItemp_arr[k, i, j] = Complex(imag(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
                                2*par.dt*( nBIk_arr[k, i, j] -
-                                          αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) -
+                                          αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) +
                                           0.5*rBRk_arr[k, i, j] )*exp(-λʷ)
             end
         else

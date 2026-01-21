@@ -138,8 +138,10 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
 
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
         N² = N²_value,  # From config.stratification.N0 for constant_N
+
         γ = T(1e-3),    # Robert-Asselin filter
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), 
+        
         ilap1 = config.ilap1, ilap2 = config.ilap2,
         νₕ₁ʷ = T(config.nu_h1_wave), νₕ₂ʷ = T(config.nu_h2_wave), 
         ilap1w = config.ilap1_wave, ilap2w = config.ilap2_wave,
@@ -571,28 +573,32 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             AI = imag(A_k)
 
             # Compute LA = ∂_z(a × C) using finite differences
-            # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
+            # C[k] is at interface z = k*Δz, a[k] is at z = (k-1)*Δz
+            # So (a×C) at interface k uses a[k+1] (both at z = k*Δz)
+            # LA[k] = (a[k+1] × C[k] - a[k] × C[k-1]) / Δz
             if nz == 1
                 LA_r = T(0)
                 LA_i = T(0)
             elseif k_global == 1
-                # Bottom boundary
-                LA_r = a_ell * CR / Δz
-                LA_i = a_ell * CI / Δz
+                # Bottom boundary: C[0] = 0 (Neumann BC), so only upper flux
+                # Interface above cell 1 is at z = Δz, uses a[2]
+                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+                LA_r = a_ell_kp1 * CR / Δz
+                LA_i = a_ell_kp1 * CI / Δz
             elseif k_global == nz
-                # Top boundary
-                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                # Top boundary: C[nz] = 0 (Neumann BC), so only lower flux
+                # Interface below cell nz is at z = (nz-1)*Δz, uses a[nz]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = -a_ell_km1 * CR_km1 / Δz
-                LA_i = -a_ell_km1 * CI_km1 / Δz
+                LA_r = -a_ell * CR_km1 / Δz
+                LA_i = -a_ell * CI_km1 / Δz
             else
-                # Interior
-                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                # Interior: LA[k] = (a[k+1]*C[k] - a[k]*C[k-1]) / Δz
+                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
-                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+                LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
+                LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
             end
 
             # WKE contribution (factor of 0.5 in norm_factor)
@@ -607,6 +613,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     end
 
     # Dealiasing correction for WKE at kh=0 mode
+    # Uses same corrected indexing as main WKE loop
     wke_zero = T(0)
     for k in 1:nz_local
         k_global = local_to_global(k, 1, state.B)
@@ -618,20 +625,20 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             LA_r = T(0)
             LA_i = T(0)
         elseif k_global == 1
-            LA_r = a_ell * CR / Δz
-            LA_i = a_ell * CI / Δz
+            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+            LA_r = a_ell_kp1 * CR / Δz
+            LA_i = a_ell_kp1 * CI / Δz
         elseif k_global == nz
-            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = -a_ell_km1 * CR_km1 / Δz
-            LA_i = -a_ell_km1 * CI_km1 / Δz
+            LA_r = -a_ell * CR_km1 / Δz
+            LA_i = -a_ell * CI_km1 / Δz
         else
-            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
-            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+            LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
+            LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
         end
         wke_zero += LA_r^2 + LA_i^2
     end
@@ -868,6 +875,9 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
     WE = T(0)
 
     # Compute LA = ∂_z(a × C) for each mode
+    # Compute LA = ∂_z(a × C) for each mode
+    # C[k] is at interface z = k*Δz, a[k] is at z = (k-1)*Δz
+    # So (a×C) at interface k uses a[k+1] (both at z = k*Δz)
     for j_local in 1:ny_local, i_local in 1:nx_local
         for k in 1:nz_local
             k_global = local_to_global(k, 1, state.C)
@@ -876,31 +886,35 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
             CI = imag(C_arr[k, i_local, j_local])
 
             # Compute LA = ∂_z(a × C) using finite differences
+            # LA[k] = (a[k+1] × C[k] - a[k] × C[k-1]) / Δz
             if nz == 1
                 LA_r = T(0)
                 LA_i = T(0)
             elseif k_global == 1
-                LA_r = a_ell * CR / Δz
-                LA_i = a_ell * CI / Δz
+                # Bottom: C[0] = 0 (Neumann BC), interface above uses a[2]
+                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+                LA_r = a_ell_kp1 * CR / Δz
+                LA_i = a_ell_kp1 * CI / Δz
             elseif k_global == nz
-                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                # Top: C[nz] = 0 (Neumann BC), interface below uses a[nz]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = -a_ell_km1 * CR_km1 / Δz
-                LA_i = -a_ell_km1 * CI_km1 / Δz
+                LA_r = -a_ell * CR_km1 / Δz
+                LA_i = -a_ell * CI_km1 / Δz
             else
-                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+                # Interior: LA[k] = (a[k+1]*C[k] - a[k]*C[k-1]) / Δz
+                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
-                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+                LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
+                LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
             end
 
             WE += LA_r^2 + LA_i^2
         end
     end
 
-    # Dealiasing correction for kh=0 mode
+    # Dealiasing correction for kh=0 mode (same corrected indexing)
     wke_zero = T(0)
     for k in 1:nz_local
         k_global = local_to_global(k, 1, state.C)
@@ -912,20 +926,20 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
             LA_r = T(0)
             LA_i = T(0)
         elseif k_global == 1
-            LA_r = a_ell * CR / Δz
-            LA_i = a_ell * CI / Δz
+            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+            LA_r = a_ell_kp1 * CR / Δz
+            LA_i = a_ell_kp1 * CI / Δz
         elseif k_global == nz
-            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = -a_ell_km1 * CR_km1 / Δz
-            LA_i = -a_ell_km1 * CI_km1 / Δz
+            LA_r = -a_ell * CR_km1 / Δz
+            LA_i = -a_ell * CI_km1 / Δz
         else
-            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
+            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
-            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
+            LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
+            LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
         end
         wke_zero += LA_r^2 + LA_i^2
     end

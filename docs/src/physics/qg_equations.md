@@ -162,14 +162,14 @@ When waves are present, the QG equation includes a feedback term through a modif
 The wave-induced PV ``q^w`` is computed from the wave envelope ``B``:
 
 ```math
-q^w = \frac{i}{2} J(B^*, B) + \frac{1}{4} \nabla_h^2 |B|^2
+q^w = \frac{i}{2f_0} J(B^*, B) + \frac{1}{4f_0} \nabla_h^2 |B|^2
 ```
 
-where ``B = B_R + i B_I`` is the complex wave envelope with units of velocity (m/s).
+where ``B = B_R + i B_I`` is the complex wave envelope with units of velocity (m/s) and ``f_0`` is the Coriolis parameter.
 
 !!! note "Dimensional Equations"
     The model solves dimensional equations where ``B`` has actual velocity amplitude.
-    No additional scaling factors are needed.
+    The ``1/f_0`` factor ensures correct dimensionality of the wave feedback term.
 
 ### Effective PV for Inversion
 

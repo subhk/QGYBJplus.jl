@@ -30,10 +30,10 @@ Near-inertial waves carry momentum and energy. When they:
 Following Xie & Vanneste (2015), the wave-induced potential vorticity is:
 
 ```math
-q^w = \frac{i}{2} J(B^*, B) + \frac{1}{4} \nabla_h^2 |B|^2
+q^w = \frac{i}{2f_0} J(B^*, B) + \frac{1}{4f_0} \nabla_h^2 |B|^2
 ```
 
-where ``B`` is the complex wave envelope with units of velocity (m/s).
+where ``B`` is the complex wave envelope with units of velocity (m/s) and ``f_0`` is the Coriolis parameter.
 
 !!! note "Dimensional Equations"
     The model solves dimensional equations where ``B`` has actual velocity amplitude.
@@ -44,7 +44,7 @@ where ``B`` is the complex wave envelope with units of velocity (m/s).
 Writing ``B = B_R + i B_I``, the Jacobian term becomes:
 
 ```math
-\frac{i}{2} J(B^*, B) = \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y}
+\frac{i}{2f_0} J(B^*, B) = \frac{1}{f_0}\left(\frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y}\right)
 ```
 
 And the wave intensity:
@@ -56,10 +56,10 @@ And the wave intensity:
 So the complete formula in spectral space is:
 
 ```math
-q^w = \left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) - \frac{k_h^2}{4} (B_R^2 + B_I^2)
+q^w = \frac{1}{f_0}\left( \frac{\partial B_R}{\partial y} \frac{\partial B_I}{\partial x} - \frac{\partial B_R}{\partial x} \frac{\partial B_I}{\partial y} \right) - \frac{k_h^2}{4f_0} (B_R^2 + B_I^2)
 ```
 
-Note: In spectral space, ``\nabla_h^2 \to -k_h^2``, so ``+\frac{1}{4}\nabla_h^2|B|^2 \to -\frac{k_h^2}{4}|B|^2``.
+Note: In spectral space, ``\nabla_h^2 \to -k_h^2``, so ``+\frac{1}{4f_0}\nabla_h^2|B|^2 \to -\frac{k_h^2}{4f_0}|B|^2``.
 
 ### How It Enters the QG Equation
 
@@ -150,6 +150,8 @@ Waves are funneled into anticyclones, enhancing deep mixing.
 ```julia
 # In nonlinear.jl: compute_qw! (BR/BI form)
 function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
+    f0 = par.f₀  # Coriolis parameter
+
     # 1. Compute derivatives of BR and BI
     # BRx = ∂BR/∂x, BRy = ∂BR/∂y, etc.
     BRxk = im * kx .* BRk
@@ -160,15 +162,15 @@ function compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
     # 2. Transform to real space
     # ...
 
-    # 3. Compute Jacobian term: BRy*BIx - BRx*BIy
-    qwr = BRyr .* BIxr - BRxr .* BIyr
+    # 3. Compute Jacobian term: (1/f₀)(BRy*BIx - BRx*BIy)
+    qwr = (BRyr .* BIxr - BRxr .* BIyr) / f0
 
     # 4. Compute |B|² = BR² + BI²
     mag2 = BRr.^2 + BIr.^2
 
     # 5. Assemble in spectral space
-    # qw = J_term - (1/4)*kh²*|B|²  (note: ∇² → -kh² in spectral)
-    qwk = (fft(qwr) - 0.25 * kh2 .* fft(mag2)) / norm
+    # qw = J_term - (kh²/4f₀)*|B|²  (note: ∇² → -kh² in spectral)
+    qwk = fft(qwr) - (0.25/f0) * kh2 .* fft(mag2)
 
     # Note: No additional scaling needed - B has dimensional velocity units (m/s)
 end

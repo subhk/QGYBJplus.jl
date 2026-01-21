@@ -721,15 +721,20 @@ end
 """
     compute_q_from_psi!(q, psi, G, params, a_ell, r_ut, r_st, dz)
 
-Compute QG potential vorticity from streamfunction.
+Compute QG potential vorticity from streamfunction (PDF Eq. A21, Appendix).
 
-The PV-streamfunction relationship is:
-    q = ∇²ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
+The PV-streamfunction relationship is (homogeneous formulation):
+    q^H = ∇²ψ^H + L(ψ^H)  where L = ∂/∂z (f²/N² ∂/∂z)
 
-In spectral space with finite differences in z:
-    q = -kh² ψ + (1/dz²) [(ρ_u a_ell ρ_s⁻¹) (ψ[k+1] - 2ψ[k] + ψ[k-1])]
+In spectral space with finite differences in z (PDF Eq. 32):
+    q[k] = -kh² ψ[k] + (1/dz²) [S_{k+1}(ψ[k+1] - ψ[k]) - S_k(ψ[k] - ψ[k-1])]
 
-with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
+where S_i = (f/(N(z^u_i)Δz))² at unstaggered level i. The interface coefficient
+a_ell[k] is at z = (k-1)*Δz (below cell k), so:
+- Interface above cell k uses a_ell[k+1]
+- Interface below cell k uses a_ell[k]
+
+Boundary conditions: ∂ψ/∂z = 0 (Neumann BC, PDF Eq. A14).
 """
 function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
     nz = G.nz
@@ -751,9 +756,10 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
         kh2 = kx_val^2 + ky_val^2
 
         # Interior points (k = 2, ..., nz-1)
+        # Interface above cell k is at a_ell[k+1], below is at a_ell[k] (PDF Eq. 32)
         for k in 2:nz-1
-            coeff_up = (r_ut[k] * a_ell[k]) / r_st[k]
-            coeff_down = (r_ut[k-1] * a_ell[k-1]) / r_st[k]
+            coeff_up = (r_ut[k+1] * a_ell[k+1]) / r_st[k]
+            coeff_down = (r_ut[k] * a_ell[k]) / r_st[k]
 
             vert_term = coeff_up * psi_arr[k+1, i_local, j_local] -
                        (coeff_up + coeff_down) * psi_arr[k, i_local, j_local] +
@@ -768,12 +774,14 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local]
         else
             # Bottom boundary (k=1): Neumann BC ψ_z = 0 ⟹ ψ[0] = ψ[1]
-            coeff_up = (r_ut[1] * a_ell[1]) / r_st[1]
+            # Interface above cell 1 is at a_ell[2] (PDF Eq. 32)
+            coeff_up = (r_ut[2] * a_ell[2]) / r_st[1]
             vert_term = coeff_up * (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local])
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local] + vert_term / dz2
 
             # Top boundary (k=nz): Neumann BC ψ_z = 0 ⟹ ψ[nz+1] = ψ[nz]
-            coeff_down = (r_ut[nz-1] * a_ell[nz-1]) / r_st[nz]
+            # Interface below cell nz is at a_ell[nz] (PDF Eq. 32)
+            coeff_down = (r_ut[nz] * a_ell[nz]) / r_st[nz]
             vert_term = coeff_down * (psi_arr[nz-1, i_local, j_local] - psi_arr[nz, i_local, j_local])
             q_arr[nz, i_local, j_local] = -kh2 * psi_arr[nz, i_local, j_local] + vert_term / dz2
         end

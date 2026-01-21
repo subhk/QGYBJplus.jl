@@ -18,9 +18,10 @@ The nonlinear terms represent:
    - Waves are refracted by gradients in relative vorticity ζ = ∇²ψ
    - This causes wave focusing in anticyclones, defocusing in cyclones
 
-3. WAVE FEEDBACK: qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+3. WAVE FEEDBACK: qʷ = (i/2f)J(B*, B) + (1/4f)∇²|B|²  (PDF Eq. 8, 29, 47)
    - Waves can modify the mean flow through nonlinear wave-wave interactions
    - This is the Xie & Vanneste (2015) wave feedback term
+   - Note: f is the Coriolis parameter in the denominator
 
 4. HYPERDIFFUSION: -ν₁(-∇²)^n₁ - ν₂(-∇²)^n₂
    - Numerical dissipation for stability
@@ -305,6 +306,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     qk_f  = similar(qk)
     BRk_f = similar(BRk)
     BIk_f = similar(BIk)
+
     _prefilter_spectral!(qk_f,  qk,  G, Lmask)
     _prefilter_spectral!(BRk_f, BRk, G, Lmask)
     _prefilter_spectral!(BIk_f, BIk, G, Lmask)
@@ -319,8 +321,12 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
     # Compute products u*q and v*q in real space (input pencil)
     uterm_r = _allocate_fft_dst(qk, plans)
     vterm_r = _allocate_fft_dst(qk, plans)
-    uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
-    uterm_k = similar(qk); vterm_k = similar(qk)
+
+    uterm_r_arr = parent(uterm_r); 
+    vterm_r_arr = parent(vterm_r)
+
+    uterm_k = similar(qk); 
+    vterm_k = similar(qk)
 
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
@@ -406,8 +412,10 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     u_arr = parent(u); v_arr = parent(v)
     nχk_arr = parent(nχk)
+
     # Physical array dimensions (u, v are in physical space)
     nz_phys, nx_phys, ny_phys = size(u_arr)
+
     # Spectral array dimensions (may differ in 2D decomposition)
     nz_spec, nx_spec, ny_spec = size(nχk_arr)
 
@@ -416,14 +424,19 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
 
     χᵣ = _allocate_fft_dst(χk, plans)
     χk_f = similar(χk)
+
     _prefilter_spectral!(χk_f, χk, G, Lmask)
     fft_backward!(χᵣ, χk_f, plans)
     χᵣ_arr = parent(χᵣ)
 
     uterm_r = _allocate_fft_dst(χk, plans)
     vterm_r = _allocate_fft_dst(χk, plans)
-    uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
-    uterm_k = similar(χk); vterm_k = similar(χk)
+
+    uterm_r_arr = parent(uterm_r) 
+    vterm_r_arr = parent(vterm_r)
+
+    uterm_k = similar(χk); 
+    vterm_k = similar(χk)
 
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
@@ -434,16 +447,19 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     fft_forward!(uterm_k, uterm_r, plans)
     fft_forward!(vterm_k, vterm_r, plans)
 
-    uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
+    uterm_arr = parent(uterm_k)
+    vterm_arr = parent(vterm_k)
+
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
         i_global = local_to_global(i_local, 2, uterm_k)
         j_global = local_to_global(j_local, 3, uterm_k)
         if should_keep(i_global, j_global)
             kₓ = G.kx[i_global]
             kᵧ = G.ky[j_global]
-            nχk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
+            nχk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + 
+                                        im*kᵧ*vterm_arr[k, i_local, j_local]
         else
-            nχk_arr[k, i_local, j_local] = 0
+            nχk_arr[k, i_local, j_local] = 0.0
         end
     end
 
@@ -547,16 +563,19 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
         if should_keep(i_global, j_global)
             ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
         else
-            ζₖ_arr[k, i_local, j_local] = 0
+            ζₖ_arr[k, i_local, j_local] = 0.0
         end
     end
 
     #= Transform to real space =#
-    ζᵣ = _allocate_fft_dst(ζₖ, plans)
-    BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
+    ζᵣ  = _allocate_fft_dst(ζₖ, plans)
+
+    BRᵣ = _allocate_fft_dst(BRk, plans); 
+    BIᵣ = _allocate_fft_dst(BIk, plans)
 
     BRk_f = similar(BRk)
     BIk_f = similar(BIk)
+
     _prefilter_spectral!(BRk_f, BRk, G, Lmask)
     _prefilter_spectral!(BIk_f, BIk, G, Lmask)
 
@@ -568,8 +587,11 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
     BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
 
     #= Compute products in real space: rB = ζ × B =#
-    rBRᵣ = similar(BRᵣ); rBIᵣ = similar(BIᵣ)
-    rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ)
+    rBRᵣ = similar(BRᵣ); 
+    rBIᵣ = similar(BIᵣ)
+    
+    rBRᵣ_arr = parent(rBRᵣ); 
+    rBIᵣ_arr = parent(rBIᵣ)
 
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
     nz_phys, nx_phys, ny_phys = size(ζᵣ_arr)
@@ -592,8 +614,8 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
         i_global = local_to_global(i_local, 2, rBRk)
         j_global = local_to_global(j_local, 3, rBRk)
         if !should_keep(i_global, j_global)
-            rBRk_arr[k, i_local, j_local] = 0  # Dealiased
-            rBIk_arr[k, i_local, j_local] = 0
+            rBRk_arr[k, i_local, j_local] = 0.0  # Dealiased
+            rBIk_arr[k, i_local, j_local] = 0.0
         end
     end
 
@@ -628,7 +650,7 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
         if should_keep(i_global, j_global)
             ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
         else
-            ζₖ_arr[k, i_local, j_local] = 0
+            ζₖ_arr[k, i_local, j_local] = 0.0
         end
     end
 
@@ -658,7 +680,7 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
         i_global = local_to_global(i_local, 2, rBk)
         j_global = local_to_global(j_local, 3, rBk)
         if !should_keep(i_global, j_global)
-            rBk_arr[k, i_local, j_local] = 0
+            rBk_arr[k, i_local, j_local] = 0.0  # Dealiased
         end
     end
 
@@ -674,7 +696,7 @@ This represents the averaged effect of nonlinear wave-wave interactions
 on the balanced flow (Xie & Vanneste 2015).
 
 For dimensional equations where B has actual velocity units:
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f)J(B*, B) + (1/4f)∇²|B|²
 
 No additional scaling is needed since B already contains the wave amplitude.
 ================================================================================
@@ -693,7 +715,7 @@ interaction in the QG-YBJ+ model.
 # Mathematical Form (Xie & Vanneste 2015)
 For dimensional equations where B has velocity units [m/s]:
 
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f)J(B*, B) + (1/4f)∇²|B|²
 
 where:
 - B* is the complex conjugate of B
@@ -715,11 +737,7 @@ The final qʷ is real-valued after combining terms.
 - `par`: QGParams
 - `G::Grid`: Grid struct
 - `plans`: FFT plans
-- `Lmask`: Dealiasing mask
-
-# Fortran Correspondence
-This is similar to `compute_qw` in derivatives.f90, but without the W2F scaling
-since we solve dimensional equations where B has actual amplitude.
+- `Lmask`: Dealiasing mask (true = keep mode, false = zero)
 
 # Example
 ```julia
@@ -766,8 +784,12 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     end
 
     #= Transform derivatives to real space =#
-    BRₓᵣ = _allocate_fft_dst(BRₓₖ, plans); BRᵧᵣ = _allocate_fft_dst(BRᵧₖ, plans)
-    BIₓᵣ = _allocate_fft_dst(BIₓₖ, plans); BIᵧᵣ = _allocate_fft_dst(BIᵧₖ, plans)
+    BRₓᵣ = _allocate_fft_dst(BRₓₖ, plans); 
+    BRᵧᵣ = _allocate_fft_dst(BRᵧₖ, plans)
+
+    BIₓᵣ = _allocate_fft_dst(BIₓₖ, plans); 
+    BIᵧᵣ = _allocate_fft_dst(BIᵧₖ, plans)
+
     fft_backward!(BRₓᵣ, BRₓₖ, plans)
     fft_backward!(BRᵧᵣ, BRᵧₖ, plans)
     fft_backward!(BIₓᵣ, BIₓₖ, plans)
@@ -776,16 +798,17 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BRₓᵣ_arr = parent(BRₓᵣ); BRᵧᵣ_arr = parent(BRᵧᵣ)
     BIₓᵣ_arr = parent(BIₓᵣ); BIᵧᵣ_arr = parent(BIᵧᵣ)
 
-    #= Compute (i/2)J(B*, B) term
+    #= Compute (i/2f)J(B*, B) term (PDF Eq. 47)
     J(B*, B) = 2i(BRₓBIᵧ - BRᵧBIₓ)  [purely imaginary]
-    So (i/2)J(B*, B) = i² × (BRₓBIᵧ - BRᵧBIₓ) = -(BRₓBIᵧ - BRᵧBIₓ) = BRᵧBIₓ - BRₓBIᵧ =#
+    So (i/2f)J(B*, B) = (i²/f)(BRₓBIᵧ - BRᵧBIₓ) = (1/f)(BRᵧBIₓ - BRₓBIᵧ) =#
+    f₀ = par.f₀
     qʷᵣ = _allocate_fft_dst(qʷₖ, plans)
     qʷᵣ_arr = parent(qʷᵣ)
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
     nz_phys, nx_phys, ny_phys = size(qʷᵣ_arr)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        qʷᵣ_arr[k, i_local, j_local] = real(BRᵧᵣ_arr[k, i_local, j_local])*real(BIₓᵣ_arr[k, i_local, j_local]) -
-                                        real(BRₓᵣ_arr[k, i_local, j_local])*real(BIᵧᵣ_arr[k, i_local, j_local])
+        qʷᵣ_arr[k, i_local, j_local] = (real(BRᵧᵣ_arr[k, i_local, j_local])*real(BIₓᵣ_arr[k, i_local, j_local]) -
+                                        real(BRₓᵣ_arr[k, i_local, j_local])*real(BIᵧᵣ_arr[k, i_local, j_local])) / f₀
     end
 
     #= Compute |B|² = BR² + BI² for the ∇²|B|² term =#
@@ -808,7 +831,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     tempₖ_arr = parent(tempₖ)
 
     #= Assemble qʷ in spectral space
-    qʷ = J_term + (1/4)∇²|B|²
+    qʷ = J_term + (1/4f)∇²|B|²
     where ∇² → -kₕ² in spectral space =#
     fft_forward!(qʷₖ, qʷᵣ, plans)
     qʷₖ_arr = parent(qʷₖ)
@@ -825,9 +848,9 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         kₕ² = kₓ^2 + kᵧ^2
       
         if should_keep(i_global, j_global)
-            # qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
-            # For dimensional equations, B has actual amplitude - no W2F scaling needed
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            # qʷ = (i/2f)J(B*, B) - (k²/4f)|B|² (PDF Eq. 29, 47)
+            # ∇² → -kₕ² in spectral space, so (1/4f)∇²|B|² → -(kₕ²/4f)|B|²
+            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - (0.25/f₀)*kₕ²*tempₖ_arr[k, i_local, j_local]
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end
@@ -881,7 +904,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     Bₓᵣ_arr = parent(Bₓᵣ)
     Bᵧᵣ_arr = parent(Bᵧᵣ)
 
-    # (i/2)J(B*, B) term in physical space
+    # (i/2f)J(B*, B) term in physical space (PDF Eq. 29, 47)
+    f₀ = par.f₀
     qʷᵣ = similar(Bᵣ)
     qʷᵣ_arr = parent(qʷᵣ)
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
@@ -889,7 +913,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         Jval = conj(Bₓᵣ_arr[k, i_local, j_local]) * Bᵧᵣ_arr[k, i_local, j_local] -
                conj(Bᵧᵣ_arr[k, i_local, j_local]) * Bₓᵣ_arr[k, i_local, j_local]
-        qʷᵣ_arr[k, i_local, j_local] = real(0.5im * Jval)
+        qʷᵣ_arr[k, i_local, j_local] = real(0.5im * Jval) / f₀
     end
 
     # |B|^2 term
@@ -913,7 +937,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
         if should_keep(i_global, j_global)
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            # -(k²/4f)|B|² term (PDF Eq. 29, 47)
+            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - (0.25/f₀)*kₕ²*tempₖ_arr[k, i_local, j_local]
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end

@@ -186,15 +186,15 @@ function main()
     end
 
     # Set up wave IC: surface-confined, horizontally uniform (k=0 mode only)
-    # Initial condition: u(t=0) = u0 exp(-d^2/s^2), v(t=0) = 0 (d = -z, Eq. 4 in paper)
-    # For horizontally uniform waves, we initialize B directly with the wave profile.
+    # Initial condition: u(z,t=0) = u0 exp(-d^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
+    # where d = -z is the depth from the surface (z=0).
+    # Grid has z=0 at surface, z<0 below, so depth d = -z is positive.
     if is_root; println("Setting up waves..."); end
     B_phys = QGYBJplus.allocate_fft_backward_dst(S.B, plans)
     B_phys_arr = parent(B_phys)
-    dz = G.Lz / G.nz
     for k_local in axes(B_phys_arr, 1)
         k_global = local_range_phys[1][k_local]
-        depth = max(0.0, -G.z[k_global] - dz / 2)  # Distance from surface [m]
+        depth = -G.z[k_global]  # Distance from surface z=0 [m]
         wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
         wave_value = complex(u0_wave * wave_profile)
         B_phys_arr[k_local, :, :] .= wave_value
