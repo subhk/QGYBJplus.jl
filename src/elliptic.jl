@@ -17,18 +17,30 @@ that arise in the QG-YBJ+ model. These are critical for:
 
 MATHEMATICAL BACKGROUND:
 ------------------------
-The QG PV inversion relates q and ψ through:
+The QG PV inversion relates q and ψ through (PDF Eq. A13):
 
-    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
+    q = ∇²ψ + L(ψ)    where   L = ∂/∂z(a(z) ∂/∂z)
 
-Rearranging for the vertical operator (in spectral space):
+with a(z) = f²/N²(z). Expanding via the product rule:
 
-    a(z) ∂²ψ/∂z² + b(z) ∂ψ/∂z - kₕ² ψ = q
+    L(ψ) = ∂/∂z(a ∂ψ/∂z) = a(z) ∂²ψ/∂z² + a'(z) ∂ψ/∂z
 
-where:
-    a(z) = f²/N²(z) (elliptic coefficient)
-    b(z) = coefficient from variable N² (often zero for constant density)
-    kₕ² = kₓ² + kᵧ² (horizontal wavenumber squared)
+where a'(z) = ∂a/∂z arises from variable stratification N²(z).
+
+In spectral space (∇² → -kₕ²), the equation becomes:
+
+    ∂/∂z(a(z) ∂ψ/∂z) - kₕ² ψ = q
+
+IMPORTANT: The staggered finite-difference discretization (PDF Eq. 32):
+
+    [S_i(ψ_{i+1} - ψ_i) - S_{i-1}(ψ_i - ψ_{i-1})] / Δz² - kₕ² ψ_i = q_i
+
+where S_i = (f/(N(z_i)Δz))² at interface i, **automatically captures both**
+the a∂²ψ/∂z² and a'∂ψ/∂z terms through the use of different S values at
+different interfaces. No explicit first-derivative term is needed.
+
+For constant N²: S_i = S_{i-1}, and the a'∂ψ/∂z term vanishes.
+For variable N²: S_i ≠ S_{i-1}, and the product rule is implicitly handled.
 
 This is solved independently for each (kₓ, kᵧ) mode using a tridiagonal solver.
 
@@ -113,17 +125,21 @@ If workspace is `nothing`, temporary arrays are allocated internally.
 ================================================================================
 This is the core elliptic inversion that relates QGPV to streamfunction.
 
-PHYSICS:
-    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
-      = ∇²ψ + a_ell ∂²ψ/∂z²
+PHYSICS (PDF Eq. A13):
+    q = ∇²ψ + L(ψ)    where   L = ∂/∂z(a(z) ∂/∂z)
 
-where a_ell = f²/N² is the "elliptic coefficient" that varies with
-stratification.
+with a(z) = f²/N²(z). Expanding via the product rule:
 
-The discrete equation for interior points is:
-    (a[k]/dz²)(ψ[k+1] - 2ψ[k] + ψ[k-1]) - kₕ² ψ[k] = q[k]
+    L(ψ) = a(z) ∂²ψ/∂z² + a'(z) ∂ψ/∂z
 
-with Neumann BCs (ψ_z = 0) modifying the boundary stencils.
+The staggered discretization (PDF Eq. 32) for interior points:
+
+    [S_{k+1}(ψ[k+1] - ψ[k]) - S_k(ψ[k] - ψ[k-1])] / dz² - kₕ² ψ[k] = q[k]
+
+where S_k = (f/(N(z_k)Δz))² at interface k. Using different S values at
+different interfaces automatically captures the a'∂ψ/∂z term.
+
+Neumann BCs (ψ_z = 0) modify the boundary stencils.
 ================================================================================
 =#
 
@@ -135,9 +151,12 @@ Invert spectral QGPV `q(kx,ky,z)` to obtain streamfunction `ψ(kx,ky,z)`.
 # Mathematical Problem
 For each horizontal wavenumber (kₓ, kᵧ), solve the vertical ODE:
 
-    a(z) ∂²ψ/∂z² - kₕ² ψ = q
+    ∂/∂z(a(z) ∂ψ/∂z) - kₕ² ψ = q
 
-with Neumann boundary conditions ψ_z = 0 at top and bottom.
+which expands via the product rule to: a(z)∂²ψ/∂z² + a'(z)∂ψ/∂z - kₕ²ψ = q.
+The staggered discretization captures a'∂ψ/∂z automatically.
+
+Neumann boundary conditions ψ_z = 0 at top and bottom.
 
 # Arguments
 - `S::State`: State struct containing `q` (input) and `psi` (output)
@@ -811,14 +830,27 @@ end
                     YBJ+ WAVE INVERSION: B → A
 ================================================================================
 In the YBJ+ formulation, the prognostic variable is B = L⁺A, where L⁺ is an
-elliptic operator. After time stepping B, we need to recover A for computing
-wave-related quantities.
+elliptic operator (PDF Eq. 2, 33). After time stepping B, we need to recover A
+for computing wave-related quantities.
 
-The operator L⁺ is:
-    L⁺A = a(z) ∂²A/∂z² - (kₕ²/4) A
+The operator L⁺ is defined as (PDF Eq. 2):
+    L⁺ = L + (1/4)∇²    where   L = ∂/∂z(a(z) ∂/∂z)
 
-So inverting gives us A from B. We also compute C = A_z for use in wave
-feedback and vertical velocity calculations.
+with a(z) = f²/N²(z). Expanding via the product rule:
+
+    L⁺A = ∂/∂z(a ∂A/∂z) - (kₕ²/4) A
+        = a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A
+
+where a'(z) = ∂a/∂z arises from variable stratification N²(z).
+
+IMPORTANT: The staggered finite-difference discretization (PDF Eq. 35):
+
+    [S_i(A_{i+1} - A_i) - S_{i-1}(A_i - A_{i-1})] / Δz² - (kₕ²/4) A_i = B_i
+
+where S_i = (f/(N(z_i)Δz))² at interface i, **automatically captures both**
+the a∂²A/∂z² and a'∂A/∂z terms. No explicit first-derivative term is needed.
+
+We also compute C = ∂A/∂z for use in wave feedback and vertical velocity.
 ================================================================================
 =#
 
@@ -828,11 +860,18 @@ feedback and vertical velocity calculations.
 YBJ+ wave amplitude recovery: solve for A given B = L⁺A.
 
 # Mathematical Problem
-For each horizontal wavenumber (kₓ, kᵧ), solve:
+For each horizontal wavenumber (kₓ, kᵧ), solve the elliptic equation:
 
-    a(z) ∂²A/∂z² - (kₕ²/4) A = B
+    L⁺A = ∂/∂z(a(z) ∂A/∂z) - (kₕ²/4) A = B
+
+which expands via the product rule to:
+
+    a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A = B
 
 with Neumann boundary conditions A_z = 0 at top and bottom.
+
+The staggered discretization using S_i = (f/(N(z_i)Δz))² at different interfaces
+automatically captures the a'(z)∂A/∂z term from variable stratification.
 
 # Arguments
 - `S::State`: State containing `B` (input), `A` and `C` (output)
@@ -847,7 +886,7 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 
 # Mean Mode (kₕ=0) Handling
 For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
-    a(z) ∂²A/∂z² = B
+    ∂/∂z(a(z) ∂A/∂z) = B
 
 With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
 is **singular** - the constant function is in its null space. To select a unique
@@ -859,7 +898,7 @@ This yields a well-defined, mean-zero A for kₕ=0 while preserving the original
 equation.
 
 # Fortran Correspondence
-This matches `A_solver_ybj_plus` in elliptic.f90.
+This matches `A_solver_ybj_plus` in elliptic.f90 (PDF Eq. 33-35).
 """
 function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
     nz = G.nz
