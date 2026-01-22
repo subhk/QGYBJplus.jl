@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Worked Example · QGYBJ+.jl</title><meta name="title" content="Worked Example · QGYBJ+.jl"/><meta property="og:title" content="Worked Example · QGYBJ+.jl"/><meta property="twitter:title" content="Worked Example · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/custom.css" rel="stylesheet" type="text/css"/></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../concepts/">Key Concepts</a></li><li><a class="tocitem" href="../getting_started/">Installation</a></li><li><a class="tocitem" href="../quickstart/">Quick Start</a></li><li class="is-active"><a class="tocitem" href>Worked Example</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Step-1:-Load-Packages-and-Set-Parameters"><span>Step 1: Load Packages and Set Parameters</span></a></li><li><a class="tocitem" href="#Step-2:-Create-Parameters-and-Initialize"><span>Step 2: Create Parameters and Initialize</span></a></li><li><a class="tocitem" href="#Step-3:-Setup-Grid,-State,-and-FFT-Plans"><span>Step 3: Setup Grid, State, and FFT Plans</span></a></li><li><a class="tocitem" href="#Step-4:-Set-Up-Initial-Conditions"><span>Step 4: Set Up Initial Conditions</span></a></li><li><a class="tocitem" href="#Step-5:-Run-the-Time-Stepping-Loop"><span>Step 5: Run the Time-Stepping Loop</span></a></li><li><a class="tocitem" href="#Step-6:-Analyze-Results"><span>Step 6: Analyze Results</span></a></li><li><a class="tocitem" href="#Step-7:-Save-Output"><span>Step 7: Save Output</span></a></li><li><a class="tocitem" href="#Complete-Script"><span>Complete Script</span></a></li><li><a class="tocitem" href="#What&#39;s-Next?"><span>What&#39;s Next?</span></a></li><li><a class="tocitem" href="#Common-Modifications"><span>Common Modifications</span></a></li></ul></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="../advanced/parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../advanced/interpolation/">Interpolation</a></li><li><a class="tocitem" href="../advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../api/types/">Core Types</a></li><li><a class="tocitem" href="../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../api/particles/">Particles</a></li><li><a class="tocitem" href="../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Getting Started</a></li><li class="is-active"><a href>Worked Example</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Worked Example</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/worked_example.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="worked_example"><a class="docs-heading-anchor" href="#worked_example">Worked Example</a><a id="worked_example-1"></a><a class="docs-heading-anchor-permalink" href="#worked_example" title="Permalink"></a></h1><p>This comprehensive tutorial builds a complete QG-YBJ+ simulation from scratch. We&#39;ll explain every step so you understand what&#39;s happening and why.</p><p><strong>Time required</strong>: ~30 minutes</p><p><strong>What you&#39;ll build</strong>: A simulation of near-inertial waves interacting with ocean eddies, including:</p><ul><li>Dipole vortex (anticyclone + cyclone pair)</li><li>Surface-trapped wave initial condition</li><li>Wave refraction and energy diagnostics</li><li>NetCDF output for visualization</li></ul><hr/><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>We&#39;ll simulate a 500km × 500km × 4km ocean domain with:</p><ul><li>A dipole vortex (cyclone + anticyclone pair)</li><li>Surface-trapped near-inertial waves</li><li>5 inertial periods of evolution</li></ul><p>The waves will refract toward the anticyclone, demonstrating the key wave-trapping phenomenon.</p><hr/><h2 id="Step-1:-Load-Packages-and-Set-Parameters"><a class="docs-heading-anchor" href="#Step-1:-Load-Packages-and-Set-Parameters">Step 1: Load Packages and Set Parameters</a><a id="Step-1:-Load-Packages-and-Set-Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Step-1:-Load-Packages-and-Set-Parameters" title="Permalink"></a></h2><pre><code class="language-julia hljs">using QGYBJplus
+using Printf
+
+# ============================================================================
+#                       PHYSICAL PARAMETERS
+# ============================================================================
+
+# Domain size (realistic ocean values)
+const Lx = 500e3    # 500 km horizontal extent
+const Ly = 500e3    # 500 km horizontal extent
+const Lz = 4000.0   # 4 km depth
+
+# Grid resolution
+const nx = 128      # Grid points in x
+const ny = 128      # Grid points in y
+const nz = 64       # Grid points in z (vertical levels)
+
+# Physical constants
+const f₀ = 1e-4     # Coriolis parameter [s⁻¹] (mid-latitude value)
+const N² = 1e-5     # Buoyancy frequency squared [s⁻²]
+
+# Time stepping
+const T_inertial = 2π / f₀           # Inertial period ≈ 17.5 hours
+const dt = 10.0                       # Time step [s] - use IMEX for larger dt
+const n_inertial_periods = 5          # Simulation duration
+const nt = round(Int, n_inertial_periods * T_inertial / dt)
+
+println(&quot;Simulation setup:&quot;)
+println(&quot;  Domain: $(Lx/1e3) km × $(Ly/1e3) km × $(Lz/1e3) km&quot;)
+println(&quot;  Grid: $nx × $ny × $nz&quot;)
+println(&quot;  Inertial period: $(T_inertial/3600) hours&quot;)
+println(&quot;  Time steps: $nt ($(n_inertial_periods) inertial periods)&quot;)</code></pre><p><strong>What&#39;s happening?</strong></p><ul><li><code>f₀ = 1e-4 s⁻¹</code> is the Coriolis parameter at ~45° latitude</li><li><code>N² = 1e-5 s⁻²</code> gives N ≈ 0.003 s⁻¹, typical for the ocean interior</li><li>The inertial period is <code>2π/f₀ ≈ 17.5 hours</code></li></ul><hr/><h2 id="Step-2:-Create-Parameters-and-Initialize"><a class="docs-heading-anchor" href="#Step-2:-Create-Parameters-and-Initialize">Step 2: Create Parameters and Initialize</a><a id="Step-2:-Create-Parameters-and-Initialize-1"></a><a class="docs-heading-anchor-permalink" href="#Step-2:-Create-Parameters-and-Initialize" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+#                       CREATE MODEL PARAMETERS
+# ============================================================================
+
+# Note: Lx, Ly, Lz are REQUIRED - there are no defaults
+par = default_params(
+    # Grid dimensions
+    nx = nx, ny = ny, nz = nz,
+
+    # Domain size [meters]
+    Lx = Lx, Ly = Ly, Lz = Lz,
+
+    # Physics
+    f₀ = f₀,
+    N² = N²,
+    ybj_plus = true,       # Use YBJ+ formulation (includes k² correction)
+
+    # Time stepping
+    dt = dt,
+    nt = nt,
+
+    # Coupling options
+    no_wave_feedback = true,  # Disable wave feedback (qʷ) for clarity
+    fixed_flow = false,        # Let mean flow evolve
+
+    # Dissipation (hyperdiffusion)
+    νₕ₁ = 1e8,    # Biharmonic viscosity [m⁴/s]
+    ilap1 = 2,    # 4th order (∇⁴)
+)
+
+println(&quot;\nParameters created:&quot;)
+println(&quot;  f₀ = $(par.f₀)&quot;)
+println(&quot;  N² = $(par.N²)&quot;)
+println(&quot;  dt = $(par.dt) s&quot;)
+println(&quot;  ybj_plus = $(par.ybj_plus)&quot;)</code></pre><p><strong>Key parameters explained:</strong></p><table><tr><th style="text-align: left">Parameter</th><th style="text-align: left">Value</th><th style="text-align: left">Meaning</th></tr><tr><td style="text-align: left"><code>ybj_plus=true</code></td><td style="text-align: left">Use full YBJ+</td><td style="text-align: left">Includes <code>k²/4</code> correction in L⁺ operator</td></tr><tr><td style="text-align: left"><code>no_wave_feedback=true</code></td><td style="text-align: left">One-way coupling</td><td style="text-align: left">Waves don&#39;t affect mean flow (simpler)</td></tr><tr><td style="text-align: left"><code>νₕ₁, ilap1</code></td><td style="text-align: left">Biharmonic</td><td style="text-align: left">Scale-selective dissipation at grid scale</td></tr></table><hr/><h2 id="Step-3:-Setup-Grid,-State,-and-FFT-Plans"><a class="docs-heading-anchor" href="#Step-3:-Setup-Grid,-State,-and-FFT-Plans">Step 3: Setup Grid, State, and FFT Plans</a><a id="Step-3:-Setup-Grid,-State,-and-FFT-Plans-1"></a><a class="docs-heading-anchor-permalink" href="#Step-3:-Setup-Grid,-State,-and-FFT-Plans" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+#                       INITIALIZE SIMULATION
+# ============================================================================
+
+# setup_model returns: Grid, State, FFT plans, elliptic coefficient
+G, S, plans, a_ell = setup_model(par)
+
+# Get dealiasing mask (2/3 rule)
+L = dealias_mask(G)
+
+println(&quot;\nGrid initialized:&quot;)
+println(&quot;  x range: [$(G.x[1]/1e3), $(G.x[end]/1e3)] km&quot;)
+println(&quot;  z range: [$(G.z[1]/1e3), $(G.z[end]/1e3)] km&quot;)
+println(&quot;  dx = $(G.dx/1e3) km, dz = $(G.dz[1]) m&quot;)</code></pre><p><strong>What did <code>setup_model</code> create?</strong></p><ul><li><strong>G (Grid)</strong>: x, y, z coordinates; kx, ky wavenumbers; kh² for each mode; dx, dy, dz spacings</li><li><strong>S (State)</strong>: q, B (prognostic, spectral); psi, A, C (diagnostic, spectral); u, v, w (velocities, real space)</li><li><strong>plans</strong>: FFTW plans for efficient transforms</li><li><strong>a_ell</strong>: Coefficient array for elliptic inversions: <code>a(z) = f₀²/N²(z)</code></li></ul><hr/><h2 id="Step-4:-Set-Up-Initial-Conditions"><a class="docs-heading-anchor" href="#Step-4:-Set-Up-Initial-Conditions">Step 4: Set Up Initial Conditions</a><a id="Step-4:-Set-Up-Initial-Conditions-1"></a><a class="docs-heading-anchor-permalink" href="#Step-4:-Set-Up-Initial-Conditions" title="Permalink"></a></h2><h3 id="4a:-Create-a-Dipole-Vortex"><a class="docs-heading-anchor" href="#4a:-Create-a-Dipole-Vortex">4a: Create a Dipole Vortex</a><a id="4a:-Create-a-Dipole-Vortex-1"></a><a class="docs-heading-anchor-permalink" href="#4a:-Create-a-Dipole-Vortex" title="Permalink"></a></h3><pre><code class="language-julia hljs"># ============================================================================
+#                       DIPOLE INITIAL CONDITION
+# ============================================================================
+
+# Dipole parameters
+U0 = 0.3           # Maximum velocity [m/s]
+R0 = 50e3          # Vortex radius [m]
+separation = 150e3 # Distance between vortex centers [m]
+
+# Dipole centers (relative to domain center)
+x_center = Lx / 2
+y_center = Ly / 2
+x_pos = x_center + separation / 2   # Anticyclone (positive ψ)
+x_neg = x_center - separation / 2   # Cyclone (negative ψ)
+
+# Build streamfunction in physical space
+psi_phys = zeros(nz, nx, ny)
+
+for k in 1:nz, j in 1:ny, i in 1:nx
+    x = G.x[i]
+    y = G.y[j]
+
+    # Distance from each vortex center
+    r_pos = sqrt((x - x_pos)^2 + (y - y_center)^2)
+    r_neg = sqrt((x - x_neg)^2 + (y - y_center)^2)
+
+    # Gaussian vortices
+    psi_anticyclone = +U0 * R0 * exp(-(r_pos/R0)^2)  # Positive ψ = anticyclone
+    psi_cyclone     = -U0 * R0 * exp(-(r_neg/R0)^2)  # Negative ψ = cyclone
+
+    psi_phys[k, i, j] = psi_anticyclone + psi_cyclone
+end
+
+# Transform to spectral space
+psi_spectral = zeros(ComplexF64, nz, nx, ny)
+for k in 1:nz
+    psi_spectral[k, :, :] = fft(psi_phys[k, :, :])
+end
+S.psi .= psi_spectral
+
+# Compute q from ψ: q = ∇²ψ + (f²/N²)∂²ψ/∂z²
+compute_q_from_psi!(S, G, par)
+
+println(&quot;\nDipole vortex created:&quot;)
+println(&quot;  Max velocity: $U0 m/s&quot;)
+println(&quot;  Vortex radius: $(R0/1e3) km&quot;)
+println(&quot;  Separation: $(separation/1e3) km&quot;)</code></pre><p><strong>Physical meaning:</strong></p><ul><li><strong>Anticyclone</strong> (positive ψ): Clockwise rotation, <strong>traps waves</strong></li><li><strong>Cyclone</strong> (negative ψ): Counter-clockwise rotation, <strong>expels waves</strong></li></ul><h3 id="4b:-Create-Surface-Wave-Initial-Condition"><a class="docs-heading-anchor" href="#4b:-Create-Surface-Wave-Initial-Condition">4b: Create Surface Wave Initial Condition</a><a id="4b:-Create-Surface-Wave-Initial-Condition-1"></a><a class="docs-heading-anchor-permalink" href="#4b:-Create-Surface-Wave-Initial-Condition" title="Permalink"></a></h3><pre><code class="language-julia hljs"># ============================================================================
+#                       WAVE INITIAL CONDITION
+# ============================================================================
+
+# Horizontally uniform, surface-trapped wave
+A0 = 0.1           # Wave amplitude [m/s]
+decay_depth = 100.0  # e-folding depth [m]
+
+# Build wave amplitude in physical space
+A_phys = zeros(ComplexF64, nz, nx, ny)
+
+for k in 1:nz
+    z = G.z[k]                              # z runs from -Lz to 0
+    depth = -z                              # Depth from surface (positive)
+    vertical_structure = exp(-depth / decay_depth)
+    A_phys[k, :, :] .= A0 * vertical_structure  # Uniform horizontally
+end
+
+# Transform to spectral space
+A_spectral = zeros(ComplexF64, nz, nx, ny)
+for k in 1:nz
+    A_spectral[k, :, :] = fft(A_phys[k, :, :])
+end
+S.A .= A_spectral
+
+# Compute B from A using L⁺ operator
+# B = L⁺(A) = ∂/∂z[(f²/N²)∂A/∂z] - (k²/4)A
+# For uniform A in x,y, this simplifies significantly
+# Here we just set B = A as initial approximation (refined by inversion)
+S.B .= S.A
+
+println(&quot;\nWave field created:&quot;)
+println(&quot;  Amplitude: $A0 m/s&quot;)
+println(&quot;  Decay depth: $decay_depth m&quot;)
+println(&quot;  Vertical structure: exp(-z/$decay_depth)&quot;)</code></pre><p>This mimics wind-generated near-inertial waves that are strongest near the surface and decay with depth.</p><hr/><h2 id="Step-5:-Run-the-Time-Stepping-Loop"><a class="docs-heading-anchor" href="#Step-5:-Run-the-Time-Stepping-Loop">Step 5: Run the Time-Stepping Loop</a><a id="Step-5:-Run-the-Time-Stepping-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Step-5:-Run-the-Time-Stepping-Loop" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+#                       TIME INTEGRATION
+# ============================================================================
+
+# Create state arrays for leapfrog (need 3 time levels)
+Snm1 = copy_state(S)  # n-1
+Sn = copy_state(S)    # n
+Snp1 = copy_state(S)  # n+1
+
+# Initialize with projection step (Forward Euler)
+println(&quot;\nRunning projection step...&quot;)
+first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
+copy_state!(Snm1, Sn)
+
+# Storage for diagnostics
+times = Float64[]
+wave_energies = Float64[]
+flow_energies = Float64[]
+
+# Diagnostic output interval (every 0.5 inertial periods)
+diag_interval = round(Int, 0.5 * T_inertial / dt)
+
+println(&quot;Starting main time loop...&quot;)
+println(&quot;=&quot;^60)
+
+for step in 1:nt
+    # Leapfrog step with Robert-Asselin filter
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
+                   a=a_ell, dealias_mask=L)
+
+    # Rotate time levels (efficient pointer swap)
+    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+
+    # Periodic diagnostics
+    if step % diag_interval == 0
+        current_time = step * dt
+        time_IP = current_time / T_inertial  # Time in inertial periods
+
+        # Compute energies
+        KE = flow_kinetic_energy(Sn.u, Sn.v)
+        # Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
+        WKE, WPE, WCE = compute_detailed_wave_energy(Sn, G, par)
+
+        # Store for later analysis
+        push!(times, time_IP)
+        push!(wave_energies, WKE)
+        push!(flow_energies, KE)
+
+        @printf(&quot;  t = %.2f IP | Flow KE = %.4e | Wave KE = %.4e\n&quot;,
+                time_IP, KE, WKE)
+    end
+end
+
+println(&quot;=&quot;^60)
+println(&quot;Simulation complete!&quot;)</code></pre><p><strong>What happens each time step?</strong></p><ol><li><strong>Invert</strong> q → ψ and B → A</li><li><strong>Compute</strong> u, v from ψ</li><li><strong>Evaluate</strong> tendencies: J(ψ,q), J(ψ,B), refraction ζ·B, dispersion k²A</li><li><strong>Update</strong>: φ^{n+1} = φ^{n-1} + 2·dt·F^n</li><li><strong>Rotate</strong> time levels: Snm1 ← Sn ← Snp1</li></ol><hr/><h2 id="Step-6:-Analyze-Results"><a class="docs-heading-anchor" href="#Step-6:-Analyze-Results">Step 6: Analyze Results</a><a id="Step-6:-Analyze-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Step-6:-Analyze-Results" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+#                       ANALYZE RESULTS
+# ============================================================================
+
+# Get final fields
+final_psi = Sn.psi
+final_B = Sn.B
+final_A = Sn.A
+
+# Compute final vorticity ζ = ∇²ψ
+# In spectral space: ζ̂ = -k²·ψ̂
+zeta_spectral = zeros(ComplexF64, nz, nx, ny)
+for k in 1:nz, j in 1:ny, i in 1:nx
+    kh2 = G.kx[i]^2 + G.ky[j]^2
+    zeta_spectral[k, i, j] = -kh2 * final_psi[k, i, j]
+end
+
+# Extract horizontal slice at mid-depth
+k_mid = nz ÷ 2
+psi_slice = slice_horizontal(Sn.psi, G, plans; k=k_mid)
+A_slice = slice_horizontal(Sn.A, G, plans; k=k_mid)
+
+println(&quot;\nFinal state analysis:&quot;)
+println(&quot;  ψ at z=$(G.z[k_mid]) m:&quot;)
+println(&quot;    min = $(minimum(real.(psi_slice)))&quot;)
+println(&quot;    max = $(maximum(real.(psi_slice)))&quot;)
+println(&quot;  |A| at z=$(G.z[k_mid]) m:&quot;)
+println(&quot;    min = $(minimum(abs.(A_slice)))&quot;)
+println(&quot;    max = $(maximum(abs.(A_slice)))&quot;)
+
+# Check wave concentration
+# Waves should be stronger in the anticyclone (positive ψ region)
+println(&quot;\nWave refraction check:&quot;)
+println(&quot;  If waves concentrated in anticyclone, max|A| should be&quot;)
+println(&quot;  near max(ψ) location&quot;)</code></pre><hr/><h2 id="Step-7:-Save-Output"><a class="docs-heading-anchor" href="#Step-7:-Save-Output">Step 7: Save Output</a><a id="Step-7:-Save-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Step-7:-Save-Output" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+#                       SAVE OUTPUT
+# ============================================================================
+
+using NCDatasets
+
+output_file = &quot;dipole_waves.nc&quot;
+
+NCDataset(output_file, &quot;c&quot;) do ds
+    # Define dimensions
+    defDim(ds, &quot;x&quot;, nx)
+    defDim(ds, &quot;y&quot;, ny)
+    defDim(ds, &quot;z&quot;, nz)
+    defDim(ds, &quot;time&quot;, length(times))
+
+    # Coordinate variables
+    x_var = defVar(ds, &quot;x&quot;, Float64, (&quot;x&quot;,))
+    y_var = defVar(ds, &quot;y&quot;, Float64, (&quot;y&quot;,))
+    z_var = defVar(ds, &quot;z&quot;, Float64, (&quot;z&quot;,))
+    t_var = defVar(ds, &quot;time&quot;, Float64, (&quot;time&quot;,))
+
+    x_var[:] = G.x
+    y_var[:] = G.y
+    z_var[:] = G.z
+    t_var[:] = times
+
+    # Final state (mid-depth slice)
+    psi_var = defVar(ds, &quot;psi_final&quot;, Float64, (&quot;x&quot;, &quot;y&quot;))
+    A_var = defVar(ds, &quot;A_amplitude_final&quot;, Float64, (&quot;x&quot;, &quot;y&quot;))
+
+    psi_var[:, :] = real.(psi_slice)&#39;
+    A_var[:, :] = abs.(A_slice)&#39;
+
+    # Time series
+    KE_var = defVar(ds, &quot;flow_KE&quot;, Float64, (&quot;time&quot;,))
+    WE_var = defVar(ds, &quot;wave_energy&quot;, Float64, (&quot;time&quot;,))
+
+    KE_var[:] = flow_energies
+    WE_var[:] = wave_energies
+
+    # Attributes
+    ds.attrib[&quot;description&quot;] = &quot;QG-YBJ+ dipole-wave simulation&quot;
+    ds.attrib[&quot;inertial_period_hours&quot;] = T_inertial / 3600
+end
+
+println(&quot;\nOutput saved to: $output_file&quot;)</code></pre><hr/><h2 id="Complete-Script"><a class="docs-heading-anchor" href="#Complete-Script">Complete Script</a><a id="Complete-Script-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Script" title="Permalink"></a></h2><p>Here&#39;s the full script you can copy and run:</p><pre><code class="language-julia hljs"># dipole_waves.jl - Complete QG-YBJ+ simulation example
+#
+# Run with: julia --project dipole_waves.jl
+
+using QGYBJplus
+using Printf
+
+# === Parameters ===
+const Lx, Ly, Lz = 500e3, 500e3, 4000.0
+const nx, ny, nz = 128, 128, 64
+const f₀, N² = 1e-4, 1e-5
+const T_inertial = 2π / f₀
+const dt = 10.0
+const nt = round(Int, 5 * T_inertial / dt)
+
+# === Create model ===
+par = default_params(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz,
+                     f₀=f₀, N²=N², dt=dt, nt=nt,
+                     ybj_plus=true, no_wave_feedback=true)
+G, S, plans, a_ell = setup_model(par)
+L = dealias_mask(G)
+
+# === Initial conditions ===
+# (Add dipole and wave initialization here - see sections above)
+
+# === Time stepping ===
+Snm1, Sn, Snp1 = copy_state(S), copy_state(S), copy_state(S)
+first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
+copy_state!(Snm1, Sn)
+
+for step in 1:nt
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
+    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+end
+
+println(&quot;Done! Final KE = &quot;, flow_kinetic_energy(Sn.u, Sn.v))</code></pre><hr/><h2 id="What&#39;s-Next?"><a class="docs-heading-anchor" href="#What&#39;s-Next?">What&#39;s Next?</a><a id="What&#39;s-Next?-1"></a><a class="docs-heading-anchor-permalink" href="#What&#39;s-Next?" title="Permalink"></a></h2><p>Now that you&#39;ve built a complete simulation:</p><ol><li><strong><a href="../guide/configuration/#configuration">Configuration Guide</a></strong> - Customize all parameters</li><li><strong><a href="../guide/stratification/#stratification">Stratification</a></strong> - Use realistic N²(z) profiles</li><li><strong><a href="../advanced/parallel/#parallel">MPI Parallelization</a></strong> - Scale to larger domains</li><li><strong><a href="../advanced/particles/#particles">Particle Advection</a></strong> - Track Lagrangian trajectories</li><li><strong><a href="../physics/overview/#physics-overview">Physics Overview</a></strong> - Understand the equations deeply</li></ol><hr/><h2 id="Common-Modifications"><a class="docs-heading-anchor" href="#Common-Modifications">Common Modifications</a><a id="Common-Modifications-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Modifications" title="Permalink"></a></h2><h3 id="Use-IMEX-Time-Stepping-(10x-faster)"><a class="docs-heading-anchor" href="#Use-IMEX-Time-Stepping-(10x-faster)">Use IMEX Time Stepping (10x faster)</a><a id="Use-IMEX-Time-Stepping-(10x-faster)-1"></a><a class="docs-heading-anchor-permalink" href="#Use-IMEX-Time-Stepping-(10x-faster)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Replace leapfrog with IMEX-CN
+imex_ws = init_imex_workspace(Sn, G)
+first_imex_step!(Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
+
+for step in 1:nt
+    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
+    parent(Sn.B) .= parent(Snp1.B)
+    parent(Sn.q) .= parent(Snp1.q)
+end</code></pre><h3 id="Add-Particle-Tracking"><a class="docs-heading-anchor" href="#Add-Particle-Tracking">Add Particle Tracking</a><a id="Add-Particle-Tracking-1"></a><a class="docs-heading-anchor-permalink" href="#Add-Particle-Tracking" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Create particles at mid-depth
+pconfig = particles_in_box(-2000.0; x_max=Lx, y_max=Ly, nx=20, ny=20)
+tracker = ParticleTracker(pconfig, G)
+initialize_particles!(tracker, pconfig)
+
+# In time loop, add:
+advect_particles!(tracker, Sn, G, dt, current_time)
+
+# After simulation:
+write_particle_trajectories(&quot;trajectories.nc&quot;, tracker)</code></pre><h3 id="Use-Realistic-Stratification"><a class="docs-heading-anchor" href="#Use-Realistic-Stratification">Use Realistic Stratification</a><a id="Use-Realistic-Stratification-1"></a><a class="docs-heading-anchor-permalink" href="#Use-Realistic-Stratification" title="Permalink"></a></h3><pre><code class="language-julia hljs">par = default_params(
+    Lx=Lx, Ly=Ly, Lz=Lz, nx=nx, ny=ny, nz=nz,
+    stratification = :skewed_gaussian,  # Realistic pycnocline
+    # Other parameters...
+)
+G, S, plans, a_ell, N2_profile = setup_model_with_profile(par)</code></pre><h3 id="Use-an-Analytical-N(z)-Profile"><a class="docs-heading-anchor" href="#Use-an-Analytical-N(z)-Profile">Use an Analytical N(z) Profile</a><a id="Use-an-Analytical-N(z)-Profile-1"></a><a class="docs-heading-anchor-permalink" href="#Use-an-Analytical-N(z)-Profile" title="Permalink"></a></h3><pre><code class="language-julia hljs">a = 0.01    # s^-1
+b = -2.0e-6 # s^-1 m^-1
+@inline N(z) = a + b * z  # z is negative below the surface
+
+domain = create_domain_config(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz)
+strat = create_stratification_config(type=:analytical, N_func=N)
+sim = setup_simulation(domain, strat)</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../quickstart/">« Quick Start</a><a class="docs-footer-nextpage" href="../physics/overview/">Model Overview »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Thursday 22 January 2026 02:57">Thursday 22 January 2026</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
