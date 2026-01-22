@@ -354,12 +354,12 @@ function set_surface_waves!(sim::Simulation;
     local_range = get_local_range_physical(plans)
 
     # Allocate physical-space array
-    B_phys = allocate_fft_backward_dst(S.B, plans)
-    B_arr = parent(B_phys)
-    T = eltype(B_arr)
+    L⁺A_phys = allocate_fft_backward_dst(S.L⁺A, plans)
+    L⁺A_arr = parent(L⁺A_phys)
+    T = eltype(L⁺A_arr)
 
     dz = G.Lz / G.nz
-    for k_local in axes(B_arr, 1)
+    for k_local in axes(L⁺A_arr, 1)
         k_global = local_range[1][k_local]
         # Depth from surface (z=0 is surface, z=-Lz is bottom).
         # Use a dz/2 shift so the top cell center corresponds to z=0.
@@ -374,15 +374,15 @@ function set_surface_waves!(sim::Simulation;
 
         if uniform
             # Horizontally uniform waves
-            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+            L⁺A_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         else
             # Could add horizontal structure here
-            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+            L⁺A_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         end
     end
 
     # Transform to spectral space
-    fft_forward!(S.B, B_phys, plans)
+    fft_forward!(S.L⁺A, L⁺A_phys, plans)
 
     return sim
 end
@@ -439,7 +439,7 @@ function set_wave_packet!(sim::Simulation;
     packet = create_wave_packet(G, kx, ky, sigma_k, amplitude)
 
     # Copy to state (handling MPI distribution)
-    S.B .= scatter_from_root(packet, G, sim.mpi_config; plans=sim.plans)
+    S.L⁺A .= scatter_from_root(packet, G, sim.mpi_config; plans=sim.plans)
 
     return sim
 end

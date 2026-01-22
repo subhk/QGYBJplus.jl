@@ -58,13 +58,13 @@ WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 # Simple wave kinetic energy
 WE = compute_wave_energy(state, grid, plans; params=params)
 
-# Basic wave energy from B and A fields
-WE_B, WE_A = wave_energy(state.B, state.A)
+# Vertically-averaged wave kinetic energy using LA = L⁺A + (k_h²/4)A
+WE = wave_energy_vavg(state.L⁺A, state.A, grid, plans)
 ```
 
 !!! note "Physical interpretation"
-    WKE uses ``|LA|^2`` where LA is computed by applying the vertical operator L
-    directly to the wave amplitude A. This matches the YBJ+ paper's definition.
+    WKE uses ``|LA|^2`` where LA is computed as ``LA = L^+A + (k_h^2/4)A`` in spectral space.
+    This uses the original YBJ ``L`` operator (not ``L^+``) for physical consistency.
 
 ## Energy Diagnostics Output Files
 
@@ -94,12 +94,12 @@ The wave kinetic energy is computed per YBJ+ equation (4.7):
 \text{WKE} = \frac{1}{2} \sum_{k_x, k_y, z} |LA|^2 - \text{(dealiasing correction)}
 ```
 
-where ``LA = B + (k_h^2/4)A`` in spectral space. This relationship comes from:
-- ``B = L^+ A = LA + \frac{1}{4}\Delta A``
-- In spectral space: ``\Delta \rightarrow -k_h^2``, so ``B = LA - (k_h^2/4)A``
-- Therefore: ``LA = B + (k_h^2/4)A``
+where ``LA = L^+A + (k_h^2/4)A`` in spectral space. This relationship comes from:
+- ``L^+A = LA - \frac{k_h^2}{4}A`` (definition of L⁺ operator)
+- In spectral space: ``\Delta \rightarrow -k_h^2``, so ``L^+A = LA - (k_h^2/4)A``
+- Therefore: ``LA = L^+A + (k_h^2/4)A``
 
-**Physical interpretation**: WKE represents the kinetic energy contained in the near-inertial wave field, computed from the wave variable ``LA`` (not the evolved envelope ``B = L^+A``). This ensures consistency with the energy budget in the YBJ+ formulation.
+**Physical interpretation**: WKE represents the kinetic energy contained in the near-inertial wave field, computed from the wave velocity amplitude ``LA`` using the original YBJ ``L`` operator (not the evolved envelope ``L^+A``). This ensures consistency with the energy budget in the YBJ+ formulation.
 
 ### Wave Potential Energy (WPE)
 
@@ -267,7 +267,7 @@ For parallel simulations, use the global reduction versions:
 ```julia
 # Physical-space energy with MPI reduction
 KE = flow_kinetic_energy_global(state.u, state.v, mpi_config)
-WE_B, WE_A = wave_energy_global(state.B, state.A, mpi_config)
+WE_B, WE_A = wave_energy_global(state.L⁺A, state.A, mpi_config)
 
 # Spectral energy with MPI reduction
 KE_spectral = flow_kinetic_energy_spectral_global(uk, vk, grid, params; mpi_config=mpi_config)
@@ -360,7 +360,7 @@ function compute_diagnostics(state, grid, params)
     # Energy
     diag["KE"] = flow_kinetic_energy(state.u, state.v)
     diag["WKE"], diag["WPE"], diag["WCE"] = compute_detailed_wave_energy(state, grid, params)
-    diag["WE_B"], diag["WE_A"] = wave_energy(state.B, state.A)
+    diag["WE_B"], diag["WE_A"] = wave_energy(state.L⁺A, state.A)
 
     # Extrema
     diag["A_max"] = maximum(abs.(state.A))

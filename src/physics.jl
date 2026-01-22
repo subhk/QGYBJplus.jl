@@ -23,6 +23,15 @@ N² controls:
 2. The vertical propagation of near-inertial waves
 3. The YBJ+ elliptic operator structure
 
+OPERATOR DEFINITIONS (from PDF):
+--------------------------------
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
+
+Key relation: L = L⁺ + k_h²/4
+
+The coefficient a(z) = f²/N² appears in both L and L⁺ operators.
+
 STRATIFICATION PROFILES:
 ------------------------
 Two analytic profiles are implemented (matching Fortran):
@@ -73,8 +82,16 @@ FORTRAN CORRESPONDENCE:
 ================================================================================
                         ELLIPTIC OPERATOR COEFFICIENTS
 ================================================================================
-These coefficients appear in the vertical elliptic operators used to invert
-PV to streamfunction and wave envelope B to amplitude A.
+These coefficients appear in the vertical elliptic operators used to:
+1. Invert PV to streamfunction: q → ψ
+2. Invert wave envelope to amplitude: B → A (where B = L⁺A)
+
+The key coefficient is a(z) = f²/N²(z), which appears in both:
+    L  (YBJ):   L  = ∂/∂z(a(z) ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+):  L⁺ = L - k_h²/4                              [spectral space]
+
+The wave velocity amplitude LA (used in GLM particle advection) is related to
+the YBJ+ quantities by: LA = B + (k_h²/4)A
 ================================================================================
 =#
 
@@ -85,14 +102,17 @@ Compute the vertical elliptic coefficient a(z) = f₀²/N²(z) on unstaggered le
 (z shifted by -dz/2 relative to the cell-centered grid).
 
 # Physical Meaning
-This coefficient appears in the stretching term of the QG elliptic operator:
+This coefficient appears in both QG and YBJ/YBJ+ elliptic operators:
 
-    L_ψ[ψ] = ∇²ψ + ∂/∂z(a(z) ∂ψ/∂z)
+1. QG stretching term: ∂/∂z(a(z) ∂ψ/∂z) in the PV inversion
 
-where a(z) = f²/(N²(z)) in dimensional form, normalized to 1/N² in nondimensional.
+2. YBJ/YBJ+ operators (from PDF):
+    L  (YBJ):   L  = ∂/∂z(a(z) ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+):  L⁺ = L - k_h²/4                              [spectral space]
 
-For the YBJ+ wave operator, a(z) also appears in the L⁺ operator that relates
-the wave envelope B to wave amplitude A.
+   where a(z) = f²/N²(z).
+
+   Key relation: L = L⁺ + k_h²/4, so LA = B + (k_h²/4)A
 
 # Stratification Options
 - `:constant_N`: Returns a(z) = f₀²/N² everywhere (uniform stratification with user-specified N²)

@@ -156,17 +156,21 @@ The `State` struct contains all prognostic and diagnostic fields.
 mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Complex{T},3}}
     # Prognostic fields (spectral space, complex)
     q::CT           # QG potential vorticity
-    B::CT           # YBJ+ wave envelope (B = L⁺A)
+    L⁺A::CT         # YBJ+ wave envelope (L⁺A where L⁺ = L - k_h²/4)
 
     # Diagnostic fields (spectral space, complex)
     psi::CT         # Streamfunction (from q via inversion)
-    A::CT           # Wave amplitude (from B via YBJ+ inversion)
+    A::CT           # Wave amplitude (from L⁺A via YBJ+ inversion)
     C::CT           # Vertical derivative A_z
 
     # Velocity fields (real space, real)
     u::RT           # Zonal velocity: u = -dψ/dy
     v::RT           # Meridional velocity: v = dψ/dx
     w::RT           # Vertical velocity (from omega equation)
+
+    # Wave velocity amplitude fields (real space)
+    LA_real::RT     # Real part of wave velocity amplitude (YBJ L operator)
+    LA_imag::RT     # Imaginary part of wave velocity amplitude
 end
 ```
 
@@ -191,18 +195,22 @@ state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
 
 ```julia
 # Prognostic fields (time-stepped)
-q = state.q      # QG potential vorticity (spectral)
-B = state.B      # Wave envelope (spectral)
+q = state.q        # QG potential vorticity (spectral)
+L⁺A = state.L⁺A    # Wave envelope (spectral), uses Unicode identifier
 
 # Diagnostic fields (computed)
-psi = state.psi  # Streamfunction (spectral)
-A = state.A      # Wave amplitude (spectral)
-C = state.C      # Vertical derivative dA/dz (spectral)
+psi = state.psi    # Streamfunction (spectral)
+A = state.A        # Wave amplitude (spectral)
+C = state.C        # Vertical derivative dA/dz (spectral)
 
 # Velocity fields (real space)
-u = state.u      # Zonal velocity
-v = state.v      # Meridional velocity
-w = state.w      # Vertical velocity
+u = state.u        # Zonal velocity
+v = state.v        # Meridional velocity
+w = state.w        # Vertical velocity
+
+# Wave velocity amplitude (real space)
+LA_real = state.LA_real  # Real part of LA = L⁺A + (k_h²/4)A
+LA_imag = state.LA_imag  # Imaginary part of LA
 ```
 
 ### Working with Arrays
@@ -233,14 +241,16 @@ state.psi .= initial_psi
 
 | Field | Symbol | Physical Meaning |
 |:------|:-------|:-----------------|
-| `q` | q | QG potential vorticity: q = nabla²psi + (f²/N²)d²psi/dz² |
-| `B` | B | YBJ+ wave envelope: B = L⁺A |
-| `psi` | psi | Streamfunction |
-| `A` | A | Wave amplitude |
-| `C` | dA/dz | Vertical derivative of wave amplitude |
-| `u` | u | Zonal velocity: u = -dpsi/dy |
-| `v` | v | Meridional velocity: v = dpsi/dx |
+| `q` | q | QG potential vorticity: q = ∇²ψ + (f²/N²)∂²ψ/∂z² |
+| `L⁺A` | L⁺A | YBJ+ wave envelope: L⁺ = L - k_h²/4 |
+| `psi` | ψ | Streamfunction |
+| `A` | A | Wave amplitude (recovered via elliptic inversion) |
+| `C` | ∂A/∂z | Vertical derivative of wave amplitude |
+| `u` | u | Zonal velocity: u = -∂ψ/∂y |
+| `v` | v | Meridional velocity: v = ∂ψ/∂x |
 | `w` | w | Vertical velocity (from omega equation or YBJ) |
+| `LA_real` | Re(LA) | Real part of wave velocity amplitude LA = L⁺A + (k_h²/4)A |
+| `LA_imag` | Im(LA) | Imaginary part of wave velocity amplitude |
 
 ## MPI Workspace
 
@@ -252,7 +262,7 @@ For 2D parallel decomposition, workspace arrays store z-pencil data:
 struct MPIWorkspace{T, PA}
     q_z::PA      # q in z-pencil configuration
     psi_z::PA    # psi in z-pencil configuration
-    B_z::PA      # B in z-pencil configuration
+    L⁺A_z::PA    # L⁺A in z-pencil configuration
     A_z::PA      # A in z-pencil configuration
     C_z::PA      # C in z-pencil configuration
     work_z::PA   # General workspace
@@ -271,7 +281,7 @@ workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
 ```julia
 # Pass workspace to functions requiring vertical operations
 invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
-invert_B_to_A!(state, grid, params, a_vec; workspace=workspace)
+invert_L⁺A_to_A!(state, grid, params, a_vec; workspace=workspace)
 compute_vertical_velocity!(state, grid, plans, params; workspace=workspace)
 ```
 
@@ -333,7 +343,7 @@ mask = dealias_mask(grid)  # 2D Bool array (nx, ny)
 ```julia
 # Zero all fields
 fill!(state.q, 0)
-fill!(state.B, 0)
+fill!(state.L⁺A, 0)
 fill!(state.psi, 0)
 
 # Check for NaN

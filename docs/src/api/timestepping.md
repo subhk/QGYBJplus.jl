@@ -131,25 +131,25 @@ F_{BI} = -J(\psi, BI) + \frac{k_h^2}{2}A_R - \frac{1}{2}BR \times \zeta
 ```@docs
 convol_waqg!
 convol_waqg_q!
-convol_waqg_B!
+convol_waqg_L⁺A!
 refraction_waqg!
-refraction_waqg_B!
+refraction_waqg_L⁺A!
 compute_qw!
 compute_qw_complex!
 ```
 
 **Advection:**
 - `convol_waqg_q!` computes J(ψ, q)
-- `convol_waqg_B!` computes J(ψ, B) for the complex YBJ+ envelope
-- `convol_waqg!` computes J(ψ, q), J(ψ, BR), J(ψ, BI) for explicit BR/BI decomposition
+- `convol_waqg_L⁺A!` computes J(ψ, L⁺A) for the complex YBJ+ envelope
+- `convol_waqg!` computes J(ψ, q), J(ψ, (L⁺A)_R), J(ψ, (L⁺A)_I) for explicit real/imag decomposition
 
 **Refraction:**
-- `refraction_waqg_B!` computes ζ × B for complex B
-- `refraction_waqg!` computes BR × ζ and BI × ζ for the decomposed form
+- `refraction_waqg_L⁺A!` computes ζ × L⁺A for complex L⁺A
+- `refraction_waqg!` computes (L⁺A)_R × ζ and (L⁺A)_I × ζ for the decomposed form
 
 **Wave feedback:**
-- `compute_qw_complex!` computes qʷ directly from complex B
-- `compute_qw!` computes qʷ from BR/BI
+- `compute_qw_complex!` computes qʷ directly from complex L⁺A
+- `compute_qw!` computes qʷ from (L⁺A)_R/(L⁺A)_I
 
 ### Vertical Diffusion
 
@@ -471,9 +471,9 @@ All time stepping functions documented above:
 - `first_imex_step!` - First-order forward Euler initialization
 
 **Common:**
-- `convol_waqg_q!` / `convol_waqg_B!` - Complex-form advection for q and B
-- `refraction_waqg_B!` - Complex-form wave refraction term
-- `convol_waqg!` / `refraction_waqg!` - BR/BI-decomposed advection/refraction
+- `convol_waqg_q!` / `convol_waqg_L⁺A!` - Complex-form advection for q and L⁺A
+- `refraction_waqg_L⁺A!` - Complex-form wave refraction term
+- `convol_waqg!` / `refraction_waqg!` - Real/imag-decomposed advection/refraction
 - `dissipation_q_nv!` - Vertical diffusion
 - `int_factor` - Integrating factor for hyperdiffusion
 - `compute_qw_complex!` / `compute_qw!` - Wave feedback term (see [Physics API](physics.md))

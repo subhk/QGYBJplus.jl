@@ -157,7 +157,7 @@ export QGParams, Grid, State,
         first_projection_step!, leapfrog_step!,
         # IMEX time stepping (unconditionally stable for dispersion)
         IMEXWorkspace, init_imex_workspace, imex_cn_step!, first_imex_step!,
-        sumB!, compute_sigma, compute_A!,
+        sumL⁺A!, compute_sigma, compute_A!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz,
         # Global energy diagnostics (MPI-aware)
         flow_kinetic_energy_global, wave_energy_global,
@@ -248,7 +248,7 @@ include("timestep_imex.jl") # IMEX Crank-Nicolson (implicit dispersion)
 include("initconds.jl")     # Random and analytic initial conditions
 
 # Normal YBJ (non-plus) operators
-include("ybj_normal.jl")    # sumB!, compute_sigma, compute_A! for normal YBJ
+include("ybj_normal.jl")    # sumL⁺A!, compute_sigma, compute_A! for normal YBJ
 
 # Diagnostics
 include("diagnostics.jl")   # Energy diagnostics, omega equation RHS

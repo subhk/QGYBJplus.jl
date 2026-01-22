@@ -44,14 +44,14 @@ The streamfunction describes the balanced (geostrophic) eddy flow:
 - Velocities derived as: `u = -∂ψ/∂y`, `v = ∂ψ/∂x`
 - Vorticity: `ζ = ∇²ψ` (positive = cyclonic, negative = anticyclonic)
 
-### Wave Envelope (B) — Waves
+### Wave Envelope (L⁺A) — Waves
 
 The wave envelope captures wave energy without tracking fast oscillations:
 
-- Complex-valued: `B = Bᵣ + i·Bᵢ`
-- Magnitude `|B|` represents wave amplitude
-- Phase `arg(B)` represents wave phase
+- Complex-valued: `L⁺A = (L⁺A)ᵣ + i·(L⁺A)ᵢ`
+- Related to physical wave amplitude via: `L⁺A = L⁺(A)` where `L⁺ = L - k_h²/4`
 - Evolves on the slow (eddy) timescale
+- The code uses the Unicode variable name `L⁺A` for mathematical clarity
 
 ---
 
@@ -61,8 +61,8 @@ Three key processes govern how waves and eddies interact:
 
 | Process | What Happens | Physical Effect |
 |:--------|:-------------|:----------------|
-| **Advection** | `J(ψ, B)` | Waves are carried by the eddy velocity field |
-| **Refraction** | `½ζB` | Waves bend toward regions of negative vorticity |
+| **Advection** | `J(ψ, L⁺A)` | Waves are carried by the eddy velocity field |
+| **Refraction** | `½ζ(L⁺A)` | Waves bend toward regions of negative vorticity |
 | **Dispersion** | `ik²A` | Waves spread horizontally over time |
 
 !!! tip "Wave Trapping"
@@ -70,18 +70,19 @@ Three key processes govern how waves and eddies interact:
 
 ---
 
-## B vs A: Why Two Wave Variables?
+## L⁺A vs A: Why Two Wave Variables?
 
-We evolve **B** (mathematically convenient) but diagnose **A** (physically meaningful):
+We evolve **L⁺A** (mathematically convenient) but diagnose **A** (physically meaningful):
 
 ```math
-B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right] - \frac{k^2}{4}A
+L^+A = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right] - \frac{k^2}{4}A
 ```
 
 | Variable | Role | Why We Need It |
 |:---------|:-----|:---------------|
-| **B** | Prognostic (evolved) | Simpler time-stepping equations |
+| **L⁺A** | Prognostic (evolved) | Simpler time-stepping equations |
 | **A** | Diagnostic (computed) | Represents physical wave amplitude |
+| **LA** | Derived | Wave velocity amplitude: LA = L⁺A + (k_h²/4)A, used for wave kinetic energy |
 
 ---
 
@@ -116,8 +117,9 @@ B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}
 |:-------|:-----|:--------|
 | ψ | Streamfunction | Describes eddy flow |
 | q | Potential vorticity | Conserved quantity for eddies |
-| B | Wave envelope | Evolved wave variable |
-| A | Wave amplitude | Physical wave amplitude |
+| L⁺A | Wave envelope | Evolved wave variable (YBJ+) |
+| A | Wave amplitude | Physical wave amplitude (diagnostic) |
+| LA | Wave velocity amplitude | LA = L⁺A + (k_h²/4)A, used for energy |
 | ζ | Relative vorticity | ∇²ψ, measures rotation |
 | f₀ | Coriolis parameter | Earth's rotation effect |
 | N | Buoyancy frequency | Stratification strength |

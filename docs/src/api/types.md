@@ -123,14 +123,14 @@ State
 | Field | Type | Description |
 |:------|:-----|:------------|
 | `q` | Array{ComplexF64,3} | QG potential vorticity (spectral) |
-| `B` | Array{ComplexF64,3} | YBJ+ wave envelope B = L⁺A (spectral) |
+| `L⁺A` | Array{ComplexF64,3} | YBJ+ wave envelope L⁺A where L⁺ = L - k_h²/4 (spectral) |
 
 **Diagnostic Fields (computed from prognostic):**
 
 | Field | Type | Description |
 |:------|:-----|:------------|
 | `psi` | Array{ComplexF64,3} | Streamfunction ψ (spectral) |
-| `A` | Array{ComplexF64,3} | Wave amplitude (spectral) |
+| `A` | Array{ComplexF64,3} | Wave amplitude (spectral, from L⁺A via inversion) |
 | `C` | Array{ComplexF64,3} | Vertical derivative ∂A/∂z (spectral) |
 
 **Velocity Fields (real space):**
@@ -140,6 +140,8 @@ State
 | `u` | Array{Float64,3} | Zonal velocity u = -∂ψ/∂y |
 | `v` | Array{Float64,3} | Meridional velocity v = ∂ψ/∂x |
 | `w` | Array{Float64,3} | Vertical velocity (from omega equation) |
+| `LA_real` | Array{Float64,3} | Real part of wave velocity amplitude LA |
+| `LA_imag` | Array{Float64,3} | Imaginary part of wave velocity amplitude LA |
 
 !!! note "Leapfrog Time-Stepping"
     The leapfrog scheme uses separate State objects (Snm1, Sn, Snp1) rather than
@@ -171,12 +173,18 @@ Snm1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
 ### Accessing Fields
 
 ```julia
-# Spectral fields (complex)
+# Prognostic field (complex, spectral)
+L⁺A = state.L⁺A    # size (nz, nx, ny), uses Unicode identifier
+
+# Diagnostic fields (complex, spectral)
 psi_k = state.psi  # size (nz, nx, ny)
+A = state.A        # size (nz, nx, ny)
 
 # Physical fields (real)
 u = state.u        # size (nz, nx, ny)
 v = state.v        # size (nz, nx, ny)
+LA_real = state.LA_real  # Real part of wave velocity amplitude
+LA_imag = state.LA_imag  # Imaginary part of wave velocity amplitude
 ```
 
 ## FFT Plans

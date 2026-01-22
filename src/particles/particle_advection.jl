@@ -1,41 +1,68 @@
 """
-Unified particle advection module for QG-YBJ simulations.
+Unified particle advection module for QG-YBJ+ simulations using GLM reconstruction.
 
-This module provides Lagrangian particle tracking that automatically handles
-both serial and parallel execution. Particles are advected using the TOTAL
-velocity field (QG + wave velocities) with options for vertical velocity from either
-QG omega equation or YBJ formulation.
+This module implements Lagrangian particle tracking following the Generalized
+Lagrangian Mean (GLM) framework. The physical particle position x(t) is decomposed as:
 
-Total velocity field includes:
-- QG velocities: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
-- Wave velocities: u_wave = Re(LA), v_wave = Im(LA) from YBJ+ eq (1.2)
-  where L = ∂_z(f²/N²)∂_z and LA = B + (k_h²/4)A in spectral space
-- Horizontal Stokes drift from Wagner & Young (2016) equation (3.16a):
-  Full Jacobian form: J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-  where ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative.
-  From eq (3.18): if₀ U^S = J₀, so u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
-- Vertical Stokes drift from Wagner & Young (2016) eq (3.19)-(3.20):
-  if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
-  Expanding: K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}, giving w_S = -2·Im(K₀)/f₀
-- Vertical velocity: w from QG omega equation or YBJ w₀ formulation
+    x(t) = X(t) + ξ(X(t), t)                                          [eq. (1)]
 
-The system automatically detects MPI availability and handles:
+where:
+- X(t) is the Lagrangian-mean (slow) trajectory advected by QG flow
+- ξ is the oscillatory wave displacement reconstructed from the YBJ+ wave field
+
+# Operator Definitions (from PDF)
+
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4
+
+Key relation: L = L⁺ + k_h²/4
+
+# GLM Decomposition (following the PDF formulation)
+
+1. **Mean trajectory**: The QG velocity IS the Lagrangian-mean flow:
+   dX/dt = u^L_QG(X, t)                                               [eq. (2)]
+
+   where u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
+
+2. **Wave velocity**: From equation (3), the instantaneous wave velocity is:
+   u + iv = (LA) × e^{-ift}                                           [eq. (3)]
+
+   where L is the YBJ operator (NOT L⁺). Since B = L⁺A:
+   LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
+
+3. **Wave displacement**: Obtained by "dividing by frequency" [eq. (5)-(6)]:
+   ξx + iξy = Re{(LA / (-if)) × e^{-ift}}                            [eq. (6)]
+
+4. **Physical position**: The instantaneous "wiggly" trajectory:
+   x(t) = X(t) + ξ(X(t), t)                                          [eq. (1)]
+
+# Key Difference from Eulerian Approach
+
+Since the QG velocity is the Lagrangian mean, we do NOT add:
+- Wave velocity (Re(LA), Im(LA)) - this is captured by the displacement ξ
+- Stokes drift - already included in the Lagrangian mean framework
+
+The wave displacement ξ provides the inertial loops of radius ~|U|/f
+riding on the mean drift X(t).
+
+# Time stepping recipe (Section 1.4 of PDF)
+
+1. Advect the slow mean position (Euler):                            [eq. (7)]
+   X^{n+1} = X^n + Δt × u^L_QG(X^n, t^n)
+
+2. Reconstruct wave displacement at (X^{n+1}, t^{n+1}):              [eq. (8)]
+   ξ^{n+1} = Re{(LA(X^{n+1}, t^{n+1}) / (-if)) × e^{-if t^{n+1}}}
+
+3. Output physical particle position:                                 [eq. (9)]
+   x^{n+1} = X^{n+1} + ξ^{n+1}
+
+# Features
+- Automatic serial/parallel execution with MPI
 - Domain decomposition and particle migration
-- Periodic boundary conditions
-- Distributed I/O
-- Load balancing
-
-Advanced features:
-- Delayed particle release: Use particle_advec_time to control when particles start moving
-- Time synchronization: Particles sync with simulation time when current_time is provided
-- Multiple integration schemes: Euler, RK2, RK4 with adjustable interpolation methods
-- Flexible I/O: Configurable save intervals and trajectory tracking
-- Boundary handling: Periodic and reflective boundary conditions
-
-Time synchronization:
-- Pass current_time to advect_particles! for proper synchronization with fluid simulation
-- particle_advec_time is compared against simulation time, not particle internal time
-- Ensures particles respond to flow conditions at the correct simulation time
+- Euler time integration for particle advection
+- Tricubic/quintic interpolation for smooth trajectories
+- Delayed particle release via particle_advec_time
+- Flexible I/O with trajectory saving
 """
 
 module UnifiedParticleAdvection
@@ -45,7 +72,8 @@ const _PARENT = Base.parentmodule(@__MODULE__)
 const Grid = _PARENT.Grid
 const State = _PARENT.State
 const plan_transforms! = _PARENT.plan_transforms!
-const compute_total_velocities! = _PARENT.compute_total_velocities!
+const compute_velocities! = _PARENT.compute_velocities!  # QG velocities only (Lagrangian mean)
+const compute_wave_displacement! = _PARENT.compute_wave_displacement!  # Wave displacement ξ
 const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
@@ -80,10 +108,10 @@ Configuration for particle initialization and advection.
 
 Key parameters:
 - Spatial domain: x_min/max, y_min/max, z_level for initial particle placement
-- Particle count: nx_particles × ny_particles 
+- Particle count: nx_particles × ny_particles
 - Physics options: use_ybj_w (vertical velocity), use_3d_advection
 - Timing control: particle_advec_time - when to start advecting particles
-- Integration: method (:euler, :rk2, :rk4) and interpolation scheme
+- Interpolation: interpolation_method for velocity interpolation
 - Boundaries: periodic_x/y, reflect_z for boundary conditions
 - I/O: save_interval and max_save_points for trajectory output
 
@@ -92,6 +120,8 @@ Advanced timing control:
 - particle_advec_time>0.0: Keep particles stationary until this time
 - Useful for letting flow field develop before particle release
 - Enables study of transient vs established flow patterns
+
+Note: Time integration uses Euler method for simplicity and stability.
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     # Spatial domain for particle initialization (x_max, y_max, z_level are REQUIRED)
@@ -100,29 +130,26 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     y_min::T = 0.0
     y_max::T           # REQUIRED - use G.Ly
     z_level::T         # REQUIRED - depth for particle initialization
-    
+
     # Number of particles
     nx_particles::Int = 10
     ny_particles::Int = 10
-    
+
     # Physics options
     use_ybj_w::Bool = false           # Use YBJ vs QG vertical velocity
     use_3d_advection::Bool = true     # Include vertical advection
-    
+
     # Advection timing control
     particle_advec_time::T = 0.0      # Start advecting particles at this time (0.0 = from beginning)
-    
-    # Integration method
-    integration_method::Symbol = :euler  # :euler, :rk2, :rk4
-    
+
     # Interpolation method
     interpolation_method::InterpolationMethod = TRILINEAR  # TRILINEAR, TRICUBIC, ADAPTIVE
-    
+
     # Boundary conditions
     periodic_x::Bool = true
     periodic_y::Bool = true
     reflect_z::Bool = true            # Reflect at vertical boundaries
-    
+
     # I/O configuration - Controls particle trajectory saving rate
     save_interval::T = 0.1           # Time interval for saving trajectories (e.g., 0.1 = save every 0.1 time units)
     max_save_points::Int = 1000      # Maximum trajectory points to save per file
@@ -205,74 +232,124 @@ create_custom_distribution(positions; kwargs...) = particles_custom(positions; k
 
 """
 Particle state including positions, global IDs, velocities, and trajectory history.
+
+# GLM Position Decomposition
+Following the GLM framework, we track both:
+- Mean positions (x, y, z): The Lagrangian-mean trajectory X(t) advected by QG flow
+- Wave displacements (xi_x, xi_y): The oscillatory displacement ξ from the wave field
+
+The physical (wiggly) position is: x_phys = x + xi_x, y_phys = y + xi_y
+
+# Wave Displacement (from PDF equations)
+
+The wave displacement is computed from the wave velocity amplitude LA:
+    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}                           [eq. (6)]
+
+where LA uses the YBJ operator L (NOT L⁺):
+    L  = ∂/∂z(f²/N² ∂/∂z)                                            [eq. (4)]
+    L⁺ = L - k_h²/4                                                   (YBJ+)
+
+Since B = L⁺A and L = L⁺ + k_h²/4:
+    LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
 """
 mutable struct ParticleState{T<:AbstractFloat}
-    # Current state
-    x::Vector{T}
-    y::Vector{T} 
-    z::Vector{T}
+    # Current mean positions (Lagrangian-mean trajectory X)
+    x::Vector{T}      # Mean x position
+    y::Vector{T}      # Mean y position
+    z::Vector{T}      # Mean z position (no wave displacement in z for horizontal NIW)
     id::Vector{Int}
-    u::Vector{T}
-    v::Vector{T}
-    w::Vector{T}
+
+    # QG (Lagrangian-mean) velocities for advection
+    u::Vector{T}      # u_QG = -∂ψ/∂y
+    v::Vector{T}      # v_QG = ∂ψ/∂x
+    w::Vector{T}      # w from omega equation
+
+    # Wave displacement ξ (for computing physical position)
+    xi_x::Vector{T}   # Horizontal wave displacement x-component
+    xi_y::Vector{T}   # Horizontal wave displacement y-component
+
+    # Wave velocity amplitude LA (complex, stored as real/imag)
+    # Used for computing ξ = Re{(LA/(-if)) × e^(-ift)}
+    LA_real::Vector{T}  # Re(LA) at particle position
+    LA_imag::Vector{T}  # Im(LA) at particle position
+
     time::T
     np::Int
-    
-    # Trajectory history
+
+    # Trajectory history (stores MEAN positions)
     x_history::Vector{Vector{T}}
     y_history::Vector{Vector{T}}
     z_history::Vector{Vector{T}}
     id_history::Vector{Vector{Int}}
     time_history::Vector{T}
-    
+
+    # Wave displacement history (for reconstructing wiggly trajectories)
+    xi_x_history::Vector{Vector{T}}
+    xi_y_history::Vector{Vector{T}}
+
     function ParticleState{T}(np::Int) where T
         ids = collect(1:np)
         new{T}(
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
             ids,
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
+            zeros(T, np), zeros(T, np),  # xi_x, xi_y
+            zeros(T, np), zeros(T, np),  # LA_real, LA_imag
             zero(T), np,
-            Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], T[]
+            Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], T[],
+            Vector{T}[], Vector{T}[]  # xi_x_history, xi_y_history
         )
     end
 end
 
 """
 Main particle tracker that handles both serial and parallel execution.
+
+# GLM Framework
+The tracker advects mean positions X(t) using QG velocities and separately
+tracks wave displacement ξ for reconstructing physical positions x = X + ξ.
 """
 mutable struct ParticleTracker{T<:AbstractFloat}
     config::ParticleConfig{T}
     particles::ParticleState{T}
-    
+
     # Grid information
     nx::Int; ny::Int; nz::Int
     Lx::T; Ly::T; Lz::T
     x0::T; y0::T
     dx::T; dy::T; dz::T
-    
-    # Velocity field workspace (real space)
+
+    # QG velocity field workspace (real space) - for mean position advection
     u_field::Array{T,3}
     v_field::Array{T,3}
     w_field::Array{T,3}
-    
+
+    # Wave velocity amplitude LA (complex) - for wave displacement ξ
+    # LA = B + (k_h²/4)A in spectral space, transformed to physical space
+    LA_real_field::Array{T,3}
+    LA_imag_field::Array{T,3}
+
     # Transform plans (for velocity computation)
     plans
-    
+
+    # Coriolis parameter for wave displacement computation
+    f0::T
+
     # Parallel information (automatically detected)
     comm::Any           # MPI communicator (nothing for serial)
     rank::Int          # MPI rank (0 for serial)
     nprocs::Int        # Number of MPI processes (1 for serial)
     is_parallel::Bool  # True if running in parallel
-    
+
     # Domain decomposition info (for parallel)
     local_domain::Union{Nothing,NamedTuple}  # Local domain bounds
-    
+
     # Particle migration buffers (for parallel)
     send_buffers::Vector{Vector{T}}
     recv_buffers::Vector{Vector{T}}
     send_buffers_id::Vector{Vector{Int}}
     recv_buffers_id::Vector{Vector{Int}}
-    
+
     # Halo exchange system for cross-domain interpolation
     halo_info::Union{Nothing,HaloInfo{T}}
     
@@ -324,14 +401,21 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             u_field = zeros(T, grid.nz, nx_local, ny_local)
             v_field = zeros(T, grid.nz, nx_local, ny_local)
             w_field = zeros(T, grid.nz, nx_local, ny_local)
+            LA_real_field = zeros(T, grid.nz, nx_local, ny_local)
+            LA_imag_field = zeros(T, grid.nz, nx_local, ny_local)
         else
             u_field = zeros(T, grid.nz, grid.nx, grid.ny)
             v_field = zeros(T, grid.nz, grid.nx, grid.ny)
             w_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            LA_real_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            LA_imag_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
         # Set up transform plans (using unified interface)
         plans = plan_transforms!(grid, parallel_config)
+
+        # Default Coriolis parameter (will be updated from params in advect_particles!)
+        f0 = T(1e-4)
 
         # Defer halo exchange setup until first velocity update
         # This allows us to get actual local dimensions from State arrays
@@ -344,7 +428,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             grid.Lx, grid.Ly, grid.Lz,
             grid.x0, grid.y0,
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
-            u_field, v_field, w_field, plans,
+            u_field, v_field, w_field,
+            LA_real_field, LA_imag_field,
+            plans, f0,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
@@ -508,14 +594,14 @@ end
 """
 Initialize particles for serial execution.
 """
-function initialize_particles_serial!(tracker::ParticleTracker{T}, 
+function initialize_particles_serial!(tracker::ParticleTracker{T},
                                      config::ParticleConfig{T}) where T
     particles = tracker.particles
-    
+
     # Create uniform grid of particles
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
-    
+
     idx = 1
     for y in y_range, x in x_range
         particles.x[idx] = x
@@ -525,12 +611,17 @@ function initialize_particles_serial!(tracker::ParticleTracker{T},
         particles.u[idx] = 0.0
         particles.v[idx] = 0.0
         particles.w[idx] = 0.0
+        # Initialize wave displacement fields
+        particles.xi_x[idx] = 0.0
+        particles.xi_y[idx] = 0.0
+        particles.LA_real[idx] = 0.0
+        particles.LA_imag[idx] = 0.0
         idx += 1
     end
-    
+
     particles.time = 0.0
     particles.np = length(particles.x)
-    
+
     return tracker
 end
 
@@ -559,6 +650,10 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         resize!(tracker.particles.u, 0)
         resize!(tracker.particles.v, 0)
         resize!(tracker.particles.w, 0)
+        resize!(tracker.particles.xi_x, 0)
+        resize!(tracker.particles.xi_y, 0)
+        resize!(tracker.particles.LA_real, 0)
+        resize!(tracker.particles.LA_imag, 0)
         tracker.particles.np = 0
         return tracker
     end
@@ -583,12 +678,16 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         resize!(tracker.particles.u, 0)
         resize!(tracker.particles.v, 0)
         resize!(tracker.particles.w, 0)
+        resize!(tracker.particles.xi_x, 0)
+        resize!(tracker.particles.xi_y, 0)
+        resize!(tracker.particles.LA_real, 0)
+        resize!(tracker.particles.LA_imag, 0)
         tracker.particles.np = 0
         return tracker
     end
 
     n_local = (i_end - i_start + 1) * (j_end - j_start + 1)
-    
+
     # Resize arrays to actual local particle count
     resize!(tracker.particles.x, n_local)
     resize!(tracker.particles.y, n_local)
@@ -597,7 +696,11 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     resize!(tracker.particles.u, n_local)
     resize!(tracker.particles.v, n_local)
     resize!(tracker.particles.w, n_local)
-    
+    resize!(tracker.particles.xi_x, n_local)
+    resize!(tracker.particles.xi_y, n_local)
+    resize!(tracker.particles.LA_real, n_local)
+    resize!(tracker.particles.LA_imag, n_local)
+
     # Initialize local particles
     idx = 1
     for j in j_start:j_end, i in i_start:i_end
@@ -608,6 +711,10 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         tracker.particles.u[idx] = 0.0
         tracker.particles.v[idx] = 0.0
         tracker.particles.w[idx] = 0.0
+        tracker.particles.xi_x[idx] = 0.0
+        tracker.particles.xi_y[idx] = 0.0
+        tracker.particles.LA_real[idx] = 0.0
+        tracker.particles.LA_imag[idx] = 0.0
         idx += 1
     end
     
@@ -620,29 +727,36 @@ end
 """
     advect_particles!(tracker, state, grid, dt, current_time=nothing; params=nothing, N2_profile=nothing)
 
-Advect particles using unified serial/parallel interface.
-Respects the particle_advec_time setting - particles remain stationary until this time.
+Advect particles using GLM (Generalized Lagrangian Mean) framework.
 
-Parameters:
+# GLM Algorithm (following PDF Section 1.4)
+1. Advect mean position X using QG velocity (Lagrangian-mean flow):
+   X^{n+1} = X^n + Δt × u^L_QG(X^n, t^n)
+
+2. Reconstruct wave displacement at (X^{n+1}, t^{n+1}):
+   ξ^{n+1} = Re{(LA(X^{n+1}, t^{n+1}) / (-if)) × e^(-if t^{n+1})}
+
+3. Physical position (available via particles.x + particles.xi_x, etc.):
+   x^{n+1} = X^{n+1} + ξ^{n+1}
+
+# Parameters
 - tracker: ParticleTracker instance
-- state: Current fluid state
+- state: Current fluid state (contains B, A fields for wave displacement)
 - grid: Grid information
 - dt: Time step
-- current_time: Current simulation time (if not provided, uses tracker's internal time)
-- params: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
-- N2_profile: Optional N²(z) profile for nonuniform stratification. If not provided and
-  `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
-  simulation's actual stratification.
+- current_time: Current simulation time (required for wave phase computation)
+- params: Model parameters (QGParams). Required for f₀.
+- N2_profile: Optional N²(z) profile for nonuniform stratification.
 
-# Important
-When using YBJ vertical velocity (`use_ybj_w=true`) with variable stratification, you MUST
-pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
-will re-invert B→A with constant N², giving inconsistent particle velocities.
+# Note
+The stored positions (particles.x, particles.y, particles.z) are the MEAN positions X.
+The wave displacements (particles.xi_x, particles.xi_y) provide the oscillatory correction.
+The physical (wiggly) trajectory is x = X + ξ.
 """
 function advect_particles!(tracker::ParticleTracker{T},
                           state::State, grid::Grid, dt::T, current_time=nothing;
                           params=nothing, N2_profile=nothing) where T
-    
+
     # Use simulation time if provided, otherwise use tracker's internal time
     if current_time !== nothing
         sim_time = T(current_time)
@@ -651,10 +765,10 @@ function advect_particles!(tracker::ParticleTracker{T},
     else
         sim_time = tracker.particles.time
     end
-    
+
     # Check if we should start advecting particles yet
     advec_start_time = tracker.config.particle_advec_time
-    
+
     if sim_time < advec_start_time
         # Particles remain stationary - only update time
         if current_time === nothing
@@ -662,84 +776,87 @@ function advect_particles!(tracker::ParticleTracker{T},
         else
             tracker.particles.time = T(current_time) + dt
         end
-        
+
         # Still save state if needed (for tracking stationary phase)
         if should_save_particles(tracker)
             save_particle_state!(tracker)
         end
-        
+
         return tracker
     end
-    
-    # Normal advection process starts here
-    # Update velocity fields (pass params and N2_profile for consistent YBJ vertical velocity)
+
+    # ============================================================
+    # Step 1: Update QG velocity fields (Lagrangian-mean flow only)
+    # ============================================================
     update_velocity_fields!(tracker, state, grid; params=params, N2_profile=N2_profile)
-    
-    # Advect particles using chosen integration method
-    if tracker.config.integration_method == :euler
-        advect_euler!(tracker, dt)
-    elseif tracker.config.integration_method == :rk2
-        advect_rk2!(tracker, dt)
-    elseif tracker.config.integration_method == :rk4
-        advect_rk4!(tracker, dt)
-    else
-        error("Unknown integration method: $(tracker.config.integration_method)")
-    end
-    
+
+    # ============================================================
+    # Step 2: Advect MEAN positions using QG velocities (Euler)
+    # ============================================================
+    advect_euler!(tracker, dt)
+
     # Handle particle migration in parallel
     if tracker.is_parallel
         migrate_particles!(tracker)
     end
-    
-    # Apply boundary conditions
+
+    # Apply boundary conditions to mean positions
     apply_boundary_conditions!(tracker)
-    
+
     # Update time (use simulation time if provided)
-    if current_time !== nothing
-        tracker.particles.time = T(current_time) + dt
+    new_time = if current_time !== nothing
+        T(current_time) + dt
     else
-        tracker.particles.time += dt
+        tracker.particles.time + dt
     end
-    
-    # Save state if needed
+    tracker.particles.time = new_time
+
+    # ============================================================
+    # Step 3: Compute wave displacement at new positions
+    # ============================================================
+    # Update wave amplitude fields LA = B + (k_h²/4)A
+    update_wave_fields!(tracker, state, grid; params=params)
+
+    # Compute wave displacement ξ = Re{(LA/(-if)) × e^(-ift)} at new time
+    compute_particle_wave_displacement!(tracker, new_time)
+
+    # Save state if needed (saves mean positions AND wave displacement)
     if should_save_particles(tracker)
         save_particle_state!(tracker)
     end
-    
+
     return tracker
 end
 
 """
     update_velocity_fields!(tracker, state, grid; params=nothing, N2_profile=nothing)
 
-Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
-Computes the complete velocity field needed for proper QG-YBJ particle advection.
+Update QG (Lagrangian-mean) velocity fields from fluid state and exchange halos if parallel.
 
-Handles 2D pencil decomposition by getting actual local dimensions from State arrays.
+# GLM Framework
+In the Generalized Lagrangian Mean framework, the QG velocity IS the Lagrangian-mean flow.
+Particles are advected by QG velocities ONLY:
+    dX/dt = u^L_QG(X, t)
+
+The wave contribution appears as a displacement ξ, not as an additional velocity.
+This is computed separately by `update_wave_displacement!`.
 
 # Arguments
-- `params`: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
-- `N2_profile`: Optional N²(z) profile for nonuniform stratification. If not provided and
-  `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
-  simulation's actual stratification.
-
-# Important
-When using YBJ vertical velocity (`use_ybj_w=true`) with variable stratification, you MUST
-pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
-will re-invert B→A with constant N², giving inconsistent particle velocities.
+- `params`: Model parameters (QGParams). Required for vertical velocity computation.
+- `N2_profile`: Optional N²(z) profile for nonuniform stratification.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid;
                                 params=nothing, N2_profile=nothing) where T
-    # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
+    # Compute ONLY QG velocities (Lagrangian-mean flow)
+    # In GLM framework, we do NOT add wave velocity or Stokes drift to advection
     # Skip w computation entirely when use_3d_advection=false for better performance
-    # Pass params and N2_profile to ensure consistent stratification handling
-    compute_total_velocities!(state, grid;
-                              plans=tracker.plans,
-                              params=params,
-                              compute_w=tracker.config.use_3d_advection,
-                              use_ybj_w=tracker.config.use_ybj_w,
-                              N2_profile=N2_profile)
+    compute_velocities!(state, grid;
+                        plans=tracker.plans,
+                        params=params,
+                        compute_w=tracker.config.use_3d_advection,
+                        use_ybj_w=tracker.config.use_ybj_w,
+                        N2_profile=N2_profile)
 
     # Get actual local dimensions from State arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
@@ -788,11 +905,210 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
 end
 
 """
+    update_wave_fields!(tracker, state, grid; params=nothing)
+
+Update wave velocity amplitude fields LA for wave displacement computation.
+
+# Operator Definitions (from PDF)
+    L  (YBJ):  L  = ∂/∂z(f²/N² ∂/∂z)                [eq. (4)]
+    L⁺ (YBJ+): L⁺ = L - k_h²/4
+
+# Wave Velocity Amplitude
+The instantaneous wave velocity is (equation 3):
+    u + iv = (LA) × e^{-ift}
+
+where L is the YBJ operator. Since B = L⁺A and L = L⁺ + k_h²/4:
+    LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
+
+This function calls compute_wave_displacement! to compute LA in physical space
+and stores it in tracker.LA_real_field and tracker.LA_imag_field for
+interpolation to particle positions.
+
+# Note
+This should be called after update_velocity_fields! and before computing wave displacement.
+"""
+function update_wave_fields!(tracker::ParticleTracker{T},
+                            state::State, grid::Grid;
+                            params=nothing) where T
+    # Compute wave displacement field LA in physical space
+    # This function is defined in operators.jl
+    compute_wave_displacement!(state, grid; plans=tracker.plans, params=params)
+
+    # Get actual local dimensions from State arrays
+    local_dims = size(parent(state.u))
+    nz_local, nx_local, ny_local = local_dims
+
+    # Resize tracker LA fields if needed
+    if size(tracker.LA_real_field) != local_dims
+        tracker.LA_real_field = zeros(T, nz_local, nx_local, ny_local)
+        tracker.LA_imag_field = zeros(T, nz_local, nx_local, ny_local)
+    end
+
+    # Copy LA data from state (assuming compute_wave_displacement! stores in state.LA_real, state.LA_imag)
+    # If the state doesn't have these fields, we need to compute them here
+    # For now, we compute directly from A and B fields
+    # LA = B + (k_h²/4)A in spectral space, but we store the physical space result
+    # which is computed by compute_wave_displacement! into state work arrays
+
+    # Copy the computed LA field
+    tracker.LA_real_field .= parent(state.LA_real)
+    tracker.LA_imag_field .= parent(state.LA_imag)
+
+    # Update f0 from params if available
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        tracker.f0 = T(params.f₀)
+    end
+
+    return tracker
+end
+
+"""
+    compute_particle_wave_displacement!(tracker, current_time)
+
+Compute wave displacement ξ for all particles at current simulation time.
+
+# Wave Displacement Formula (from PDF)
+
+The wave displacement is obtained from equation (6):
+    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}
+
+where LA uses the YBJ operator L (NOT L⁺):
+    L  = ∂/∂z(f²/N² ∂/∂z)                     [eq. (4)]
+    L⁺ = L - k_h²/4                            (YBJ+)
+
+Since B = L⁺A, we have:
+    LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
+
+# Physical Interpretation
+The displacement ξ represents the inertial loops of radius ~|LA|/f
+that particles trace while riding on the mean drift X(t).
+
+# Arguments
+- `tracker`: ParticleTracker with updated LA fields (from update_wave_fields!)
+- `current_time`: Current simulation time (for phase factor e^{-ift})
+"""
+function compute_particle_wave_displacement!(tracker::ParticleTracker{T},
+                                            current_time::Real) where T
+    particles = tracker.particles
+    f0 = tracker.f0
+
+    # Phase factor for wave displacement: e^(-ift)
+    phase = -f0 * T(current_time)
+    cos_phase = cos(phase)
+    sin_phase = sin(phase)
+
+    @inbounds for i in 1:particles.np
+        x, y, z = particles.x[i], particles.y[i], particles.z[i]
+
+        # Interpolate LA at particle position
+        LA_r, LA_i = interpolate_LA_at_position(x, y, z, tracker)
+        particles.LA_real[i] = LA_r
+        particles.LA_imag[i] = LA_i
+
+        # Compute wave displacement: ξ = Re{(LA / (-if)) × e^(-ift)}
+        # LA / (-if) = LA × (i/f) = (LA_r + i·LA_i) × (i/f) = (-LA_i + i·LA_r) / f
+        # So: LA / (-if) = (-LA_i/f) + i·(LA_r/f)
+        disp_amp_real = -LA_i / f0
+        disp_amp_imag = LA_r / f0
+
+        # Multiply by e^(-ift) = cos(phase) + i·sin(phase)
+        # (a + ib)(cos + i·sin) = (a·cos - b·sin) + i·(a·sin + b·cos)
+        xi_complex_real = disp_amp_real * cos_phase - disp_amp_imag * sin_phase
+        xi_complex_imag = disp_amp_real * sin_phase + disp_amp_imag * cos_phase
+
+        # Take real part: ξx + iξy = Re{...}
+        # Actually the formula is ξx + iξy = Re{(complex expression)}
+        # The "Re{...}" means we take the real part of the entire complex expression
+        # which gives us the x and y components
+        particles.xi_x[i] = xi_complex_real  # x-component of displacement
+        particles.xi_y[i] = xi_complex_imag  # y-component of displacement
+    end
+
+    return tracker
+end
+
+"""
+    interpolate_LA_at_position(x, y, z, tracker)
+
+Interpolate wave velocity amplitude LA at particle position.
+Returns (LA_real, LA_imag) tuple.
+"""
+function interpolate_LA_at_position(x::T, y::T, z::T,
+                                   tracker::ParticleTracker{T}) where T
+    # Handle periodic boundaries (shift to domain-relative coordinates)
+    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    z_min = -tracker.Lz
+    z0 = z_min + tracker.dz / 2
+    z_max = zero(T)
+    z_clamped = clamp(z, z0, z_max)
+
+    # Convert to grid indices (0-based for interpolation)
+    fx = x_rel / tracker.dx
+    fy = y_rel / tracker.dy
+    fz = (z_clamped - z0) / tracker.dz
+
+    # Get integer and fractional parts
+    ix = floor(Int, fx)
+    iy = floor(Int, fy)
+    iz = floor(Int, fz)
+
+    rx = fx - ix
+    ry = fy - iy
+    rz = fz - iz
+
+    # Handle boundary indices with proper periodic wrapping
+    if tracker.config.periodic_x
+        ix1 = mod(ix, tracker.nx) + 1
+        ix2 = mod(ix + 1, tracker.nx) + 1
+    else
+        ix1 = max(1, min(tracker.nx, ix + 1))
+        ix2 = max(1, min(tracker.nx, ix + 2))
+    end
+
+    if tracker.config.periodic_y
+        iy1 = mod(iy, tracker.ny) + 1
+        iy2 = mod(iy + 1, tracker.ny) + 1
+    else
+        iy1 = max(1, min(tracker.ny, iy + 1))
+        iy2 = max(1, min(tracker.ny, iy + 2))
+    end
+
+    # Z is never periodic
+    iz1 = max(1, min(tracker.nz, iz + 1))
+    iz2 = max(1, min(tracker.nz, iz + 2))
+
+    # Trilinear interpolation for LA_real
+    LA_r_z1_y1 = (1-rx) * tracker.LA_real_field[iz1, ix1, iy1] + rx * tracker.LA_real_field[iz1, ix2, iy1]
+    LA_r_z1_y2 = (1-rx) * tracker.LA_real_field[iz1, ix1, iy2] + rx * tracker.LA_real_field[iz1, ix2, iy2]
+    LA_r_z1 = (1-ry) * LA_r_z1_y1 + ry * LA_r_z1_y2
+
+    LA_r_z2_y1 = (1-rx) * tracker.LA_real_field[iz2, ix1, iy1] + rx * tracker.LA_real_field[iz2, ix2, iy1]
+    LA_r_z2_y2 = (1-rx) * tracker.LA_real_field[iz2, ix1, iy2] + rx * tracker.LA_real_field[iz2, ix2, iy2]
+    LA_r_z2 = (1-ry) * LA_r_z2_y1 + ry * LA_r_z2_y2
+
+    LA_real = (1-rz) * LA_r_z1 + rz * LA_r_z2
+
+    # Trilinear interpolation for LA_imag
+    LA_i_z1_y1 = (1-rx) * tracker.LA_imag_field[iz1, ix1, iy1] + rx * tracker.LA_imag_field[iz1, ix2, iy1]
+    LA_i_z1_y2 = (1-rx) * tracker.LA_imag_field[iz1, ix1, iy2] + rx * tracker.LA_imag_field[iz1, ix2, iy2]
+    LA_i_z1 = (1-ry) * LA_i_z1_y1 + ry * LA_i_z1_y2
+
+    LA_i_z2_y1 = (1-rx) * tracker.LA_imag_field[iz2, ix1, iy1] + rx * tracker.LA_imag_field[iz2, ix2, iy1]
+    LA_i_z2_y2 = (1-rx) * tracker.LA_imag_field[iz2, ix1, iy2] + rx * tracker.LA_imag_field[iz2, ix2, iy2]
+    LA_i_z2 = (1-ry) * LA_i_z2_y1 + ry * LA_i_z2_y2
+
+    LA_imag = (1-rz) * LA_i_z1 + rz * LA_i_z2
+
+    return LA_real, LA_imag
+end
+
+"""
     validate_particle_cfl(tracker, max_velocity, dt)
 
 Check if timestep satisfies CFL condition for particle advection in parallel mode.
 
-For RK4 integration, intermediate positions can move up to dt*max_velocity from their
+For Euler integration, particles move up to dt*max_velocity from their
 starting position. If this exceeds the halo region, interpolation will be inaccurate.
 
 Returns true if timestep is safe, false if timestep may cause issues.
@@ -801,7 +1117,6 @@ Returns true if timestep is safe, false if timestep may cause issues.
 If this returns false, consider:
 - Reducing dt
 - Increasing halo_width (use higher-order interpolation which has wider halos)
-- Using Euler instead of RK4 (which only evaluates at current position)
 """
 function validate_particle_cfl(tracker::ParticleTracker{T}, max_velocity::T, dt::T) where T
     if !tracker.is_parallel || tracker.halo_info === nothing
@@ -1043,16 +1358,16 @@ function interpolate_velocity_local(x::T, y::T, z::T,
     return u_interp, v_interp, w_interp
 end
 
-# Integration methods
+# Integration method (Euler only)
 
 """
     advect_euler!(tracker, dt)
 
-Advect particles using simple Euler integration method: x = x + dt*u
+Advect particles using Euler integration method: x = x + dt*u
 
-This implements the basic Euler timestep:
+This implements the Euler timestep:
 - x_new = x_old + dt * u
-- y_new = y_old + dt * v  
+- y_new = y_old + dt * v
 - z_new = z_old + dt * w
 
 where (u,v,w) is the interpolated velocity at the current particle position.
@@ -1076,78 +1391,6 @@ function advect_euler!(tracker::ParticleTracker{T}, dt::T) where T
         particles.u[i] = u
         particles.v[i] = v
         particles.w[i] = w
-    end
-end
-
-function advect_rk2!(tracker::ParticleTracker{T}, dt::T) where T
-    particles = tracker.particles
-    use_3d = tracker.config.use_3d_advection
-
-    @inbounds for i in 1:particles.np
-        x0, y0, z0 = particles.x[i], particles.y[i], particles.z[i]
-
-        # First stage
-        u1, v1, w1 = interpolate_velocity_at_position(x0, y0, z0, tracker)
-
-        # Midpoint (z stays fixed if 2D advection)
-        x_mid = x0 + 0.5 * dt * u1
-        y_mid = y0 + 0.5 * dt * v1
-        z_mid = use_3d ? z0 + 0.5 * dt * w1 : z0
-
-        # Second stage
-        u2, v2, w2 = interpolate_velocity_at_position(x_mid, y_mid, z_mid, tracker)
-
-        # Final update
-        particles.x[i] = x0 + dt * u2
-        particles.y[i] = y0 + dt * v2
-        if use_3d
-            particles.z[i] = z0 + dt * w2
-        end
-
-        particles.u[i] = u2
-        particles.v[i] = v2
-        particles.w[i] = w2
-    end
-end
-
-function advect_rk4!(tracker::ParticleTracker{T}, dt::T) where T
-    particles = tracker.particles
-    use_3d = tracker.config.use_3d_advection
-
-    @inbounds for i in 1:particles.np
-        x0, y0, z0 = particles.x[i], particles.y[i], particles.z[i]
-
-        # Stage 1
-        u1, v1, w1 = interpolate_velocity_at_position(x0, y0, z0, tracker)
-
-        # Stage 2 (z stays fixed if 2D advection)
-        x_temp = x0 + 0.5 * dt * u1
-        y_temp = y0 + 0.5 * dt * v1
-        z_temp = use_3d ? z0 + 0.5 * dt * w1 : z0
-        u2, v2, w2 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-
-        # Stage 3
-        x_temp = x0 + 0.5 * dt * u2
-        y_temp = y0 + 0.5 * dt * v2
-        z_temp = use_3d ? z0 + 0.5 * dt * w2 : z0
-        u3, v3, w3 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-
-        # Stage 4
-        x_temp = x0 + dt * u3
-        y_temp = y0 + dt * v3
-        z_temp = use_3d ? z0 + dt * w3 : z0
-        u4, v4, w4 = interpolate_velocity_at_position(x_temp, y_temp, z_temp, tracker)
-
-        # Final update
-        particles.x[i] = x0 + dt * (u1 + 2*u2 + 2*u3 + u4) / 6
-        particles.y[i] = y0 + dt * (v1 + 2*v2 + 2*v3 + v4) / 6
-        if use_3d
-            particles.z[i] = z0 + dt * (w1 + 2*w2 + 2*w3 + w4) / 6
-        end
-
-        particles.u[i] = (u1 + 2*u2 + 2*u3 + u4) / 6
-        particles.v[i] = (v1 + 2*v2 + 2*v3 + v4) / 6
-        particles.w[i] = (w1 + 2*w2 + 2*w3 + w4) / 6
     end
 end
 
@@ -1440,42 +1683,51 @@ end
 """
 Save current particle state to trajectory history.
 
+Saves both MEAN positions (x, y, z) and WAVE displacements (xi_x, xi_y).
+The physical (wiggly) trajectory can be reconstructed as: x_phys = x + xi_x, y_phys = y + xi_y.
+
 If auto_split_files is enabled and max_save_points is reached, automatically
 creates a new file and resets the trajectory history to continue saving.
 """
 function save_particle_state!(tracker::ParticleTracker{T}) where T
     particles = tracker.particles
-    
+
     # Check if we've reached max_save_points
     if length(particles.time_history) >= tracker.config.max_save_points
         if tracker.config.auto_split_files && !isempty(tracker.base_output_filename)
             # Save current trajectory segment to file
             split_and_save_trajectory_segment!(tracker)
-            
+
             # Reset trajectory history for next segment
             empty!(particles.x_history)
-            empty!(particles.y_history) 
+            empty!(particles.y_history)
             empty!(particles.z_history)
             empty!(particles.id_history)
             empty!(particles.time_history)
-            
+            empty!(particles.xi_x_history)
+            empty!(particles.xi_y_history)
+
             tracker.output_file_sequence += 1
         else
             # Traditional behavior: stop saving when max reached
             return tracker
         end
     end
-    
-    # Save current state to history
+
+    # Save current mean positions to history
     push!(particles.x_history, copy(particles.x))
     push!(particles.y_history, copy(particles.y))
     push!(particles.z_history, copy(particles.z))
     push!(particles.id_history, copy(particles.id))
     push!(particles.time_history, particles.time)
-    
+
+    # Save wave displacement history (for reconstructing wiggly trajectories)
+    push!(particles.xi_x_history, copy(particles.xi_x))
+    push!(particles.xi_y_history, copy(particles.xi_y))
+
     tracker.save_counter += 1
     tracker.last_save_time = particles.time
-    
+
     return tracker
 end
 
@@ -1599,7 +1851,6 @@ function enable_auto_file_splitting!(tracker::ParticleTracker{T}, base_filename:
         use_ybj_w = old_config.use_ybj_w,
         use_3d_advection = old_config.use_3d_advection,
         particle_advec_time = old_config.particle_advec_time,
-        integration_method = old_config.integration_method,
         interpolation_method = old_config.interpolation_method,
         periodic_x = old_config.periodic_x,
         periodic_y = old_config.periodic_y,

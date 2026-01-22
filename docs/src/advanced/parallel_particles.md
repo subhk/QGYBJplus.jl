@@ -348,17 +348,19 @@ end
 │  └────────────────────────────────────────────────────────────────────────┘  │ 
 │                                ↓                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐         │
-│  │ STEP 2: ADVECT PARTICLES (each rank independently)              │         │
+│  │ STEP 2: ADVECT MEAN POSITIONS (GLM framework)                   │         │
 │  │                                                                 │         │
 │  │   For each local particle:                                      │         │
-│  │     1. Interpolate velocity at (x, y, z)                        │         │
+│  │     1. Interpolate QG velocity at mean position (X, Y, Z)       │         │
 │  │        • Use extended arrays (halos) if near boundary           │         │
 │  │        • Trilinear/Tricubic/Quintic interpolation               │         │
 │  │                                                                 │         │
-│  │     2. Time integration:                                        │         │
-│  │        • Euler:  x_{n+1} = x_n + dt·u                           │         │
-│  │        • RK2:    Midpoint method                                │         │
-│  │        • RK4:    Classical 4th order                            │         │
+│  │     2. Time integration (Euler):                                │         │
+│  │        • X_{n+1} = X_n + dt·u_QG                                │         │
+│  │                                                                 │         │
+│  │     3. Reconstruct wave displacement (diagnostic):              │         │
+│  │        • ξ = Re{(LA/(-if)) × e^{-ift}}                          │         │
+│  │        • Physical position: x = X + ξ                           │         │
 │  └─────────────────────────────────────────────────────────────────┘         │
 │                                ↓                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐         │
@@ -531,10 +533,10 @@ The wave amplitude `A` and its derivatives come from the simulation state:
 | Field | Location | Description |
 |:------|:---------|:------------|
 | `State.A` | Spectral | Wave amplitude Â(kₓ, kᵧ, z) |
-| `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_B_to_A!`) |
+| `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_L⁺A_to_A!`) |
 
 The wave velocity and Stokes drift computation (Wagner & Young 2016, eq. 3.16a-3.20):
-1. Computes LA = B + (k_h²/4)A in spectral space (wave velocity)
+1. Computes LA = L⁺A + (k_h²/4)A in spectral space (wave velocity amplitude)
 2. Computes ∂_{s*}(LA), ∂_{s*}(A_z*), ∂_z(LA) in spectral space
 3. For vertical Stokes: computes A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}
 4. Transforms all fields to physical space
@@ -561,18 +563,19 @@ advect_particles!(tracker, state, grid, dt)
   └─→ update_velocity_fields!(tracker, state, grid)
         ├─→ compute_total_velocities!(state, grid)
         │     ├─→ compute_velocities!()      # QG: u,v from ψ; w from omega eqn
-        │     └─→ compute_wave_velocities!() # Wave velocity + Stokes drift (J₀, K₀)
-        ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL total velocity
+        │     └─→ compute_wave_velocities!() # Wave velocity LA = L⁺A + (k_h²/4)A
+        ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL QG velocity
         └─→ exchange_velocity_halos!()          # Fill halos from neighbors
-  └─→ advect_euler!/advect_rk2!/advect_rk4!()
-        └─→ interpolate_velocity_at_position()  # Uses extended arrays
+  └─→ advect_euler!()                           # GLM mean position advection
+        ├─→ interpolate_velocity_at_position()  # Uses extended arrays
+        └─→ reconstruct_wave_displacement()     # ξ = Re{(LA/(-if)) × e^{-ift}}
 ```
 
 ## CFL Stability for Particle Advection
 
 ### Halo Constraint
 
-For multi-stage integration methods (RK2, RK4), intermediate particle positions are evaluated during a single timestep. If a particle moves beyond the halo region, velocity interpolation becomes inaccurate (values are clamped to boundary).
+For Euler time integration with the GLM framework, particles should not move beyond the halo region in a single timestep. If a particle moves beyond the halo region, velocity interpolation becomes inaccurate (values are clamped to boundary).
 
 **Stability requirement:**
 ```
@@ -761,7 +764,6 @@ particle_config = create_particle_config(
     z_level = π,
     nx_particles = 100,
     ny_particles = 100,
-    integration_method = :rk4,
     interpolation_method = TRILINEAR
 )
 

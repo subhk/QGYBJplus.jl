@@ -476,12 +476,12 @@ function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing)
 end
 
 """
-    convol_waqg_B!(nBk, u, v, Bk, G, plans; Lmask=nothing)
+    convol_waqg_L⁺A!(nL⁺Ak, u, v, L⁺Ak, G, plans; Lmask=nothing)
 
-Compute advection of complex B directly (YBJ+ path).
+Compute advection of complex L⁺A directly (YBJ+ path).
 """
-function convol_waqg_B!(nBk, u, v, Bk, G::Grid, plans; Lmask=nothing)
-    return _convol_advect!(nBk, u, v, Bk, G, plans; Lmask=Lmask, use_real=false)
+function convol_waqg_L⁺A!(nL⁺Ak, u, v, L⁺Ak, G::Grid, plans; Lmask=nothing)
+    return _convol_advect!(nL⁺Ak, u, v, L⁺Ak, G, plans; Lmask=Lmask, use_real=false)
 end
 
 #=
@@ -493,11 +493,11 @@ This causes:
 - Focusing of waves in anticyclones (ζ < 0)
 - Defocusing in cyclones (ζ > 0)
 
-The refraction term is: B × ζ (complex multiplication by real ζ)
+The refraction term is: L⁺A × ζ (complex multiplication by real ζ)
 
 In terms of real/imaginary parts:
-- rBR = BR × ζ
-- rBI = BI × ζ
+- rL⁺AR = L⁺AR × ζ
+- rL⁺AI = L⁺AI × ζ
 ================================================================================
 =#
 
@@ -623,15 +623,15 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=not
 end
 
 """
-    refraction_waqg_B!(rBk, Bk, ψₖ, G, plans; Lmask=nothing)
+    refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G, plans; Lmask=nothing)
 
-Compute wave refraction term ζ*B directly for complex B (YBJ+ path).
+Compute wave refraction term ζ*L⁺A directly for complex L⁺A (YBJ+ path).
 """
-function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψₖ)
-    rBk_arr = parent(rBk)
+    rL⁺Ak_arr = parent(rL⁺Ak)
     # Spectral array dimensions
     nz_spec, nx_spec, ny_spec = size(ψ_arr)
 
@@ -655,36 +655,36 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
     end
 
     ζᵣ = _allocate_fft_dst(ζₖ, plans)
-    Bᵣ = _allocate_fft_dst(Bk, plans)
-    Bk_f = similar(Bk)
-    _prefilter_spectral!(Bk_f, Bk, G, Lmask)
+    L⁺Aᵣ = _allocate_fft_dst(L⁺Ak, plans)
+    L⁺Ak_f = similar(L⁺Ak)
+    _prefilter_spectral!(L⁺Ak_f, L⁺Ak, G, Lmask)
     fft_backward!(ζᵣ, ζₖ, plans)
-    fft_backward!(Bᵣ, Bk_f, plans)
+    fft_backward!(L⁺Aᵣ, L⁺Ak_f, plans)
 
     ζᵣ_arr = parent(ζᵣ)
-    Bᵣ_arr = parent(Bᵣ)
+    L⁺Aᵣ_arr = parent(L⁺Aᵣ)
 
-    rBᵣ = similar(Bᵣ)
-    rBᵣ_arr = parent(rBᵣ)
+    rL⁺Aᵣ = similar(L⁺Aᵣ)
+    rL⁺Aᵣ_arr = parent(rL⁺Aᵣ)
 
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
     nz_phys, nx_phys, ny_phys = size(ζᵣ_arr)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        rBᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local]) * Bᵣ_arr[k, i_local, j_local]
+        rL⁺Aᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local]) * L⁺Aᵣ_arr[k, i_local, j_local]
     end
 
-    fft_forward!(rBk, rBᵣ, plans)
-    rBk_arr = parent(rBk)
+    fft_forward!(rL⁺Ak, rL⁺Aᵣ, plans)
+    rL⁺Ak_arr = parent(rL⁺Ak)
 
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, rBk)
-        j_global = local_to_global(j_local, 3, rBk)
+        i_global = local_to_global(i_local, 2, rL⁺Ak)
+        j_global = local_to_global(j_local, 3, rL⁺Ak)
         if !should_keep(i_global, j_global)
-            rBk_arr[k, i_local, j_local] = 0.0  # Dealiased
+            rL⁺Ak_arr[k, i_local, j_local] = 0.0  # Dealiased
         end
     end
 
-    return rBk
+    return rL⁺Ak
 end
 
 #=
@@ -695,10 +695,10 @@ Waves can modify the mean flow through the wave feedback term qʷ.
 This represents the averaged effect of nonlinear wave-wave interactions
 on the balanced flow (Xie & Vanneste 2015).
 
-For dimensional equations where B has actual velocity units:
-    qʷ = (i/2f)J(B*, B) + (1/4f)∇²|B|²
+For dimensional equations where L⁺A has actual velocity units:
+    qʷ = (i/2f)J(L⁺A*, L⁺A) + (1/4f)∇²|L⁺A|²
 
-No additional scaling is needed since B already contains the wave amplitude.
+No additional scaling is needed since L⁺A already contains the wave amplitude.
 ================================================================================
 =#
 
@@ -1187,6 +1187,6 @@ end
 end # module
 
 # Export nonlinear operators to main QGYBJplus module
-using .Nonlinear: jacobian_spectral!, convol_waqg!, convol_waqg_q!, convol_waqg_B!,
-                  refraction_waqg!, refraction_waqg_B!, compute_qw!, compute_qw_complex!,
+using .Nonlinear: jacobian_spectral!, convol_waqg!, convol_waqg_q!, convol_waqg_L⁺A!,
+                  refraction_waqg!, refraction_waqg_L⁺A!, compute_qw!, compute_qw_complex!,
                   dissipation_q_nv!, int_factor

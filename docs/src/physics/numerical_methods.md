@@ -266,9 +266,9 @@ end
 
 | Function | Solves | Physical Meaning |
 |:---------|:-------|:-----------------|
-| `invert_q_to_psi!` | nabla²psi + (f²/N²)d²psi/dz² = q | PV to streamfunction |
-| `invert_B_to_A!` | L⁺A = B | Wave envelope to amplitude |
-| `invert_helmholtz!` | nabla²phi - lambda*phi = f | General Helmholtz |
+| `invert_q_to_psi!` | ∇²ψ + (f²/N²)∂²ψ/∂z² = q | PV to streamfunction |
+| `invert_L⁺A_to_A!` | L⁺A = input | Wave envelope to amplitude |
+| `invert_helmholtz!` | ∇²ϕ - λϕ = f | General Helmholtz |
 
 ## FFT Implementation
 
@@ -363,14 +363,14 @@ end
 | Function | What it does | Needs z local? |
 |:---------|:-------------|:---------------|
 | `invert_q_to_psi!` | PV inversion | Yes (tridiagonal) |
-| `invert_B_to_A!` | Wave amplitude recovery | Yes (tridiagonal) |
+| `invert_L⁺A_to_A!` | Wave amplitude recovery | Yes (tridiagonal) |
 | `invert_helmholtz!` | General Helmholtz | Yes (tridiagonal) |
 | `compute_vertical_velocity!` | Omega equation | Yes (tridiagonal) |
 | `compute_ybj_vertical_velocity!` | YBJ w formula | Yes (vertical derivative) |
 | `dissipation_q_nv!` | Numerical dissipation | Yes (vertical terms) |
-| `sumB!` | Sum B over depth | Yes (vertical sum) |
+| `sumL⁺A!` | Sum L⁺A over depth | Yes (vertical sum) |
 | `compute_sigma` | YBJ sigma term | Yes (vertical operations) |
-| `compute_A!` | Compute A from B | Yes (vertical operations) |
+| `compute_A!` | Compute A from L⁺A | Yes (vertical operations) |
 | `omega_eqn_rhs!` | RHS of omega equation | Yes (vertical derivatives) |
 
 ### Workspace Arrays

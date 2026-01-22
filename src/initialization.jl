@@ -25,9 +25,15 @@ const _allocate_fft_dst = allocate_fft_backward_dst
 
 Initialize model state from configuration.
 
-This function initializes the streamfunction (ψ) and wave field (B), then computes
-consistent potential vorticity (q) from ψ to ensure the first timestep doesn't
-wipe out the user-provided initial conditions.
+This function initializes the streamfunction (ψ) and YBJ+ wave envelope (B = L⁺A),
+then computes consistent potential vorticity (q) from ψ to ensure the first
+timestep doesn't wipe out the user-provided initial conditions.
+
+# Operator Definitions (from PDF)
+    L  (YBJ):   L  = ∂/∂z(f²/N² ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+):  L⁺ = L - k_h²/4                               [spectral space]
+
+The prognostic variable B = L⁺A is the YBJ+ wave envelope.
 
 # Arguments
 - `config`: Model configuration with initial condition settings
@@ -67,15 +73,15 @@ function initialize_from_config(config, G::Grid, S::State, plans;
 
     # Initialize wave field
     if config.initial_conditions.wave_type == :analytical
-        init_analytical_waves!(S.B, G, config.initial_conditions.wave_amplitude, plans)
+        init_analytical_waves!(S.L⁺A, G, config.initial_conditions.wave_amplitude, plans)
     elseif config.initial_conditions.wave_type == :random
-        init_random_waves!(S.B, G, config.initial_conditions.wave_amplitude)
+        init_random_waves!(S.L⁺A, G, config.initial_conditions.wave_amplitude)
     elseif config.initial_conditions.wave_type == :from_file
-        S.B .= read_initial_waves(config.initial_conditions.wave_filename, G, plans;
+        S.L⁺A .= read_initial_waves(config.initial_conditions.wave_filename, G, plans;
                                   parallel_config=parallel_config)
     elseif config.initial_conditions.wave_type == :surface_waves
         init_surface_waves!(
-            S.B, G,
+            S.L⁺A, G,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -84,7 +90,7 @@ function initialize_from_config(config, G::Grid, S::State, plans;
         )
     elseif config.initial_conditions.wave_type == :surface_exponential
         init_surface_waves!(
-            S.B, G,
+            S.L⁺A, G,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -93,7 +99,7 @@ function initialize_from_config(config, G::Grid, S::State, plans;
         )
     elseif config.initial_conditions.wave_type == :surface_gaussian
         init_surface_waves!(
-            S.B, G,
+            S.L⁺A, G,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -102,7 +108,7 @@ function initialize_from_config(config, G::Grid, S::State, plans;
         )
     else
         # Zero initialization (type-safe)
-        fill!(S.B, zero(eltype(S.B)))
+        fill!(S.L⁺A, zero(eltype(S.L⁺A)))
     end
 
     # Compute q from ψ to ensure consistency
@@ -295,25 +301,31 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
 end
 
 """
-    init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
+    init_analytical_waves!(L⁺Ak, G::Grid, amplitude::Real, plans)
 
-Initialize wave field (L+A) with analytical expression.
+Initialize YBJ+ wave envelope L⁺A with analytical expression.
+
+# Operator Definitions (from PDF)
+    L  (YBJ):   L  = ∂/∂z(f²/N² ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+):  L⁺ = L - k_h²/4                               [spectral space]
+
+The prognostic variable L⁺A is the YBJ+ wave envelope.
 
 # Arguments
-- `Bk`: Spectral field to populate (output)
+- `L⁺Ak`: Spectral field L⁺A to populate (output)
 - `G::Grid`: Grid structure
 - `amplitude::Real`: Amplitude of the initial field
 - `plans`: FFT plans for forward transform
 """
-function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
+function init_analytical_waves!(L⁺Ak, G::Grid, amplitude::Real, plans)
     @info "Initializing analytical wave field (amplitude=$amplitude)"
 
     # Initialize in real space with LOCAL dimensions (input pencil for MPI)
-    Br = _allocate_fft_dst(Bk, plans)
-    Bi = _allocate_fft_dst(Bk, plans)
-    Br_arr = parent(Br)
-    Bi_arr = parent(Bi)
-    nz_local, nx_local, ny_local = size(Br_arr)
+    L⁺Ar = _allocate_fft_dst(L⁺Ak, plans)
+    L⁺Ai = _allocate_fft_dst(L⁺Ak, plans)
+    L⁺Ar_arr = parent(L⁺Ar)
+    L⁺Ai_arr = parent(L⁺Ai)
+    nz_local, nx_local, ny_local = size(L⁺Ar_arr)
 
     dx = G.Lx / G.nx
     dy = G.Ly / G.ny
@@ -325,18 +337,18 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
 
     for k in 1:nz_local
         # Get global z-index for correct coordinate
-        k_global = local_to_global(k, 1, Br)
+        k_global = local_to_global(k, 1, L⁺Ar)
         z = -G.Lz + (k_global - 0.5) * dz
         depth = -z
 
         for j_local in 1:ny_local
             # Get global y-index
-            j_global = local_to_global(j_local, 3, Br)
+            j_global = local_to_global(j_local, 3, L⁺Ar)
             y = (j_global - 1) * dy
 
             for i_local in 1:nx_local
                 # Get global x-index
-                i_global = local_to_global(i_local, 2, Br)
+                i_global = local_to_global(i_local, 2, L⁺Ar)
                 x = (i_global - 1) * dx
 
                 # Use normalized coordinates for wave patterns
@@ -345,12 +357,12 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
                 z_norm = 2π * depth / G.Lz
 
                 # Example wave pattern with vertical decay centered at mid-depth
-                Br_arr[k, i_local, j_local] = amplitude * (
+                L⁺Ar_arr[k, i_local, j_local] = amplitude * (
                     sin(4*x_norm + z_norm) * cos(2*y_norm) * exp(-((depth - z_mid)^2)/(2*sigma_z^2)) +
                     0.3 * cos(2*x_norm) * sin(4*y_norm + 2*z_norm) * exp(-((depth - z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
 
-                Bi_arr[k, i_local, j_local] = amplitude * 0.1 * (
+                L⁺Ai_arr[k, i_local, j_local] = amplitude * 0.1 * (
                     cos(4*x_norm + z_norm) * sin(2*y_norm) * exp(-((depth - z_mid)^2)/(2*sigma_z^2)) +
                     0.3 * sin(2*x_norm) * cos(4*y_norm + 2*z_norm) * exp(-((depth - z_mid)^2)/(2*(0.6*sigma_z)^2))
                 )
@@ -359,22 +371,22 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
     end
 
     # Transform to spectral space
-    Brk = similar(Bk)
-    Bik = similar(Bk)
-    fft_forward!(Brk, Br, plans)
-    fft_forward!(Bik, Bi, plans)
+    L⁺Ark = similar(L⁺Ak)
+    L⁺Aik = similar(L⁺Ak)
+    fft_forward!(L⁺Ark, L⁺Ar, plans)
+    fft_forward!(L⁺Aik, L⁺Ai, plans)
 
     # Combine real and imaginary parts
-    Bk .= Brk .+ im .* Bik
+    L⁺Ak .= L⁺Ark .+ im .* L⁺Aik
 end
 
 """
-    init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans; uniform=true, profile=:gaussian)
+    init_surface_waves!(L⁺Ak, G::Grid, amplitude::Real, surface_depth::Real, plans; uniform=true, profile=:gaussian)
 
 Initialize horizontally uniform surface waves with a specified vertical decay profile.
 
 # Arguments
-- `Bk`: Spectral field to populate (output)
+- `L⁺Ak`: Spectral field to populate (output)
 - `G::Grid`: Grid structure
 - `amplitude::Real`: Wave velocity amplitude
 - `surface_depth::Real`: E-folding depth [m]
@@ -382,18 +394,18 @@ Initialize horizontally uniform surface waves with a specified vertical decay pr
 - `uniform`: Horizontally uniform waves (default: true)
 - `profile`: Vertical decay profile (:gaussian or :exponential)
 """
-function init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans;
+function init_surface_waves!(L⁺Ak, G::Grid, amplitude::Real, surface_depth::Real, plans;
                              uniform::Bool=true, profile::Symbol=:gaussian)
     surface_depth > 0 || throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
 
     # Initialize in real space with LOCAL dimensions (input pencil for MPI)
-    B_phys = _allocate_fft_dst(Bk, plans)
-    B_arr = parent(B_phys)
-    T = eltype(B_arr)
+    L⁺A_phys = _allocate_fft_dst(L⁺Ak, plans)
+    L⁺A_arr = parent(L⁺A_phys)
+    T = eltype(L⁺A_arr)
 
     dz = G.Lz / G.nz
-    for k_local in axes(B_arr, 1)
-        k_global = local_to_global(k_local, 1, B_phys)
+    for k_local in axes(L⁺A_arr, 1)
+        k_global = local_to_global(k_local, 1, L⁺A_phys)
         # Depth from surface (z=0 is surface, z=-Lz is bottom).
         # Use a dz/2 shift so the top cell center corresponds to z=0.
         depth = max(zero(T), -G.z[k_global] - dz / 2)
@@ -406,26 +418,26 @@ function init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, 
         end
 
         if uniform
-            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+            L⁺A_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         else
             # Placeholder for future horizontal structure.
-            B_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
+            L⁺A_arr[k_local, :, :] .= complex(T(amplitude) * wave_profile)
         end
     end
 
     # Transform to spectral space
-    fft_forward!(Bk, B_phys, plans)
+    fft_forward!(L⁺Ak, L⁺A_phys, plans)
 end
 
 """
-    init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
+    init_random_waves!(L⁺Ak, G::Grid, amplitude::Real; slope::Real=-2.0)
 
 Initialize wave field with random amplitudes and phases.
 """
-function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
+function init_random_waves!(L⁺Ak, G::Grid, amplitude::Real; slope::Real=-2.0)
     @info "Initializing random wave field (amplitude=$amplitude, slope=$slope)"
-    
-    if Bk isa PencilArray
+
+    if L⁺Ak isa PencilArray
         error("init_random_waves! does not support PencilArray. " *
               "Use parallel_initialize_fields! for MPI runs.")
     end
@@ -433,46 +445,46 @@ function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
     # Generate random phases for real and imaginary parts
     phases_r = 2π * rand(Float64, G.nz, G.nx, G.ny)
     phases_i = 2π * rand(Float64, G.nz, G.nx, G.ny)
-    
-    fill!(Bk, zero(eltype(Bk)))
-    
+
+    fill!(L⁺Ak, zero(eltype(L⁺Ak)))
+
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
-    
+
     for k in 1:G.nz
         # Add some vertical structure - stronger near middle depths
         z_factor = sin(π * k / G.nz)^2
-        
+
         for j in 1:G.ny
             ky = j <= ky_max ? j-1 : j-1-G.ny
-            
+
             for i in 1:G.nx
                 kx = i <= kx_max ? i - 1 : i - 1 - G.nx
-                
+
                 if kx == 0 && ky == 0
                     continue  # Skip mean mode
                 end
-                
+
                 k_total = sqrt(Float64(kx^2 + ky^2))
-                
+
                 if k_total > 0
                     # Energy spectrum for waves
                     energy = amplitude^2 * k_total^slope * z_factor
-                    
+
                     # Random amplitudes
                     amp_r = sqrt(energy) * randn()
                     amp_i = sqrt(energy) * randn()
-                    
+
                     # Set complex field
-                    Bk[k, i, j] = (amp_r * cis(phases_r[k, i, j])) +
-                                  im * (amp_i * cis(phases_i[k, i, j]))
+                    L⁺Ak[k, i, j] = (amp_r * cis(phases_r[k, i, j])) +
+                                    im * (amp_i * cis(phases_i[k, i, j]))
                 end
             end
         end
     end
-    
+
     # Apply dealiasing mask
-    apply_dealiasing_mask!(Bk, G)
+    apply_dealiasing_mask!(L⁺Ak, G)
 end
 
 """
@@ -871,7 +883,7 @@ function check_initial_conditions(S::State, G::Grid, plans)
         error("NaN or Inf detected in initial psi field")
     end
     
-    if any(x -> !isfinite(x), S.B)
+    if any(x -> !isfinite(x), S.L⁺A)
         error("NaN or Inf detected in initial wave field")
     end
     
@@ -882,9 +894,9 @@ function check_initial_conditions(S::State, G::Grid, plans)
     psir = real.(parent(psir_complex))
     psi_energy = 0.5 * sum(abs2, psir) / (G.nx * G.ny * G.nz)
 
-    # For wave field: do full complex IFFT on S.B, then extract real part
-    Br_complex = _allocate_fft_dst(S.B, plans)
-    fft_backward!(Br_complex, S.B, plans)
+    # For wave field: do full complex IFFT on S.L⁺A, then extract real part
+    Br_complex = _allocate_fft_dst(S.L⁺A, plans)
+    fft_backward!(Br_complex, S.L⁺A, plans)
     Br = real.(parent(Br_complex))
     wave_energy = 0.5 * sum(abs2, Br) / (G.nx * G.ny * G.nz)
 
@@ -892,7 +904,7 @@ function check_initial_conditions(S::State, G::Grid, plans)
     @info "  Psi energy: $psi_energy"
     @info "  Wave energy: $wave_energy"
     @info "  Max |psi|: $(maximum(abs, psir))"
-    @info "  Max |B|: $(maximum(abs, Br))"
+    @info "  Max |L⁺A|: $(maximum(abs, Br))"
     
     return Dict(
         "psi_energy" => psi_energy,

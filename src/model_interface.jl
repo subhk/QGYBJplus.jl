@@ -10,7 +10,7 @@ using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
 using ..QGYBJplus: first_projection_step!, leapfrog_step!
 using ..QGYBJplus: IMEXWorkspace, init_imex_workspace, imex_cn_step!
-using ..QGYBJplus: invert_q_to_psi!, invert_B_to_A!, compute_velocities!
+using ..QGYBJplus: invert_q_to_psi!, invert_L⁺A_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
@@ -320,7 +320,7 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
         # Copy the current state (Sn after rotation) to sim.state
         sim.state.q .= Sn.q
         sim.state.psi .= Sn.psi
-        sim.state.B .= Sn.B
+        sim.state.L⁺A .= Sn.L⁺A
         sim.state.A .= Sn.A
         sim.state.C .= Sn.C
         sim.state.u .= Sn.u
@@ -474,9 +474,9 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
 
     # Wave field extrema (with MPI reduction)
     # Transform full complex B to physical space, then extract real part
-    Br_complex = _allocate_fft_dst(sim.state.B, sim.plans)
-    fft_backward!(Br_complex, sim.state.B, sim.plans)
-    Br = real.(parent(Br_complex))
+    L⁺Ar_complex = _allocate_fft_dst(sim.state.L⁺A, sim.plans)
+    fft_backward!(L⁺Ar_complex, sim.state.L⁺A, sim.plans)
+    Br = real.(parent(L⁺Ar_complex))
     diagnostics["wave_min"] = reduce_min_if_mpi(minimum(Br), sim.parallel_config)
     diagnostics["wave_max"] = reduce_max_if_mpi(maximum(Br), sim.parallel_config)
 
@@ -529,11 +529,11 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     end
 
     # Get arrays
-    B_arr = parent(state.B)
+    L⁺A_arr = parent(state.L⁺A)
     A_arr = parent(state.A)
     C_arr = parent(state.C)
 
-    nz_local, nx_local, ny_local = size(B_arr)
+    nz_local, nx_local, ny_local = size(L⁺A_arr)
 
     # Grid spacing for vertical derivative
     Δz = nz > 1 ? abs(grid.z[2] - grid.z[1]) : T(1)
@@ -545,15 +545,15 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     # For WKE, compute LA = ∂_z(a × C) using the L operator from equation (1.3)
     # Loop over (i,j) modes first, then compute LA across z levels
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, state.B)
-        j_global = local_to_global(j_local, 3, state.B)
+        i_global = local_to_global(i_local, 2, state.L⁺A)
+        j_global = local_to_global(j_local, 3, state.L⁺A)
 
         kx_val = grid.kx[min(i_global, length(grid.kx))]
         ky_val = grid.ky[min(j_global, length(grid.ky))]
         kh2 = kx_val^2 + ky_val^2
 
         for k in 1:nz_local
-            k_global = local_to_global(k, 1, state.B)
+            k_global = local_to_global(k, 1, state.L⁺A)
             a_ell = a_ell_arr[min(k_global, nz)]
 
             C_k = C_arr[k, i_local, j_local]
@@ -607,7 +607,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     # Uses same corrected indexing as main WKE loop
     wke_zero = T(0)
     for k in 1:nz_local
-        k_global = local_to_global(k, 1, state.B)
+        k_global = local_to_global(k, 1, state.L⁺A)
         a_ell = a_ell_arr[min(k_global, nz)]
         CR = real(C_arr[k, 1, 1])
         CI = imag(C_arr[k, 1, 1])
@@ -844,7 +844,7 @@ with a(z) = f²/N² and C = ∂A/∂z.
 Domain-integrated wave kinetic energy (scalar).
 """
 function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
-    T = eltype(real(state.B[1]))
+    T = eltype(real(state.L⁺A[1]))
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
@@ -1136,7 +1136,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     # This is needed before the first diagnostics printout (step 0)
     # For YBJ+, A is the wave amplitude and B = L⁺·A
     if par.ybj_plus
-        invert_B_to_A!(S, G, par, a_ell; workspace=workspace)
+        invert_L⁺A_to_A!(S, G, par, a_ell; workspace=workspace)
     end
 
     # Create output manager if config provided
@@ -1193,7 +1193,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     # Allocate temporary arrays for physical space diagnostics
     # These are used to transform B and A from spectral to physical space
     # Must use _allocate_fft_dst for correct pencil allocation in MPI case
-    B_phys = _allocate_fft_dst(S.B, plans)
+    L⁺A_phys = _allocate_fft_dst(S.L⁺A, plans)
     A_phys = _allocate_fft_dst(S.A, plans)
 
     report_step = function(state::State, step::Int, current_time)
@@ -1202,9 +1202,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
             max_v = reduce_max_if_mpi(maximum(abs, parent(state.v)), mpi_config)
             max_vel = max(max_u, max_v)
 
-            fft_backward!(B_phys, state.B, plans)
+            fft_backward!(L⁺A_phys, state.L⁺A, plans)
             fft_backward!(A_phys, state.A, plans)
-            max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
+            max_B = reduce_max_if_mpi(maximum(abs, parent(L⁺A_phys)), mpi_config)
             max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
 
             if is_root && print_progress
@@ -1232,9 +1232,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         max_vel = max(max_u, max_v)
 
         # Transform B and A to physical space for meaningful diagnostics
-        fft_backward!(B_phys, S.B, plans)
+        fft_backward!(L⁺A_phys, S.L⁺A, plans)
         fft_backward!(A_phys, S.A, plans)
-        max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
+        max_B = reduce_max_if_mpi(maximum(abs, parent(L⁺A_phys)), mpi_config)
         max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
 
         if is_root && print_progress
@@ -1277,7 +1277,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         # Copy final state back to S
         copyto!(parent(S.psi), parent(Sn.psi))
         copyto!(parent(S.q), parent(Sn.q))
-        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
         copyto!(parent(S.A), parent(Sn.A))
         copyto!(parent(S.C), parent(Sn.C))
         copyto!(parent(S.u), parent(Sn.u))
@@ -1309,7 +1309,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         # Copy final state back to S
         copyto!(parent(S.psi), parent(Sn.psi))
         copyto!(parent(S.q), parent(Sn.q))
-        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
         copyto!(parent(S.A), parent(Sn.A))
         copyto!(parent(S.C), parent(Sn.C))
         copyto!(parent(S.u), parent(Sn.u))
@@ -1341,8 +1341,8 @@ Check for early termination conditions (blow-up, etc.).
 function check_termination_conditions(sim::QGYBJSimulation{T}) where T
     # Check for NaNs or Infs
     psi_arr = parent(sim.state.psi)
-    B_arr = parent(sim.state.B)
-    local_bad = any(x -> !isfinite(x), psi_arr) || any(x -> !isfinite(x), B_arr)
+    L⁺A_arr = parent(sim.state.L⁺A)
+    local_bad = any(x -> !isfinite(x), psi_arr) || any(x -> !isfinite(x), L⁺A_arr)
     bad_count = reduce_sum_if_mpi(local_bad ? 1 : 0, sim.parallel_config)
     if bad_count > 0
         if sim.parallel_config === nothing || sim.parallel_config.is_root

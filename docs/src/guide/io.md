@@ -58,16 +58,17 @@ close_output!(output_config)
 | Variable | Description | Dimensions |
 |:---------|:------------|:-----------|
 | `psi` | Streamfunction (physical) | (x, y, z, t) |
-| `LAr`, `LAi` | Wave envelope B = L⁺A real/imag parts (physical) | (x, y, z, t) |
+| `LAr`, `LAi` | Wave velocity amplitude LA = L⁺A + (k_h²/4)A real/imag parts | (x, y, z, t) |
 | `Ar`, `Ai` | Wave amplitude A real/imag parts (physical) | (x, y, z, t) |
 | `q` | Potential vorticity (spectral) | (kx, ky, z, t) |
 | `u`, `v` | Velocities (physical) | (x, y, z, t) |
 | `energy` | Domain-integrated energy | (t) |
 
 !!! note "Wave field naming"
-    - `LAr`, `LAi`: Real and imaginary parts of the wave envelope ``B = L^+ A``
+    - `LAr`, `LAi`: Real and imaginary parts of the wave velocity amplitude ``LA = L^+A + (k_h^2/4)A``
     - `Ar`, `Ai`: Real and imaginary parts of the wave amplitude ``A``
-    - Both are needed to compute wave kinetic energy per equation (4.7): ``\text{WKE} = \frac{1}{2}|LA|^2`` where ``LA = B + (k_h^2/4)A``
+    - The prognostic variable is ``L^+A`` (evolved in time), ``A`` is diagnostic (from inversion)
+    - Wave kinetic energy per equation (4.7): ``\text{WKE} = \frac{1}{2}|LA|^2``
 
 ### Custom Variables
 
@@ -144,7 +145,7 @@ using JLD2
 # Or more selectively
 jldsave("restart.jld2";
     psi = state.psi,
-    B = state.B,
+    L⁺A = state.L⁺A,
     q = state.q,
     step = step,
     time = time
@@ -230,7 +231,7 @@ for step = 1:nsteps
     record!(diagnostics, step, time,
         KE = flow_kinetic_energy(state.u, state.v),
         PE = flow_potential_energy(state.psi, grid),
-        WE = wave_energy(state.B, state.A)
+        WE = wave_energy_vavg(state.L⁺A, state.A, grid, plans)
     )
 end
 

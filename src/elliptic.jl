@@ -9,8 +9,8 @@ that arise in the QG-YBJ+ model. These are critical for:
 1. STREAMFUNCTION INVERSION (q → ψ):
    Given the QG potential vorticity q, solve for the streamfunction ψ.
 
-2. WAVE AMPLITUDE RECOVERY (B → A):
-   Given the YBJ+ evolved field B = L⁺A, recover the true wave amplitude A.
+2. WAVE AMPLITUDE RECOVERY (L⁺A → A):
+   Given the YBJ+ evolved field L⁺A, recover the true wave amplitude A.
 
 3. GENERAL HELMHOLTZ PROBLEMS:
    For omega equation, buoyancy inversions, etc.
@@ -70,7 +70,7 @@ before the solve, then transposed back afterward.
 FORTRAN CORRESPONDENCE:
 ----------------------
 - invert_q_to_psi! ↔ psi_solver (elliptic.f90)
-- invert_B_to_A!   ↔ A_solver_ybj_plus (elliptic.f90)
+- invert_L⁺A_to_A!   ↔ A_solver_ybj_plus (elliptic.f90)
 - invert_helmholtz! ↔ helmholtzdouble (elliptic.f90)
 
 ================================================================================
@@ -99,8 +99,8 @@ For `invert_helmholtz!`:
   - `work_z`: z-pencil work array (ComplexF64)
   - `psi_z`: z-pencil array for solution (ComplexF64)
 
-For `invert_B_to_A!`:
-  - `B_z`: z-pencil array for B (ComplexF64)
+For `invert_L⁺A_to_A!`:
+  - `L⁺A_z`: z-pencil array for L⁺A (ComplexF64)
   - `A_z`: z-pencil array for A (ComplexF64)
   - `C_z`: z-pencil array for C (A_z derivative) (ComplexF64)
 
@@ -110,7 +110,7 @@ workspace = (
     q_z = allocate_z_pencil(G, ComplexF64),
     psi_z = allocate_z_pencil(G, ComplexF64),
     work_z = allocate_z_pencil(G, ComplexF64),
-    B_z = allocate_z_pencil(G, ComplexF64),
+    L⁺A_z = allocate_z_pencil(G, ComplexF64),
     A_z = allocate_z_pencil(G, ComplexF64),
     C_z = allocate_z_pencil(G, ComplexF64),
 )
@@ -805,16 +805,36 @@ end
 
 #=
 ================================================================================
-                    YBJ+ WAVE INVERSION: B → A
+                    YBJ+ WAVE INVERSION: L⁺A → A
 ================================================================================
-In the YBJ+ formulation, the prognostic variable is B = L⁺A, where L⁺ is an
-elliptic operator (PDF Eq. 2, 33). After time stepping B, we need to recover A
-for computing wave-related quantities.
+In the YBJ+ formulation, the prognostic variable is L⁺A, where L⁺ is the
+YBJ+ elliptic operator. After time stepping L⁺A, we need to recover A for
+computing wave-related quantities (including the wave velocity amplitude LA
+for GLM particle advection).
 
-The operator L⁺ is defined as (PDF Eq. 2):
-    L⁺ = L + (1/4)∇²    where   L = ∂/∂z(a(z) ∂/∂z)
+OPERATOR DEFINITIONS (from PDF):
+--------------------------------
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
 
-with a(z) = f²/N²(z). Expanding via the product rule:
+Or equivalently in physical space:
+    L⁺ = L + (1/4)∇²     where ∇² → -k_h² in spectral space
+
+KEY RELATION: L = L⁺ + k_h²/4
+
+WAVE VELOCITY AMPLITUDE:
+------------------------
+The instantaneous wave velocity uses the YBJ operator L (NOT L⁺):
+    u + iv = (LA) × e^{-ift}                                 [eq. (3)]
+
+Since L = L⁺ + k_h²/4:
+    LA = (L⁺ + k_h²/4)A = L⁺A + (k_h²/4)A
+
+This LA is used for GLM particle advection wave displacement.
+
+ELLIPTIC EQUATION:
+------------------
+With a(z) = f²/N²(z), the L⁺ operator expands via the product rule:
 
     L⁺A = ∂/∂z(a ∂A/∂z) - (kₕ²/4) A
         = a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A
@@ -823,7 +843,7 @@ where a'(z) = ∂a/∂z arises from variable stratification N²(z).
 
 IMPORTANT: The staggered finite-difference discretization (PDF Eq. 35):
 
-    [S_i(A_{i+1} - A_i) - S_{i-1}(A_i - A_{i-1})] / Δz² - (kₕ²/4) A_i = B_i
+    [S_i(A_{i+1} - A_i) - S_{i-1}(A_i - A_{i-1})] / Δz² - (kₕ²/4) A_i = (L⁺A)_i
 
 where S_i = (f/(N(z_i)Δz))² at interface i, **automatically captures both**
 the a∂²A/∂z² and a'∂A/∂z terms. No explicit first-derivative term is needed.
@@ -833,18 +853,24 @@ We also compute C = ∂A/∂z for use in wave feedback and vertical velocity.
 =#
 
 """
-    invert_B_to_A!(S, G, par, a; workspace=nothing)
+    invert_L⁺A_to_A!(S, G, par, a; workspace=nothing)
 
-YBJ+ wave amplitude recovery: solve for A given B = L⁺A.
+YBJ+ wave amplitude recovery: solve for A given L⁺A (the prognostic variable).
+
+# Operator Definitions (from PDF)
+    L  (YBJ):   L  = ∂/∂z(f²/N² ∂/∂z)                        [eq. (4)]
+    L⁺ (YBJ+):  L⁺ = L - k_h²/4                               [spectral space]
+
+Key relation: L = L⁺ + k_h²/4, so LA = L⁺A + (k_h²/4)A
 
 # Mathematical Problem
-For each horizontal wavenumber (kₓ, kᵧ), solve the elliptic equation:
+For each horizontal wavenumber (kₓ, kᵧ), solve the L⁺ elliptic equation:
 
-    L⁺A = ∂/∂z(a(z) ∂A/∂z) - (kₕ²/4) A = B
+    L⁺A = ∂/∂z(a(z) ∂A/∂z) - (kₕ²/4) A = (L⁺A)_input
 
 which expands via the product rule to:
 
-    a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A = B
+    a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A = (L⁺A)_input
 
 with Neumann boundary conditions A_z = 0 at top and bottom.
 
@@ -852,7 +878,7 @@ The staggered discretization using S_i = (f/(N(z_i)Δz))² at different interfac
 automatically captures the a'(z)∂A/∂z term from variable stratification.
 
 # Arguments
-- `S::State`: State containing `B` (input), `A` and `C` (output)
+- `S::State`: State containing `L⁺A` (input), `A` and `C` (output)
 - `G::Grid`: Grid struct
 - `par`: QGParams (for f0, N2 parameters)
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
@@ -862,9 +888,13 @@ automatically captures the a'(z)∂A/∂z term from variable stratification.
 - `S.A`: Recovered wave amplitude A
 - `S.C`: Vertical derivative C = ∂A/∂z (for wave velocity computation)
 
+# Wave Velocity Amplitude
+After this function, LA can be computed as: LA = L⁺A + (k_h²/4)A
+This is used for GLM particle advection (see compute_wave_displacement!).
+
 # Mean Mode (kₕ=0) Handling
 For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
-    ∂/∂z(a(z) ∂A/∂z) = B
+    LA = ∂/∂z(a(z) ∂A/∂z) = L⁺A    (since L⁺ = L when k_h=0)
 
 With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
 is **singular** - the constant function is in its null space. To select a unique
@@ -878,16 +908,16 @@ equation.
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90 (PDF Eq. 33-35).
 """
-function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
+function invert_L⁺A_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.B, G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.L⁺A, G)
 
     if need_transpose
-        _invert_B_to_A_2d!(S, G, par, a, workspace)
+        _invert_L⁺A_to_A_2d!(S, G, par, a, workspace)
     else
-        _invert_B_to_A_direct!(S, G, par, a)
+        _invert_L⁺A_to_A_direct!(S, G, par, a)
     end
 
     return S
@@ -896,11 +926,11 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
+function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     nz = G.nz
 
     A_arr = parent(S.A)
-    B_arr = parent(S.B)
+    L⁺A_arr = parent(S.L⁺A)
     C_arr = parent(S.C)
 
     nz_local, nx_local, ny_local = size(A_arr)
@@ -922,8 +952,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, S.B)
-        j_global = local_to_global(j_local, 3, S.B)
+        i_global = local_to_global(i_local, 2, S.L⁺A)
+        j_global = local_to_global(j_local, 3, S.L⁺A)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -960,8 +990,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
             d[nz]  = -a[nz]
 
             @inbounds for k in 1:nz
-                rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
-                rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
+                rhsᵣ[k] = Δz² * real(L⁺A_arr[k, i_local, j_local])
+                rhsᵢ[k] = Δz² * imag(L⁺A_arr[k, i_local, j_local])
             end
 
             # Fix gauge: A[1] = 0 for a nonsingular solve
@@ -996,7 +1026,7 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         # The YBJ+ equation reduces to: -(kₕ²/4) A = B  →  A = -4B/kₕ²
         # C = ∂A/∂z = 0 (no vertical structure)
         if nz == 1
-            @inbounds A_arr[1, i_local, j_local] = -4 * B_arr[1, i_local, j_local] / kₕ²
+            @inbounds A_arr[1, i_local, j_local] = -4 * L⁺A_arr[1, i_local, j_local] / kₕ²
             @inbounds C_arr[1, i_local, j_local] = 0
             continue
         end
@@ -1021,8 +1051,8 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
         # Build RHS
         @inbounds for k in 1:nz
             # RHS is just Δz² * B (no a_ell_coeff - that was incorrect)
-            rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
-            rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
+            rhsᵣ[k] = Δz² * real(L⁺A_arr[k, i_local, j_local])
+            rhsᵢ[k] = Δz² * imag(L⁺A_arr[k, i_local, j_local])
         end
 
         thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
@@ -1042,22 +1072,22 @@ end
 """
 2D decomposition B→A solve with transposes.
 """
-function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace)
+function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace
-    B_z = workspace !== nothing ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
+    L⁺A_z = workspace !== nothing ? workspace.L⁺A_z : allocate_z_pencil(G, ComplexF64)
     A_z = workspace !== nothing ? workspace.A_z : allocate_z_pencil(G, ComplexF64)
     C_z = workspace !== nothing ? workspace.C_z : allocate_z_pencil(G, ComplexF64)
 
     # Transpose B to z-pencil
-    transpose_to_z_pencil!(B_z, S.B, G)
+    transpose_to_z_pencil!(L⁺A_z, S.L⁺A, G)
 
-    B_z_arr = parent(B_z)
+    L⁺A_z_arr = parent(L⁺A_z)
     A_z_arr = parent(A_z)
     C_z_arr = parent(C_z)
 
-    nz_local, nx_local, ny_local = size(B_z_arr)
+    nz_local, nx_local, ny_local = size(L⁺A_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     dl = zeros(eltype(a), nz)
@@ -1109,8 +1139,8 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
             d[nz]  = -a[nz]
 
             @inbounds for k in 1:nz
-                rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
-                rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
+                rhs_r[k] = Δ2 * real(L⁺A_z_arr[k, i_local, j_local])
+                rhs_i[k] = Δ2 * imag(L⁺A_z_arr[k, i_local, j_local])
             end
 
             # Fix gauge: A[1] = 0 for a nonsingular solve
@@ -1141,7 +1171,7 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
 
         # Special case: nz == 1 (single-layer / 2D mode)
         if nz == 1
-            @inbounds A_z_arr[1, i_local, j_local] = -4 * B_z_arr[1, i_local, j_local] / kh2
+            @inbounds A_z_arr[1, i_local, j_local] = -4 * L⁺A_z_arr[1, i_local, j_local] / kh2
             @inbounds C_z_arr[1, i_local, j_local] = 0
             continue
         end
@@ -1167,8 +1197,8 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
         # RHS is just Δ² * B (no a_coeff - that was incorrect)
         # The a(z) profile is already in the LHS operator matrix
         @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
-            rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
+            rhs_r[k] = Δ2 * real(L⁺A_z_arr[k, i_local, j_local])
+            rhs_i[k] = Δ2 * imag(L⁺A_z_arr[k, i_local, j_local])
         end
 
         thomas_solve!(solr, dl, d, du, rhs_r)
@@ -1259,4 +1289,4 @@ end
 end # module
 
 # Export elliptic solvers to main QGYBJplus module
-using .Elliptic: invert_q_to_psi!, invert_helmholtz!, invert_B_to_A!
+using .Elliptic: invert_q_to_psi!, invert_helmholtz!, invert_L⁺A_to_A!

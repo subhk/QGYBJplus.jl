@@ -86,9 +86,8 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     # Physics options
     use_ybj_w::Bool = false
     use_3d_advection::Bool = true
-    
-    # Integration and interpolation methods
-    integration_method::Symbol = :euler
+
+    # Interpolation method
     interpolation_method::InterpolationMethod = TRILINEAR
     
     # Boundary conditions
@@ -107,10 +106,10 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     function ParticleConfig3D{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                                 distribution_type, nx_particles, ny_particles, nz_particles,
                                 z_levels, particles_per_level, custom_x, custom_y, custom_z,
-                                use_ybj_w, use_3d_advection, integration_method, interpolation_method,
+                                use_ybj_w, use_3d_advection, interpolation_method,
                                 periodic_x, periodic_y, reflect_z, save_interval, max_save_points,
                                 seed) where T
-        
+
         # Basic validation
         if distribution_type == CUSTOM
             @assert x_max ≥ x_min "x_max must be greater than or equal to x_min"
@@ -123,7 +122,7 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
         @assert nx_particles > 0 "nx_particles must be positive"
         @assert ny_particles > 0 "ny_particles must be positive"
         @assert nz_particles > 0 "nz_particles must be positive"
-        
+
         # Distribution-specific validation
         if distribution_type == LAYERED
             if !isempty(z_levels)
@@ -142,11 +141,11 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
                 @assert all(z_min ≤ z ≤ z_max for z in custom_z) "All custom_z must be within [z_min, z_max]"
             end
         end
-        
+
         new{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                distribution_type, nx_particles, ny_particles, nz_particles,
                z_levels, particles_per_level, custom_x, custom_y, custom_z,
-               use_ybj_w, use_3d_advection, integration_method, interpolation_method,
+               use_ybj_w, use_3d_advection, interpolation_method,
                periodic_x, periodic_y, reflect_z, save_interval, max_save_points, seed)
     end
 end
@@ -868,7 +867,6 @@ function convert_to_basic_config(config::ParticleConfig3D{T}) where T
         z_level=z_level,
         nx_particles=config.nx_particles, ny_particles=config.ny_particles,
         use_ybj_w=config.use_ybj_w, use_3d_advection=config.use_3d_advection,
-        integration_method=config.integration_method,
         interpolation_method=config.interpolation_method,
         periodic_x=config.periodic_x, periodic_y=config.periodic_y, reflect_z=config.reflect_z,
         save_interval=config.save_interval, max_save_points=config.max_save_points

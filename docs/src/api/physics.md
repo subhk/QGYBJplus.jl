@@ -29,19 +29,19 @@ invert_q_to_psi!(state, grid; a=a_ell, workspace=workspace)
 ### Wave Amplitude Inversion
 
 ```@docs
-invert_B_to_A!
+invert_L⁺A_to_A!
 ```
 
-**Solves:** ``\frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = B``
+**Solves:** ``\frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = L^+A``
 
 **Usage:**
 ```julia
 # Serial mode
-invert_B_to_A!(state, grid, params, a_ell)
+invert_L⁺A_to_A!(state, grid, params, a_ell)
 
 # Parallel mode (with workspace for 2D decomposition)
-invert_B_to_A!(state, grid, params, a_ell; workspace=workspace)
-# Updates state.A from state.B
+invert_L⁺A_to_A!(state, grid, params, a_ell; workspace=workspace)
+# Updates state.A from state.L⁺A
 ```
 
 ### Helmholtz Solver
@@ -63,7 +63,7 @@ jacobian_spectral!
 ### Wave Advection and Refraction
 
 The wave nonlinear terms are documented in the [Time Stepping API](timestepping.md):
-- `convol_waqg_B!` / `refraction_waqg_B!` / `compute_qw_complex!` - Complex B (YBJ+) operators
+- `convol_waqg_L⁺A!` / `refraction_waqg_L⁺A!` / `compute_qw_complex!` - Complex L⁺A (YBJ+) operators
 - `convol_waqg!` / `refraction_waqg!` / `compute_qw!` - BR/BI-decomposed operators
 
 ## Velocity Computation
@@ -240,7 +240,7 @@ Higher orders provide more scale-selective damping, concentrating dissipation at
 ## YBJ Normal Mode Functions
 
 ```@docs
-sumB!
+sumL⁺A!
 compute_sigma
 compute_A!
 ```
@@ -250,13 +250,13 @@ compute_A!
 | Function | Input | Output | In-place |
 |:---------|:------|:-------|:---------|
 | `invert_q_to_psi!` | q | psi | Yes |
-| `invert_B_to_A!` | B | A, C | Yes |
+| `invert_L⁺A_to_A!` | L⁺A | A, C | Yes |
 | `jacobian_spectral!` | a, b | J(a,b) | Yes |
 | `compute_velocities!` | psi | u, v | Yes |
 | `flow_kinetic_energy` | u, v | scalar | No |
 | `flow_kinetic_energy_global` | u, v, mpi_config | scalar | No |
-| `wave_energy` | B, A | (EB, EA) | No |
-| `wave_energy_global` | B, A, mpi_config | (EB, EA) | No |
+| `wave_energy_vavg` | L⁺A, A | WKE | No |
+| `wave_energy_global` | L⁺A, A, mpi_config | (E_L⁺A, E_A) | No |
 
 ## Performance Notes
 
@@ -272,7 +272,7 @@ Functions requiring vertical operations automatically detect 2D decomposition an
 | Function | Serial | Parallel (2D) |
 |:---------|:-------|:--------------|
 | `invert_q_to_psi!` | Direct solve | Transpose → solve → transpose |
-| `invert_B_to_A!` | Direct solve | Transpose → solve → transpose |
+| `invert_L⁺A_to_A!` | Direct solve | Transpose → solve → transpose |
 | `compute_vertical_velocity!` | Direct solve | Transpose → solve → transpose |
 | `dissipation_q_nv!` | Direct | Transpose if needed |
 

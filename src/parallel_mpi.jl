@@ -1234,16 +1234,16 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
     end
 
     if config.initial_conditions.wave_type == :random
-        init_mpi_random_field!(state.B, grid, config.initial_conditions.wave_amplitude, 1;
+        init_mpi_random_field!(state.L⁺A, grid, config.initial_conditions.wave_amplitude, 1;
                                seed=config.initial_conditions.random_seed)
     elseif config.initial_conditions.wave_type == :analytical
-        init_analytical_waves!(state.B, grid, config.initial_conditions.wave_amplitude, plans)
+        init_analytical_waves!(state.L⁺A, grid, config.initial_conditions.wave_amplitude, plans)
     elseif config.initial_conditions.wave_type == :from_file
-        state.B .= read_initial_waves(config.initial_conditions.wave_filename, grid, plans;
+        state.L⁺A .= read_initial_waves(config.initial_conditions.wave_filename, grid, plans;
                                       parallel_config=mpi_config)
     elseif config.initial_conditions.wave_type == :surface_waves
         init_surface_waves!(
-            state.B, grid,
+            state.L⁺A, grid,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -1252,7 +1252,7 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
         )
     elseif config.initial_conditions.wave_type == :surface_exponential
         init_surface_waves!(
-            state.B, grid,
+            state.L⁺A, grid,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -1261,7 +1261,7 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
         )
     elseif config.initial_conditions.wave_type == :surface_gaussian
         init_surface_waves!(
-            state.B, grid,
+            state.L⁺A, grid,
             config.initial_conditions.wave_amplitude,
             config.initial_conditions.wave_surface_depth,
             plans;
@@ -1269,7 +1269,7 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
             profile=:gaussian
         )
     else
-        fill!(state.B, zero(eltype(state.B)))
+        fill!(state.L⁺A, zero(eltype(state.L⁺A)))
     end
 
     # Compute q from ψ

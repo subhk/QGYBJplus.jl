@@ -91,7 +91,6 @@ G, S, plans, a = setup_model(par)
 pconfig = particles_in_box(-2000.0;
     x_max=G.Lx, y_max=G.Ly,  # REQUIRED
     nx=10, ny=10,
-    integration_method=:rk4,
     save_interval=0.1
 )
 

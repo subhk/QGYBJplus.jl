@@ -1151,19 +1151,25 @@ propagation. This is the Stokes drift correction.
 
 Compute wave velocities and Stokes drift, adding them to existing QG velocities.
 
+# Operator Definitions (from PDF)
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
+
+Key relation: L = L⁺ + k_h²/4
+
 # Physical Background
 Near-inertial waves contribute to particle advection through two mechanisms:
 
 1. **Wave velocity**: Following Asselin & Young (2019) YBJ+ equation (1.2):
-   u + iv = e^{-ift} L A
-   where L = ∂_z(f²/N²)∂_z is the vertical operator.
+   u + iv = e^{-ift} (LA)                                    [eq. (3)]
+   where L is the YBJ operator (NOT L⁺).
 
    The backrotated velocity (phase-averaged) is LA:
    - u_wave = Re(LA)
    - v_wave = Im(LA)
 
-   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
-   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
+   Since B = L⁺A and L = L⁺ + k_h²/4:
+   LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A                      [spectral space]
 
 2. **Stokes drift**: Following Wagner & Young (2016) equation (3.16a), the
    horizontal Stokes drift is computed from the full Jacobian:
@@ -1236,8 +1242,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     v_arr = parent(S.v)
     w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
-    Bₖ_arr = parent(S.B)
-    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_B_to_A!
+    L⁺Aₖ_arr = parent(S.L⁺A)
+    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_L⁺A_to_A!
     nz_local, nx_local, ny_local = size(Aₖ_arr)
 
     # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
@@ -1285,8 +1291,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         kₕ² = kₓ^2 + kᵧ^2
 
         # Wave velocity from eq (1.2): u + iv = e^{-ift} LA
-        # LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
-        LA_val = Bₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
+        # LA = L⁺A + (k_h²/4)A in spectral space (YBJ+ relation)
+        LA_val = L⁺Aₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
         LAₖ_arr[k, i_local, j_local] = LA_val
 
         # Complex derivative: ∂_{s*} = (1/2)(∂_x + i∂_y)
@@ -1542,6 +1548,114 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     return S
 end
 
+#=
+================================================================================
+                    WAVE DISPLACEMENT FOR GLM PARTICLE ADVECTION
+================================================================================
+In the GLM (Generalized Lagrangian Mean) framework for particle advection,
+particles are advected by the QG (Lagrangian-mean) velocity, and the wave
+contribution appears as a displacement ξ rather than an additional velocity.
+
+OPERATOR DEFINITIONS (from PDF):
+--------------------------------
+L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)           [equation (4)]
+L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4
+
+KEY RELATIONS:
+--------------
+- YBJ+ envelope:     B = L⁺A
+- Wave velocity:     u + iv = (LA) × e^{-ift}         [equation (3)]
+
+Since L = L⁺ + k_h²/4, the wave velocity amplitude is:
+    LA = (L⁺ + k_h²/4)A = L⁺A + (k_h²/4)A = B + (k_h²/4)A
+
+The wave displacement is then:
+    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}           [equation (6)]
+
+This function computes LA in physical space and stores it in state.LA_real
+and state.LA_imag for interpolation to particle positions.
+================================================================================
+=#
+
+"""
+    compute_wave_displacement!(S, G; plans=nothing, params=nothing)
+
+Compute wave velocity amplitude LA for GLM particle advection.
+
+# Operator Definitions (from PDF)
+- L  (YBJ):  L  = ∂/∂z(f²/N² ∂/∂z)                    [equation (4)]
+- L⁺ (YBJ+): L⁺ = L - k_h²/4
+
+# Wave Velocity Amplitude
+The instantaneous wave velocity is (equation 3):
+    u + iv = (LA) × e^{-ift}
+
+where L is the YBJ operator (NOT L⁺). Since B = L⁺A and L = L⁺ + k_h²/4:
+    LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
+
+# Wave Displacement
+Particles compute wave displacement via (equation 6):
+    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}
+
+# Arguments
+- `S::State`: State with B, A (input) and LA_real, LA_imag (output)
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `params`: Model parameters
+
+# Note
+This function should be called after invert_B_to_A! has computed A from B.
+The particle advection code then interpolates LA to particle positions and
+computes the time-dependent wave displacement ξ.
+"""
+function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=nothing)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    # Get underlying arrays
+    Aₖ_arr = parent(S.A)
+    L⁺Aₖ_arr = parent(S.L⁺A)
+    LA_real_arr = parent(S.LA_real)
+    LA_imag_arr = parent(S.LA_imag)
+    nz_local, nx_local, ny_local = size(Aₖ_arr)
+
+    # Set up plans if needed
+    if plans === nothing
+        plans = plan_transforms!(G)
+    end
+
+    # Compute LA = B + (k_h²/4)A in spectral space
+    # YBJ+ relation: B = L⁺A = LA + (1/4)ΔA, so LA = B - (1/4)ΔA
+    # In spectral space: Δ → -k_h², so LA = B + (k_h²/4)A
+    LAₖ = similar(S.A)
+    LAₖ_arr = parent(LAₖ)
+
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, S.A)
+        j_global = local_to_global(j_local, 3, S.A)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+
+        # LA = L⁺A + (k_h²/4)A
+        LAₖ_arr[k, i_local, j_local] = L⁺Aₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
+    end
+
+    # Transform LA to physical space
+    LA_phys = allocate_fft_backward_dst(LAₖ, plans)
+    fft_backward!(LA_phys, LAₖ, plans)
+    LA_phys_arr = parent(LA_phys)
+
+    # Store real and imaginary parts in state
+    # Use physical array dimensions (may differ from spectral in 2D decomposition)
+    nz_phys, nx_phys, ny_phys = size(LA_phys_arr)
+    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
+        LA_real_arr[k, i, j] = real(LA_phys_arr[k, i, j])
+        LA_imag_arr[k, i, j] = imag(LA_phys_arr[k, i, j])
+    end
+
+    return S
+end
+
 end # module
 
-using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!
+using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!, compute_wave_displacement!

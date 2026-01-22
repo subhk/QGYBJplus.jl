@@ -220,16 +220,16 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
     LAr = nothing
     if write_waves
         # Compute LA = B + (k²/4)A in spectral space
-        LA_hat = similar(S.B)
+        LA_hat = similar(S.L⁺A)
         LA_hat_arr = parent(LA_hat)
-        B_arr = parent(S.B)
+        L⁺A_arr = parent(S.L⁺A)
         A_arr = parent(S.A)
         kx = G.kx
         ky = G.ky
         @inbounds for j in 1:G.ny, i in 1:G.nx
             kh2 = kx[i]^2 + ky[j]^2
             for k in 1:G.nz
-                LA_hat_arr[k, i, j] = B_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
+                LA_hat_arr[k, i, j] = L⁺A_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
             end
         end
         LAr = _allocate_fft_dst(LA_hat, plans)
@@ -535,7 +535,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     # Use QGYBJplus's gather function which handles 2D decomposition
     # Use GC.@preserve to prevent premature garbage collection during MPI communication
     gathered_psi = nothing
-    gathered_B = nothing
+    gathered_L⁺A = nothing
     gathered_A = nothing
     gathered_u = nothing
     gathered_v = nothing
@@ -543,7 +543,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
 
     GC.@preserve S begin
         gathered_psi = gather_psi ? QGYBJplus.gather_to_root(S.psi, G, parallel_config) : nothing
-        gathered_B = gather_waves ? QGYBJplus.gather_to_root(S.B, G, parallel_config) : nothing
+        gathered_L⁺A = gather_waves ? QGYBJplus.gather_to_root(S.L⁺A, G, parallel_config) : nothing
         gathered_A = gather_waves ? QGYBJplus.gather_to_root(S.A, G, parallel_config) : nothing
 
         gathered_u = gather_velocities ? QGYBJplus.gather_to_root(S.u, G, parallel_config) : nothing
@@ -552,7 +552,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     end
 
     # Create tuple with gathered arrays (only meaningful on rank 0)
-    return (psi=gathered_psi, B=gathered_B, A=gathered_A, u=gathered_u, v=gathered_v, w=gathered_w)
+    return (psi=gathered_psi, L⁺A=gathered_L⁺A, A=gathered_A, u=gathered_u, v=gathered_v, w=gathered_w)
 end
 
 """
@@ -564,7 +564,7 @@ Write gathered state from rank 0.
 
 The gathered_state should be a named tuple with fields:
 - `psi`: Gathered streamfunction array (spectral, nz×nx×ny)
-- `B`: Gathered wave envelope array (spectral, nz×nx×ny)
+- `L⁺A`: Gathered YBJ+ wave envelope array (spectral, nz×nx×ny)
 - `A`: Gathered wave amplitude array (spectral, nz×nx×ny)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
@@ -574,7 +574,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
     # Extract gathered fields
     gathered_psi = gathered_state.psi
-    gathered_B = gathered_state.B
+    gathered_L⁺A = gathered_state.L⁺A
     gathered_A = hasproperty(gathered_state, :A) ? gathered_state.A : nothing
     gathered_u = hasproperty(gathered_state, :u) ? gathered_state.u : nothing
     gathered_v = hasproperty(gathered_state, :v) ? gathered_state.v : nothing
@@ -587,7 +587,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     # Note: fft_backward! uses FFTW.ifft which is already normalized
 
     complex_type = gathered_psi !== nothing ? eltype(gathered_psi) :
-                   (gathered_B !== nothing ? eltype(gathered_B) : ComplexF64)
+                   (gathered_L⁺A !== nothing ? eltype(gathered_L⁺A) : ComplexF64)
 
     psir = nothing
     if write_psi && gathered_psi !== nothing
@@ -598,7 +598,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     # Compute LA = B + (k²/4)A in spectral space, then transform to physical
     # LA is the wave velocity envelope: u₀ + iv₀ = e^{-ift}LA
     LAr = nothing
-    if write_waves && gathered_B !== nothing && gathered_A !== nothing
+    if write_waves && gathered_L⁺A !== nothing && gathered_A !== nothing
         # Compute LA = B + (k²/4)A in spectral space
         LA_hat = zeros(complex_type, G.nz, G.nx, G.ny)
         kx = G.kx
@@ -606,15 +606,15 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         @inbounds for j in 1:G.ny, i in 1:G.nx
             kh2 = kx[i]^2 + ky[j]^2
             for k in 1:G.nz
-                LA_hat[k, i, j] = gathered_B[k, i, j] + (kh2 / 4) * gathered_A[k, i, j]
+                LA_hat[k, i, j] = gathered_L⁺A[k, i, j] + (kh2 / 4) * gathered_A[k, i, j]
             end
         end
         LAr = zeros(complex_type, G.nz, G.nx, G.ny)
         fft_backward!(LAr, LA_hat, temp_plans)  # Transform LA to physical space
-    elseif write_waves && gathered_B !== nothing
+    elseif write_waves && gathered_L⁺A !== nothing
         # Fallback if A not available: use B directly (less accurate)
         LAr = zeros(complex_type, G.nz, G.nx, G.ny)
-        fft_backward!(LAr, gathered_B, temp_plans)
+        fft_backward!(LAr, gathered_L⁺A, temp_plans)
     end
 
     zeta_r = nothing
@@ -1261,16 +1261,16 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
     @info "Writing LA to: $path"
 
     # Compute LA = B + (k²/4)A in spectral space
-    LA_hat = similar(S.B)
+    LA_hat = similar(S.L⁺A)
     LA_hat_arr = parent(LA_hat)
-    B_arr = parent(S.B)
+    L⁺A_arr = parent(S.L⁺A)
     A_arr = parent(S.A)
     kx = G.kx
     ky = G.ky
     @inbounds for j in 1:G.ny, i in 1:G.nx
         kh2 = kx[i]^2 + ky[j]^2
         for k in 1:G.nz
-            LA_hat_arr[k, i, j] = B_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
+            LA_hat_arr[k, i, j] = L⁺A_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
         end
     end
 
@@ -1357,7 +1357,7 @@ function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc", parallel_confi
     B_data = read_initial_waves(path, G, plans; parallel_config=parallel_config)
 
     # Copy to state (handles both Array and PencilArray)
-    parent(S.B) .= parent(B_data)
+    parent(S.L⁺A) .= parent(B_data)
 
     return S
 end

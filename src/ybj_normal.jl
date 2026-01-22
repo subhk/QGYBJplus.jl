@@ -49,7 +49,7 @@ integration problem.
 
 FORTRAN CORRESPONDENCE:
 -----------------------
-- sumB! → sumB in derivatives.f90
+- sumL⁺A! → sumB in derivatives.f90
 - compute_sigma → compute_sigma in derivatives.f90
 - compute_A! → compute_A in derivatives.f90
 
@@ -73,7 +73,7 @@ For normal YBJ, we need to remove the vertical mean of B before integration.
 =#
 
 """
-    sumB!(B, G; Lmask=nothing, workspace=nothing)
+    sumL⁺A!(B, G; Lmask=nothing, workspace=nothing)
 
 Remove the vertical mean from the wave envelope B at each horizontal wavenumber.
 
@@ -104,20 +104,20 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 # Fortran Correspondence
 Matches `sumB` in derivatives.f90.
 """
-function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
+function sumL⁺A!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(B, G)
 
     if need_transpose
-        _sumB_2d!(B, G, Lmask, workspace)
+        _sumL⁺A_2d!(B, G, Lmask, workspace)
     else
-        _sumB_direct!(B, G, Lmask)
+        _sumL⁺A_direct!(B, G, Lmask)
     end
     return B
 end
 
 # Direct computation when z is fully local
-function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
+function _sumL⁺A_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -150,7 +150,7 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
 end
 
 # 2D decomposition version with transposes
-function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
+function _sumL⁺A_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -554,4 +554,4 @@ end
 
 end # module
 
-using .YBJNormal: sumB!, compute_sigma, compute_A!
+using .YBJNormal: sumL⁺A!, compute_sigma, compute_A!

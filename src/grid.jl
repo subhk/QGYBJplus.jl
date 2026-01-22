@@ -450,11 +450,11 @@ Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
 
 # Prognostic Fields (evolved in time)
 - `q::CT`: QG potential vorticity in spectral space
-- `B::CT`: YBJ+ wave envelope B = L⁺A in spectral space
+- `L⁺A::CT`: YBJ+ wave envelope in spectral space
 
 # Diagnostic Fields (computed from prognostic)
 - `psi::CT`: Streamfunction ψ (from q via elliptic inversion)
-- `A::CT`: Wave amplitude (from B via YBJ+ inversion)
+- `A::CT`: Wave amplitude (from L⁺A via YBJ+ inversion)
 - `C::CT`: Vertical derivative C = ∂A/∂z (for wave velocities)
 
 # Velocity Fields (real space)
@@ -464,7 +464,7 @@ Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
 
 # Array Dimensions
 All arrays have shape (nz, nx, ny).
-- Spectral fields (q, psi, A, B, C): Complex arrays
+- Spectral fields (q, psi, A, L⁺A, C): Complex arrays
 - Real-space fields (u, v, w): Real arrays
 
 # Physical Interpretation
@@ -472,9 +472,11 @@ The prognostic variables are:
 1. q: Quasi-geostrophic potential vorticity
    - Related to ψ by: q = ∇²ψ + (f²/N²)∂²ψ/∂z²
 
-2. B: YBJ+ wave envelope
-   - Related to wave amplitude A by: B = L⁺A
-   - L⁺ is an elliptic operator involving ∂²/∂z² and kh²
+2. L⁺A: YBJ+ wave envelope
+   - Operator definitions (from PDF):
+     - L  (YBJ):  L  = ∂/∂z(f²/N² ∂/∂z)          [eq. (4)]
+     - L⁺ (YBJ+): L⁺ = L - k_h²/4                 [spectral space]
+   - Key relation: L = L⁺ + k_h²/4, so LA = L⁺A + (k_h²/4)A
 
 # Example
 ```julia
@@ -492,12 +494,12 @@ Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Co
     #= Prognostic fields (spectral space, complex)
     These are the variables that are time-stepped =#
     q::CT           # QG potential vorticity
-    B::CT           # YBJ+ wave envelope (B = L⁺A)
+    L⁺A::CT         # YBJ+ wave envelope: L⁺A where L⁺ = L - k_h²/4
 
     #= Diagnostic fields (spectral space, complex)
     These are computed from prognostic fields =#
     psi::CT         # Streamfunction (from q via inversion)
-    A::CT           # Wave amplitude (from B via YBJ+ inversion)
+    A::CT           # Wave amplitude (from L⁺A via YBJ+ inversion)
     C::CT           # Vertical derivative A_z
 
     #= Velocity fields (real space, real)
@@ -505,6 +507,15 @@ Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Co
     u::RT           # Zonal velocity: u = -∂ψ/∂y
     v::RT           # Meridional velocity: v = ∂ψ/∂x
     w::RT           # Vertical velocity (from omega equation)
+
+    #= Wave velocity amplitude LA (real space, for GLM particle advection)
+    The wave velocity uses the YBJ operator L (NOT L⁺):
+        u + iv = (LA) × e^{-ift}                        [eq. (3)]
+    Since L = L⁺ + k_h²/4:
+        LA = L⁺A + (k_h²/4)A                            [spectral space]
+    Used for computing wave displacement ξ = Re{(LA/(-if)) × e^{-ift}} [eq. (6)] =#
+    LA_real::RT     # Real part of wave velocity amplitude (YBJ L operator)
+    LA_imag::RT     # Imaginary part of wave velocity amplitude (YBJ L operator)
 end
 
 """
@@ -555,7 +566,7 @@ Allocate and initialize a State with all fields set to zero.
 # Returns
 State struct with:
 - Spectral fields (q, psi, A, B, C): Complex arrays, initialized to 0
-- Real fields (u, v, w): Real arrays, initialized to 0
+- Real fields (u, v, w, LA_real, LA_imag): Real arrays, initialized to 0
 
 # Example
 ```julia
@@ -573,7 +584,7 @@ function init_state(G::Grid; T=Float64)
     q   = allocate_field(T, G; complex=true);    fill!(q, 0)
     psi = allocate_field(T, G; complex=true);    fill!(psi, 0)
     A   = allocate_field(T, G; complex=true);    fill!(A, 0)
-    B   = allocate_field(T, G; complex=true);    fill!(B, 0)
+    L⁺A = allocate_field(T, G; complex=true);    fill!(L⁺A, 0)
     C   = allocate_field(T, G; complex=true);    fill!(C, 0)
 
     # Allocate real-space (real) fields
@@ -581,7 +592,11 @@ function init_state(G::Grid; T=Float64)
     v   = allocate_field(T, G; complex=false);   fill!(v, 0)
     w   = allocate_field(T, G; complex=false);   fill!(w, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+    # Allocate wave velocity amplitude fields (for GLM particle advection)
+    LA_real = allocate_field(T, G; complex=false);  fill!(LA_real, 0)
+    LA_imag = allocate_field(T, G; complex=false);  fill!(LA_imag, 0)
+
+    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag)
 end
 
 """
@@ -612,14 +627,16 @@ function copy_state(src::State{T, RT, CT}) where {T, RT, CT}
     # Use similar to preserve array structure (including PencilArray topology)
     # For regular Arrays, similar creates a new array with same type/size
     # For PencilArrays, similar preserves the pencil decomposition
-    q   = similar(src.q);   q   .= src.q
-    B   = similar(src.B);   B   .= src.B
-    psi = similar(src.psi); psi .= src.psi
-    A   = similar(src.A);   A   .= src.A
-    C   = similar(src.C);   C   .= src.C
-    u   = similar(src.u);   u   .= src.u
-    v   = similar(src.v);   v   .= src.v
-    w   = similar(src.w);   w   .= src.w
+    q   = similar(src.q);     q   .= src.q
+    L⁺A = similar(src.L⁺A);   L⁺A .= src.L⁺A
+    psi = similar(src.psi);   psi .= src.psi
+    A   = similar(src.A);     A   .= src.A
+    C   = similar(src.C);     C   .= src.C
+    u   = similar(src.u);     u   .= src.u
+    v   = similar(src.v);     v   .= src.v
+    w   = similar(src.w);     w   .= src.w
+    LA_real = similar(src.LA_real); LA_real .= src.LA_real
+    LA_imag = similar(src.LA_imag); LA_imag .= src.LA_imag
 
-    return State{T, RT, CT}(q, B, psi, A, C, u, v, w)
+    return State{T, RT, CT}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag)
 end

@@ -74,8 +74,8 @@ state = result.state
 
 # Spectral fields (complex, in Fourier space)
 state.psi    # Streamfunction
-state.B      # Wave envelope
-state.A      # Wave amplitude (diagnosed from B)
+state.L⁺A    # Wave envelope (L⁺A where L⁺ = L - k_h²/4)
+state.A      # Wave amplitude (diagnosed from L⁺A)
 state.C      # Vertical derivative of A
 
 # Physical fields (real, in physical space)
@@ -93,8 +93,8 @@ KE = flow_kinetic_energy(state.u, state.v)
 # Wave energy components per YBJ+ equation (4.7)
 WKE, WPE, WCE = compute_detailed_wave_energy(state, result.grid, result.params)
 
-# Simple wave energy
-WE_B, WE_A = wave_energy(state.B, state.A)
+# Vertically-averaged wave kinetic energy (uses LA = L⁺A + k_h²/4 * A)
+WE = wave_energy_vavg(state.L⁺A, state.A, grid, plans)
 ```
 
 ---

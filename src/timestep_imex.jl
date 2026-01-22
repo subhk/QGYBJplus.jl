@@ -6,10 +6,26 @@
 Second-order IMEX (Implicit-Explicit) time stepping for YBJ+ equation with
 Strang operator splitting and Adams-Bashforth 2 for advection.
 
-The YBJ+ equation for B:
-    ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A - (i/2)ζB
+OPERATOR DEFINITIONS (from PDF):
+--------------------------------
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
 
-where A = (L⁺)⁻¹·B (elliptic inversion).
+Key relation: L = L⁺ + k_h²/4
+
+YBJ+ EQUATION:
+--------------
+The prognostic variable is B = L⁺A. The YBJ+ equation for B:
+    ∂B/∂t + J(ψ,L⁺A) = i·αdisp·kₕ²·A - (i/2)ζB
+
+where:
+- A = (L⁺)⁻¹·B (elliptic inversion)
+- αdisp = f₀/2 (dispersion coefficient)
+- ζ = ∇²ψ (relative vorticity)
+
+Note: The dispersion term uses A (not LA), because the full wave equation
+dispersion +i(f/2)k²LA reduces to +i(f/2)k²A when using B = L⁺A as the
+prognostic variable.
 
 SECOND-ORDER SCHEME: STRANG SPLITTING + IMEX-CNAB
 -------------------------------------------------
@@ -82,7 +98,7 @@ struct IMEXThreadLocal
     tri_sol::Vector{ComplexF64}      # Solution
     tri_c_prime::Vector{ComplexF64}  # Work array for forward elimination
     tri_d_prime::Vector{ComplexF64}  # Work array for forward elimination
-    B_col::Vector{ComplexF64}        # Column work vector
+    L⁺A_col::Vector{ComplexF64}        # Column work vector
     A_col::Vector{ComplexF64}        # Column work vector
     RHS_col::Vector{ComplexF64}      # Column work vector
 end
@@ -97,7 +113,7 @@ function init_thread_local(nz::Int)
         zeros(ComplexF64, nz),      # tri_sol
         zeros(ComplexF64, nz),      # tri_c_prime
         zeros(ComplexF64, nz),      # tri_d_prime
-        zeros(ComplexF64, nz),      # B_col
+        zeros(ComplexF64, nz),      # L⁺A_col
         zeros(ComplexF64, nz),      # A_col
         zeros(ComplexF64, nz)       # RHS_col
     )
@@ -113,16 +129,16 @@ tendencies for both q and B to enable Adams-Bashforth 2 extrapolation.
 """
 struct IMEXWorkspace{CT, RT}
     # Tendency arrays (shared, written before parallel region)
-    nBk::CT      # J(ψ, B) advection at time n
-    nBk_prev::CT # J(ψ, B) advection at time n-1 (for AB2)
-    rBk::CT      # ζ × B refraction
+    nL⁺Ak::CT      # J(ψ, L⁺A) advection at time n
+    nL⁺Ak_prev::CT # J(ψ, L⁺A) advection at time n-1 (for AB2)
+    rL⁺Ak::CT      # ζ × B refraction
     nqk::CT      # J(ψ, q) advection
     dqk::CT      # Vertical diffusion
     tqk_prev::CT # q advection tendency at time n-1 (for AB2)
 
     # Temporary arrays for IMEX
     RHS::CT      # Right-hand side for elliptic solve
-    Bstar::CT    # B after first half-refraction (for Strang splitting)
+    L⁺Astar::CT    # B after first half-refraction (for Strang splitting)
     Atemp::CT    # Temporary A storage
     αdisp_profile::Vector{Float64}  # αdisp(z) cache (length nz)
 
@@ -153,17 +169,17 @@ The workspace includes storage for Adams-Bashforth 2 (previous tendency)
 and Strang splitting (intermediate B* state).
 """
 function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
-    CT = typeof(S.B)
+    CT = typeof(S.L⁺A)
     RT = typeof(S.u)
 
-    nBk = similar(S.B)
-    nBk_prev = similar(S.B)  # For AB2: stores N^{n-1}
-    rBk = similar(S.B)
+    nL⁺Ak = similar(S.L⁺A)
+    nL⁺Ak_prev = similar(S.L⁺A)  # For AB2: stores N^{n-1}
+    rL⁺Ak = similar(S.L⁺A)
     nqk = similar(S.q)
-    dqk = similar(S.B)
+    dqk = similar(S.L⁺A)
     tqk_prev = similar(S.q)  # For AB2: stores N^{n-1} = -J(ψ,q)
-    RHS = similar(S.B)
-    Bstar = similar(S.B)     # For Strang: B after first half-refraction
+    RHS = similar(S.L⁺A)
+    L⁺Astar = similar(S.L⁺A)     # For Strang: B after first half-refraction
     Atemp = similar(S.A)
     # Initialize with zeros to avoid garbage values
     αdisp_profile = zeros(Float64, G.nz)
@@ -180,7 +196,7 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     has_prev_tendency = Ref(false)
 
     return IMEXWorkspace{CT, RT}(
-        nBk, nBk_prev, rBk, nqk, dqk, tqk_prev, RHS, Bstar, Atemp, αdisp_profile,
+        nL⁺Ak, nL⁺Ak_prev, rL⁺Ak, nqk, dqk, tqk_prev, RHS, L⁺Astar, Atemp, αdisp_profile,
         thread_local,
         qtemp,
         nz,
@@ -189,7 +205,7 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
 end
 
 """
-    apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans; dt_fraction=1.0, dealias_mask=nothing)
+    apply_refraction_exact!(L⁺Ak_out, L⁺Ak_in, ψk, G, par, plans; dt_fraction=1.0, dealias_mask=nothing)
 
 Apply exact refraction using integrating factor (operator splitting).
 
@@ -199,8 +215,8 @@ Solution: B(Δt) = B(0) × exp(-i·Δt·ζ/2)
 This is energy-preserving since |exp(-i·Δt·ζ/2)| = 1 for real ζ.
 
 # Arguments
-- `Bk_out`: Output wave envelope in spectral space
-- `Bk_in`: Input wave envelope in spectral space
+- `L⁺Ak_out`: Output wave envelope in spectral space
+- `L⁺Ak_in`: Input wave envelope in spectral space
 - `ψk`: Streamfunction in spectral space (for computing ζ = ∇²ψ)
 - `G`: Grid
 - `par`: Parameters (uses par.dt and par.passive_scalar)
@@ -209,11 +225,11 @@ This is energy-preserving since |exp(-i·Δt·ζ/2)| = 1 for real ζ.
 - `dealias_mask`: Dealiasing mask (true = keep mode, false = zero)
 
 # Notes
-- If par.passive_scalar is true, refraction is skipped (just copies Bk_in to Bk_out).
+- If par.passive_scalar is true, refraction is skipped (just copies L⁺Ak_in to L⁺Ak_out).
 - For Strang splitting (second-order), call with dt_fraction=0.5 before and after the IMEX step.
 - For Lie splitting (first-order), call with dt_fraction=1.0 before the IMEX step only.
 """
-function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
+function apply_refraction_exact!(L⁺Ak_out, L⁺Ak_in, ψk, G, par, plans;
                                  dt_fraction::Real=1.0, dealias_mask=nothing)
     dt = par.dt * dt_fraction
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -226,17 +242,17 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
 
     # Skip refraction for passive scalar mode, but still enforce dealiasing
     if par.passive_scalar
-        parent(Bk_out) .= parent(Bk_in)
-        Bk_out_arr = parent(Bk_out)
-        nz_spec, nx_spec, ny_spec = size(Bk_out_arr)
+        parent(L⁺Ak_out) .= parent(L⁺Ak_in)
+        L⁺Ak_out_arr = parent(L⁺Ak_out)
+        nz_spec, nx_spec, ny_spec = size(L⁺Ak_out_arr)
         @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-            i_global = local_to_global(i_local, 2, Bk_out)
-            j_global = local_to_global(j_local, 3, Bk_out)
+            i_global = local_to_global(i_local, 2, L⁺Ak_out)
+            j_global = local_to_global(j_local, 3, L⁺Ak_out)
             if !should_keep(i_global, j_global)
-                Bk_out_arr[k, i_local, j_local] = 0
+                L⁺Ak_out_arr[k, i_local, j_local] = 0
             end
         end
-        return Bk_out
+        return L⁺Ak_out
     end
 
     # Compute vorticity ζ = -kₕ²ψ in spectral space
@@ -258,14 +274,14 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
 
     # Transform to physical space
     ζ_phys = allocate_fft_backward_dst(ζk, plans)
-    B_phys = allocate_fft_backward_dst(Bk_in, plans)
+    L⁺A_phys = allocate_fft_backward_dst(L⁺Ak_in, plans)
     fft_backward!(ζ_phys, ζk, plans)
-    Bk_f = similar(Bk_in)
-    _prefilter_spectral!(Bk_f, Bk_in, G, dealias_mask)
-    fft_backward!(B_phys, Bk_f, plans)
+    L⁺Ak_f = similar(L⁺Ak_in)
+    _prefilter_spectral!(L⁺Ak_f, L⁺Ak_in, G, dealias_mask)
+    fft_backward!(L⁺A_phys, L⁺Ak_f, plans)
 
     ζ_phys_arr = parent(ζ_phys)
-    B_phys_arr = parent(B_phys)
+    L⁺A_phys_arr = parent(L⁺A_phys)
     nz_phys, nx_phys, ny_phys = size(ζ_phys_arr)
 
     # Apply exact integrating factor: B* = B × exp(-i·dt·ζ/2)
@@ -274,24 +290,24 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
     @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         ζ_val = real(ζ_phys_arr[k, i, j])  # Vorticity is real
         phase_factor = exp(-im * dt * ζ_val / 2)
-        B_phys_arr[k, i, j] *= phase_factor
+        L⁺A_phys_arr[k, i, j] *= phase_factor
     end
 
     # Transform back to spectral space
-    fft_forward!(Bk_out, B_phys, plans)
+    fft_forward!(L⁺Ak_out, L⁺A_phys, plans)
 
     # Apply dealiasing mask to remove quadratic aliasing from ζ·B product
-    Bk_out_arr = parent(Bk_out)
-    nz_spec, nx_spec, ny_spec = size(Bk_out_arr)
+    L⁺Ak_out_arr = parent(L⁺Ak_out)
+    nz_spec, nx_spec, ny_spec = size(L⁺Ak_out_arr)
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, Bk_out)
-        j_global = local_to_global(j_local, 3, Bk_out)
+        i_global = local_to_global(i_local, 2, L⁺Ak_out)
+        j_global = local_to_global(j_local, 3, L⁺Ak_out)
         if !should_keep(i_global, j_global)
-            Bk_out_arr[k, i_local, j_local] = 0
+            L⁺Ak_out_arr[k, i_local, j_local] = 0
         end
     end
 
-    return Bk_out
+    return L⁺Ak_out
 end
 
 """
@@ -444,12 +460,12 @@ function first_imex_step!(S::State, G::Grid, par::QGParams, plans, imex_ws::IMEX
                         workspace=workspace, dealias_mask=L, compute_w=false)
 
     # Use half-step refraction state for AB2 history to stay consistent with Strang splitting
-    apply_refraction_exact!(imex_ws.Bstar, S.B, S.psi, G, par, plans;
+    apply_refraction_exact!(imex_ws.L⁺Astar, S.L⁺A, S.psi, G, par, plans;
                             dt_fraction=0.5, dealias_mask=L)
     if par.linear
-        fill!(parent(imex_ws.nBk_prev), zero(eltype(imex_ws.nBk_prev)))
+        fill!(parent(imex_ws.nL⁺Ak_prev), zero(eltype(imex_ws.nL⁺Ak_prev)))
     else
-        convol_waqg_B!(imex_ws.nBk_prev, S.u, S.v, imex_ws.Bstar, G, plans; Lmask=L)
+        convol_waqg_L⁺A!(imex_ws.nL⁺Ak_prev, S.u, S.v, imex_ws.L⁺Astar, G, plans; Lmask=L)
     end
 
     # Initialize q advection history for AB2
@@ -493,7 +509,7 @@ Uses Strang splitting with Adams-Bashforth 2 for advection (waves and mean flow)
 Crank-Nicolson for linear PV diffusion/hyperdiffusion:
 1. **Stage 1 (First Half-Refraction)**: B* = B^n × exp(-i·(dt/2)·ζ/2)
 2. **Stage 2 (IMEX-CNAB for Advection + Dispersion)**:
-   - Advection (AB2): (3/2)N^n - (1/2)N^{n-1} where N = -J(ψ,B)
+   - Advection (AB2): (3/2)N^n - (1/2)N^{n-1} where N = -J(ψ,L⁺A)
    - Dispersion (CN): (1/2)[L(B*) + L(B^{n+1})]
 3. **Stage 3 (Second Half-Refraction)**: B^{n+1} = B** × exp(-i·(dt/2)·ζ/2) using ψ^{n+1} predictor
 
@@ -548,7 +564,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     # Get arrays
     qn_arr = parent(Sn.q)
-    Bn_arr = parent(Sn.B)
+    Bn_arr = parent(Sn.L⁺A)
     An_arr = parent(Sn.A)
     qnp1_arr = parent(Snp1.q)
     Bnp1_arr = parent(Snp1.B)
@@ -580,7 +596,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     #= Step 2: Compute explicit tendencies =#
     nqk_arr = parent(imex_ws.nqk)
-    nBk_arr = parent(imex_ws.nBk)
+    nL⁺Ak_arr = parent(imex_ws.nL⁺Ak)
     dqk_arr = parent(imex_ws.dqk)
     qtemp_arr = parent(imex_ws.qtemp)
 
@@ -614,26 +630,26 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     end
 
     # Get previous tendency arrays (for AB2)
-    nBk_prev_arr = parent(imex_ws.nBk_prev)
+    nL⁺Ak_prev_arr = parent(imex_ws.nL⁺Ak_prev)
     tqk_prev_arr = parent(imex_ws.tqk_prev)
 
     #= Step 3.5: Apply FIRST HALF refraction via Strang splitting =#
     # For second-order Strang splitting, we apply half the refraction before
     # and half after the IMEX step. This gives O(dt²) splitting error.
     # B* = B^n × exp(-i·(dt/2)·ζ/2) is energy-preserving since |exp(...)| = 1.
-    Bstar = imex_ws.Bstar  # Dedicated storage for first-half refraction result
-    apply_refraction_exact!(Bstar, Sn.B, Sn.psi, G, par, plans;
+    L⁺Astar = imex_ws.L⁺Astar  # Dedicated storage for first-half refraction result
+    apply_refraction_exact!(L⁺Astar, Sn.L⁺A, Sn.psi, G, par, plans;
                             dt_fraction=0.5, dealias_mask=L)
 
     # Get B* array for use in IMEX loop
-    Bstar_arr = parent(Bstar)
+    L⁺Astar_arr = parent(L⁺Astar)
 
     # IMPORTANT: Compute B advection using the refraction-rotated state (B*).
     # This keeps the Strang split consistent and preserves second-order accuracy.
     if par.linear
-        fill!(nBk_arr, zero(eltype(nBk_arr)))
+        fill!(nL⁺Ak_arr, zero(eltype(nL⁺Ak_arr)))
     else
-        convol_waqg_B!(imex_ws.nBk, Sn.u, Sn.v, Bstar, G, plans; Lmask=L)
+        convol_waqg_L⁺A!(imex_ws.nL⁺Ak, Sn.u, Sn.v, L⁺Astar, G, plans; Lmask=L)
     end
 
     # IMPORTANT: We must compute A* = (L⁺)⁻¹B* for consistency.
@@ -775,28 +791,28 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Explicit update for mean mode or when dispersion is disabled
             # Use B* (after first half-refraction) and AB2 advection
             @inbounds for k in 1:nz_local
-                N_n = -nBk_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
+                N_n = -nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term) * hyperdiff_factor
+                Bnp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
             end
         else
             # IMEX-CNAB: CN for dispersion, AB2 for advection
             # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with B*
             @inbounds for k in 1:nz_local
-                tl.B_col[k] = Bstar_arr[k, i, j]
+                tl.L⁺A_col[k] = L⁺Astar_arr[k, i, j]
             end
-            solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
+            solve_modified_elliptic!(tl.A_col, tl.L⁺A_col, G, par, a, kₕ²,
                                      complex(0.0), αdisp_profile, tl)
 
             # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
             @inbounds for k in 1:nz_local
-                N_n = -nBk_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
+                N_n = -nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + advection_term
+                tl.RHS_col[k] = L⁺Astar_arr[k, i, j] + (dt/2) * disp_star + advection_term
             end
 
             # Step 3: Solve modified elliptic problem for A^{n+1}
@@ -843,11 +859,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Use B* (after first half-refraction) and AB2 advection
             # AB2: (c_n * dt) * N^n + (c_nm1 * dt) * N^{n-1}
             for k in 1:nz_local
-                N_n = -nBk_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
+                N_n = -nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
                 # Store B** (before second half-refraction) in Bnp1 temporarily
-                Bnp1_arr[k, i, j] = (Bstar_arr[k, i, j] + advection_term) * hyperdiff_factor
+                Bnp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
             end
         else
@@ -855,20 +871,20 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with the refraction-rotated B*
             # This is critical: using A^n with B* breaks IMEX-CN stability!
             for k in 1:nz_local
-                tl.B_col[k] = Bstar_arr[k, i, j]
+                tl.L⁺A_col[k] = L⁺Astar_arr[k, i, j]
             end
             # Use β_scale=0 to get standard L⁺ inversion (A* = (L⁺)⁻¹B*)
-            solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
+            solve_modified_elliptic!(tl.A_col, tl.L⁺A_col, G, par, a, kₕ²,
                                      complex(0.0), αdisp_profile, tl)
 
             # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
             # RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (c_n·dt)·N^n + (c_nm1·dt)·N^{n-1}
             for k in 1:nz_local
-                N_n = -nBk_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nBk_prev_arr[k, i, j] : zero(eltype(nBk_prev_arr))
+                N_n = -nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                tl.RHS_col[k] = Bstar_arr[k, i, j] + (dt/2) * disp_star + advection_term
+                tl.RHS_col[k] = L⁺Astar_arr[k, i, j] + (dt/2) * disp_star + advection_term
             end
 
             # Step 3: Solve modified elliptic problem for A^{n+1}
@@ -945,7 +961,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     Bnp1_arr = parent(Snp1.B)
 
     #= Step 5.6: Store current advection tendencies for next step (AB2) =#
-    parent(imex_ws.nBk_prev) .= parent(imex_ws.nBk)
+    parent(imex_ws.nL⁺Ak_prev) .= parent(imex_ws.nL⁺Ak)
     if par.fixed_flow
         fill!(tqk_prev_arr, zero(eltype(tqk_prev_arr)))
     else

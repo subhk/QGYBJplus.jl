@@ -524,18 +524,21 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 end
 
 """
-    wave_energy_vavg(B, G, plans) -> WE_ave::Array{Float64,2}
+    wave_energy_vavg(L⁺A, A, G, plans) -> WE_ave::Array{Float64,2}
 
-Compute vertically-averaged wave energy density in physical space.
+Compute vertically-averaged wave kinetic energy density in physical space.
 
 # Physical Background
-The wave energy density based on envelope B:
+The wave kinetic energy density is based on LA (wave velocity amplitude):
 
-    WE(x,y,z) = (1/2) |B|²
+    WKE(x,y,z) = (1/2) |LA|²
+
+where LA is computed using the YBJ L operator (NOT L⁺):
+    LA = L⁺A + (k_h²/4)A
 
 This function returns the vertical average:
 
-    WE_avg(x,y) = (1/nz) Σₖ WE(x,y,k)
+    WKE_avg(x,y) = (1/nz) Σₖ WKE(x,y,k)
 
 # Use Cases
 - Visualize horizontal wave energy distribution
@@ -543,37 +546,61 @@ This function returns the vertical average:
 - Monitor wave-mean flow interaction regions
 
 # Algorithm
-1. Transform B to physical space
-2. Compute 0.5|B|² at each point
-3. Average over vertical levels
+1. Compute LA = L⁺A + (k_h²/4)A in spectral space
+2. Transform LA to physical space
+3. Compute 0.5|LA|² at each point
+4. Average over vertical levels
+
+# Arguments
+- `L⁺A`: YBJ+ wave envelope (spectral)
+- `A`: Wave amplitude (spectral)
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
 
 # Returns
-2D array (nx_local, ny_local) of vertically-averaged wave energy density.
+2D array (nx_local, ny_local) of vertically-averaged wave kinetic energy density.
 
 # Note
 In MPI mode with 2D decomposition, this returns LOCAL data only.
 For full domain visualization, gather data to root first.
 """
-function wave_energy_vavg(B, G::Grid, plans)
+function wave_energy_vavg(L⁺A, A, G::Grid, plans)
     nz = G.nz
 
     # Get local dimensions
-    B_arr = parent(B)
-    nz_local, nx_local, ny_local = size(B_arr)
+    L⁺A_arr = parent(L⁺A)
+    A_arr = parent(A)
+    nz_local, nx_local, ny_local = size(L⁺A_arr)
 
-    # Invert full complex field to physical space
-    Br = _allocate_fft_dst(B, plans)
-    fft_backward!(Br, B, plans)
-    Br_arr = parent(Br)
+    # Compute LA = L⁺A + (k_h²/4)A in spectral space
+    # This uses the YBJ L operator relation: LA = L⁺A + (k_h²/4)A
+    LA_k = similar(L⁺A)
+    LA_k_arr = parent(LA_k)
 
-    # Accumulate 0.5|B|^2 and average over nz
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, L⁺A)
+        j_global = local_to_global(j_local, 3, L⁺A)
+        kₓ = G.kx[i_global]
+        kᵧ = G.ky[j_global]
+        kₕ² = kₓ^2 + kᵧ^2
+
+        # LA = L⁺A + (k_h²/4)A
+        LA_k_arr[k, i_local, j_local] = L⁺A_arr[k, i_local, j_local] + (kₕ² / 4) * A_arr[k, i_local, j_local]
+    end
+
+    # Transform LA to physical space
+    LAr = _allocate_fft_dst(LA_k, plans)
+    fft_backward!(LAr, LA_k, plans)
+    LAr_arr = parent(LAr)
+
+    # Accumulate 0.5|LA|^2 and average over nz
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(Br_arr)
+    nz_phys, nx_phys, ny_phys = size(LAr_arr)
     WE = zeros(Float64, nx_phys, ny_phys)
     @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        WE[i,j] += 0.5 * abs2(Br_arr[k, i, j])
+        WE[i,j] += 0.5 * abs2(LAr_arr[k, i, j])
     end
     WE ./= nz
     return WE
@@ -685,15 +712,15 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
 end
 
 """
-    wave_energy(B, A) -> (E_B, E_A)
+    wave_energy(L⁺A, A) -> (E_L⁺A, E_A)
 
-Compute domain-integrated wave energy from both B and A fields (simple version).
+Compute domain-integrated wave energy from both L⁺A and A fields (simple version).
 
 # Physical Background
 Two measures of wave energy in the model:
 
-1. **Envelope energy** E_B = Σ |B|²
-   - Based on the evolved wave envelope
+1. **Envelope energy** E_L⁺A = Σ |L⁺A|²
+   - Based on the evolved YBJ+ wave envelope
    - Directly available from prognostic variable
 
 2. **Amplitude energy** E_A = Σ |A|²
@@ -702,15 +729,15 @@ Two measures of wave energy in the model:
 
 # Use Cases
 - Monitor total wave energy conservation/dissipation
-- Compare E_B and E_A to verify B→A recovery
+- Compare E_L⁺A and E_A to verify L⁺A→A recovery
 - Track energy exchange with mean flow
 
 # Arguments
-- `B::Array{Complex,3}`: Wave envelope (spectral or physical)
+- `L⁺A::Array{Complex,3}`: YBJ+ wave envelope (spectral or physical)
 - `A::Array{Complex,3}`: Wave amplitude (spectral or physical)
 
 # Returns
-Tuple (E_B, E_A) of domain-summed squared magnitudes.
+Tuple (E_L⁺A, E_A) of domain-summed squared magnitudes.
 
 # Note
 - These are domain SUMS, not means. For energy density, divide by grid volume.
@@ -718,14 +745,14 @@ Tuple (E_B, E_A) of domain-summed squared magnitudes.
 - For physically accurate wave energies with dealiasing and density weighting,
   use `wave_energy_spectral` instead.
 """
-function wave_energy(B, A)
+function wave_energy(L⁺A, A)
     # Works with any array (regular or PencilArray)
-    B_arr = parent(B)
+    L⁺A_arr = parent(L⁺A)
     A_arr = parent(A)
-    EB = 0.0; EA = 0.0
-    @inbounds for x in B_arr; EB += abs2(x); end
+    EL⁺A = 0.0; EA = 0.0
+    @inbounds for x in L⁺A_arr; EL⁺A += abs2(x); end
     @inbounds for x in A_arr; EA += abs2(x); end
-    return EB, EA
+    return EL⁺A, EA
 end
 
 """
@@ -733,17 +760,26 @@ end
 
 Compute physically accurate wave energies in spectral space with dealiasing.
 
+# Operator Definitions (from PDF)
+    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
+    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
+
+Key relation: L = L⁺ + k_h²/4, so LA = B + (k_h²/4)A
+
 # Physical Background (matches YBJ+ paper)
 Three components of wave energy:
 
-1. **Wave Kinetic Energy (WKE)** - per YBJ+ equation (4.7):
+1. **Wave Kinetic Energy (WKE)** - uses YBJ L operator (NOT L⁺):
    WKE = (1/2) × Σₖ |LAₖ|²
 
-   where LA is computed directly using the L operator from equation (1.3):
-   L = ∂_z(f²/N² × ∂_z)
+   where LA is computed using the YBJ L operator [eq. (4)]:
+   L = ∂/∂z(f²/N² × ∂/∂z)
 
    So LA = ∂_z(a(z) × C) where a(z) = f²/N² and C = ∂A/∂z.
    This is discretized as: LA[k] = (a[k]×C[k] - a[k-1]×C[k-1]) / Δz
+
+   Note: This LA is the wave velocity amplitude, same as used in GLM particle
+   advection for computing wave displacement ξ.
 
 2. **Wave Potential Energy (WPE)**:
    WPE = Σₖ (0.5/(ρ₂×a_ell)) × kh² × (|CRₖ|² + |CIₖ|²)
@@ -753,7 +789,7 @@ Three components of wave energy:
 3. **Wave Correction Energy (WCE)**:
    WCE = Σₖ (1/8) × (1/a_ell²) × kh⁴ × (|ARₖ|² + |AIₖ|²)
 
-   Higher-order correction term from the YBJ+ formulation.
+   Higher-order correction term from the YBJ+ formulation (related to L vs L⁺ difference).
 
 # Algorithm
 1. Loop over all spectral modes with dealiasing mask L
@@ -948,38 +984,38 @@ function flow_kinetic_energy_global(u, v, mpi_config=nothing)
 end
 
 """
-    wave_energy_global(B, A, mpi_config=nothing) -> (E_B, E_A)
+    wave_energy_global(L⁺A, A, mpi_config=nothing) -> (E_L⁺A, E_A)
 
 Compute GLOBAL wave energy across all MPI processes.
 
 # Arguments
-- `B, A`: Wave envelope and amplitude arrays (local portion in MPI mode)
+- `L⁺A, A`: YBJ+ wave envelope and amplitude arrays (local portion in MPI mode)
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
-Tuple (E_B, E_A) of global summed squared magnitudes.
+Tuple (E_L⁺A, E_A) of global summed squared magnitudes.
 
 # Example
 ```julia
 # Serial mode
-EB, EA = wave_energy_global(state.B, state.A)
+EL⁺A, EA = wave_energy_global(state.L⁺A, state.A)
 
 # MPI mode
-EB, EA = wave_energy_global(state.B, state.A, mpi_config)
+EL⁺A, EA = wave_energy_global(state.L⁺A, state.A, mpi_config)
 ```
 """
-function wave_energy_global(B, A, mpi_config=nothing)
+function wave_energy_global(L⁺A, A, mpi_config=nothing)
     # Compute local energy
-    EB_local, EA_local = wave_energy(B, A)
+    EL⁺A_local, EA_local = wave_energy(L⁺A, A)
 
     # Reduce across processes if MPI is active
     if mpi_config === nothing
-        return EB_local, EA_local
+        return EL⁺A_local, EA_local
     else
         # Use the MPI reduce function from the main module
-        EB_global = PARENT.mpi_reduce_sum(EB_local, mpi_config)
+        EL⁺A_global = PARENT.mpi_reduce_sum(EL⁺A_local, mpi_config)
         EA_global = PARENT.mpi_reduce_sum(EA_local, mpi_config)
-        return EB_global, EA_global
+        return EL⁺A_global, EA_global
     end
 end
 

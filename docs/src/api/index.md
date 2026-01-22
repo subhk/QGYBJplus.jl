@@ -145,7 +145,7 @@ workspace = init_mpi_workspace(G, mpi_config)
 | Function | Description |
 |:---------|:------------|
 | `invert_q_to_psi!` | Solve elliptic PV inversion |
-| `invert_B_to_A!` | Solve YBJ+ wave inversion |
+| `invert_L⁺A_to_A!` | Solve YBJ+ wave inversion (L⁺A → A) |
 | `compute_velocities!` | Compute u, v from ψ |
 | `jacobian_spectral!` | Compute Jacobian J(a,b) |
 

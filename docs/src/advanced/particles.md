@@ -112,20 +112,20 @@ L = \partial_z \left(\frac{f_0^2}{N^2}\right) \partial_z
 
 For constant ``N^2``, this simplifies to ``L = (f_0^2/N^2) \partial_{zz}``.
 
-**YBJ+ relation**: The evolved variable ``B`` relates to the wave amplitude ``A`` via:
+**YBJ+ relation**: The evolved variable ``L^+A`` relates to the wave amplitude ``A`` via:
 ```math
-B = L^+ A = \left(L + \frac{1}{4}\Delta_H\right) A
+L^+A = \left(L - \frac{k_h^2}{4}\right) A
 ```
 
-where ``\Delta_H = \partial_{xx} + \partial_{yy}`` is the horizontal Laplacian.
+where ``k_h^2 = k_x^2 + k_y^2`` is the horizontal wavenumber squared.
 
-**Computing ``LA`` from ``B`` and ``A``**:
+**Computing ``LA`` from ``L^+A`` and ``A``**:
 
-Rearranging: ``LA = B - \frac{1}{4}\Delta_H A``
+From ``L^+A = LA - (k_h^2/4)A``, we get: ``LA = L^+A + (k_h^2/4)A``
 
-In **spectral space** (where ``\Delta_H \to -k_h^2``):
+In **spectral space**:
 ```math
-\widehat{LA} = \hat{B} + \frac{k_h^2}{4} \hat{A}
+\widehat{LA} = \widehat{L^+A} + \frac{k_h^2}{4} \hat{A}
 ```
 
 **Wave velocity components**:
@@ -385,53 +385,83 @@ end
 write_particle_trajectories("particles.nc", tracker)
 ```
 
-## Time Integration Methods
+## Generalized Lagrangian Mean (GLM) Framework
 
-Three integration schemes are available:
+QGYBJ+.jl implements particle advection using the **Generalized Lagrangian Mean (GLM)** framework, which cleanly separates the slowly-evolving mean trajectory from fast wave oscillations.
 
-### Euler Method (1st order)
+### GLM Position Decomposition
+
+The physical particle position ``\mathbf{x}(t)`` is decomposed into:
+
 ```math
-\mathbf{x}_{n+1} = \mathbf{x}_n + \Delta t \cdot \mathbf{u}(\mathbf{x}_n, t_n)
+\mathbf{x}(t) = \mathbf{X}(t) + \boldsymbol{\xi}(\mathbf{X}(t), t)
+```
+
+where:
+- ``\mathbf{X}(t)`` is the **mean position** (Lagrangian-mean trajectory)
+- ``\boldsymbol{\xi}`` is the **wave displacement** (fast oscillatory component)
+
+### Mean Position Advection
+
+The mean position evolves according to the **QG velocity** (which is the Lagrangian-mean flow):
+
+```math
+\frac{d\mathbf{X}}{dt} = \mathbf{u}^L_{QG}(\mathbf{X}, t)
+```
+
+This is time-stepped using **Euler method**:
+
+```math
+\mathbf{X}^{n+1} = \mathbf{X}^n + \Delta t \cdot \mathbf{u}_{QG}(\mathbf{X}^n, t^n)
+```
+
+### Wave Displacement Reconstruction
+
+The wave displacement is reconstructed from the wave velocity amplitude ``LA``:
+
+```math
+\xi_x + i\xi_y = \text{Re}\left\{\frac{LA(\mathbf{X}, t)}{-if_0} e^{-if_0 t}\right\}
+```
+
+This captures the oscillatory motion of particles due to near-inertial waves. The wave displacement:
+- Has zero time-mean (pure oscillation at frequency ``f_0``)
+- Is computed **diagnostically** from the current wave field
+- Does not require time-stepping (instantaneous reconstruction)
+
+### Physical Position
+
+The full physical position at each output time is:
+
+```math
+\mathbf{x}^{n+1} = \mathbf{X}^{n+1} + \boldsymbol{\xi}^{n+1}
+```
+
+### Advantages of GLM Approach
+
+| Aspect | Benefit |
+|:-------|:--------|
+| **Numerical stability** | Mean trajectory uses larger ``\Delta t`` (not constrained by wave period) |
+| **Physical clarity** | Separates slow (QG) and fast (wave) dynamics |
+| **Efficiency** | Wave displacement is diagnostic, not prognostic |
+| **Accuracy** | No accumulation of phase errors in wave oscillations |
+
+## Time Integration
+
+Particle mean positions are advected using **Euler method**:
+
+```math
+\mathbf{X}^{n+1} = \mathbf{X}^n + \Delta t \cdot \mathbf{u}_{QG}(\mathbf{X}^n, t^n)
 ```
 
 ```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:euler)
+# Create particle configuration (Euler is the only method)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 ```
 
-### RK2 Midpoint Method (2nd order)
-```math
-\begin{aligned}
-\mathbf{k}_1 &= \mathbf{u}(\mathbf{x}_n, t_n) \\
-\mathbf{x}_{mid} &= \mathbf{x}_n + \frac{\Delta t}{2} \mathbf{k}_1 \\
-\mathbf{k}_2 &= \mathbf{u}(\mathbf{x}_{mid}, t_n + \frac{\Delta t}{2}) \\
-\mathbf{x}_{n+1} &= \mathbf{x}_n + \Delta t \cdot \mathbf{k}_2
-\end{aligned}
-```
-
-```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk2)
-```
-
-### RK4 Classical Method (4th order)
-```math
-\begin{aligned}
-\mathbf{k}_1 &= \mathbf{u}(\mathbf{x}_n, t_n) \\
-\mathbf{k}_2 &= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_1, t_n + \frac{\Delta t}{2}) \\
-\mathbf{k}_3 &= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_2, t_n + \frac{\Delta t}{2}) \\
-\mathbf{k}_4 &= \mathbf{u}(\mathbf{x}_n + \Delta t\,\mathbf{k}_3, t_n + \Delta t) \\
-\mathbf{x}_{n+1} &= \mathbf{x}_n + \frac{\Delta t}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
-\end{aligned}
-```
-
-```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk4)
-```
-
-| Method | Order | Velocity Evaluations/Step | Recommended Use |
-|:-------|:------|:--------------------------|:----------------|
-| `:euler` (default) | 1 | 1 | Co-evolution with fluid, large dt |
-| `:rk2` | 2 | 2 | Balance of speed/accuracy |
-| `:rk4` | 4 | 4 | High accuracy studies |
+The Euler method is well-suited for GLM advection because:
+- QG velocities vary slowly compared to the timestep
+- Wave effects are captured through displacement reconstruction, not velocity integration
+- Simplicity and efficiency for co-evolution with the fluid solver
 
 ## Interpolation Methods
 
@@ -740,27 +770,32 @@ When particles cross domain boundaries, they are transferred:
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│                  PARALLEL ADVECTION TIMESTEP                  │
+│              PARALLEL GLM ADVECTION TIMESTEP                  │
 │                                                               │
 │  1. UPDATE VELOCITY FIELDS                                    │
 │     • Compute QG velocities (distributed FFT)                 │
 │     • Solve omega equation (tridiagonal in z)                 │
-│     • Add wave Stokes drift                                   │
+│     • Compute wave amplitude LA = L⁺A + (k_h²/4)A             │
 │     • Exchange velocity halos in x/y (and corners for 2D)     │
 │                              ↓                                │
-│  2. ADVECT PARTICLES (each rank processes local particles)    │
-│     • Interpolate velocity (use halo for boundary particles)  │
-│     • Time integration (Euler/RK2/RK4)                        │
+│  2. ADVECT MEAN POSITIONS (each rank processes local parts)   │
+│     • Interpolate QG velocity (use halo for boundary parts)   │
+│     • Euler step: X^{n+1} = X^n + Δt × u_QG                   │
 │                              ↓                                │
-│  3. MIGRATE PARTICLES                                         │
+│  3. RECONSTRUCT WAVE DISPLACEMENT                             │
+│     • Interpolate LA at mean positions                        │
+│     • ξ = Re{(LA/(-if)) × e^{-ift}} (diagnostic)              │
+│     • Physical position: x = X + ξ                            │
+│                              ↓                                │
+│  4. MIGRATE PARTICLES                                         │
 │     • Identify particles that left local domain               │
 │     • Exchange particle data between ranks (MPI)              │
 │                              ↓                                │
-│  4. APPLY BOUNDARY CONDITIONS                                 │
+│  5. APPLY BOUNDARY CONDITIONS                                 │
 │     • Periodic wrap in x, y                                   │
 │     • Reflective bounce in z                                  │
 │                              ↓                                │
-│  5. SAVE TRAJECTORIES (if save_interval reached)              │
+│  6. SAVE TRAJECTORIES (if save_interval reached)              │
 │     • Each rank saves local particles, or                     │
 │     • Gather to rank 0 for unified output                     │
 └───────────────────────────────────────────────────────────────┘
@@ -813,7 +848,6 @@ struct ParticleConfig{T}
     particle_advec_time::T    # Delayed start time
 
     # Numerics
-    integration_method::Symbol        # :euler, :rk2, :rk4
     interpolation_method::InterpolationMethod  # TRILINEAR, etc.
 
     # Boundaries
@@ -862,7 +896,7 @@ end
 
 **Tips:**
 - Use `TRILINEAR` for speed, `TRICUBIC` for accuracy
-- RK4 costs 4× more than Euler but is much more accurate
+- GLM framework with Euler is efficient: wave effects are diagnostic, not integrated
 - Halo exchange overhead is small for typical particle counts
 - Migration cost depends on flow strength near boundaries
 
