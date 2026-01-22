@@ -120,7 +120,7 @@ The exports are organized by functionality:
    - State: Prognostic (q, B) and diagnostic (ψ, A, u, v, w) fields
 
 2. PHYSICS ROUTINES:
-   - Elliptic solvers: invert_q_to_psi!, invert_B_to_A!, invert_helmholtz!
+   - Elliptic solvers: invert_q_to_psi!, invert_L⁺A_to_A!, invert_helmholtz!
    - Nonlinear terms: jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!
    - Velocity operators: compute_velocities!, compute_vertical_velocity!
 
@@ -150,7 +150,7 @@ export QGParams, Grid, State,
        default_params, setup_model, setup_model_with_profile,
        a_ell_ut, a_ell_from_N2, dealias_mask, is_dealiased,
        compute_hyperdiff_coeff, compute_hyperdiff_params, dimensional_hyperdiff_params,
-       invert_B_to_A!, invert_helmholtz!,
+       invert_L⁺A_to_A!, invert_helmholtz!,
        jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
        init_random_psi!, init_analytical_psi!, init_analytical_waves!, init_surface_waves!,
        add_balanced_component!, compute_q_from_psi!, initialize_from_config,

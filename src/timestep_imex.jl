@@ -354,7 +354,7 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     # and β = (dt/2)·i·αdisp(z)·kₕ² is the implicit dispersion coefficient
     # With Neumann BCs: ∂A/∂z = 0 at z = -Lz, 0
 
-    # This matches the discretization used by invert_B_to_A!
+    # This matches the discretization used by invert_L⁺A_to_A!
     # The matrix is scaled by dz², so RHS is dz² * B.
     @inbounds for k in 1:nz
         βₖ = β_scale * αdisp_profile[k]
@@ -592,7 +592,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Only compute u, v - not w (omega equation is expensive and not needed for advection)
     compute_velocities!(Sn, G; plans=plans, params=par, N2_profile=N2_profile,
                         workspace=workspace, dealias_mask=L, compute_w=false)
-    invert_B_to_A!(Sn, G, par, a; workspace=workspace)
+    invert_L⁺A_to_A!(Sn, G, par, a; workspace=workspace)
 
     #= Step 2: Compute explicit tendencies =#
     nqk_arr = parent(imex_ws.nqk)
@@ -1007,7 +1007,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # A is already computed above for most modes
     # For kₕ² ≈ 0 modes, do standard inversion
     # Actually, let's just do full inversion to be safe
-    invert_B_to_A!(Snp1, G, par, a; workspace=workspace)
+    invert_L⁺A_to_A!(Snp1, G, par, a; workspace=workspace)
 
     # Only compute u, v for diagnostics - w can be computed separately if needed
     compute_velocities!(Snp1, G; plans=plans, params=par, N2_profile=N2_profile,

@@ -207,8 +207,8 @@ end
     @test all(isfinite, real.(S.psi))
 
     # Put a simple B mode and invert to A (YBJ+)
-    S.B[3, 2, 2] = 1 + 0im
-    invert_B_to_A!(S, G, par, a)
+    S.L⁺A[3, 2, 2] = 1 + 0im
+    invert_L⁺A_to_A!(S, G, par, a)
     @test all(isfinite, real.(S.A))
 
     # One projection step should run without error
@@ -230,7 +230,7 @@ end
     L = dealias_mask(G)
 
     # Seed a nontrivial wave mode
-    S.B[3, 2, 2] = 1.0 + 0.2im
+    S.L⁺A[3, 2, 2] = 1.0 + 0.2im
 
     imex_ws = init_imex_workspace(S, G)
     first_imex_step!(S, G, par, plans, imex_ws; a=a, dealias_mask=L)
@@ -271,7 +271,7 @@ end
     @test all(iszero, S.psi[:, 1, 1])
 
     # Run one normal-branch step to ensure it executes
-    S.B[4, 3, 3] = 0.5 + 0.2im
+    S.L⁺A[4, 3, 3] = 0.5 + 0.2im
     first_projection_step!(S, G, par, plans; a, dealias_mask=L)
     Snp1 = deepcopy(S); Snm1 = deepcopy(S)
 
@@ -298,10 +298,10 @@ Tests for key physics operators that were identified as error-prone:
     G, S, plans, a = setup_model(par)
 
     # Set a non-trivial B field (single mode)
-    S.B[8, 3, 3] = 1.0 + 0.5im
+    S.L⁺A[8, 3, 3] = 1.0 + 0.5im
 
     # Invert to get A
-    invert_B_to_A!(S, G, par, a)
+    invert_L⁺A_to_A!(S, G, par, a)
 
     # Check A is finite and non-zero where B is non-zero
     @test all(isfinite, real.(S.A))
@@ -387,8 +387,8 @@ end
     G, S, plans, a = setup_model(par)
 
     # Set a non-trivial B field and compute A
-    S.B[8, 3, 3] = 1.0 + 0.5im
-    invert_B_to_A!(S, G, par, a)
+    S.L⁺A[8, 3, 3] = 1.0 + 0.5im
+    invert_L⁺A_to_A!(S, G, par, a)
 
     # The A field should be non-zero after inversion
     @test !all(iszero, S.A)
@@ -411,7 +411,7 @@ end
     L = dealias_mask(G)
 
     # Set initial wave field
-    S.B[4, 3, 3] = 1.0 + 0.5im
+    S.L⁺A[4, 3, 3] = 1.0 + 0.5im
 
     # A should initially be zero
     @test all(iszero, S.A)

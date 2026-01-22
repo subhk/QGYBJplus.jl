@@ -10,7 +10,7 @@ YBJ vs YBJ+ COMPARISON:
 -----------------------
 1. YBJ+ (Plus formulation):
    - B = L⁺A where L⁺ is an elliptic operator
-   - Recover A from B via tridiagonal solve (invert_B_to_A!)
+   - Recover A from B via tridiagonal solve (invert_L⁺A_to_A!)
    - More accurate for high vertical wavenumber modes
 
 2. Normal YBJ (this file):
@@ -413,7 +413,7 @@ Tuple (A, C) with recovered amplitude and its vertical derivative.
 Matches `compute_A` in derivatives.f90.
 
 # Note
-This is the NORMAL YBJ recovery method. For YBJ+, use `invert_B_to_A!` instead,
+This is the NORMAL YBJ recovery method. For YBJ+, use `invert_L⁺A_to_A!` instead,
 which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 """
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},

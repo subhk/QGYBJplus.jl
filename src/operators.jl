@@ -123,7 +123,7 @@ using ..QGYBJplus: Grid, State, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
-using ..QGYBJplus: invert_B_to_A!
+using ..QGYBJplus: invert_L⁺A_to_A!
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -131,9 +131,9 @@ const PARENT = Base.parentmodule(@__MODULE__)
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
-# Access invert_B_to_A! through the Elliptic submodule via PARENT
-# (Direct import via `using ..QGYBJplus: invert_B_to_A!` can fail in some loading contexts)
-# @inline invert_B_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_B_to_A!(args...; kwargs...)
+# Access invert_L⁺A_to_A! through the Elliptic submodule via PARENT
+# (Direct import via `using ..QGYBJplus: invert_L⁺A_to_A!` can fail in some loading contexts)
+# @inline invert_L⁺A_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_L⁺A_to_A!(args...; kwargs...)
 
 function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid)
     N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
@@ -718,7 +718,7 @@ This represents vertical motion induced by:
 - The velocity oscillates at inertial frequency f
 
 # Algorithm
-1. **A Recovery**: Solve L⁺A = B using invert_B_to_A!
+1. **A Recovery**: Solve L⁺A = B using invert_L⁺A_to_A!
    - L⁺ is the YBJ+ elliptic operator
    - Tridiagonal solver in z for each horizontal wavenumber
 
@@ -822,10 +822,10 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
-        invert_B_to_A!(S, G, params, a_vec)
+        invert_L⁺A_to_A!(S, G, params, a_vec)
     end
     # Step 2: Compute vertical derivative A_z using finite differences
-    Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
+    Aₖ_z = S.C  # C was set to A_z by invert_L⁺A_to_A!
     Aₖ_z_arr = parent(Aₖ_z)
     nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
 
@@ -941,7 +941,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
-    # Step 1: Recover A from B = L⁺A (invert_B_to_A! handles 2D decomposition internally)
+    # Step 1: Recover A from B = L⁺A (invert_L⁺A_to_A! handles 2D decomposition internally)
     # a(z) = f²/N²(z) is the elliptic coefficient
     if skip_inversion
         # Use existing S.A and S.C computed by the timestep with correct stratification.
@@ -959,11 +959,11 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
         # Pass workspace if available
-        invert_B_to_A!(S, G, params, a_vec; workspace=workspace)
+        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
     end
 
     # Now A and C (A_z) are in xy-pencil form.
-    # invert_B_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
+    # invert_L⁺A_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
     # Use S.C directly instead of recomputing - this ensures MPI and serial paths match,
     # and respects skip_inversion=true which promises to reuse precomputed A/C.
     Aₖ_z = S.C
@@ -1604,7 +1604,7 @@ Particles compute wave displacement via (equation 6):
 - `params`: Model parameters
 
 # Note
-This function should be called after invert_B_to_A! has computed A from B.
+This function should be called after invert_L⁺A_to_A! has computed A from B.
 The particle advection code then interpolates LA to particle positions and
 computes the time-dependent wave displacement ξ.
 """

@@ -259,7 +259,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     # Must use the same approach as the main integrator to avoid startup transients
     if par.ybj_plus
         # YBJ+: Solve elliptic problem B → A, C
-        invert_B_to_A!(S, G, par, a; workspace=workspace)
+        invert_L⁺A_to_A!(S, G, par, a; workspace=workspace)
     else
         # Normal YBJ: Use sumL⁺A!/compute_sigma/compute_A! path
         # For initial step, use zero tendencies for sigma computation
@@ -461,7 +461,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         fill!(C_arr, zero(eltype(C_arr)))
     elseif par.ybj_plus
         # YBJ+: Solve elliptic problem B → A, C (handles 2D decomposition internally)
-        invert_B_to_A!(S, G, par, a; workspace=workspace)
+        invert_L⁺A_to_A!(S, G, par, a; workspace=workspace)
     else
         # Normal YBJ: Different procedure
         sumL⁺A!(S.L⁺A, G; Lmask=L)  # Remove vertical mean
@@ -836,7 +836,7 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
         fill!(parent(Snp1.C), zero(eltype(parent(Snp1.C))))
     elseif par.ybj_plus
         # YBJ+: handles 2D decomposition transposes internally
-        invert_B_to_A!(Snp1, G, par, a; workspace=workspace)
+        invert_L⁺A_to_A!(Snp1, G, par, a; workspace=workspace)
     else
         # Normal YBJ path
         sumL⁺A!(Snp1.L⁺A, G; Lmask=L)
