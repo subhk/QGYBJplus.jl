@@ -214,15 +214,26 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         fft_backward!(psir, S.psi, plans)
     end
 
-    # For wave field B: transform full complex B to physical space as needed
-    # B = BR + i*BI where BR, BI are real fields in physical space
-    Br = nothing
-    Ar = nothing
+    # For wave field: compute LA = B + (k²/4)A in spectral space, then transform to physical
+    # LA is the wave velocity envelope: u₀ + iv₀ = e^{-ift}LA
+    # B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA = B + (k²/4)A (since Δ → -k²)
+    LAr = nothing
     if write_waves
-        Br = _allocate_fft_dst(S.B, plans)
-        fft_backward!(Br, S.B, plans)  # Full complex IFFT for B (wave envelope)
-        Ar = _allocate_fft_dst(S.A, plans)
-        fft_backward!(Ar, S.A, plans)  # Full complex IFFT for A (wave amplitude)
+        # Compute LA = B + (k²/4)A in spectral space
+        LA_hat = similar(S.B)
+        LA_hat_arr = parent(LA_hat)
+        B_arr = parent(S.B)
+        A_arr = parent(S.A)
+        kx = G.kx
+        ky = G.ky
+        @inbounds for j in 1:G.ny, i in 1:G.nx
+            kh2 = kx[i]^2 + ky[j]^2
+            for k in 1:G.nz
+                LA_hat_arr[k, i, j] = B_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
+            end
+        end
+        LAr = _allocate_fft_dst(LA_hat, plans)
+        fft_backward!(LAr, LA_hat, plans)  # Transform LA to physical space
     end
 
     # Optional vorticity field (computed from spectral psi)
@@ -286,34 +297,20 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
-        # Extract real and imag parts of the PHYSICAL fields (already normalized)
+        # Wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
+        # LA = B + (k²/4)A computed in spectral space above
         if write_waves
-            # B = L⁺A (wave envelope)
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            Br_arr = parent(Br)
-            LAr_var[:,:,:] = _to_xyz(real.(Br_arr))  # Real part of B
-            LAi_var[:,:,:] = _to_xyz(imag.(Br_arr))  # Imaginary part of B
+            LAr_arr = parent(LAr)
+            LAr_var[:,:,:] = _to_xyz(real.(LAr_arr))  # Real part of LA
+            LAi_var[:,:,:] = _to_xyz(imag.(LAr_arr))  # Imaginary part of LA
 
             LAr_var.attrib["units"] = "m/s"
-            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
+            LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
             LAi_var.attrib["units"] = "m/s"
-            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
-
-            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
-            Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
-            Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
-
-            Ar_arr = parent(Ar)
-            Ar_var[:,:,:] = _to_xyz(real.(Ar_arr))  # Real part of A
-            Ai_var[:,:,:] = _to_xyz(imag.(Ar_arr))  # Imaginary part of A
-
-            Ar_var.attrib["units"] = "m/s"
-            Ar_var.attrib["long_name"] = "wave amplitude A real part"
-            Ai_var.attrib["units"] = "m/s"
-            Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
+            LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
         end
         
         # Horizontal velocities (if requested)
@@ -598,15 +595,26 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         fft_backward!(psir, gathered_psi, temp_plans)
     end
 
-    Br = nothing
-    Ar = nothing
-    if write_waves && gathered_B !== nothing
-        Br = zeros(complex_type, G.nz, G.nx, G.ny)
-        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT for B (wave envelope)
-        if gathered_A !== nothing
-            Ar = zeros(complex_type, G.nz, G.nx, G.ny)
-            fft_backward!(Ar, gathered_A, temp_plans)  # Full complex IFFT for A (wave amplitude)
+    # Compute LA = B + (k²/4)A in spectral space, then transform to physical
+    # LA is the wave velocity envelope: u₀ + iv₀ = e^{-ift}LA
+    LAr = nothing
+    if write_waves && gathered_B !== nothing && gathered_A !== nothing
+        # Compute LA = B + (k²/4)A in spectral space
+        LA_hat = zeros(complex_type, G.nz, G.nx, G.ny)
+        kx = G.kx
+        ky = G.ky
+        @inbounds for j in 1:G.ny, i in 1:G.nx
+            kh2 = kx[i]^2 + ky[j]^2
+            for k in 1:G.nz
+                LA_hat[k, i, j] = gathered_B[k, i, j] + (kh2 / 4) * gathered_A[k, i, j]
+            end
         end
+        LAr = zeros(complex_type, G.nz, G.nx, G.ny)
+        fft_backward!(LAr, LA_hat, temp_plans)  # Transform LA to physical space
+    elseif write_waves && gathered_B !== nothing
+        # Fallback if A not available: use B directly (less accurate)
+        LAr = zeros(complex_type, G.nz, G.nx, G.ny)
+        fft_backward!(LAr, gathered_B, temp_plans)
     end
 
     zeta_r = nothing
@@ -665,34 +673,19 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Write wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
-        # Extract real and imag parts of the PHYSICAL fields (already normalized)
-        if write_waves && gathered_B !== nothing
-            # B = L⁺A (wave envelope)
+        # Write wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
+        # LA = B + (k²/4)A computed in spectral space above
+        if write_waves && LAr !== nothing
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of B
-            LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of B
+            LAr_var[:,:,:] = _to_xyz(real.(parent(LAr)))  # Real part of LA
+            LAi_var[:,:,:] = _to_xyz(imag.(parent(LAr)))  # Imaginary part of LA
 
             LAr_var.attrib["units"] = "m/s"
-            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
+            LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
             LAi_var.attrib["units"] = "m/s"
-            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
-
-            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
-            if Ar !== nothing
-                Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
-                Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
-
-                Ar_var[:,:,:] = _to_xyz(real.(parent(Ar)))  # Real part of A
-                Ai_var[:,:,:] = _to_xyz(imag.(parent(Ar)))  # Imaginary part of A
-
-                Ar_var.attrib["units"] = "m/s"
-                Ar_var.attrib["long_name"] = "wave amplitude A real part"
-                Ai_var.attrib["units"] = "m/s"
-                Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
-            end
+            LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
         end
 
         if write_velocities && gathered_u !== nothing && gathered_v !== nothing
@@ -1185,10 +1178,10 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
 
         psi_var.attrib["units"] = "m²/s"
         psi_var.attrib["long_name"] = "stream function"
-        LAr_var.attrib["units"] = "wave amplitude"
-        LAr_var.attrib["long_name"] = "L+A real part"
-        LAi_var.attrib["units"] = "wave amplitude"
-        LAi_var.attrib["long_name"] = "L+A imaginary part"
+        LAr_var.attrib["units"] = "m/s"
+        LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
+        LAi_var.attrib["units"] = "m/s"
+        LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
         
         # Global attributes
         ds.attrib["title"] = "QG-YBJ Model State Time Series"
@@ -1261,15 +1254,29 @@ end
 """
     ncdump_la(S, G, plans; path="la.out.nc")
 
-Legacy compatibility wrapper for writing L+A wave field to NetCDF.
-Directly writes wave field without using OutputManager.
+Legacy compatibility wrapper for writing LA wave velocity envelope to NetCDF.
+Computes LA = B + (k²/4)A in spectral space, then transforms to physical space.
 """
 function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
-    @info "Writing L+A to: $path"
+    @info "Writing LA to: $path"
 
-    # Convert spectral B to real space (full complex IFFT)
-    Br = _allocate_fft_dst(S.B, plans)
-    fft_backward!(Br, S.B, plans)
+    # Compute LA = B + (k²/4)A in spectral space
+    LA_hat = similar(S.B)
+    LA_hat_arr = parent(LA_hat)
+    B_arr = parent(S.B)
+    A_arr = parent(S.A)
+    kx = G.kx
+    ky = G.ky
+    @inbounds for j in 1:G.ny, i in 1:G.nx
+        kh2 = kx[i]^2 + ky[j]^2
+        for k in 1:G.nz
+            LA_hat_arr[k, i, j] = B_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
+        end
+    end
+
+    # Transform LA to physical space
+    Br = _allocate_fft_dst(LA_hat, plans)
+    fft_backward!(Br, LA_hat, plans)
 
     NCDatasets.Dataset(path, "c") do ds
         # Define dimensions
@@ -1298,19 +1305,19 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
         z_var.attrib["long_name"] = "z coordinate (vertical)"
 
-        # Write wave field real and imaginary parts (already normalized)
+        # Write wave velocity envelope LA real and imaginary parts
         LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
         LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-        LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of physical wave field
-        LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of physical wave field
+        LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of LA
+        LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of LA
 
-        LAr_var.attrib["units"] = "wave amplitude"
-        LAr_var.attrib["long_name"] = "L+A real part"
-        LAi_var.attrib["units"] = "wave amplitude"
-        LAi_var.attrib["long_name"] = "L+A imaginary part"
+        LAr_var.attrib["units"] = "m/s"
+        LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
+        LAi_var.attrib["units"] = "m/s"
+        LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
 
-        ds.attrib["title"] = "QG-YBJ Wave Field (L+A)"
+        ds.attrib["title"] = "QG-YBJ Wave Velocity Envelope (LA)"
         ds.attrib["created_at"] = string(now())
     end
 
