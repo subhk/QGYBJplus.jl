@@ -96,7 +96,7 @@ For the skewed Gaussian N²(z) profile:
 par = default_params(nx=128, ny=128, nz=64, Lx=500e3, Ly=500e3, Lz=4000.0, dt=0.001, nt=10000)
 ```
 
-See also: `default_params`, `with_density_profiles`
+See also: `default_params`, `with_b_ell_profile`
 """
 Base.@kwdef mutable struct QGParams{T}
     #= ====================================================================
@@ -210,52 +210,41 @@ Base.@kwdef mutable struct QGParams{T}
     #= ====================================================================
                     OPTIONAL VERTICAL PROFILES (Advanced)
     ====================================================================
-    These allow overriding default density/stratification profiles with
+    These allow overriding default stratification profiles with
     custom user-provided profiles. If nothing, defaults are computed.
     ==================================================================== =#
-    ρ_ut_profile::Union{Nothing,Vector{T}} = nothing   # Unstaggered density weights
-    ρ_st_profile::Union{Nothing,Vector{T}} = nothing   # Staggered density weights
-    b_ell_profile::Union{Nothing,Vector{T}} = nothing  # b_ell coefficient profile
+    b_ell_profile::Union{Nothing,Vector{T}} = nothing  # b_ell coefficient profile (f₀²/N²)
 end
 
 """
-    with_density_profiles(par; rho_ut, rho_st, b_ell=nothing)
+    with_b_ell_profile(par; b_ell)
 
-Return a new `QGParams` with user-provided vertical density profiles.
+Return a new `QGParams` with a user-provided b_ell (f₀²/N²) profile.
 
 This is useful for implementing custom stratification that doesn't fit
 the standard profiles (constant N², skewed Gaussian).
 
 # Arguments
 - `par`: Existing QGParams to copy
-- `rho_ut`: Unstaggered density weights (length nz)
-- `rho_st`: Staggered density weights (length nz)
-- `b_ell`: Optional b_ell coefficient profile (length nz)
+- `b_ell`: b_ell coefficient profile (length nz), where b_ell = f₀²/N²
 
 # Returns
-New QGParams with profiles populated.
+New QGParams with b_ell_profile populated.
 
 # Example
 ```julia
 par = default_params(nz=64)
-rho_ut = ones(64)
-rho_st = ones(64)
-par_custom = with_density_profiles(par; rho_ut=rho_ut, rho_st=rho_st)
+b_ell = ones(64)  # constant N² case
+par_custom = with_b_ell_profile(par; b_ell=b_ell)
 ```
 """
-function with_density_profiles(par::QGParams{T};
-                               rho_ut::AbstractVector{T},
-                               rho_st::AbstractVector{T},
-                               b_ell::Union{Nothing,AbstractVector{T}}=nothing) where T
-    @assert length(rho_ut) == par.nz "rho_ut must have length nz=$(par.nz)"
-    @assert length(rho_st) == par.nz "rho_st must have length nz=$(par.nz)"
-    bprof = b_ell
-    # Rebuild parameter struct with all existing fields + new profiles
+function with_b_ell_profile(par::QGParams{T};
+                            b_ell::AbstractVector{T}) where T
+    @assert length(b_ell) == par.nz "b_ell must have length nz=$(par.nz)"
+    # Rebuild parameter struct with all existing fields + new profile
     return QGParams{T}(;
-        (name => getfield(par, name) for name in fieldnames(typeof(par)) if !(name in (:ρ_ut_profile, :ρ_st_profile, :b_ell_profile)))...,
-        ρ_ut_profile = collect(rho_ut),
-        ρ_st_profile = collect(rho_st),
-        b_ell_profile = bprof === nothing ? nothing : collect(bprof),
+        (name => getfield(par, name) for name in fieldnames(typeof(par)) if name != :b_ell_profile)...,
+        b_ell_profile = collect(b_ell),
     )
 end
 

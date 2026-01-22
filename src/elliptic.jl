@@ -172,12 +172,11 @@ For 2D decomposition:
 3. Transpose ψ from z-pencil back to xy-pencil
 
 The discrete system is tridiagonal with structure (for interior row k):
-- Upper diagonal: du[k] = a[k+1]/r_st[k]  (interface above cell k)
-- Diagonal: d[k] = -(a[k+1] + a[k])/r_st[k] - kₕ² dz²
-- Lower diagonal: dl[k] = a[k]/r_st[k]  (interface below cell k)
+- Upper diagonal: du[k] = a[k+1]  (interface above cell k)
+- Diagonal: d[k] = -(a[k+1] + a[k]) - kₕ² dz²
+- Lower diagonal: dl[k] = a[k]  (interface below cell k)
 
-where a[k] is at the interface below cell k (between cells k-1 and k),
-and r_ut, r_st are density weights (unity for Boussinesq).
+where a[k] = f₀²/N²[k] is evaluated at the interface below cell k.
 
 # Fortran Correspondence
 This matches `psi_solver` in elliptic.f90.
@@ -251,18 +250,6 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
 
-    # Density weights for variable-density formulation
-    ρᵤₜ = if par === nothing
-        ones(eltype(a), nz)
-    else
-        isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
-    end
-    ρₛₜ = if par === nothing
-        ones(eltype(a), nz)
-    else
-        isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
-    end
-
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs  = zeros(eltype(a), nz)
     rhsᵢ = zeros(eltype(a), nz)
@@ -313,22 +300,19 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
         # Bottom boundary (k=1): Neumann condition ψ_z = 0
-        # Interface above cell 1 (between cells 1 and 2) is at a[2]
-        d[1]  = -( (ρᵤₜ[2]*a[2]) / ρₛₜ[1] + kₕ²*Δz² )
-        dᵤ[1] =   (ρᵤₜ[2]*a[2]) / ρₛₜ[1]
+        d[1]  = -(a[1] + kₕ²*Δz²)
+        dᵤ[1] = a[1]
 
         # Interior points (k = 2, ..., nz-1)
-        # Interface above cell k is at a[k+1], below is at a[k]
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k+1]*a[k+1] + ρᵤₜ[k]*a[k]) / ρₛₜ[k]) + kₕ²*Δz² )
-            dᵤ[k] = (ρᵤₜ[k+1]*a[k+1]) / ρₛₜ[k]
+            dₗ[k] = a[k]
+            d[k]  = -(a[k+1] + a[k] + kₕ²*Δz²)
+            dᵤ[k] = a[k+1]
         end
 
         # Top boundary (k=nz): Neumann condition ψ_z = 0
-        # Interface below cell nz (between cells nz-1 and nz) is at a[nz]
-        dₗ[nz] = (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz] + kₕ²*Δz² )
+        dₗ[nz] = a[nz]
+        d[nz]  = -(a[nz] + kₕ²*Δz²)
 
         # Solve for real and imaginary parts separately
         @inbounds for k in 1:nz
@@ -377,12 +361,6 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
 
-    # Density weights
-    ρᵤₜ = par === nothing ? ones(eltype(a), nz) :
-           (isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz))
-    ρₛₜ = par === nothing ? ones(eltype(a), nz) :
-           (isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz))
-
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs  = zeros(eltype(a), nz)
     rhsᵢ = zeros(eltype(a), nz)
@@ -425,20 +403,20 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        # Bottom boundary: interface above cell 1 is at a[2]
-        d[1]  = -( (ρᵤₜ[2]*a[2]) / ρₛₜ[1] + kₕ²*Δz² )
-        dᵤ[1] =   (ρᵤₜ[2]*a[2]) / ρₛₜ[1]
+        # Bottom boundary (k=1): Neumann condition ψ_z = 0
+        d[1]  = -(a[1] + kₕ²*Δz²)
+        dᵤ[1] = a[1]
 
-        # Interior: interface above cell k at a[k+1], below at a[k]
+        # Interior points (k = 2, ..., nz-1)
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k+1]*a[k+1] + ρᵤₜ[k]*a[k]) / ρₛₜ[k]) + kₕ²*Δz² )
-            dᵤ[k] = (ρᵤₜ[k+1]*a[k+1]) / ρₛₜ[k]
+            dₗ[k] = a[k]
+            d[k]  = -(a[k+1] + a[k] + kₕ²*Δz²)
+            dᵤ[k] = a[k+1]
         end
 
-        # Top boundary: interface below cell nz is at a[nz]
-        dₗ[nz] = (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz] + kₕ²*Δz² )
+        # Top boundary (k=nz): Neumann condition ψ_z = 0
+        dₗ[nz] = a[nz]
+        d[nz]  = -(a[nz] + kₕ²*Δz²)
 
         # Solve for real and imaginary parts
         @inbounds for k in 1:nz
@@ -937,17 +915,6 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
     # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
 
-    ρᵤₜ = if par !== nothing && isdefined(PARENT, :rho_ut)
-        PARENT.rho_ut(par, G)
-    else
-        ones(eltype(a), nz)
-    end
-    ρₛₜ = if par !== nothing && isdefined(PARENT, :rho_st)
-        PARENT.rho_st(par, G)
-    else
-        ones(eltype(a), nz)
-    end
-
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhsᵣ = zeros(eltype(a), nz)
     rhsᵢ = zeros(eltype(a), nz)
@@ -977,21 +944,20 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
 
             fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-            # Row 1 (bottom): Neumann BC at z=-Lz, couple to cell 2 via interface at z=-Lz+Δz
-            # Interface above cell 1 (between cells 1 and 2) is at a[2]
-            d[1]  = -( (ρᵤₜ[2]*a[2]) / ρₛₜ[1] )
-            dᵤ[1] =   (ρᵤₜ[2]*a[2]) / ρₛₜ[1]
+            # Row 1 (bottom): Neumann BC at z=-Lz
+            d[1]  = -a[1]
+            dᵤ[1] = a[1]
 
-            # Interior rows: interface above cell k is at a[k+1], below is at a[k]
+            # Interior rows
             @inbounds for k in 2:nz-1
-                dₗ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
-                d[k]  = -((ρᵤₜ[k+1]*a[k+1] + ρᵤₜ[k]*a[k]) / ρₛₜ[k])
-                dᵤ[k] = (ρᵤₜ[k+1]*a[k+1]) / ρₛₜ[k]
+                dₗ[k] = a[k]
+                d[k]  = -(a[k+1] + a[k])
+                dᵤ[k] = a[k+1]
             end
 
-            # Row nz (top): Neumann BC at z=0, couple to cell nz-1 via interface at a[nz]
-            dₗ[nz] = (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz]
-            d[nz]  = -( (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz] )
+            # Row nz (top): Neumann BC at z=0
+            dₗ[nz] = a[nz]
+            d[nz]  = -a[nz]
 
             @inbounds for k in 1:nz
                 rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
@@ -1037,21 +1003,20 @@ function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        # Row 1 (bottom): Neumann BC at z=-Lz, couple to cell 2 via interface at z=-Lz+Δz
-        # Interface above cell 1 (between cells 1 and 2) is at a[2]
-        d[1]  = -( (ρᵤₜ[2]*a[2]) / ρₛₜ[1] + (kₕ²*Δz²)/4 )
-        dᵤ[1] =   (ρᵤₜ[2]*a[2]) / ρₛₜ[1]
+        # Row 1 (bottom): Neumann BC at z=-Lz
+        d[1]  = -(a[1] + (kₕ²*Δz²)/4)
+        dᵤ[1] = a[1]
 
-        # Interior rows: interface above cell k is at a[k+1], below is at a[k]
+        # Interior rows
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k+1]*a[k+1] + ρᵤₜ[k]*a[k]) / ρₛₜ[k]) + (kₕ²*Δz²)/4 )
-            dᵤ[k] = (ρᵤₜ[k+1]*a[k+1]) / ρₛₜ[k]
+            dₗ[k] = a[k]
+            d[k]  = -(a[k+1] + a[k] + (kₕ²*Δz²)/4)
+            dᵤ[k] = a[k+1]
         end
 
-        # Row nz (top): Neumann BC at z=0, couple to cell nz-1 via interface at a[nz]
-        dₗ[nz] = (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz]*a[nz]) / ρₛₜ[nz] + (kₕ²*Δz²)/4 )
+        # Row nz (top): Neumann BC at z=0
+        dₗ[nz] = a[nz]
+        d[nz]  = -(a[nz] + (kₕ²*Δz²)/4)
 
         # Build RHS
         @inbounds for k in 1:nz
@@ -1102,17 +1067,6 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
 
-    r_ut = if par !== nothing && isdefined(PARENT, :rho_ut)
-        PARENT.rho_ut(par, G)
-    else
-        ones(eltype(a), nz)
-    end
-    r_st = if par !== nothing && isdefined(PARENT, :rho_st)
-        PARENT.rho_st(par, G)
-    else
-        ones(eltype(a), nz)
-    end
-
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs_r = zeros(eltype(a), nz)
     rhs_i = zeros(eltype(a), nz)
@@ -1139,20 +1093,20 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
 
             fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-            # Row 1 (bottom): Neumann BC at z=-Lz, couple to cell 2 via interface at a[2]
-            d[1]  = -( (r_ut[2]*a[2]) / r_st[1] )
-            du[1] =   (r_ut[2]*a[2]) / r_st[1]
+            # Row 1 (bottom): Neumann BC at z=-Lz
+            d[1]  = -a[1]
+            du[1] = a[1]
 
-            # Interior rows: interface above cell k is at a[k+1], below is at a[k]
+            # Interior rows
             @inbounds for k in 2:nz-1
-                dl[k] = (r_ut[k]*a[k]) / r_st[k]
-                d[k]  = -((r_ut[k+1]*a[k+1] + r_ut[k]*a[k]) / r_st[k])
-                du[k] = (r_ut[k+1]*a[k+1]) / r_st[k]
+                dl[k] = a[k]
+                d[k]  = -(a[k+1] + a[k])
+                du[k] = a[k+1]
             end
 
-            # Row nz (top): Neumann BC at z=0, couple to cell nz-1 via interface at a[nz]
-            dl[nz] = (r_ut[nz]*a[nz]) / r_st[nz]
-            d[nz]  = -( (r_ut[nz]*a[nz]) / r_st[nz] )
+            # Row nz (top): Neumann BC at z=0
+            dl[nz] = a[nz]
+            d[nz]  = -a[nz]
 
             @inbounds for k in 1:nz
                 rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
@@ -1194,20 +1148,20 @@ function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace
 
         fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-        # Row 1 (bottom): Neumann BC at z=-Lz, couple to cell 2 via interface at a[2]
-        d[1]  = -( (r_ut[2]*a[2]) / r_st[1] + (kh2*Δ2)/4 )
-        du[1] =   (r_ut[2]*a[2]) / r_st[1]
+        # Row 1 (bottom): Neumann BC at z=-Lz
+        d[1]  = -(a[1] + (kh2*Δ2)/4)
+        du[1] = a[1]
 
-        # Interior rows: interface above cell k is at a[k+1], below is at a[k]
+        # Interior rows
         @inbounds for k in 2:nz-1
-            dl[k] = (r_ut[k]*a[k]) / r_st[k]
-            d[k]  = -( ((r_ut[k+1]*a[k+1] + r_ut[k]*a[k]) / r_st[k]) + (kh2*Δ2)/4 )
-            du[k] = (r_ut[k+1]*a[k+1]) / r_st[k]
+            dl[k] = a[k]
+            d[k]  = -(a[k+1] + a[k] + (kh2*Δ2)/4)
+            du[k] = a[k+1]
         end
 
-        # Row nz (top): Neumann BC at z=0, couple to cell nz-1 via interface at a[nz]
-        dl[nz] = (r_ut[nz]*a[nz]) / r_st[nz]
-        d[nz]  = -( (r_ut[nz]*a[nz]) / r_st[nz] + (kh2*Δ2)/4 )
+        # Row nz (top): Neumann BC at z=0
+        dl[nz] = a[nz]
+        d[nz]  = -(a[nz] + (kh2*Δ2)/4)
 
         # Build RHS
         # RHS is just Δ² * B (no a_coeff - that was incorrect)

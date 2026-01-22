@@ -416,20 +416,9 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     vk_arr = parent(vk)
     nz_local, nx_local, ny_local = size(uk_arr)
 
-    # Get density profile for weighting (ρₛ at staggered points)
-    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     KE_total = 0.0
 
     @inbounds for k in 1:nz_local
-        # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, uk)
-        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
-
         ke_k = 0.0
 
         # Sum over horizontal wavenumbers with dealiasing
@@ -450,8 +439,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
             ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         end
 
-        # Weight by density and accumulate
-        KE_total += ρₛₖ * ke_k
+        KE_total += ke_k
     end
 
     # Normalize by nz (vertical integration)
@@ -502,34 +490,12 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     bk_arr = parent(bk)
     nz_local, nx_local, ny_local = size(bk_arr)
 
-    # Get density profiles
-    ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
-        PARENT.rho_ut(par, G)
-    else
-        ones(Float64, nz)
-    end
-
-    ρ₂ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
-    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     PE_total = 0.0
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
         k_global = local_to_global(k, 1, bk)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-        ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
-        ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
-        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         pe_k = 0.0
 
@@ -538,18 +504,17 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
             j_global = local_to_global(j, 3, bk)
 
             if L[i_global, j_global]
-                # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
-                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, i, j])
+                # PE contribution: a_ell(z) × |b|² (Boussinesq: ρ = const)
+                pe_k += a_ell_k * abs2(bk_arr[k, i, j])
             end
         end
 
         # Dealiasing correction
         if local_to_global(1, 2, bk) == 1 && local_to_global(1, 3, bk) == 1
-            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, 1, 1])
+            pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
         end
 
-        # Weight by density and accumulate
-        PE_total += ρₛₖ * pe_k
+        PE_total += pe_k
     end
 
     # Normalize by nz
@@ -836,14 +801,6 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     nz_local, nx_local, ny_local = size(BR_arr)
 
-    # Get density profile if available (for variable stratification)
-    # r_2 corresponds to rho at staggered points for potential energy
-    ρ₂ = if isdefined(PARENT, :rho_st)
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     # Grid spacing for vertical derivative
     Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
 
@@ -874,7 +831,6 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         for k in 1:nz_local
             k_global = local_to_global(k, 1, BR)
             a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-            ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
             # Compute LA = ∂_z(a × C) using finite differences
             # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
@@ -905,8 +861,8 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
             # WKE per equation (4.7): (1/2)|LA|²
             WKE_local += 0.5 * (abs2(LA_r) + abs2(LA_i))
 
-            # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
-            WPE_local += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
+            # WPE: (0.5/a_ell(z)) × kh² × (|CR|² + |CI|²) (Boussinesq: ρ = const)
+            WPE_local += (0.5 / a_ell_k) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
 
             # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
             WCE_local += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))

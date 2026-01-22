@@ -53,9 +53,6 @@ From N²(z), we derive:
   Used in: ∂/∂z(a_ell ∂ψ/∂z) for streamfunction inversion
   When f₀=1 (nondimensional): a_ell = 1/N²
 
-- rho_ut, rho_st: Density weights on unstaggered/staggered grids
-  Used in: Mass-weighted vertical operators (currently unity for Boussinesq)
-
 DEALIASING:
 -----------
 The dealias_mask implements the 2/3 rule for spectral dealiasing:
@@ -247,86 +244,6 @@ approximation (ρ = const), so these return unity weights.
 =#
 
 """
-    rho_ut(par, G) -> Vector
-
-Background density weight on unstaggered vertical levels.
-
-# Physical Context
-In the general (non-Boussinesq) formulation, the vertical elliptic operators
-include density weights:
-
-    L[ψ] = ∇²ψ + (1/ρ) ∂/∂z(ρ a(z) ∂ψ/∂z)
-
-For the Boussinesq approximation used in QG-YBJ+, ρ is constant and these
-weights reduce to unity.
-
-# Current Implementation
-- Returns user-provided profile if `par.ρ_ut_profile` is set
-- Otherwise returns ones(nz) for Boussinesq dynamics
-
-# Arguments
-- `par::QGParams`: May contain custom ρ_ut_profile
-- `G::Grid`: Grid with vertical levels
-
-# Returns
-Vector of length nz with density weights ρ(z_k).
-
-# Fortran Correspondence
-Matches `rho_ut(k)` in the Fortran implementation.
-"""
-function rho_ut(par::QGParams, G::Grid)
-    # Check for user-provided custom profile
-    if par.ρ_ut_profile !== nothing
-        @assert length(par.ρ_ut_profile) == G.nz
-        return copy(par.ρ_ut_profile)
-    end
-    # Default: unity weights (Boussinesq approximation)
-    w = similar(G.z)
-    @inbounds fill!(w, 1.0)
-    return w
-end
-
-"""
-    rho_st(par, G) -> Vector
-
-Background density weight on staggered vertical levels (cell centers).
-
-# Physical Context
-Staggered density values are used in finite-difference approximations of
-vertical derivatives. In the vertical discretization:
-- Unstaggered: function values at z[k] - dz/2 (cell faces)
-- Staggered: derivatives at z[k] (cell centers)
-
-The staggered density is typically interpolated from unstaggered values
-or defined at half-levels.
-
-# Current Implementation
-- Returns user-provided profile if `par.ρ_st_profile` is set
-- Otherwise returns ones(nz) for Boussinesq dynamics
-
-# Arguments
-- `par::QGParams`: May contain custom ρ_st_profile
-- `G::Grid`: Grid with vertical levels
-
-# Returns
-Vector of length nz with staggered density weights.
-
-# Fortran Correspondence
-Matches `rho_st(k)` in the Fortran implementation.
-"""
-function rho_st(par::QGParams, G::Grid)
-    # Check for user-provided custom profile
-    if par.ρ_st_profile !== nothing
-        @assert length(par.ρ_st_profile) == G.nz
-        return copy(par.ρ_st_profile)
-    end
-    # Default: unity weights (Boussinesq approximation)
-    w = similar(G.z)
-    @inbounds fill!(w, 1.0)
-    return w
-end
-
-"""
     b_ell_ut(par, G) -> Vector
 
 First-derivative coefficient b(z) for generalized vertical elliptic operators.
@@ -461,69 +378,6 @@ function N2_ut(par::QGParams, G::Grid)
         error("Unsupported stratification: $(par.stratification)")
     end
     return N2
-end
-
-"""
-    derive_density_profiles(par, G; N2_profile=nothing) -> (rho_ut, rho_st)
-
-Derive background density profiles from stratification N²(z).
-
-# Physical Background
-In the ocean, density ρ(z) and stratification N²(z) are related by:
-
-    N² = -(g/ρ₀) ∂ρ/∂z
-
-Integrating: ρ(z) = ρ₀ - (ρ₀/g) ∫ N²(z') dz'
-
-This function could derive ρ(z) from N²(z) for non-Boussinesq dynamics.
-
-# Algorithm (if implemented)
-1. Get N²(z) from `N2_ut(par, G)` or provided profile
-2. Integrate: dρ/dz = -N² (nondimensional with g = ρ₀ = 1)
-3. Normalize to unit mean for numerical stability
-4. Interpolate to staggered grid for rho_st
-
-# Current Implementation
-Returns unity profiles (Boussinesq approximation). The QG-YBJ+ model
-assumes constant background density, with stratification effects entering
-only through a_ell = 1/N² in the elliptic operators.
-
-# Arguments
-- `par::QGParams`: Model parameters
-- `G::Grid`: Grid structure
-- `N2_profile`: Optional custom N² profile (currently ignored, reserved for future use)
-
-# Returns
-- `rho_ut`: Density weights on unstaggered levels (length nz)
-- `rho_st`: Density weights for staggered derivative operations (length nz)
-
-# Note
-Both return arrays have length nz for indexing convenience, even though true
-staggered values would have length nz-1. With Boussinesq (unity weights),
-this distinction doesn't matter.
-
-# Fortran Correspondence
-The Fortran test1 case also uses unity weights (Boussinesq).
-"""
-function derive_density_profiles(par::QGParams, G::Grid; N2_profile=nothing)
-    #= For the QG-YBJ+ model with Boussinesq approximation:
-    - Background density ρ = const = 1 (nondimensional)
-    - Stratification enters through a_ell = 1/N² in elliptic operators
-    - No density weighting in vertical derivatives
-
-    This matches the Fortran reference implementation (test1). =#
-
-    # Warn if N2_profile is provided since we currently use Boussinesq approximation
-    if N2_profile !== nothing
-        @warn "derive_density_profiles: N2_profile argument is currently ignored. " *
-              "Returning unity profiles (Boussinesq approximation). " *
-              "For variable-density effects, modify this function." maxlog=1
-    end
-
-    nz = G.nz
-    rho_ut = ones(eltype(G.z), nz)
-    rho_st = ones(eltype(G.z), nz)
-    return rho_ut, rho_st
 end
 
 #=

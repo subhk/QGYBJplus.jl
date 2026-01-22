@@ -7,7 +7,7 @@ Second-order IMEX (Implicit-Explicit) time stepping for YBJ+ equation with
 Strang operator splitting and Adams-Bashforth 2 for advection.
 
 The YBJ+ equation for B:
-    ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A + (i/2)ζB
+    ∂B/∂t + J(ψ,B) = i·αdisp·kₕ²·A - (i/2)ζB
 
 where A = (L⁺)⁻¹·B (elliptic inversion).
 
@@ -125,8 +125,6 @@ struct IMEXWorkspace{CT, RT}
     Bstar::CT    # B after first half-refraction (for Strang splitting)
     Atemp::CT    # Temporary A storage
     αdisp_profile::Vector{Float64}  # αdisp(z) cache (length nz)
-    r_ut::Vector{Float64}           # Unstaggered density weights (length nz)
-    r_st::Vector{Float64}           # Staggered density weights (length nz)
 
     # Per-thread workspace for tridiagonal solves
     thread_local::Vector{IMEXThreadLocal}
@@ -169,8 +167,6 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     Atemp = similar(S.A)
     # Initialize with zeros to avoid garbage values
     αdisp_profile = zeros(Float64, G.nz)
-    r_ut = ones(Float64, G.nz)  # Default to 1 for Boussinesq
-    r_st = ones(Float64, G.nz)  # Default to 1 for Boussinesq
     qtemp = similar(S.q)
 
     nz = G.nz
@@ -184,7 +180,7 @@ function init_imex_workspace(S, G; nthreads=Threads.maxthreadid())
     has_prev_tendency = Ref(false)
 
     return IMEXWorkspace{CT, RT}(
-        nBk, nBk_prev, rBk, nqk, dqk, tqk_prev, RHS, Bstar, Atemp, αdisp_profile, r_ut, r_st,
+        nBk, nBk_prev, rBk, nqk, dqk, tqk_prev, RHS, Bstar, Atemp, αdisp_profile,
         thread_local,
         qtemp,
         nz,
@@ -299,13 +295,12 @@ function apply_refraction_exact!(Bk_out, Bk_in, ψk, G, par, plans;
 end
 
 """
-    solve_modified_elliptic!(A, B, G, par, a, kₕ², β_scale, αdisp_profile, r_ut, r_st,
-                             tl::IMEXThreadLocal)
+    solve_modified_elliptic!(A, B, G, par, a, kₕ², β_scale, αdisp_profile, tl::IMEXThreadLocal)
 
 Solve the modified elliptic problem for IMEX dispersion:
     (L⁺ - β)·A = B
 
-where L⁺ = (1/ρ)∂/∂z(ρ a(z) ∂/∂z) - kₕ²/4 and β = (dt/2)·i·αdisp(z)·kₕ²
+where L⁺ = ∂/∂z(a(z) ∂/∂z) - kₕ²/4 and β = (dt/2)·i·αdisp(z)·kₕ² (Boussinesq)
 
 This is a tridiagonal system for each horizontal mode.
 
@@ -318,13 +313,10 @@ This is a tridiagonal system for each horizontal mode.
 - `kₕ²`: Horizontal wavenumber squared
 - `β_scale`: Scalar factor = (dt/2)·i·kₕ² (multiplied by αdisp_profile[k] per level)
 - `αdisp_profile`: αdisp(z) profile, length nz
-- `r_ut`: Unstaggered density weights (length nz)
-- `r_st`: Staggered density weights (length nz)
 - `tl`: IMEXThreadLocal with pre-allocated tridiagonal arrays (thread-local)
 """
 function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
                                    G, par, a, kₕ², β_scale, αdisp_profile::AbstractVector,
-                                   r_ut::AbstractVector, r_st::AbstractVector,
                                    tl::IMEXThreadLocal)
     nz = G.nz
     if nz == 1
@@ -342,11 +334,11 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
     dz² = dz * dz
 
     # Build tridiagonal system: (L⁺ - β)·A = B
-    # where L⁺ = (1/ρ)∂/∂z(ρ a(z) ∂A/∂z) - kₕ²/4·A is the YBJ+ elliptic operator
+    # where L⁺ = ∂/∂z(a(z) ∂A/∂z) - kₕ²/4·A is the YBJ+ elliptic operator (Boussinesq)
     # and β = (dt/2)·i·αdisp(z)·kₕ² is the implicit dispersion coefficient
     # With Neumann BCs: ∂A/∂z = 0 at z = -Lz, 0
 
-    # This matches the discretization used by invert_B_to_A! (including density weights).
+    # This matches the discretization used by invert_B_to_A!
     # The matrix is scaled by dz², so RHS is dz² * B.
     @inbounds for k in 1:nz
         βₖ = β_scale * αdisp_profile[k]
@@ -354,20 +346,16 @@ function solve_modified_elliptic!(A_out::AbstractVector, B_in::AbstractVector,
 
         if k == 1
             # Bottom boundary (Neumann): A_z = 0 → A[0] = A[1]
-            coeff = (r_ut[1] * a[1]) / r_st[1]
-            tl.tri_diag[1] = -(coeff + (kₕ² * dz²) / 4.0) - βₖ * dz²
-            tl.tri_upper[1] = coeff
+            tl.tri_diag[1] = -(a[1] + (kₕ² * dz²) / 4.0) - βₖ * dz²
+            tl.tri_upper[1] = a[1]
         elseif k == nz
             # Top boundary (Neumann): A_z = 0 → A[nz+1] = A[nz]
-            coeff = (r_ut[nz-1] * a[nz-1]) / r_st[nz]
-            tl.tri_lower[nz-1] = coeff
-            tl.tri_diag[nz] = -(coeff + (kₕ² * dz²) / 4.0) - βₖ * dz²
+            tl.tri_lower[nz-1] = a[nz]
+            tl.tri_diag[nz] = -(a[nz] + (kₕ² * dz²) / 4.0) - βₖ * dz²
         else
-            coeff_down = (r_ut[k-1] * a[k-1]) / r_st[k]
-            coeff_up = (r_ut[k] * a[k]) / r_st[k]
-            tl.tri_lower[k-1] = coeff_down
-            tl.tri_diag[k] = -(coeff_up + coeff_down + (kₕ² * dz²) / 4.0) - βₖ * dz²
-            tl.tri_upper[k] = coeff_up
+            tl.tri_lower[k-1] = a[k]
+            tl.tri_diag[k] = -(a[k+1] + a[k] + (kₕ² * dz²) / 4.0) - βₖ * dz²
+            tl.tri_upper[k] = a[k+1]
         end
     end
 
@@ -739,30 +727,6 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     αdisp_const = T(par.f₀) / T(2)
     fill!(αdisp_profile, αdisp_const)
 
-    # Density weights (default to unity for Boussinesq)
-    r_ut = imex_ws.r_ut
-    r_st = imex_ws.r_st
-    if length(r_ut) != nz
-        resize!(r_ut, nz)
-    end
-    if length(r_st) != nz
-        resize!(r_st, nz)
-    end
-    if par.ρ_ut_profile !== nothing
-        @inbounds for k in 1:nz
-            r_ut[k] = par.ρ_ut_profile[k]
-        end
-    else
-        fill!(r_ut, one(eltype(r_ut)))
-    end
-    if par.ρ_st_profile !== nothing
-        @inbounds for k in 1:nz
-            r_st[k] = par.ρ_st_profile[k]
-        end
-    else
-        fill!(r_st, one(eltype(r_st)))
-    end
-
     # Process each horizontal mode
     # For IMEX-CN: (I - dt/2·L)·B^{n+1} = (I + dt/2·L)·B^n + dt·N
     # where L·B = i·αdisp·kₕ²·A and A = (L⁺)⁻¹·B
@@ -824,7 +788,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 tl.B_col[k] = Bstar_arr[k, i, j]
             end
             solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
-                                     complex(0.0), αdisp_profile, r_ut, r_st, tl)
+                                     complex(0.0), αdisp_profile, tl)
 
             # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
             @inbounds for k in 1:nz_local
@@ -839,7 +803,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             β_scale = (dt/2) * im * kₕ²
 
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
-                                     β_scale, αdisp_profile, r_ut, r_st, tl)
+                                     β_scale, αdisp_profile, tl)
 
             # Recover B** from the IMEX-CN relation
             @inbounds for k in 1:nz_local
@@ -895,7 +859,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             end
             # Use β_scale=0 to get standard L⁺ inversion (A* = (L⁺)⁻¹B*)
             solve_modified_elliptic!(tl.A_col, tl.B_col, G, par, a, kₕ²,
-                                     complex(0.0), αdisp_profile, r_ut, r_st, tl)
+                                     complex(0.0), αdisp_profile, tl)
 
             # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
             # RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (c_n·dt)·N^n + (c_nm1·dt)·N^{n-1}
@@ -912,7 +876,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             β_scale = (dt/2) * im * kₕ²
 
             solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
-                                     β_scale, αdisp_profile, r_ut, r_st, tl)
+                                     β_scale, αdisp_profile, tl)
 
             # Recover B** from the IMEX-CN relation: B** = RHS + β*A^{n+1}
             for k in 1:nz_local

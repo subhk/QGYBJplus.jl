@@ -690,18 +690,14 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
         @info "Using variable stratification from N² profile"
     end
 
-    # Density weights (unity for Boussinesq)
-    r_ut = ones(Float64, nz)  # rho at unstaggered (u) points
-    r_st = ones(Float64, nz)  # rho at staggered (s) points
-
     # Get underlying arrays
     psi_arr = parent(S.psi)
     nz_local, nx_local, ny_local = size(psi_arr)
 
     # Compute potential vorticity q from ψ
-    # q = -kh² ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
+    # q = -kh² ψ + ∂/∂z (a_ell ∂ψ/∂z) (Boussinesq)
     if hasfield(typeof(S), :q)
-        compute_q_from_psi!(S.q, S.psi, G, params, a_ell, r_ut, r_st, dz)
+        compute_q_from_psi!(S.q, S.psi, G, params, a_ell, dz)
         @info "Computed potential vorticity q from streamfunction"
     end
 
@@ -719,24 +715,21 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
 end
 
 """
-    compute_q_from_psi!(q, psi, G, params, a_ell, r_ut, r_st, dz)
+    compute_q_from_psi!(q, psi, G, params, a_ell, dz)
 
 Compute QG potential vorticity from streamfunction (PDF Eq. A21, Appendix).
 
-The PV-streamfunction relationship is (homogeneous formulation):
-    q^H = ∇²ψ^H + L(ψ^H)  where L = ∂/∂z (f²/N² ∂/∂z)
+The PV-streamfunction relationship is (Boussinesq formulation):
+    q = ∇²ψ + L(ψ)  where L = ∂/∂z (f²/N² ∂/∂z)
 
 In spectral space with finite differences in z (PDF Eq. 32):
-    q[k] = -kh² ψ[k] + (1/dz²) [S_{k+1}(ψ[k+1] - ψ[k]) - S_k(ψ[k] - ψ[k-1])]
+    q[k] = -kh² ψ[k] + (1/dz²) [a[k+1](ψ[k+1] - ψ[k]) - a[k](ψ[k] - ψ[k-1])]
 
-where S_i = (f/(N(z^u_i)Δz))² at unstaggered level i. The interface coefficient
-a_ell[k] is at z = (k-1)*Δz (below cell k), so:
-- Interface above cell k uses a_ell[k+1]
-- Interface below cell k uses a_ell[k]
+where a[k] = f₀²/N²[k] is the elliptic coefficient at interface k.
 
 Boundary conditions: ∂ψ/∂z = 0 (Neumann BC, PDF Eq. A14).
 """
-function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
+function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, dz)
     nz = G.nz
     dz2 = dz^2
 
@@ -756,14 +749,10 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
         kh2 = kx_val^2 + ky_val^2
 
         # Interior points (k = 2, ..., nz-1)
-        # Interface above cell k is at a_ell[k+1], below is at a_ell[k] (PDF Eq. 32)
         for k in 2:nz-1
-            coeff_up = (r_ut[k+1] * a_ell[k+1]) / r_st[k]
-            coeff_down = (r_ut[k] * a_ell[k]) / r_st[k]
-
-            vert_term = coeff_up * psi_arr[k+1, i_local, j_local] -
-                       (coeff_up + coeff_down) * psi_arr[k, i_local, j_local] +
-                       coeff_down * psi_arr[k-1, i_local, j_local]
+            vert_term = a_ell[k+1] * psi_arr[k+1, i_local, j_local] -
+                       (a_ell[k+1] + a_ell[k]) * psi_arr[k, i_local, j_local] +
+                       a_ell[k] * psi_arr[k-1, i_local, j_local]
 
             q_arr[k, i_local, j_local] = -kh2 * psi_arr[k, i_local, j_local] + vert_term / dz2
         end
@@ -774,15 +763,11 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local]
         else
             # Bottom boundary (k=1): Neumann BC ψ_z = 0 ⟹ ψ[0] = ψ[1]
-            # Interface above cell 1 is at a_ell[2] (PDF Eq. 32)
-            coeff_up = (r_ut[2] * a_ell[2]) / r_st[1]
-            vert_term = coeff_up * (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local])
+            vert_term = a_ell[1] * (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local])
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local] + vert_term / dz2
 
             # Top boundary (k=nz): Neumann BC ψ_z = 0 ⟹ ψ[nz+1] = ψ[nz]
-            # Interface below cell nz is at a_ell[nz] (PDF Eq. 32)
-            coeff_down = (r_ut[nz] * a_ell[nz]) / r_st[nz]
-            vert_term = coeff_down * (psi_arr[nz-1, i_local, j_local] - psi_arr[nz, i_local, j_local])
+            vert_term = a_ell[nz] * (psi_arr[nz-1, i_local, j_local] - psi_arr[nz, i_local, j_local])
             q_arr[nz, i_local, j_local] = -kh2 * psi_arr[nz, i_local, j_local] + vert_term / dz2
         end
     end
