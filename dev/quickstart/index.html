@@ -24,8 +24,8 @@ println(&quot;Kinetic Energy: &quot;, flow_kinetic_energy(result.state.u, result
 
 # Spectral fields (complex, in Fourier space)
 state.psi    # Streamfunction
-state.B      # Wave envelope
-state.A      # Wave amplitude (diagnosed from B)
+state.L⁺A    # Wave envelope (L⁺A where L⁺ = L - k_h²/4)
+state.A      # Wave amplitude (diagnosed from L⁺A)
 state.C      # Vertical derivative of A
 
 # Physical fields (real, in physical space)
@@ -37,8 +37,8 @@ KE = flow_kinetic_energy(state.u, state.v)
 # Wave energy components per YBJ+ equation (4.7)
 WKE, WPE, WCE = compute_detailed_wave_energy(state, result.grid, result.params)
 
-# Simple wave energy
-WE_B, WE_A = wave_energy(state.B, state.A)</code></pre><hr/><h2 id="Common-Configuration-Options"><a class="docs-heading-anchor" href="#Common-Configuration-Options">Common Configuration Options</a><a id="Common-Configuration-Options-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Configuration-Options" title="Permalink"></a></h2><div class="feature-grid">
+# Vertically-averaged wave kinetic energy (uses LA = L⁺A + k_h²/4 * A)
+WE = wave_energy_vavg(state.L⁺A, state.A, grid, plans)</code></pre><hr/><h2 id="Common-Configuration-Options"><a class="docs-heading-anchor" href="#Common-Configuration-Options">Common Configuration Options</a><a id="Common-Configuration-Options-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Configuration-Options" title="Permalink"></a></h2><div class="feature-grid">
 <div class="feature-card">
     <h3>Physics Options</h3>
     <p>Control the physical model behavior</p>
@@ -84,4 +84,4 @@ WE_B, WE_A = wave_energy(state.B, state.A)</code></pre><hr/><h2 id="Common-Confi
         <strong><a href="../advanced/parallel/">MPI Parallelization</a></strong> — Run large-scale simulations
     </div>
 </div>
-</div></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../getting_started/">« Installation</a><a class="docs-footer-nextpage" href="../worked_example/">Worked Example »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Thursday 22 January 2026 14:26">Thursday 22 January 2026</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+</div></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../getting_started/">« Installation</a><a class="docs-footer-nextpage" href="../worked_example/">Worked Example »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Thursday 22 January 2026 16:35">Thursday 22 January 2026</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
