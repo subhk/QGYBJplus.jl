@@ -423,7 +423,7 @@ for step in 1:nsteps
                   N2_profile=N2_profile)
 
     # Copy for next step (only need 2 time levels, not 3 like leapfrog)
-    parent(Sn.B) .= parent(Snp1.B)
+    parent(Sn.L⁺A) .= parent(Snp1.L⁺A)
     parent(Sn.A) .= parent(Snp1.A)
     parent(Sn.q) .= parent(Snp1.q)
     parent(Sn.psi) .= parent(Snp1.psi)

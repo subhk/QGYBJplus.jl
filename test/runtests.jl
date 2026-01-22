@@ -240,8 +240,8 @@ end
 
     @test all(isfinite, real.(Snp1.q))
     @test all(isfinite, imag.(Snp1.q))
-    @test all(isfinite, real.(Snp1.B))
-    @test all(isfinite, imag.(Snp1.B))
+    @test all(isfinite, real.(Snp1.L⁺A))
+    @test all(isfinite, imag.(Snp1.L⁺A))
     @test all(isfinite, real.(Snp1.psi))
 end
 

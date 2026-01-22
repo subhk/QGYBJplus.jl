@@ -128,7 +128,7 @@ S.psi .= psi_init
 
 # Read initial waves from file (optional)
 B_init = read_initial_waves("initial_conditions.nc", G)
-S.B .= B_init
+S.L⁺A .= B_init
 
 # Compute derived quantities
 compute_q_from_psi!(S, G, plans, a_ell)
@@ -180,7 +180,7 @@ G, S, plans, a_ell = setup_model(par)
 
 # Direct assignment (in spectral space)
 S.psi .= 0.0  # Zero everywhere
-S.B .= 0.0    # No waves
+S.L⁺A .= 0.0    # No waves
 
 # Or set specific modes
 # S.psi[kx_idx, ky_idx, kz] = amplitude
@@ -237,7 +237,7 @@ KE = flow_kinetic_energy(S.u, S.v)
 println("Initial KE: $KE")
 
 # Check wave energy
-WE_B, WE_A = wave_energy(S.B, S.A)
+WE_B, WE_A = wave_energy(S.L⁺A, S.A)
 println("Initial Wave Energy (B): $WE_B")
 println("Initial Wave Energy (A): $WE_A")
 ```

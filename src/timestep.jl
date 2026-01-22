@@ -208,7 +208,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                                 particle_tracker=nothing, current_time=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     q_arr = parent(S.q)
-    B_arr = parent(S.L⁺A)
+    L⁺A_arr = parent(S.L⁺A)
     psi_arr = parent(S.psi)
     A_arr = parent(S.A)
     C_arr = parent(S.C)
@@ -228,13 +228,13 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     nqk = similar(S.q)   # J(ψ, q) advection of PV
     dqk = similar(S.L⁺A)   # Vertical diffusion of q
     if par.ybj_plus
-        nBk = similar(S.L⁺A)   # J(ψ, B) advection (complex)
-        rBk = similar(S.L⁺A)   # ζ × B refraction (complex)
+        nL⁺Ak = similar(S.L⁺A)   # J(ψ, L⁺A) advection (complex)
+        rL⁺Ak = similar(S.L⁺A)   # ζ × L⁺A refraction (complex)
     else
-        nBRk = similar(S.L⁺A)  # J(ψ, BR) advection of wave real part
-        nBIk = similar(S.L⁺A)  # J(ψ, BI) advection of wave imaginary part
-        rBRk = similar(S.L⁺A)  # BR × ζ refraction real part
-        rBIk = similar(S.L⁺A)  # BI × ζ refraction imaginary part
+        nL⁺ARk = similar(S.L⁺A)  # J(ψ, BR) advection of wave real part
+        nL⁺AIk = similar(S.L⁺A)  # J(ψ, BI) advection of wave imaginary part
+        rL⁺ARk = similar(S.L⁺A)  # BR × ζ refraction real part
+        rL⁺AIk = similar(S.L⁺A)  # BI × ζ refraction imaginary part
     end
 
     # For normal YBJ, remove vertical mean of B before any diagnostics/tendencies.
@@ -242,12 +242,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         sumL⁺A!(S.L⁺A, G; Lmask=L)
 
         # Split B into real and imaginary parts for computation
-        BRk = similar(S.L⁺A); BIk = similar(S.L⁺A)
-        BRk_arr = parent(BRk); BIk_arr = parent(BIk)
+        L⁺ARk = similar(S.L⁺A); L⁺AIk = similar(S.L⁺A)
+        L⁺ARk_arr = parent(L⁺ARk); L⁺AIk_arr = parent(L⁺AIk)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-            BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
+            L⁺ARk_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
+            L⁺AIk_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
         end
     end
 
@@ -263,12 +263,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     else
         # Normal YBJ: Use sumL⁺A!/compute_sigma/compute_A! path
         # For initial step, use zero tendencies for sigma computation
-        nBRk_zero = similar(S.L⁺A); fill!(nBRk_zero, 0)
-        nBIk_zero = similar(S.L⁺A); fill!(nBIk_zero, 0)
-        rBRk_zero = similar(S.L⁺A); fill!(rBRk_zero, 0)
-        rBIk_zero = similar(S.L⁺A); fill!(rBIk_zero, 0)
-        sigma_init = compute_sigma(par, G, nBRk_zero, nBIk_zero, rBRk_zero, rBIk_zero; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma_init, par, G; Lmask=L, N2_profile=N2_profile)
+        nL⁺ARk_zero = similar(S.L⁺A); fill!(nL⁺ARk_zero, 0)
+        nL⁺AIk_zero = similar(S.L⁺A); fill!(nL⁺AIk_zero, 0)
+        rL⁺ARk_zero = similar(S.L⁺A); fill!(rL⁺ARk_zero, 0)
+        rL⁺AIk_zero = similar(S.L⁺A); fill!(rL⁺AIk_zero, 0)
+        sigma_init = compute_sigma(par, G, nL⁺ARk_zero, nL⁺AIk_zero, rL⁺ARk_zero, rL⁺AIk_zero; Lmask=L, N2_profile=N2_profile)
+        compute_A!(S.A, S.C, L⁺ARk, L⁺AIk, sigma_init, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     #= Step 2: Compute nonlinear tendencies =#
@@ -282,10 +282,10 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         refraction_waqg_L⁺A!(rL⁺Ak, S.L⁺A, S.psi, G, plans; Lmask=L)
     else
         # Advection: J(ψ, q), J(ψ, BR), J(ψ, BI)
-        convol_waqg!(nqk, nBRk, nBIk, S.u, S.v, S.q, BRk, BIk, G, plans; Lmask=L)
+        convol_waqg!(nqk, nL⁺ARk, nL⁺AIk, S.u, S.v, S.q, L⁺ARk, L⁺AIk, G, plans; Lmask=L)
 
         # Wave refraction: B × ζ where ζ = ∇²ψ
-        refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
+        refraction_waqg!(rL⁺ARk, rL⁺AIk, L⁺ARk, L⁺AIk, S.psi, G, plans; Lmask=L)
     end
 
     # Vertical diffusion: νz ∂²q/∂z² (handles 2D decomposition transposes internally)
@@ -300,9 +300,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     if par.linear
         nqk .= 0
         if par.ybj_plus
-            nBk .= 0
+            nL⁺Ak .= 0
         else
-            nBRk .= 0; nBIk .= 0
+            nL⁺ARk .= 0; nL⁺AIk .= 0
         end
     end
 
@@ -315,9 +315,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     if par.passive_scalar
         S.A .= 0; S.C .= 0
         if par.ybj_plus
-            rBk .= 0
+            rL⁺Ak .= 0
         else
-            rBRk .= 0; rBIk .= 0
+            rL⁺ARk .= 0; rL⁺AIk .= 0
         end
     end
 
@@ -328,15 +328,15 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     qok  = copy(S.q)
     qok_arr = parent(qok)
     if par.ybj_plus
-        Bok = copy(S.L⁺A)
-        Bok_arr = parent(Bok)
+        L⁺Aok = copy(S.L⁺A)
+        L⁺Aok_arr = parent(L⁺Aok)
     else
-        BRok = similar(S.L⁺A); BIok = similar(S.L⁺A)
-        BRok_arr = parent(BRok); BIok_arr = parent(BIok)
+        L⁺ARok = similar(S.L⁺A); L⁺AIok = similar(S.L⁺A)
+        L⁺ARok_arr = parent(L⁺ARok); L⁺AIok_arr = parent(L⁺AIok)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRok_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-            BIok_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
+            L⁺ARok_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
+            L⁺AIok_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
         end
     end
 
@@ -347,11 +347,11 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     # Get parent arrays for tendency terms
     nqk_arr = parent(nqk)
     if par.ybj_plus
-        nBk_arr = parent(nBk)
-        rBk_arr = parent(rBk)
+        nL⁺Ak_arr = parent(nL⁺Ak)
+        rL⁺Ak_arr = parent(rL⁺Ak)
     else
-        nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-        rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
+        nL⁺ARk_arr = parent(nL⁺ARk); nL⁺AIk_arr = parent(nL⁺AIk)
+        rL⁺ARk_arr = parent(rL⁺ARk); rL⁺AIk_arr = parent(rL⁺AIk)
     end
     dqk_arr = parent(dqk)
 
@@ -390,8 +390,8 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                 ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
                 k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
-                B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
-                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
+                L⁺A_arr[k, i, j] = ( L⁺Aok_arr[k, i, j] - par.dt*nL⁺Ak_arr[k, i, j]
+                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rL⁺Ak_arr[k, i, j]) ) * exp(-λʷ)
             else
                 #= Update B (wave envelope) - Normal YBJ (PDF Eq. 45-46)
                 In terms of real/imaginary parts (with αdisp = f/2):
@@ -399,20 +399,20 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
                     ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
                 k_global = local_to_global(k, 1, S.q)
                 αdisp = αdisp_profile[k_global]
-                BRnew = ( BRok_arr[k, i, j] - par.dt*nBRk_arr[k, i, j]
+                L⁺ARnew = ( L⁺ARok_arr[k, i, j] - par.dt*nL⁺ARk_arr[k, i, j]
                           - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
-                          + par.dt*0.5*rBIk_arr[k, i, j] ) * exp(-λʷ)
-                BInew = ( BIok_arr[k, i, j] - par.dt*nBIk_arr[k, i, j]
+                          + par.dt*0.5*rL⁺AIk_arr[k, i, j] ) * exp(-λʷ)
+                L⁺AInew = ( L⁺AIok_arr[k, i, j] - par.dt*nL⁺AIk_arr[k, i, j]
                           + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
-                          - par.dt*0.5*rBRk_arr[k, i, j] ) * exp(-λʷ)
+                          - par.dt*0.5*rL⁺ARk_arr[k, i, j] ) * exp(-λʷ)
 
                 # Recombine into complex B
-                B_arr[k, i, j] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
+                L⁺A_arr[k, i, j] = Complex(real(L⁺ARnew), 0) + im*Complex(real(L⁺AInew), 0)
             end
         else
             # Zero out dealiased modes
             q_arr[k, i, j] = 0
-            B_arr[k, i, j] = 0
+            L⁺A_arr[k, i, j] = 0
         end
     end
 
@@ -428,12 +428,12 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
         else
             # Rebuild BR/BI from updated B
             @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-                BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
+                L⁺ARk_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
+                L⁺AIk_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
             end
 
             # Compute qʷ from B
-            compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+            compute_qw!(qwk, L⁺ARk, L⁺AIk, par, G, plans; Lmask=L)
         end
 
         # Subtract from q
@@ -465,9 +465,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     else
         # Normal YBJ: Different procedure
         sumL⁺A!(S.L⁺A, G; Lmask=L)  # Remove vertical mean
-        split_L⁺A_to_real_imag!(BRk, BIk, S.L⁺A)
-        sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma, par, G; Lmask=L, N2_profile=N2_profile)
+        split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, S.L⁺A)
+        sigma = compute_sigma(par, G, nL⁺ARk, nL⁺AIk, rL⁺ARk, rL⁺AIk; Lmask=L, N2_profile=N2_profile)
+        compute_A!(S.A, S.C, L⁺ARk, L⁺AIk, sigma, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     # Compute velocities from ψ (with dealiasing for omega equation RHS)
@@ -586,12 +586,12 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
                         particle_tracker=nothing, current_time=nothing)
     #= Setup - get local dimensions for PencilArray compatibility =#
     qn_arr = parent(Sn.q)
-    Bn_arr = parent(Sn.L⁺A)
+    L⁺An_arr = parent(Sn.L⁺A)
     An_arr = parent(Sn.A)
     qnm1_arr = parent(Snm1.q)
-    Bnm1_arr = parent(Snm1.B)
+    L⁺Anm1_arr = parent(Snm1.L⁺A)
     qnp1_arr = parent(Snp1.q)
-    Bnp1_arr = parent(Snp1.L⁺A)
+    L⁺Anp1_arr = parent(Snp1.L⁺A)
 
     nz_local, nx_local, ny_local = size(qn_arr)
     nz = G.nz
@@ -651,18 +651,18 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     if par.linear
         nqk .= 0
         if par.ybj_plus
-            nBk .= 0
+            nL⁺Ak .= 0
         else
-            nBRk .= 0; nBIk .= 0
+            nL⁺ARk .= 0; nL⁺AIk .= 0
         end
     end
     if par.no_dispersion; Sn.A .= 0; Sn.C .= 0; end
     if par.passive_scalar
         Sn.A .= 0; Sn.C .= 0
         if par.ybj_plus
-            rBk .= 0
+            rL⁺Ak .= 0
         else
-            rBRk .= 0; rBIk .= 0
+            rL⁺ARk .= 0; rL⁺AIk .= 0
         end
     end
     if par.fixed_flow; nqk .= 0; end
@@ -671,21 +671,21 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     qtemp = similar(Sn.q)
     qtemp_arr = parent(qtemp)
     if par.ybj_plus
-        Btemp = similar(Sn.L⁺A)
-        Btemp_arr = parent(Btemp)
+        L⁺Atemp = similar(Sn.L⁺A)
+        L⁺Atemp_arr = parent(L⁺Atemp)
     else
-        BRtemp = similar(Sn.L⁺A); BItemp = similar(Sn.L⁺A)
-        BRtemp_arr = parent(BRtemp); BItemp_arr = parent(BItemp)
+        L⁺ARtemp = similar(Sn.L⁺A); L⁺AItemp = similar(Sn.L⁺A)
+        L⁺ARtemp_arr = parent(L⁺ARtemp); L⁺AItemp_arr = parent(L⁺AItemp)
     end
 
     # Get parent arrays for tendency terms
     nqk_arr = parent(nqk)
     if par.ybj_plus
-        nBk_arr = parent(nBk)
-        rBk_arr = parent(rBk)
+        nL⁺Ak_arr = parent(nL⁺Ak)
+        rL⁺Ak_arr = parent(rL⁺Ak)
     else
-        nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-        rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
+        nL⁺ARk_arr = parent(nL⁺ARk); nL⁺AIk_arr = parent(nL⁺AIk)
+        rL⁺ARk_arr = parent(rL⁺ARk); rL⁺AIk_arr = parent(rL⁺AIk)
     end
     dqk_arr = parent(dqk)
 
@@ -724,31 +724,31 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
                 ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
                 k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
-                Btemp_arr[k, i, j] = Bnm1_arr[k, i, j]*exp(-2λʷ) +
-                               2*par.dt*( -nBk_arr[k, i, j] +
+                L⁺Atemp_arr[k, i, j] = L⁺Anm1_arr[k, i, j]*exp(-2λʷ) +
+                               2*par.dt*( -nL⁺Ak_arr[k, i, j] +
                                           im*αdisp*kₕ²*An_arr[k, i, j] -
-                                          0.5im*rBk_arr[k, i, j] )*exp(-λʷ)
+                                          0.5im*rL⁺Ak_arr[k, i, j] )*exp(-λʷ)
             else
                 #= Update B (real and imaginary parts) - PDF Eq. 45-46
                 BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
                 BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
                 k_global = local_to_global(k, 1, Sn.q)
                 αdisp = αdisp_profile[k_global]
-                BRtemp_arr[k, i, j] = Complex(real(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBRk_arr[k, i, j] +
+                L⁺ARtemp_arr[k, i, j] = Complex(real(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                               2*par.dt*( nL⁺ARk_arr[k, i, j] +
                                           αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) -
-                                          0.5*rBIk_arr[k, i, j] )*exp(-λʷ)
-                BItemp_arr[k, i, j] = Complex(imag(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBIk_arr[k, i, j] -
+                                          0.5*rL⁺AIk_arr[k, i, j] )*exp(-λʷ)
+                L⁺AItemp_arr[k, i, j] = Complex(imag(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                               2*par.dt*( nL⁺AIk_arr[k, i, j] -
                                           αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) +
-                                          0.5*rBRk_arr[k, i, j] )*exp(-λʷ)
+                                          0.5*rL⁺ARk_arr[k, i, j] )*exp(-λʷ)
             end
         else
             qtemp_arr[k, i, j] = 0
             if par.ybj_plus
-                Btemp_arr[k, i, j] = 0
+                L⁺Atemp_arr[k, i, j] = 0
             else
-                BRtemp_arr[k, i, j] = 0; BItemp_arr[k, i, j] = 0
+                L⁺ARtemp_arr[k, i, j] = 0; L⁺AItemp_arr[k, i, j] = 0
             end
         end
     end
@@ -772,13 +772,13 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
             # Filter B - store in Sn so it becomes new Snm1 after rotation
             if par.ybj_plus
-                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Btemp_arr[k, i, j] )
+                L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Atemp_arr[k, i, j] )
             else
-                Bnp1 = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
-                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Bnp1 )
+                L⁺Anp1_local = Complex(real(L⁺ARtemp_arr[k, i, j]),0) + im*Complex(real(L⁺AItemp_arr[k, i, j]),0)
+                L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Anp1_local )
             end
         else
-            qn_arr[k, i, j] = 0; Bn_arr[k, i, j] = 0
+            qn_arr[k, i, j] = 0; L⁺An_arr[k, i, j] = 0
         end
     end
 
@@ -786,9 +786,9 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         qnp1_arr[k, i, j] = qtemp_arr[k, i, j]
         if par.ybj_plus
-            Bnp1_arr[k, i, j] = Btemp_arr[k, i, j]
+            L⁺Anp1_arr[k, i, j] = L⁺Atemp_arr[k, i, j]
         else
-            Bnp1_arr[k, i, j] = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
+            L⁺Anp1_arr[k, i, j] = Complex(real(L⁺ARtemp_arr[k, i, j]),0) + im*Complex(real(L⁺AItemp_arr[k, i, j]),0)
         end
     end
 
@@ -802,14 +802,14 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
             compute_qw_complex!(qwk, Snp1.L⁺A, par, G, plans; Lmask=L)
         else
             # Rebuild BR/BI from updated B
-            BRk2 = similar(Snp1.L⁺A); BIk2 = similar(Snp1.L⁺A)
-            BRk2_arr = parent(BRk2); BIk2_arr = parent(BIk2)
+            L⁺ARk2 = similar(Snp1.L⁺A); L⁺AIk2 = similar(Snp1.L⁺A)
+            L⁺ARk2_arr = parent(L⁺ARk2); L⁺AIk2_arr = parent(L⁺AIk2)
             @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk2_arr[k, i, j] = Complex(real(Bnp1_arr[k, i, j]),0)
-                BIk2_arr[k, i, j] = Complex(imag(Bnp1_arr[k, i, j]),0)
+                L⁺ARk2_arr[k, i, j] = Complex(real(L⁺Anp1_arr[k, i, j]),0)
+                L⁺AIk2_arr[k, i, j] = Complex(imag(L⁺Anp1_arr[k, i, j]),0)
             end
 
-            compute_qw!(qwk, BRk2, BIk2, par, G, plans; Lmask=L)
+            compute_qw!(qwk, L⁺ARk2, L⁺AIk2, par, G, plans; Lmask=L)
         end
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
@@ -840,10 +840,10 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     else
         # Normal YBJ path
         sumL⁺A!(Snp1.L⁺A, G; Lmask=L)
-        BRk3 = similar(Snp1.L⁺A); BIk3 = similar(Snp1.L⁺A)
-        split_L⁺A_to_real_imag!(BRk3, BIk3, Snp1.L⁺A)
-        sigma2 = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L, N2_profile=N2_profile)
+        L⁺ARk3 = similar(Snp1.L⁺A); L⁺AIk3 = similar(Snp1.L⁺A)
+        split_L⁺A_to_real_imag!(L⁺ARk3, L⁺AIk3, Snp1.L⁺A)
+        sigma2 = compute_sigma(par, G, nL⁺ARk, nL⁺AIk, rL⁺ARk, rL⁺AIk; Lmask=L, N2_profile=N2_profile)
+        compute_A!(Snp1.A, Snp1.C, L⁺ARk3, L⁺AIk3, sigma2, par, G; Lmask=L, N2_profile=N2_profile)
     end
 
     # Compute velocities

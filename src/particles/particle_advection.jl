@@ -73,7 +73,8 @@ const Grid = _PARENT.Grid
 const State = _PARENT.State
 const plan_transforms! = _PARENT.plan_transforms!
 const compute_velocities! = _PARENT.compute_velocities!  # QG velocities only (Lagrangian mean)
-const compute_wave_displacement! = _PARENT.compute_wave_displacement!  # Wave displacement ξ
+const compute_wave_displacement! = _PARENT.compute_wave_displacement!  # Horizontal wave displacement ξ
+const compute_vertical_wave_displacement! = _PARENT.compute_vertical_wave_displacement!  # Vertical wave displacement ξz
 const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
@@ -267,11 +268,17 @@ mutable struct ParticleState{T<:AbstractFloat}
     # Wave displacement ξ (for computing physical position)
     xi_x::Vector{T}   # Horizontal wave displacement x-component
     xi_y::Vector{T}   # Horizontal wave displacement y-component
+    xi_z::Vector{T}   # Vertical wave displacement (from equation 2.10)
 
     # Wave velocity amplitude LA (complex, stored as real/imag)
     # Used for computing ξ = Re{(LA/(-if)) × e^(-ift)}
     LA_real::Vector{T}  # Re(LA) at particle position
     LA_imag::Vector{T}  # Im(LA) at particle position
+
+    # Vertical wave displacement coefficients at particle position
+    # ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+    xi_z_cos::Vector{T}  # Coefficient of cos(ft) at particle position
+    xi_z_sin::Vector{T}  # Coefficient of sin(ft) at particle position
 
     time::T
     np::Int
@@ -286,6 +293,7 @@ mutable struct ParticleState{T<:AbstractFloat}
     # Wave displacement history (for reconstructing wiggly trajectories)
     xi_x_history::Vector{Vector{T}}
     xi_y_history::Vector{Vector{T}}
+    xi_z_history::Vector{Vector{T}}
 
     function ParticleState{T}(np::Int) where T
         ids = collect(1:np)
@@ -293,11 +301,12 @@ mutable struct ParticleState{T<:AbstractFloat}
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
             ids,
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
-            zeros(T, np), zeros(T, np),  # xi_x, xi_y
+            zeros(T, np), zeros(T, np), zeros(T, np),  # xi_x, xi_y, xi_z
             zeros(T, np), zeros(T, np),  # LA_real, LA_imag
+            zeros(T, np), zeros(T, np),  # xi_z_cos, xi_z_sin
             zero(T), np,
             Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], T[],
-            Vector{T}[], Vector{T}[]  # xi_x_history, xi_y_history
+            Vector{T}[], Vector{T}[], Vector{T}[]  # xi_x_history, xi_y_history, xi_z_history
         )
     end
 end
@@ -324,10 +333,15 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     v_field::Array{T,3}
     w_field::Array{T,3}
 
-    # Wave velocity amplitude LA (complex) - for wave displacement ξ
+    # Wave velocity amplitude LA (complex) - for horizontal wave displacement ξ
     # LA = B + (k_h²/4)A in spectral space, transformed to physical space
     LA_real_field::Array{T,3}
     LA_imag_field::Array{T,3}
+
+    # Vertical wave displacement coefficients - from equation (2.10)
+    # ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+    ξz_cos_field::Array{T,3}
+    ξz_sin_field::Array{T,3}
 
     # Transform plans (for velocity computation)
     plans
@@ -403,12 +417,16 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             w_field = zeros(T, grid.nz, nx_local, ny_local)
             LA_real_field = zeros(T, grid.nz, nx_local, ny_local)
             LA_imag_field = zeros(T, grid.nz, nx_local, ny_local)
+            ξz_cos_field = zeros(T, grid.nz, nx_local, ny_local)
+            ξz_sin_field = zeros(T, grid.nz, nx_local, ny_local)
         else
             u_field = zeros(T, grid.nz, grid.nx, grid.ny)
             v_field = zeros(T, grid.nz, grid.nx, grid.ny)
             w_field = zeros(T, grid.nz, grid.nx, grid.ny)
             LA_real_field = zeros(T, grid.nz, grid.nx, grid.ny)
             LA_imag_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            ξz_cos_field = zeros(T, grid.nz, grid.nx, grid.ny)
+            ξz_sin_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
         # Set up transform plans (using unified interface)
@@ -430,6 +448,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
             u_field, v_field, w_field,
             LA_real_field, LA_imag_field,
+            ξz_cos_field, ξz_sin_field,
             plans, f0,
             comm, rank, nprocs, is_parallel,
             local_domain,
@@ -614,8 +633,11 @@ function initialize_particles_serial!(tracker::ParticleTracker{T},
         # Initialize wave displacement fields
         particles.xi_x[idx] = 0.0
         particles.xi_y[idx] = 0.0
+        particles.xi_z[idx] = 0.0
         particles.LA_real[idx] = 0.0
         particles.LA_imag[idx] = 0.0
+        particles.xi_z_cos[idx] = 0.0
+        particles.xi_z_sin[idx] = 0.0
         idx += 1
     end
 
@@ -652,12 +674,15 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         resize!(tracker.particles.w, 0)
         resize!(tracker.particles.xi_x, 0)
         resize!(tracker.particles.xi_y, 0)
+        resize!(tracker.particles.xi_z, 0)
         resize!(tracker.particles.LA_real, 0)
         resize!(tracker.particles.LA_imag, 0)
+        resize!(tracker.particles.xi_z_cos, 0)
+        resize!(tracker.particles.xi_z_sin, 0)
         tracker.particles.np = 0
         return tracker
     end
-    
+
     # Compute exact index ranges from the global particle grid
     tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
     x_rel_min = (x_min - config.x_min) / dxp
@@ -680,8 +705,11 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         resize!(tracker.particles.w, 0)
         resize!(tracker.particles.xi_x, 0)
         resize!(tracker.particles.xi_y, 0)
+        resize!(tracker.particles.xi_z, 0)
         resize!(tracker.particles.LA_real, 0)
         resize!(tracker.particles.LA_imag, 0)
+        resize!(tracker.particles.xi_z_cos, 0)
+        resize!(tracker.particles.xi_z_sin, 0)
         tracker.particles.np = 0
         return tracker
     end
@@ -698,8 +726,11 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     resize!(tracker.particles.w, n_local)
     resize!(tracker.particles.xi_x, n_local)
     resize!(tracker.particles.xi_y, n_local)
+    resize!(tracker.particles.xi_z, n_local)
     resize!(tracker.particles.LA_real, n_local)
     resize!(tracker.particles.LA_imag, n_local)
+    resize!(tracker.particles.xi_z_cos, n_local)
+    resize!(tracker.particles.xi_z_sin, n_local)
 
     # Initialize local particles
     idx = 1
@@ -713,8 +744,11 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
         tracker.particles.w[idx] = 0.0
         tracker.particles.xi_x[idx] = 0.0
         tracker.particles.xi_y[idx] = 0.0
+        tracker.particles.xi_z[idx] = 0.0
         tracker.particles.LA_real[idx] = 0.0
         tracker.particles.LA_imag[idx] = 0.0
+        tracker.particles.xi_z_cos[idx] = 0.0
+        tracker.particles.xi_z_sin[idx] = 0.0
         idx += 1
     end
     
@@ -814,8 +848,8 @@ function advect_particles!(tracker::ParticleTracker{T},
     # ============================================================
     # Step 3: Compute wave displacement at new positions
     # ============================================================
-    # Update wave amplitude fields LA = B + (k_h²/4)A
-    update_wave_fields!(tracker, state, grid; params=params)
+    # Update wave amplitude fields LA = B + (k_h²/4)A and vertical displacement coefficients
+    update_wave_fields!(tracker, state, grid; params=params, N2_profile=N2_profile)
 
     # Compute wave displacement ξ = Re{(LA/(-if)) × e^(-ift)} at new time
     compute_particle_wave_displacement!(tracker, new_time)
@@ -929,30 +963,36 @@ This should be called after update_velocity_fields! and before computing wave di
 """
 function update_wave_fields!(tracker::ParticleTracker{T},
                             state::State, grid::Grid;
-                            params=nothing) where T
-    # Compute wave displacement field LA in physical space
+                            params=nothing, N2_profile=nothing) where T
+    # Compute horizontal wave displacement field LA in physical space
     # This function is defined in operators.jl
     compute_wave_displacement!(state, grid; plans=tracker.plans, params=params)
+
+    # Compute vertical wave displacement coefficients
+    # ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+    # skip_inversion=true because compute_wave_displacement! already inverted A
+    compute_vertical_wave_displacement!(state, grid, tracker.plans, params;
+                                        N2_profile=N2_profile, skip_inversion=true)
 
     # Get actual local dimensions from State arrays
     local_dims = size(parent(state.u))
     nz_local, nx_local, ny_local = local_dims
 
-    # Resize tracker LA fields if needed
+    # Resize tracker fields if needed
     if size(tracker.LA_real_field) != local_dims
         tracker.LA_real_field = zeros(T, nz_local, nx_local, ny_local)
         tracker.LA_imag_field = zeros(T, nz_local, nx_local, ny_local)
+        tracker.ξz_cos_field = zeros(T, nz_local, nx_local, ny_local)
+        tracker.ξz_sin_field = zeros(T, nz_local, nx_local, ny_local)
     end
 
-    # Copy LA data from state (assuming compute_wave_displacement! stores in state.LA_real, state.LA_imag)
-    # If the state doesn't have these fields, we need to compute them here
-    # For now, we compute directly from A and B fields
-    # LA = B + (k_h²/4)A in spectral space, but we store the physical space result
-    # which is computed by compute_wave_displacement! into state work arrays
-
-    # Copy the computed LA field
+    # Copy horizontal wave displacement amplitude
     tracker.LA_real_field .= parent(state.LA_real)
     tracker.LA_imag_field .= parent(state.LA_imag)
+
+    # Copy vertical wave displacement coefficients
+    tracker.ξz_cos_field .= parent(state.ξz_cos)
+    tracker.ξz_sin_field .= parent(state.ξz_sin)
 
     # Update f0 from params if available
     if params !== nothing && hasfield(typeof(params), :f₀)
@@ -965,11 +1005,11 @@ end
 """
     compute_particle_wave_displacement!(tracker, current_time)
 
-Compute wave displacement ξ for all particles at current simulation time.
+Compute wave displacement ξ (horizontal and vertical) for all particles at current simulation time.
 
-# Wave Displacement Formula (from PDF)
+# Horizontal Wave Displacement Formula (from PDF)
 
-The wave displacement is obtained from equation (6):
+The horizontal wave displacement is obtained from equation (6):
     ξx + iξy = Re{(LA / (-if)) × e^{-ift}}
 
 where LA uses the YBJ operator L (NOT L⁺):
@@ -979,12 +1019,21 @@ where LA uses the YBJ operator L (NOT L⁺):
 Since B = L⁺A, we have:
     LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
 
+# Vertical Wave Displacement Formula (equation 2.10)
+
+The vertical wave displacement is:
+    ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+
+where ξz_cos and ξz_sin are precomputed coefficients stored in the tracker's
+ξz_cos_field and ξz_sin_field (from compute_vertical_wave_displacement!).
+
 # Physical Interpretation
-The displacement ξ represents the inertial loops of radius ~|LA|/f
-that particles trace while riding on the mean drift X(t).
+The horizontal displacement ξ represents the inertial loops of radius ~|LA|/f
+that particles trace while riding on the mean drift X(t). The vertical
+displacement ξz captures wave-induced vertical oscillations from equation (2.10).
 
 # Arguments
-- `tracker`: ParticleTracker with updated LA fields (from update_wave_fields!)
+- `tracker`: ParticleTracker with updated LA and ξz fields (from update_wave_fields!)
 - `current_time`: Current simulation time (for phase factor e^{-ift})
 """
 function compute_particle_wave_displacement!(tracker::ParticleTracker{T},
@@ -992,20 +1041,26 @@ function compute_particle_wave_displacement!(tracker::ParticleTracker{T},
     particles = tracker.particles
     f0 = tracker.f0
 
-    # Phase factor for wave displacement: e^(-ift)
-    phase = -f0 * T(current_time)
+    # Phase factors for wave displacement
+    ft = f0 * T(current_time)
+    cos_ft = cos(ft)
+    sin_ft = sin(ft)
+
+    # For horizontal displacement: e^(-ift)
+    phase = -ft
     cos_phase = cos(phase)
     sin_phase = sin(phase)
 
     @inbounds for i in 1:particles.np
         x, y, z = particles.x[i], particles.y[i], particles.z[i]
 
+        # ======== Horizontal wave displacement ========
         # Interpolate LA at particle position
         LA_r, LA_i = interpolate_LA_at_position(x, y, z, tracker)
         particles.LA_real[i] = LA_r
         particles.LA_imag[i] = LA_i
 
-        # Compute wave displacement: ξ = Re{(LA / (-if)) × e^(-ift)}
+        # Compute horizontal wave displacement: ξ = Re{(LA / (-if)) × e^(-ift)}
         # LA / (-if) = LA × (i/f) = (LA_r + i·LA_i) × (i/f) = (-LA_i + i·LA_r) / f
         # So: LA / (-if) = (-LA_i/f) + i·(LA_r/f)
         disp_amp_real = -LA_i / f0
@@ -1016,15 +1071,97 @@ function compute_particle_wave_displacement!(tracker::ParticleTracker{T},
         xi_complex_real = disp_amp_real * cos_phase - disp_amp_imag * sin_phase
         xi_complex_imag = disp_amp_real * sin_phase + disp_amp_imag * cos_phase
 
-        # Take real part: ξx + iξy = Re{...}
-        # Actually the formula is ξx + iξy = Re{(complex expression)}
-        # The "Re{...}" means we take the real part of the entire complex expression
-        # which gives us the x and y components
-        particles.xi_x[i] = xi_complex_real  # x-component of displacement
-        particles.xi_y[i] = xi_complex_imag  # y-component of displacement
+        # Horizontal displacement components
+        particles.xi_x[i] = xi_complex_real
+        particles.xi_y[i] = xi_complex_imag
+
+        # ======== Vertical wave displacement ========
+        # Interpolate ξz coefficients at particle position
+        ξz_cos, ξz_sin = interpolate_xi_z_coeffs_at_position(x, y, z, tracker)
+        particles.xi_z_cos[i] = ξz_cos
+        particles.xi_z_sin[i] = ξz_sin
+
+        # Compute vertical displacement: ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+        particles.xi_z[i] = ξz_cos * cos_ft + ξz_sin * sin_ft
     end
 
     return tracker
+end
+
+"""
+    interpolate_xi_z_coeffs_at_position(x, y, z, tracker)
+
+Interpolate vertical wave displacement coefficients at particle position.
+Returns (ξz_cos, ξz_sin) tuple.
+"""
+function interpolate_xi_z_coeffs_at_position(x::T, y::T, z::T,
+                                             tracker::ParticleTracker{T}) where T
+    # Handle periodic boundaries (shift to domain-relative coordinates)
+    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    z_min = -tracker.Lz
+    z0 = z_min + tracker.dz / 2
+    z_max = zero(T)
+    z_clamped = clamp(z, z0, z_max)
+
+    # Convert to grid indices (0-based for interpolation)
+    fx = x_rel / tracker.dx
+    fy = y_rel / tracker.dy
+    fz = (z_clamped - z0) / tracker.dz
+
+    # Get integer and fractional parts
+    ix = floor(Int, fx)
+    iy = floor(Int, fy)
+    iz = floor(Int, fz)
+
+    rx = fx - ix
+    ry = fy - iy
+    rz = fz - iz
+
+    # Handle boundary indices with proper periodic wrapping
+    if tracker.config.periodic_x
+        ix1 = mod(ix, tracker.nx) + 1
+        ix2 = mod(ix + 1, tracker.nx) + 1
+    else
+        ix1 = max(1, min(tracker.nx, ix + 1))
+        ix2 = max(1, min(tracker.nx, ix + 2))
+    end
+
+    if tracker.config.periodic_y
+        iy1 = mod(iy, tracker.ny) + 1
+        iy2 = mod(iy + 1, tracker.ny) + 1
+    else
+        iy1 = max(1, min(tracker.ny, iy + 1))
+        iy2 = max(1, min(tracker.ny, iy + 2))
+    end
+
+    # Z is never periodic
+    iz1 = max(1, min(tracker.nz, iz + 1))
+    iz2 = max(1, min(tracker.nz, iz + 2))
+
+    # Trilinear interpolation for ξz_cos
+    c_z1_y1 = (1-rx) * tracker.ξz_cos_field[iz1, ix1, iy1] + rx * tracker.ξz_cos_field[iz1, ix2, iy1]
+    c_z1_y2 = (1-rx) * tracker.ξz_cos_field[iz1, ix1, iy2] + rx * tracker.ξz_cos_field[iz1, ix2, iy2]
+    c_z1 = (1-ry) * c_z1_y1 + ry * c_z1_y2
+
+    c_z2_y1 = (1-rx) * tracker.ξz_cos_field[iz2, ix1, iy1] + rx * tracker.ξz_cos_field[iz2, ix2, iy1]
+    c_z2_y2 = (1-rx) * tracker.ξz_cos_field[iz2, ix1, iy2] + rx * tracker.ξz_cos_field[iz2, ix2, iy2]
+    c_z2 = (1-ry) * c_z2_y1 + ry * c_z2_y2
+
+    ξz_cos = (1-rz) * c_z1 + rz * c_z2
+
+    # Trilinear interpolation for ξz_sin
+    s_z1_y1 = (1-rx) * tracker.ξz_sin_field[iz1, ix1, iy1] + rx * tracker.ξz_sin_field[iz1, ix2, iy1]
+    s_z1_y2 = (1-rx) * tracker.ξz_sin_field[iz1, ix1, iy2] + rx * tracker.ξz_sin_field[iz1, ix2, iy2]
+    s_z1 = (1-ry) * s_z1_y1 + ry * s_z1_y2
+
+    s_z2_y1 = (1-rx) * tracker.ξz_sin_field[iz2, ix1, iy1] + rx * tracker.ξz_sin_field[iz2, ix2, iy1]
+    s_z2_y2 = (1-rx) * tracker.ξz_sin_field[iz2, ix1, iy2] + rx * tracker.ξz_sin_field[iz2, ix2, iy2]
+    s_z2 = (1-ry) * s_z2_y1 + ry * s_z2_y2
+
+    ξz_sin = (1-rz) * s_z1 + rz * s_z2
+
+    return ξz_cos, ξz_sin
 end
 
 """
@@ -1706,6 +1843,7 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
             empty!(particles.time_history)
             empty!(particles.xi_x_history)
             empty!(particles.xi_y_history)
+            empty!(particles.xi_z_history)
 
             tracker.output_file_sequence += 1
         else
@@ -1724,6 +1862,7 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
     # Save wave displacement history (for reconstructing wiggly trajectories)
     push!(particles.xi_x_history, copy(particles.xi_x))
     push!(particles.xi_y_history, copy(particles.xi_y))
+    push!(particles.xi_z_history, copy(particles.xi_z))
 
     tracker.save_counter += 1
     tracker.last_save_time = particles.time

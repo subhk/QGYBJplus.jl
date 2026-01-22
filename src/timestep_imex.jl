@@ -564,10 +564,10 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
     # Get arrays
     qn_arr = parent(Sn.q)
-    Bn_arr = parent(Sn.L⁺A)
+    L⁺An_arr = parent(Sn.L⁺A)
     An_arr = parent(Sn.A)
     qnp1_arr = parent(Snp1.q)
-    Bnp1_arr = parent(Snp1.B)
+    L⁺Anp1_arr = parent(Snp1.L⁺A)
     Anp1_arr = parent(Snp1.A)
 
     nz_local, nx_local, ny_local = size(qn_arr)
@@ -775,7 +775,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         if !L[i_global, j_global]
             # Zero out dealiased modes
             @inbounds for k in 1:nz_local
-                Bnp1_arr[k, i, j] = 0
+                L⁺Anp1_arr[k, i, j] = 0
                 Anp1_arr[k, i, j] = 0
             end
             continue
@@ -794,7 +794,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 N_n = -nL⁺Ak_arr[k, i, j]
                 N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                Bnp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
+                L⁺Anp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
             end
         else
@@ -824,7 +824,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Recover B** from the IMEX-CN relation
             @inbounds for k in 1:nz_local
                 βₖ = β_scale * αdisp_profile[k]
-                Bnp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
+                L⁺Anp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
@@ -843,7 +843,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
         if !L[i_global, j_global]
             for k in 1:nz_local
-                Bnp1_arr[k, i, j] = 0
+                L⁺Anp1_arr[k, i, j] = 0
                 Anp1_arr[k, i, j] = 0
             end
             continue
@@ -862,8 +862,8 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 N_n = -nL⁺Ak_arr[k, i, j]
                 N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                # Store B** (before second half-refraction) in Bnp1 temporarily
-                Bnp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
+                # Store L⁺A** (before second half-refraction) in L⁺Anp1 temporarily
+                L⁺Anp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
                 Anp1_arr[k, i, j] = 0
             end
         else
@@ -897,7 +897,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             # Recover B** from the IMEX-CN relation: B** = RHS + β*A^{n+1}
             for k in 1:nz_local
                 βₖ = β_scale * αdisp_profile[k]
-                Bnp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
+                L⁺Anp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
                 Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
@@ -908,27 +908,27 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Use ψ^{n+1} (from the updated mean flow) for the second half-step to
     # keep the coupled system formally second-order in time.
     RHS_temp = imex_ws.RHS  # Reuse RHS as temporary storage
-    parent(RHS_temp) .= Bnp1_arr  # Copy B** to temporary
+    parent(RHS_temp) .= L⁺Anp1_arr  # Copy B** to temporary
 
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     psi_pred_valid = false
 
     if par.fixed_flow
         # Mean flow is fixed: use ψ^n for refraction
-        apply_refraction_exact!(Snp1.B, RHS_temp, Sn.psi, G, par, plans;
+        apply_refraction_exact!(Snp1.L⁺A, RHS_temp, Sn.psi, G, par, plans;
                                 dt_fraction=0.5, dealias_mask=L)
         psi_pred_valid = true
     else
         if wave_feedback_enabled
             # Predictor: use ψ^n to get B_pred and q^w_pred for ψ^{n+1}
-            apply_refraction_exact!(Snp1.B, RHS_temp, Sn.psi, G, par, plans;
+            apply_refraction_exact!(Snp1.L⁺A, RHS_temp, Sn.psi, G, par, plans;
                                     dt_fraction=0.5, dealias_mask=L)
 
             # Backup q^{n+1} (base, before wave feedback)
             qtemp_arr .= qnp1_arr
 
             # Compute q^w_pred into qnp1_arr, then form q_pred = q_base - q^w_pred
-            compute_qw_complex!(Snp1.q, Snp1.B, par, G, plans; Lmask=L)
+            compute_qw_complex!(Snp1.q, Snp1.L⁺A, par, G, plans; Lmask=L)
             @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
                 i_global = local_to_global(i, 2, Snp1.q)
                 j_global = local_to_global(j, 3, Snp1.q)
@@ -946,19 +946,19 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
             qnp1_arr .= qtemp_arr
 
             # Corrector: refraction with ψ^{n+1} predictor
-            apply_refraction_exact!(Snp1.B, RHS_temp, Snp1.psi, G, par, plans;
+            apply_refraction_exact!(Snp1.L⁺A, RHS_temp, Snp1.psi, G, par, plans;
                                     dt_fraction=0.5, dealias_mask=L)
         else
             # No wave feedback: compute ψ^{n+1} from q^{n+1} base
             invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
-            apply_refraction_exact!(Snp1.B, RHS_temp, Snp1.psi, G, par, plans;
+            apply_refraction_exact!(Snp1.L⁺A, RHS_temp, Snp1.psi, G, par, plans;
                                     dt_fraction=0.5, dealias_mask=L)
             psi_pred_valid = true
         end
     end
 
-    # Update Bnp1_arr to point to the final result
-    Bnp1_arr = parent(Snp1.B)
+    # Update L⁺Anp1_arr to point to the final result
+    L⁺Anp1_arr = parent(Snp1.L⁺A)
 
     #= Step 5.6: Store current advection tendencies for next step (AB2) =#
     parent(imex_ws.nL⁺Ak_prev) .= parent(imex_ws.nL⁺Ak)
@@ -983,7 +983,7 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         # (allocation inside tight loops causes heap corruption in MPI)
         qwk = imex_ws.qtemp
         qwk_arr = parent(qwk)
-        compute_qw_complex!(qwk, Snp1.B, par, G, plans; Lmask=L)
+        compute_qw_complex!(qwk, Snp1.L⁺A, par, G, plans; Lmask=L)
 
         @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
             i_global = local_to_global(i, 2, Snp1.q)

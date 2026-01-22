@@ -190,7 +190,7 @@ function main()
     # where d = -z is the depth from the surface (z=0).
     # Grid has z=0 at surface, z<0 below, so depth d = -z is positive.
     if is_root; println("Setting up waves..."); end
-    B_phys = QGYBJplus.allocate_fft_backward_dst(S.B, plans)
+    B_phys = QGYBJplus.allocate_fft_backward_dst(S.L⁺A, plans)
     B_phys_arr = parent(B_phys)
     for k_local in axes(B_phys_arr, 1)
         k_global = local_range_phys[1][k_local]
@@ -199,7 +199,7 @@ function main()
         wave_value = complex(u0_wave * wave_profile)
         B_phys_arr[k_local, :, :] .= wave_value
     end
-    QGYBJplus.fft_forward!(S.B, B_phys, plans)
+    QGYBJplus.fft_forward!(S.L⁺A, B_phys, plans)
 
     # Configure output
     output_config = QGYBJplus.OutputConfig(

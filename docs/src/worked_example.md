@@ -239,7 +239,7 @@ S.A .= A_spectral
 # B = L⁺(A) = ∂/∂z[(f²/N²)∂A/∂z] - (k²/4)A
 # For uniform A in x,y, this simplifies significantly
 # Here we just set B = A as initial approximation (refined by inversion)
-S.B .= S.A
+S.L⁺A .= S.A
 
 println("\nWave field created:")
 println("  Amplitude: $A0 m/s")
@@ -330,7 +330,7 @@ println("Simulation complete!")
 
 # Get final fields
 final_psi = Sn.psi
-final_B = Sn.B
+final_B = Sn.L⁺A
 final_A = Sn.A
 
 # Compute final vorticity ζ = ∇²ψ
@@ -484,7 +484,7 @@ first_imex_step!(Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
 
 for step in 1:nt
     imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-    parent(Sn.B) .= parent(Snp1.B)
+    parent(Sn.L⁺A) .= parent(Snp1.L⁺A)
     parent(Sn.q) .= parent(Snp1.q)
 end
 ```

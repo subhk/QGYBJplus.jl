@@ -417,13 +417,42 @@ This is time-stepped using **Euler method**:
 
 ### Wave Displacement Reconstruction
 
-The wave displacement is reconstructed from the wave velocity amplitude ``LA``:
+#### Horizontal Wave Displacement
+
+The horizontal wave displacement is reconstructed from the wave velocity amplitude ``LA``:
 
 ```math
 \xi_x + i\xi_y = \text{Re}\left\{\frac{LA(\mathbf{X}, t)}{-if_0} e^{-if_0 t}\right\}
 ```
 
-This captures the oscillatory motion of particles due to near-inertial waves. The wave displacement:
+#### Vertical Wave Displacement (Equation 2.10)
+
+The vertical wave displacement is reconstructed from the wave amplitude derivatives using YBJ+ equation (2.10):
+
+```math
+\xi_z = \xi_{z,\cos} \cos(f_0 t) + \xi_{z,\sin} \sin(f_0 t)
+```
+
+where the coefficients are:
+```math
+\xi_{z,\cos} = \frac{f_0}{N^2} w_{\sin}, \quad \xi_{z,\sin} = -\frac{f_0}{N^2} w_{\cos}
+```
+
+with:
+```math
+w_{\cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z)
+```
+```math
+w_{\sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
+```
+
+This follows from the YBJ+ vertical velocity equation (2.10):
+```math
+w_0 = -\frac{f_0^2}{N^2} A_{zs} \, e^{-if_0 t} + \text{c.c.}
+```
+where ``A_{zs} = \partial_s(A_z) = \frac{1}{2}(\partial_x - i\partial_y)(A_z)`` is the complex derivative of ``A_z``.
+
+The wave displacement:
 - Has zero time-mean (pure oscillation at frequency ``f_0``)
 - Is computed **diagnostically** from the current wave field
 - Does not require time-stepping (instantaneous reconstruction)
@@ -435,6 +464,16 @@ The full physical position at each output time is:
 ```math
 \mathbf{x}^{n+1} = \mathbf{X}^{n+1} + \boldsymbol{\xi}^{n+1}
 ```
+
+In component form:
+```math
+x = X + \xi_x, \quad y = Y + \xi_y, \quad z = Z + \xi_z
+```
+
+where:
+- ``(X, Y, Z)`` is the mean position advected by QG flow
+- ``(\xi_x, \xi_y)`` is the horizontal wave displacement from ``LA``
+- ``\xi_z`` is the vertical wave displacement from equation (2.10)
 
 ### Advantages of GLM Approach
 
@@ -866,14 +905,18 @@ end
 ```julia
 mutable struct ParticleTracker{T}  # Simplified view (omits I/O bookkeeping)
     config::ParticleConfig{T}
-    particles::ParticleState{T}   # x, y, z, id, u, v, w arrays
+    particles::ParticleState{T}   # Positions, IDs, velocities, wave displacement
 
     # Grid info
     nx, ny, nz::Int
     Lx, Ly, Lz, dx, dy, dz::T
 
-    # Velocity workspace
+    # QG velocity workspace
     u_field, v_field, w_field::Array{T,3}
+
+    # Wave displacement workspace
+    LA_real_field, LA_imag_field::Array{T,3}  # Horizontal wave amplitude
+    ξz_cos_field, ξz_sin_field::Array{T,3}    # Vertical displacement coefficients
 
     # MPI info (for parallel)
     comm, rank, nprocs, is_parallel
@@ -884,6 +927,15 @@ mutable struct ParticleTracker{T}  # Simplified view (omits I/O bookkeeping)
     gather_for_io::Bool
 end
 ```
+
+**ParticleState** contains:
+- Mean positions: `x, y, z` (advected by QG flow)
+- Particle IDs: `id`
+- QG velocities at particle positions: `u, v, w`
+- Horizontal wave displacement: `xi_x, xi_y`
+- Vertical wave displacement: `xi_z`
+- Wave amplitude at particle position: `LA_real, LA_imag`
+- Vertical displacement coefficients: `xi_z_cos, xi_z_sin`
 
 ## Performance Considerations
 

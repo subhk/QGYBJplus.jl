@@ -1656,6 +1656,285 @@ function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=not
     return S
 end
 
+"""
+    compute_vertical_wave_displacement!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
+
+Compute vertical wave displacement coefficients from YBJ+ equation (2.10).
+
+# Physical Background
+From Asselin & Young (2019) equation (2.10), the wave-induced vertical velocity is:
+```
+w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
+```
+where A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) with s = x + iy.
+
+Integrating to get vertical displacement:
+```
+ξz = (2f/N²) Im{A_{zs} e^{-ift}}
+   = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
+```
+where:
+- w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y)
+- w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
+
+This function stores the coefficients:
+- S.ξz_cos = (f/N²) × w_sin
+- S.ξz_sin = -(f/N²) × w_cos
+
+So the vertical displacement at time t is:
+```
+ξz(t) = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+```
+
+# Arguments
+- `S::State`: State with A, C (A_z) as input; ξz_cos, ξz_sin as output
+- `G::Grid`: Grid structure
+- `plans`: FFT plans
+- `params`: Model parameters (f₀, N²)
+- `N2_profile::Vector`: Optional N²(z) profile (default: constant from params.N²)
+- `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `skip_inversion::Bool`: If true, use existing S.A and S.C instead of re-inverting
+
+# Usage in GLM Particle Advection
+The vertical position of a Lagrangian particle is:
+```
+Z(t) = z_mean + ξz(t)
+     = z_mean + ξz_cos × cos(ft) + ξz_sin × sin(ft)
+```
+where z_mean is advected by the mean vertical velocity (e.g., from omega equation).
+
+# References
+- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
+"""
+function compute_vertical_wave_displacement!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
+    # Check if we need 2D decomposition with transposes
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
+
+    if need_transpose
+        _compute_vertical_wave_displacement_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)
+    else
+        _compute_vertical_wave_displacement_direct!(S, G, plans, params, N2_profile, skip_inversion)
+    end
+    return S
+end
+
+# Direct computation when z is fully local (serial or 1D decomposition)
+function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    # Get underlying arrays for output
+    ξz_cos_arr = parent(S.ξz_cos)
+    ξz_sin_arr = parent(S.ξz_sin)
+
+    # Get parameters
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
+    else
+        f = 1.0
+    end
+
+    # Get N² value from params (default to 1.0 if not available)
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+
+    # Step 1: Recover A from L⁺A using YBJ+ inversion (if needed)
+    if skip_inversion
+        if all(iszero, parent(S.A))
+            @warn "skip_inversion=true but S.A is all zeros - vertical displacement will be zero" maxlog=1
+        end
+    else
+        a_vec = similar(G.z)
+        f_sq = f^2
+        @inbounds for k in eachindex(a_vec)
+            a_vec[k] = f_sq / N2_profile[k]
+        end
+        invert_L⁺A_to_A!(S, G, params, a_vec)
+    end
+
+    # Step 2: Get A_z from S.C (computed by invert_L⁺A_to_A!)
+    Aₖ_z = S.C
+    Aₖ_z_arr = parent(Aₖ_z)
+    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
+
+    @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
+
+    # Step 3: Compute horizontal derivatives of A_z in spectral space
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ_arr = parent(dAz_dxₖ)
+    dAz_dyₖ_arr = parent(dAz_dyₖ)
+
+    # Compute derivatives for k = 1:(nz-1) where A_z is defined
+    @inbounds for k in 1:(nz-1), j_local in 1:ny_spec, i_local in 1:nx_spec
+        i_global = local_to_global(i_local, 2, dAz_dxₖ)
+        j_global = local_to_global(j_local, 3, dAz_dxₖ)
+        ikₓ = im * G.kx[i_global]
+        ikᵧ = im * G.ky[j_global]
+        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
+        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
+    end
+
+    # Zero the top slice (k=nz) to avoid garbage from similar()
+    @inbounds for j_local in 1:ny_spec, i_local in 1:nx_spec
+        dAz_dxₖ_arr[nz, i_local, j_local] = 0
+        dAz_dyₖ_arr[nz, i_local, j_local] = 0
+    end
+
+    # Step 4: Transform to physical space
+    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
+    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
+    dAz_dx_phys_arr = parent(dAz_dx_phys)
+    dAz_dy_phys_arr = parent(dAz_dy_phys)
+    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
+
+    @assert size(ξz_cos_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils must match"
+
+    # Step 5: Compute displacement coefficients
+    # ξz = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
+    # So: ξz_cos = (f/N²) × w_sin, ξz_sin = -(f/N²) × w_cos
+    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
+        k_out = k + 1  # Shift to match output grid
+        N²ₗ = N2_profile[k_out]
+        disp_factor = f / N²ₗ
+
+        # Get derivatives in physical space
+        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
+        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
+
+        # w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y)
+        w_cos = real(dAz_dx) + imag(dAz_dy)
+        # w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
+        w_sin = imag(dAz_dx) - real(dAz_dy)
+
+        # Store coefficients: ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
+        ξz_cos_arr[k_out, i_local, j_local] = disp_factor * w_sin
+        ξz_sin_arr[k_out, i_local, j_local] = -disp_factor * w_cos
+    end
+
+    # Apply boundary conditions: ξz = 0 at top and bottom
+    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
+        ξz_cos_arr[1, i_local, j_local] = 0.0
+        ξz_sin_arr[1, i_local, j_local] = 0.0
+        if nz > 1
+            ξz_cos_arr[nz, i_local, j_local] = 0.0
+            ξz_sin_arr[nz, i_local, j_local] = 0.0
+        end
+    end
+end
+
+# 2D decomposition version with transposes
+function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion)
+    nx, ny, nz = G.nx, G.ny, G.nz
+
+    # Get underlying arrays for output
+    ξz_cos_arr = parent(S.ξz_cos)
+    ξz_sin_arr = parent(S.ξz_sin)
+
+    # Get parameters
+    if params !== nothing && hasfield(typeof(params), :f₀)
+        f = params.f₀
+    else
+        f = 1.0
+    end
+
+    # Get N² value from params
+    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
+        params.N²
+    else
+        1.0
+    end
+
+    # Get N² profile
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+
+    # Step 1: Recover A from L⁺A (handles 2D decomposition internally)
+    if skip_inversion
+        if all(iszero, parent(S.A))
+            @warn "skip_inversion=true but S.A is all zeros - vertical displacement will be zero" maxlog=1
+        end
+    else
+        a_vec = similar(G.z)
+        f_sq = f^2
+        @inbounds for k in eachindex(a_vec)
+            a_vec[k] = f_sq / N2_profile[k]
+        end
+        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
+    end
+
+    # Step 2: Get A_z from S.C
+    Aₖ_z = S.C
+    Aₖ_z_arr = parent(Aₖ_z)
+    nz_local, nx_local, ny_local = size(Aₖ_z_arr)
+
+    @assert nz_local == nz "Vertical dimension must be fully local for vertical displacement"
+
+    # Step 3: Compute horizontal derivatives of A_z in spectral space
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ_arr = parent(dAz_dxₖ)
+    dAz_dyₖ_arr = parent(dAz_dyₖ)
+
+    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, dAz_dxₖ)
+        j_global = local_to_global(j_local, 3, dAz_dxₖ)
+        ikₓ = im * G.kx[i_global]
+        ikᵧ = im * G.ky[j_global]
+        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
+        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
+    end
+
+    # Zero the top slice
+    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
+        dAz_dxₖ_arr[nz, i_local, j_local] = 0
+        dAz_dyₖ_arr[nz, i_local, j_local] = 0
+    end
+
+    # Step 4: Transform to physical space
+    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
+    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
+    dAz_dx_phys_arr = parent(dAz_dx_phys)
+    dAz_dy_phys_arr = parent(dAz_dy_phys)
+    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
+
+    @assert size(ξz_cos_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils must match"
+
+    # Step 5: Compute displacement coefficients
+    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
+        k_out = k + 1
+        N²ₗ = N2_profile[k_out]
+        disp_factor = f / N²ₗ
+
+        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
+        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
+
+        w_cos = real(dAz_dx) + imag(dAz_dy)
+        w_sin = imag(dAz_dx) - real(dAz_dy)
+
+        ξz_cos_arr[k_out, i_local, j_local] = disp_factor * w_sin
+        ξz_sin_arr[k_out, i_local, j_local] = -disp_factor * w_cos
+    end
+
+    # Boundary conditions
+    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
+        ξz_cos_arr[1, i_local, j_local] = 0.0
+        ξz_sin_arr[1, i_local, j_local] = 0.0
+        if nz > 1
+            ξz_cos_arr[nz, i_local, j_local] = 0.0
+            ξz_sin_arr[nz, i_local, j_local] = 0.0
+        end
+    end
+end
+
 end # module
 
-using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!, compute_wave_displacement!
+using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!, compute_wave_displacement!, compute_vertical_wave_displacement!

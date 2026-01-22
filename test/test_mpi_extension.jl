@@ -152,7 +152,7 @@ function run_mpi_tests()
 
                 # Check that arrays are PencilArrays
                 @test typeof(state.psi) <: PencilArray
-                @test typeof(state.B) <: PencilArray
+                @test typeof(state.L⁺A) <: PencilArray
                 @test typeof(state.u) <: PencilArray
 
                 if rank == 0

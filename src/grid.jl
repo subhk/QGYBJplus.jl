@@ -516,6 +516,17 @@ Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Co
     Used for computing wave displacement ξ = Re{(LA/(-if)) × e^{-ift}} [eq. (6)] =#
     LA_real::RT     # Real part of wave velocity amplitude (YBJ L operator)
     LA_imag::RT     # Imaginary part of wave velocity amplitude (YBJ L operator)
+
+    #= Vertical wave displacement coefficients (real space, for GLM particle advection)
+    From YBJ+ equation (2.10), the vertical velocity is:
+        w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c. = -2(f²/N²) Re{A_{zs} e^{-ift}}
+    The vertical displacement (integrating w₀) is:
+        ξz = (2f/N²) Im{A_{zs} e^{-ift}}
+           = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
+    where w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y), w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
+    We store the coefficients: ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft) =#
+    ξz_cos::RT      # Coefficient of cos(ft) in vertical wave displacement
+    ξz_sin::RT      # Coefficient of sin(ft) in vertical wave displacement
 end
 
 """
@@ -596,7 +607,11 @@ function init_state(G::Grid; T=Float64)
     LA_real = allocate_field(T, G; complex=false);  fill!(LA_real, 0)
     LA_imag = allocate_field(T, G; complex=false);  fill!(LA_imag, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag)
+    # Allocate vertical wave displacement coefficient fields (for GLM particle advection)
+    ξz_cos = allocate_field(T, G; complex=false);  fill!(ξz_cos, 0)
+    ξz_sin = allocate_field(T, G; complex=false);  fill!(ξz_sin, 0)
+
+    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
 end
 
 """
@@ -637,6 +652,8 @@ function copy_state(src::State{T, RT, CT}) where {T, RT, CT}
     w   = similar(src.w);     w   .= src.w
     LA_real = similar(src.LA_real); LA_real .= src.LA_real
     LA_imag = similar(src.LA_imag); LA_imag .= src.LA_imag
+    ξz_cos = similar(src.ξz_cos); ξz_cos .= src.ξz_cos
+    ξz_sin = similar(src.ξz_sin); ξz_sin .= src.ξz_sin
 
-    return State{T, RT, CT}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag)
+    return State{T, RT, CT}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
 end

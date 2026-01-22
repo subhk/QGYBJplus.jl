@@ -92,7 +92,7 @@ for step = 1:par.nt
                   workspace=workspace, N2_profile=N2)
 
     # Copy for next step (only 2 time levels needed)
-    parent(S.B) .= parent(Snp1.B)
+    parent(S.L⁺A) .= parent(Snp1.L⁺A)
     parent(S.A) .= parent(Snp1.A)
     parent(S.q) .= parent(Snp1.q)
     parent(S.psi) .= parent(Snp1.psi)
@@ -136,7 +136,7 @@ for step = 2:par.nt
     if step % 100 == 0
         compute_velocities!(S, G, plans)
         KE = flow_kinetic_energy(S.u, S.v)
-        WE_B, WE_A = wave_energy(S.B, S.A)
+        WE_B, WE_A = wave_energy(S.L⁺A, S.A)
         println("Step $step: KE=$KE, WE_B=$WE_B")
     end
 end
@@ -266,7 +266,7 @@ for step = 2:par.nt
     push!(time_history, step * par.dt)
     compute_velocities!(S, G, plans)
     push!(KE_history, flow_kinetic_energy(S.u, S.v))
-    push!(WE_history, wave_energy(S.B, S.A)[1])
+    push!(WE_history, wave_energy(S.L⁺A, S.A)[1])
 end
 ```
 
