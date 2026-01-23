@@ -155,7 +155,7 @@ function _sumL⁺A_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     # Transpose to z-pencil for vertical operations
-    B_z = workspace !== nothing && hasfield(typeof(workspace), :B_z) ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
+    B_z = workspace !== nothing && hasfield(typeof(workspace), :L⁺A_z) ? workspace.L⁺A_z : allocate_z_pencil(G, ComplexF64)
     transpose_to_z_pencil!(B_z, B, G)
 
     B_z_arr = parent(B_z)

@@ -495,7 +495,7 @@ Pre-allocated workspace arrays for transpose operations.
 struct MPIWorkspace{T, PA}
     q_z::PA
     psi_z::PA
-    B_z::PA
+    L⁺A_z::PA
     A_z::PA
     C_z::PA
     work_z::PA
@@ -664,12 +664,12 @@ function init_mpi_workspace(grid::Grid, mpi_config::MPIConfig; T=Float64)
 
     q_z    = PencilArray{Complex{T}}(undef, pencil_z); fill!(q_z, 0)
     psi_z  = PencilArray{Complex{T}}(undef, pencil_z); fill!(psi_z, 0)
-    B_z    = PencilArray{Complex{T}}(undef, pencil_z); fill!(B_z, 0)
+    L⁺A_z  = PencilArray{Complex{T}}(undef, pencil_z); fill!(L⁺A_z, 0)
     A_z    = PencilArray{Complex{T}}(undef, pencil_z); fill!(A_z, 0)
     C_z    = PencilArray{Complex{T}}(undef, pencil_z); fill!(C_z, 0)
     work_z = PencilArray{Complex{T}}(undef, pencil_z); fill!(work_z, 0)
 
-    return MPIWorkspace{T, typeof(q_z)}(q_z, psi_z, B_z, A_z, C_z, work_z)
+    return MPIWorkspace{T, typeof(q_z)}(q_z, psi_z, L⁺A_z, A_z, C_z, work_z)
 end
 
 #=
