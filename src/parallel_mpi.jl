@@ -596,7 +596,7 @@ function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Fl
     q   = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(q, 0)
     psi = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(psi, 0)
     A   = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(A, 0)
-    B   = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(B, 0)
+    L⁺A = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(L⁺A, 0)
     C   = PencilArray{Complex{T}}(undef, spectral_pencil); fill!(C, 0)
 
     # Allocate real-space (real) fields
@@ -604,7 +604,15 @@ function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Fl
     v = PencilArray{T}(undef, physical_pencil); fill!(v, 0)
     w = PencilArray{T}(undef, physical_pencil); fill!(w, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+    # Allocate wave velocity amplitude fields (for GLM particle advection)
+    LA_real = PencilArray{T}(undef, physical_pencil); fill!(LA_real, 0)
+    LA_imag = PencilArray{T}(undef, physical_pencil); fill!(LA_imag, 0)
+
+    # Allocate vertical wave displacement coefficient fields (for GLM particle advection)
+    ξz_cos = PencilArray{T}(undef, physical_pencil); fill!(ξz_cos, 0)
+    ξz_sin = PencilArray{T}(undef, physical_pencil); fill!(ξz_sin, 0)
+
+    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
 end
 
 function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
@@ -619,7 +627,7 @@ function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
     q   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(q, 0)
     psi = PencilArray{Complex{T}}(undef, pencil_xy); fill!(psi, 0)
     A   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(A, 0)
-    B   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(B, 0)
+    L⁺A = PencilArray{Complex{T}}(undef, pencil_xy); fill!(L⁺A, 0)
     C   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(C, 0)
 
     # Allocate real-space (real) fields
@@ -627,7 +635,15 @@ function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
     v = PencilArray{T}(undef, pencil_xy); fill!(v, 0)
     w = PencilArray{T}(undef, pencil_xy); fill!(w, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+    # Allocate wave velocity amplitude fields (for GLM particle advection)
+    LA_real = PencilArray{T}(undef, pencil_xy); fill!(LA_real, 0)
+    LA_imag = PencilArray{T}(undef, pencil_xy); fill!(LA_imag, 0)
+
+    # Allocate vertical wave displacement coefficient fields (for GLM particle advection)
+    ξz_cos = PencilArray{T}(undef, pencil_xy); fill!(ξz_cos, 0)
+    ξz_sin = PencilArray{T}(undef, pencil_xy); fill!(ξz_sin, 0)
+
+    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
 end
 
 # Alias for backward compatibility
