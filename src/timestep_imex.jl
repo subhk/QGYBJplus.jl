@@ -574,6 +574,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     nz = G.nz
     dt = par.dt
 
+    # Check if z-dimension is distributed across MPI processes.
+    # When PencilFFTs uses a 2D topology, the output pencil (spectral space) may
+    # distribute z, requiring transposes for column-based tridiagonal solves.
+    z_distributed = (nz_local < nz)
+
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
     # Ensure we have enough thread-local workspaces for any thread id in use
@@ -679,9 +684,43 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
         tri_c_prime = tl.tri_c_prime
         tri_d_prime = tl.tri_d_prime
 
-        @inbounds for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, Sn.q)
-            j_global = local_to_global(j, 3, Sn.q)
+        # When vertical diffusion is active and z is distributed, transpose to z-local
+        if z_distributed && has_vert_diff && workspace === nothing
+            error("IMEX-CN q equation with vertical diffusion requires workspace when z is distributed. " *
+                  "Pass workspace=init_mpi_workspace(G, mpi_config).")
+        end
+        q_z_distributed = z_distributed && has_vert_diff && workspace !== nothing
+        if q_z_distributed
+            _transpose_output_to_input!(workspace.q_z, Sn.q, plans)
+            _transpose_output_to_input!(workspace.L⁺A_z, imex_ws.nqk, plans)
+            if use_ab2
+                _transpose_output_to_input!(workspace.work_z, imex_ws.tqk_prev, plans)
+            end
+            _transpose_output_to_input!(workspace.C_z, imex_ws.dqk, plans)
+
+            q_eff_qn_arr = parent(workspace.q_z)
+            q_eff_nqk_arr = parent(workspace.L⁺A_z)
+            q_eff_tqk_prev_arr = parent(workspace.work_z)
+            q_eff_dqk_arr = parent(workspace.C_z)
+            q_eff_qnp1_arr = parent(workspace.A_z)
+            fill!(q_eff_qnp1_arr, zero(eltype(q_eff_qnp1_arr)))
+            q_eff_nz, q_eff_nx, q_eff_ny = size(q_eff_qn_arr)
+            q_eff_ref_arr = workspace.q_z
+        else
+            q_eff_qn_arr = qn_arr
+            q_eff_nqk_arr = nqk_arr
+            q_eff_tqk_prev_arr = tqk_prev_arr
+            q_eff_dqk_arr = dqk_arr
+            q_eff_qnp1_arr = qnp1_arr
+            q_eff_nz = nz_local
+            q_eff_nx = nx_local
+            q_eff_ny = ny_local
+            q_eff_ref_arr = Sn.q
+        end
+
+        @inbounds for j in 1:q_eff_ny, i in 1:q_eff_nx
+            i_global = local_to_global(i, 2, q_eff_ref_arr)
+            j_global = local_to_global(j, 3, q_eff_ref_arr)
 
             if L[i_global, j_global]
                 kₓ = G.kx[i_global]
@@ -691,12 +730,12 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                 denom = one(Treal) + 0.5 * dt * λ
 
                 if !has_vert_diff
-                    @inbounds for k in 1:nz_local
-                        N_n = -nqk_arr[k, i, j]
-                        N_nm1 = use_ab2 ? tqk_prev_arr[k, i, j] : zero(eltype(tqk_prev_arr))
-                        rhs = (one(Treal) - 0.5 * dt * λ) * qn_arr[k, i, j] +
+                    @inbounds for k in 1:q_eff_nz
+                        N_n = -q_eff_nqk_arr[k, i, j]
+                        N_nm1 = use_ab2 ? q_eff_tqk_prev_arr[k, i, j] : zero(eltype(q_eff_tqk_prev_arr))
+                        rhs = (one(Treal) - 0.5 * dt * λ) * q_eff_qn_arr[k, i, j] +
                               dt * (c_n * N_n + c_nm1 * N_nm1)
-                        qnp1_arr[k, i, j] = rhs / denom
+                        q_eff_qnp1_arr[k, i, j] = rhs / denom
                     end
                 else
                     @inbounds for k in 1:nz
@@ -708,11 +747,11 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                             tri_upper[k] = Complex(off, 0)
                             tri_lower[k] = Complex(off, 0)
                         end
-                        N_n = -nqk_arr[k, i, j]
-                        N_nm1 = use_ab2 ? tqk_prev_arr[k, i, j] : zero(eltype(tqk_prev_arr))
-                        tri_rhs[k] = (one(Treal) - 0.5 * dt * λ) * qn_arr[k, i, j] +
+                        N_n = -q_eff_nqk_arr[k, i, j]
+                        N_nm1 = use_ab2 ? q_eff_tqk_prev_arr[k, i, j] : zero(eltype(q_eff_tqk_prev_arr))
+                        tri_rhs[k] = (one(Treal) - 0.5 * dt * λ) * q_eff_qn_arr[k, i, j] +
                                      dt * (c_n * N_n + c_nm1 * N_nm1) +
-                                     0.5 * dt * dqk_arr[k, i, j]
+                                     0.5 * dt * q_eff_dqk_arr[k, i, j]
                     end
 
                     solve_tridiagonal_complex!(
@@ -720,13 +759,22 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                         tri_c_prime, tri_d_prime
                     )
                     @inbounds for k in 1:nz
-                        qnp1_arr[k, i, j] = tri_sol[k]
+                        q_eff_qnp1_arr[k, i, j] = tri_sol[k]
                     end
                 end
             else
-                @inbounds for k in 1:nz_local
-                    qnp1_arr[k, i, j] = 0
+                @inbounds for k in 1:q_eff_nz
+                    q_eff_qnp1_arr[k, i, j] = 0
                 end
+            end
+        end
+
+        # Transpose q result back if z was distributed
+        if q_z_distributed
+            _transpose_input_to_output!(Snp1.q, workspace.A_z, plans)
+        else
+            if q_eff_qnp1_arr !== qnp1_arr
+                qnp1_arr .= q_eff_qnp1_arr
             end
         end
     end
@@ -750,101 +798,65 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     # Reformulated: solve for A^{n+1} from modified elliptic problem
     # Then B^{n+1} = L⁺·A^{n+1}
 
-    # Process horizontal modes in parallel using threads
-    # Each thread uses its own workspace to avoid data races
-    n_modes = nx_local * ny_local
-
-    # Threading disabled by default: benchmarks show serial is faster even for large grids
-    # (thread synchronization and cache contention overhead exceed benefits)
-    # This may change with different hardware or Julia versions
-    use_threading = false
-
-    @inbounds if use_threading
-    Threads.@threads for mode_idx in 1:n_modes
-        # Convert linear index to (i, j)
-        i = ((mode_idx - 1) % nx_local) + 1
-        j = ((mode_idx - 1) ÷ nx_local) + 1
-
-        # Get thread-local workspace
-        tid = Threads.threadid()
-        tl = imex_ws.thread_local[tid]
-
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
-
-        if !L[i_global, j_global]
-            # Zero out dealiased modes
-            @inbounds for k in 1:nz_local
-                L⁺Anp1_arr[k, i, j] = 0
-                Anp1_arr[k, i, j] = 0
-            end
-            continue
+    # The tridiagonal solve requires the FULL z-column for each (kx,ky) mode.
+    # When PencilFFTs distributes z (output pencil decomp (1,2)), we must
+    # transpose to the z-local pencil (input pencil, decomp (2,3)) first.
+    if z_distributed && workspace === nothing
+        error("IMEX-CN requires workspace (MPIWorkspace) when z is distributed across MPI processes. " *
+              "Pass workspace=init_mpi_workspace(G, mpi_config) to run_simulation! or imex_cn_step!.")
+    end
+    if z_distributed && workspace !== nothing
+        # Transpose input arrays from output pencil (z-distributed) to
+        # input pencil (z-local) using MPIWorkspace arrays
+        _transpose_output_to_input!(workspace.L⁺A_z, imex_ws.L⁺Astar, plans)
+        _transpose_output_to_input!(workspace.work_z, imex_ws.nL⁺Ak, plans)
+        if use_ab2
+            _transpose_output_to_input!(workspace.C_z, imex_ws.nL⁺Ak_prev, plans)
         end
 
-        kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-        λʷ = int_factor(kₓ, kᵧ, par; waves=true)
-        hyperdiff_factor = exp(-λʷ)
+        # Work on z-local arrays
+        eff_L⁺Astar_arr = parent(workspace.L⁺A_z)
+        eff_nL⁺Ak_arr = parent(workspace.work_z)
+        eff_nL⁺Ak_prev_arr = parent(workspace.C_z)
+        # Output arrays on z-local pencil (transpose back after loop)
+        eff_L⁺Anp1_arr = parent(workspace.A_z)
+        eff_Anp1_arr = parent(workspace.psi_z)
+        fill!(eff_L⁺Anp1_arr, zero(eltype(eff_L⁺Anp1_arr)))
+        fill!(eff_Anp1_arr, zero(eltype(eff_Anp1_arr)))
 
-        # Handle cases where dispersion is disabled or kₕ² ≈ 0
-        if !dispersion_active || kₕ² < IMEX_KH2_EPS
-            # Explicit update for mean mode or when dispersion is disabled
-            # Use B* (after first half-refraction) and AB2 advection
-            @inbounds for k in 1:nz_local
-                N_n = -nL⁺Ak_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
-                advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                L⁺Anp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
-                Anp1_arr[k, i, j] = 0
-            end
-        else
-            # IMEX-CNAB: CN for dispersion, AB2 for advection
-            # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with B*
-            @inbounds for k in 1:nz_local
-                tl.L⁺A_col[k] = L⁺Astar_arr[k, i, j]
-            end
-            solve_modified_elliptic!(tl.A_col, tl.L⁺A_col, G, par, a, kₕ²,
-                                     complex(0.0), αdisp_profile, tl)
-
-            # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
-            @inbounds for k in 1:nz_local
-                N_n = -nL⁺Ak_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
-                disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
-                advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                tl.RHS_col[k] = L⁺Astar_arr[k, i, j] + (dt/2) * disp_star + advection_term
-            end
-
-            # Step 3: Solve modified elliptic problem for A^{n+1}
-            β_scale = (dt/2) * im * kₕ²
-
-            solve_modified_elliptic!(tl.A_col, tl.RHS_col, G, par, a, kₕ²,
-                                     β_scale, αdisp_profile, tl)
-
-            # Recover B** from the IMEX-CN relation
-            @inbounds for k in 1:nz_local
-                βₖ = β_scale * αdisp_profile[k]
-                L⁺Anp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
-                Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
-            end
-        end
-    end  # end threaded for
+        eff_nz, eff_nx, eff_ny = size(eff_L⁺Astar_arr)
+        # Reference PencilArray for local_to_global mapping on z-local pencil
+        eff_ref_arr = workspace.L⁺A_z
     else
-    # Serial path for small grids (threading overhead exceeds benefit)
-    for mode_idx in 1:n_modes
-        i = ((mode_idx - 1) % nx_local) + 1
-        j = ((mode_idx - 1) ÷ nx_local) + 1
+        # z is already local (single process or 1D decomposition)
+        eff_L⁺Astar_arr = L⁺Astar_arr
+        eff_nL⁺Ak_arr = nL⁺Ak_arr
+        eff_nL⁺Ak_prev_arr = nL⁺Ak_prev_arr
+        eff_L⁺Anp1_arr = L⁺Anp1_arr
+        eff_Anp1_arr = Anp1_arr
+        eff_nz = nz_local  # == nz when z is local
+        eff_nx = nx_local
+        eff_ny = ny_local
+        eff_ref_arr = Sn.q
+    end
+
+    n_modes_eff = eff_nx * eff_ny
+
+    # Serial path: process each horizontal mode with full z-column
+    for mode_idx in 1:n_modes_eff
+        i = ((mode_idx - 1) % eff_nx) + 1
+        j = ((mode_idx - 1) ÷ eff_nx) + 1
 
         tid = 1  # Use first workspace
         tl = imex_ws.thread_local[tid]
 
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
+        i_global = local_to_global(i, 2, eff_ref_arr)
+        j_global = local_to_global(j, 3, eff_ref_arr)
 
         if !L[i_global, j_global]
-            for k in 1:nz_local
-                L⁺Anp1_arr[k, i, j] = 0
-                Anp1_arr[k, i, j] = 0
+            for k in 1:eff_nz
+                eff_L⁺Anp1_arr[k, i, j] = 0
+                eff_Anp1_arr[k, i, j] = 0
             end
             continue
         end
@@ -856,35 +868,30 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
 
         if !dispersion_active || kₕ² < IMEX_KH2_EPS
             # Explicit update for mean mode or when dispersion is disabled
-            # Use B* (after first half-refraction) and AB2 advection
-            # AB2: (c_n * dt) * N^n + (c_nm1 * dt) * N^{n-1}
-            for k in 1:nz_local
-                N_n = -nL⁺Ak_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
+            for k in 1:eff_nz
+                N_n = -eff_nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -eff_nL⁺Ak_prev_arr[k, i, j] : zero(eltype(eff_nL⁺Ak_prev_arr))
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                # Store L⁺A** (before second half-refraction) in L⁺Anp1 temporarily
-                L⁺Anp1_arr[k, i, j] = (L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
-                Anp1_arr[k, i, j] = 0
+                eff_L⁺Anp1_arr[k, i, j] = (eff_L⁺Astar_arr[k, i, j] + advection_term) * hyperdiff_factor
+                eff_Anp1_arr[k, i, j] = 0
             end
         else
             # IMEX-CNAB: CN for dispersion, AB2 for advection
-            # Step 1: Compute A* = (L⁺)⁻¹B* for consistency with the refraction-rotated B*
-            # This is critical: using A^n with B* breaks IMEX-CN stability!
-            for k in 1:nz_local
-                tl.L⁺A_col[k] = L⁺Astar_arr[k, i, j]
+            # Step 1: Compute A* = (L⁺)⁻¹B* — full z-column now available
+            for k in 1:nz
+                tl.L⁺A_col[k] = eff_L⁺Astar_arr[k, i, j]
             end
-            # Use β_scale=0 to get standard L⁺ inversion (A* = (L⁺)⁻¹B*)
             solve_modified_elliptic!(tl.A_col, tl.L⁺A_col, G, par, a, kₕ²,
                                      complex(0.0), αdisp_profile, tl)
 
-            # Step 2: Build RHS for IMEX-CNAB using B*, A*, and AB2 advection
+            # Step 2: Build RHS for IMEX-CNAB
             # RHS = B* + (dt/2)·i·αdisp·kₕ²·A* + (c_n·dt)·N^n + (c_nm1·dt)·N^{n-1}
-            for k in 1:nz_local
-                N_n = -nL⁺Ak_arr[k, i, j]
-                N_nm1 = use_ab2 ? -nL⁺Ak_prev_arr[k, i, j] : zero(eltype(nL⁺Ak_prev_arr))
+            for k in 1:nz
+                N_n = -eff_nL⁺Ak_arr[k, i, j]
+                N_nm1 = use_ab2 ? -eff_nL⁺Ak_prev_arr[k, i, j] : zero(eltype(eff_nL⁺Ak_prev_arr))
                 disp_star = im * αdisp_profile[k] * kₕ² * tl.A_col[k]
                 advection_term = (c_n * dt) * N_n + (c_nm1 * dt) * N_nm1
-                tl.RHS_col[k] = L⁺Astar_arr[k, i, j] + (dt/2) * disp_star + advection_term
+                tl.RHS_col[k] = eff_L⁺Astar_arr[k, i, j] + (dt/2) * disp_star + advection_term
             end
 
             # Step 3: Solve modified elliptic problem for A^{n+1}
@@ -895,14 +902,19 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
                                      β_scale, αdisp_profile, tl)
 
             # Recover B** from the IMEX-CN relation: B** = RHS + β*A^{n+1}
-            for k in 1:nz_local
+            for k in 1:nz
                 βₖ = β_scale * αdisp_profile[k]
-                L⁺Anp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
-                Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
+                eff_L⁺Anp1_arr[k, i, j] = (tl.RHS_col[k] + βₖ * tl.A_col[k]) * hyperdiff_factor
+                eff_Anp1_arr[k, i, j] = tl.A_col[k] * hyperdiff_factor
             end
         end
-    end  # end serial for
-    end  # end if use_threading
+    end  # end mode loop
+
+    # Transpose results back to output pencil if z was distributed
+    if z_distributed && workspace !== nothing
+        _transpose_input_to_output!(Snp1.L⁺A, workspace.A_z, plans)
+        _transpose_input_to_output!(Snp1.A, workspace.psi_z, plans)
+    end
 
     #= Step 5.5: Apply SECOND HALF refraction with updated ψ =#
     # Use ψ^{n+1} (from the updated mean flow) for the second half-step to
