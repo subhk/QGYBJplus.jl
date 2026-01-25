@@ -7,6 +7,7 @@ QG-YBJ+ Model
 
 This numerical model simulates the coupling between near-inertial waves and (Lagrangian-mean) balanced eddies. Wave dynamics follow the YBJ+ equation (Asselin & Young 2019), while potential vorticity evolution is governed by the quasigeostrophic equation, incorporating the wave feedback formulation of Xie & Vanneste (2015). The model employs pseudo-spectral methods horizontally and second-order finite differencing for vertical and temporal derivatives.
 
+![Wave Kinetic Energy](waveKE_plot.png)
 
 ## References
 
