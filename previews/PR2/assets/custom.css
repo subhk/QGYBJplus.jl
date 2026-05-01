@@ -1,0 +1,777 @@
+/* QGYBJ+.jl Custom Documentation Styles */
+/* Ocean-inspired color palette for a wave-eddy simulation package */
+
+/* Import a clean, readable font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+    /* Primary colors - ocean blues (slightly softer) */
+    --primary-color: #0077b6;
+    --primary-dark: #023e8a;
+    --primary-light: #90e0ef;
+
+    /* Accent colors */
+    --accent-color: #00b4d8;
+    --accent-warm: #f77f00;
+
+    /* Neutrals - softer for better reading */
+    --text-color: #374151;
+    --text-muted: #6b7280;
+    --bg-light: #f9fafb;
+    --bg-code: #f3f4f6;
+    --border-color: #e5e7eb;
+
+    /* Status colors */
+    --success-color: #10b981;
+    --warning-color: #f59e0b;
+    --danger-color: #ef4444;
+    --info-color: #3b82f6;
+
+    /* Typography */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+    /* Spacing */
+    --content-max-width: 48rem;
+    --reading-line-height: 1.75;
+}
+
+/* ============================================
+   TYPOGRAPHY
+   ============================================ */
+
+/* Apply font family globally */
+#documenter .docs-main,
+#documenter .docs-sidebar {
+    font-family: var(--font-sans);
+}
+
+/* Better body text with optimal reading width */
+#documenter .docs-main article {
+    font-size: 1.0625rem;
+    line-height: var(--reading-line-height);
+    color: var(--text-color);
+    max-width: var(--content-max-width);
+    letter-spacing: -0.011em;
+}
+
+/* Paragraph spacing for better rhythm */
+#documenter .docs-main article p {
+    margin-bottom: 1.5rem;
+}
+
+/* Lists with better spacing */
+#documenter .docs-main article ul,
+#documenter .docs-main article ol {
+    margin-bottom: 1.5rem;
+    padding-left: 1.5rem;
+}
+
+#documenter .docs-main article li {
+    margin-bottom: 0.5rem;
+}
+
+#documenter .docs-main article li > ul,
+#documenter .docs-main article li > ol {
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Headings with better hierarchy and spacing */
+#documenter .docs-main h1 {
+    font-size: 2.25rem;
+    font-weight: 700;
+    color: var(--primary-dark);
+    border-bottom: 3px solid var(--primary-color);
+    padding-bottom: 0.6rem;
+    margin-top: 0;
+    margin-bottom: 2rem;
+    letter-spacing: -0.025em;
+    line-height: 1.2;
+}
+
+#documenter .docs-main h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--primary-dark);
+    border-bottom: 2px solid var(--accent-color);
+    padding-bottom: 0.5rem;
+    margin-top: 3rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+}
+
+#documenter .docs-main h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--primary-color);
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+    letter-spacing: -0.015em;
+    line-height: 1.4;
+}
+
+#documenter .docs-main h4 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+    line-height: 1.4;
+}
+
+/* Blockquotes */
+#documenter .docs-main blockquote {
+    border-left: 4px solid var(--primary-light);
+    background: var(--bg-light);
+    padding: 1rem 1.5rem;
+    margin: 1.5rem 0;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+#documenter .docs-main blockquote p:last-child {
+    margin-bottom: 0;
+}
+
+/* ============================================
+   SIDEBAR
+   ============================================ */
+
+#documenter .docs-sidebar {
+    background: linear-gradient(180deg, var(--primary-dark) 0%, #034078 100%);
+}
+
+#documenter .docs-sidebar .docs-logo img {
+    max-width: 150px;
+}
+
+#documenter .docs-sidebar .docs-package-name {
+    color: white;
+    font-weight: 700;
+    font-size: 1.3rem;
+}
+
+#documenter .docs-sidebar .docs-package-name .docs-autofit {
+    color: white;
+}
+
+#documenter .docs-sidebar ul.docs-menu li a {
+    color: rgba(255, 255, 255, 0.85);
+    transition: all 0.2s ease;
+}
+
+#documenter .docs-sidebar ul.docs-menu li a:hover {
+    color: white;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+#documenter .docs-sidebar ul.docs-menu li.is-active > a {
+    color: white;
+    background-color: var(--accent-color);
+    font-weight: 600;
+}
+
+#documenter .docs-sidebar ul.docs-menu .tocitem {
+    border-left: 3px solid transparent;
+}
+
+#documenter .docs-sidebar ul.docs-menu li.is-active > .tocitem {
+    border-left-color: white;
+}
+
+/* ============================================
+   CODE BLOCKS
+   ============================================ */
+
+#documenter .docs-main pre {
+    background-color: #1e1e2e;
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.75rem 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.1);
+    border: 1px solid #313244;
+    overflow-x: auto;
+}
+
+#documenter .docs-main pre code {
+    font-family: var(--font-mono);
+    color: #cdd6f4;
+    font-size: 0.875rem;
+    line-height: 1.7;
+    letter-spacing: 0;
+}
+
+/* Inline code */
+#documenter .docs-main code {
+    font-family: var(--font-mono);
+    background-color: var(--bg-code);
+    color: var(--primary-dark);
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    font-size: 0.875em;
+    font-weight: 500;
+    border: 1px solid var(--border-color);
+}
+
+#documenter .docs-main pre code {
+    background-color: transparent;
+    padding: 0;
+    border: none;
+    font-weight: 400;
+}
+
+/* Syntax highlighting improvements */
+#documenter .docs-main pre .hljs-keyword,
+#documenter .docs-main pre .hljs-built_in {
+    color: #cba6f7;
+}
+
+#documenter .docs-main pre .hljs-string {
+    color: #a6e3a1;
+}
+
+#documenter .docs-main pre .hljs-number {
+    color: #fab387;
+}
+
+#documenter .docs-main pre .hljs-comment {
+    color: #6c7086;
+    font-style: italic;
+}
+
+#documenter .docs-main pre .hljs-function {
+    color: #89b4fa;
+}
+
+/* ============================================
+   ADMONITIONS (Note, Warning, Tip boxes)
+   ============================================ */
+
+#documenter .admonition {
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border: none;
+    overflow: hidden;
+}
+
+#documenter .admonition-header {
+    font-weight: 600;
+    padding: 0.8rem 1rem;
+    font-size: 0.95rem;
+}
+
+#documenter .admonition-body {
+    padding: 1rem;
+    background-color: white;
+}
+
+/* Note */
+#documenter .admonition.is-info {
+    border-left: 4px solid var(--info-color);
+}
+#documenter .admonition.is-info .admonition-header {
+    background-color: var(--info-color);
+    color: white;
+}
+
+/* Tip */
+#documenter .admonition.is-success {
+    border-left: 4px solid var(--success-color);
+}
+#documenter .admonition.is-success .admonition-header {
+    background-color: var(--success-color);
+    color: white;
+}
+
+/* Warning */
+#documenter .admonition.is-warning {
+    border-left: 4px solid var(--warning-color);
+}
+#documenter .admonition.is-warning .admonition-header {
+    background-color: var(--warning-color);
+    color: var(--text-color);
+}
+
+/* Danger */
+#documenter .admonition.is-danger {
+    border-left: 4px solid var(--danger-color);
+}
+#documenter .admonition.is-danger .admonition-header {
+    background-color: var(--danger-color);
+    color: white;
+}
+
+/* ============================================
+   TABLES
+   ============================================ */
+
+#documenter .docs-main table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+#documenter .docs-main table thead {
+    background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+}
+
+#documenter .docs-main table th {
+    color: white;
+    font-weight: 600;
+    padding: 1rem;
+    text-align: left;
+    border: none;
+}
+
+#documenter .docs-main table td {
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#documenter .docs-main table tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+#documenter .docs-main table tbody tr:hover {
+    background-color: var(--bg-light);
+}
+
+#documenter .docs-main table tbody tr:nth-child(even) {
+    background-color: #fafbfc;
+}
+
+#documenter .docs-main table tbody tr:nth-child(even):hover {
+    background-color: var(--bg-light);
+}
+
+/* ============================================
+   LINKS
+   ============================================ */
+
+#documenter .docs-main a {
+    color: var(--primary-color);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s ease;
+}
+
+#documenter .docs-main a:hover {
+    color: var(--primary-dark);
+    border-bottom-color: var(--primary-color);
+}
+
+/* ============================================
+   HORIZONTAL RULES
+   ============================================ */
+
+#documenter .docs-main hr {
+    border: none;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
+    margin: 3rem 0;
+}
+
+/* ============================================
+   MATH BLOCKS
+   ============================================ */
+
+#documenter .docs-main .MathJax {
+    font-size: 1.05em;
+}
+
+#documenter .docs-main mjx-container[display="true"] {
+    background-color: var(--bg-light);
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+}
+
+/* ============================================
+   DOCSTRINGS
+   ============================================ */
+
+#documenter .docs-main .docstring {
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+#documenter .docs-main .docstring header {
+    background: linear-gradient(135deg, var(--bg-light) 0%, white 100%);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.8rem 1rem;
+    border-radius: 8px 8px 0 0;
+}
+
+#documenter .docs-main .docstring header code {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--primary-dark);
+    background: transparent;
+}
+
+#documenter .docs-main .docstring article {
+    padding: 1rem;
+}
+
+/* ============================================
+   SEARCH
+   ============================================ */
+
+#documenter .docs-sidebar form.docs-search input {
+    border-radius: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+    padding: 0.5rem 1rem;
+}
+
+#documenter .docs-sidebar form.docs-search input::placeholder {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+#documenter .docs-sidebar form.docs-search input:focus {
+    border-color: var(--accent-color);
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ============================================
+   FOOTER
+   ============================================ */
+
+#documenter .docs-main footer {
+    border-top: 2px solid var(--border-color);
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    color: var(--text-muted);
+}
+
+/* ============================================
+   RESPONSIVE IMPROVEMENTS
+   ============================================ */
+
+@media screen and (max-width: 1024px) {
+    #documenter .docs-main article {
+        padding: 1rem;
+    }
+
+    #documenter .docs-main h1 {
+        font-size: 1.8rem;
+    }
+
+    #documenter .docs-main h2 {
+        font-size: 1.4rem;
+    }
+}
+
+/* ============================================
+   SPECIAL LANDING PAGE STYLES
+   ============================================ */
+
+/* Hero section styling for index page */
+.hero-section {
+    background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary-color) 50%, var(--accent-color) 100%);
+    color: white;
+    padding: 3rem 2rem;
+    border-radius: 12px;
+    margin: -1rem -1rem 2rem -1rem;
+    text-align: center;
+}
+
+.hero-section h1 {
+    color: white !important;
+    border-bottom: none !important;
+    font-size: 2.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+.hero-section p {
+    font-size: 1.2rem;
+    opacity: 0.95;
+    max-width: 700px;
+    margin: 0 auto;
+}
+
+/* Feature cards */
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.feature-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.feature-card h3 {
+    color: var(--primary-color) !important;
+    margin-top: 0 !important;
+    margin-bottom: 0.8rem !important;
+    font-size: 1.2rem !important;
+}
+
+.feature-card p {
+    color: var(--text-muted);
+    margin-bottom: 0;
+    font-size: 0.95rem;
+}
+
+/* Quick start card */
+.quickstart-card {
+    background: linear-gradient(135deg, #1e1e2e 0%, #2a2a3e 100%);
+    border-radius: 12px;
+    padding: 2rem;
+    margin: 2rem 0;
+}
+
+.quickstart-card h3 {
+    color: var(--accent-color) !important;
+    margin-top: 0 !important;
+}
+
+/* Learning path cards */
+.learning-path {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.path-step {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--bg-light);
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    border-left: 4px solid var(--primary-color);
+    transition: border-color 0.2s ease;
+}
+
+.path-step:hover {
+    border-left-color: var(--accent-color);
+}
+
+.path-step .step-number {
+    background: var(--primary-color);
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.path-step .step-content {
+    flex-grow: 1;
+}
+
+.path-step .step-content strong {
+    color: var(--primary-dark);
+}
+
+.path-step .step-time {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Badge styles */
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.badge-blue {
+    background-color: var(--primary-light);
+    color: var(--primary-dark);
+}
+
+.badge-green {
+    background-color: #d3f9d8;
+    color: #087f5b;
+}
+
+.badge-orange {
+    background-color: #fff3bf;
+    color: #e67700;
+}
+
+/* ============================================
+   SMOOTH SCROLLING & ACCESSIBILITY
+   ============================================ */
+
+html {
+    scroll-behavior: smooth;
+}
+
+/* Better focus states for accessibility */
+#documenter a:focus,
+#documenter button:focus,
+#documenter input:focus {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ============================================
+   SELECTION STYLING
+   ============================================ */
+
+::selection {
+    background-color: var(--primary-light);
+    color: var(--primary-dark);
+}
+
+/* ============================================
+   ENHANCED RESPONSIVE DESIGN
+   ============================================ */
+
+@media screen and (max-width: 768px) {
+    #documenter .docs-main article {
+        font-size: 1rem;
+        padding: 1rem;
+    }
+
+    #documenter .docs-main h1 {
+        font-size: 1.75rem;
+    }
+
+    #documenter .docs-main h2 {
+        font-size: 1.35rem;
+        margin-top: 2rem;
+    }
+
+    #documenter .docs-main h3 {
+        font-size: 1.15rem;
+    }
+
+    .hero-section {
+        padding: 2rem 1.5rem;
+        margin: -0.5rem -0.5rem 1.5rem -0.5rem;
+    }
+
+    .hero-section h1 {
+        font-size: 1.75rem !important;
+    }
+
+    .hero-section p {
+        font-size: 1rem;
+    }
+
+    .feature-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .feature-card {
+        padding: 1.25rem;
+    }
+
+    #documenter .docs-main pre {
+        padding: 1rem;
+        margin: 1rem -0.5rem;
+        border-radius: 0;
+    }
+}
+
+/* ============================================
+   PRINT STYLES
+   ============================================ */
+
+@media print {
+    #documenter .docs-sidebar {
+        display: none;
+    }
+
+    #documenter .docs-main {
+        margin-left: 0;
+        max-width: 100%;
+    }
+
+    #documenter .docs-main article {
+        max-width: 100%;
+    }
+
+    #documenter .docs-main pre {
+        background-color: #f5f5f5 !important;
+        color: #333 !important;
+        border: 1px solid #ddd;
+        box-shadow: none;
+    }
+
+    #documenter .docs-main a {
+        color: inherit;
+        text-decoration: underline;
+    }
+
+    #documenter .docs-main a[href^="http"]::after {
+        content: " (" attr(href) ")";
+        font-size: 0.8em;
+        color: #666;
+    }
+}
+
+/* ============================================
+   CUSTOM SCROLLBAR
+   ============================================ */
+
+#documenter .docs-main ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+#documenter .docs-main ::-webkit-scrollbar-track {
+    background: var(--bg-light);
+    border-radius: 4px;
+}
+
+#documenter .docs-main ::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+#documenter .docs-main ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}
