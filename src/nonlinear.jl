@@ -59,6 +59,50 @@ const PARENT = Base.parentmodule(@__MODULE__)
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
+"""
+    NonlinearWorkspace(spectral_template, plans)
+
+Reusable scratch arrays for pseudo-spectral nonlinear products.
+
+The spectral arrays use the same pencil as `spectral_template`; physical arrays
+use the FFT backward destination pencil. The workspace is intentionally generic
+because nonlinear kernels run sequentially and can reuse the same buffers for
+advection, refraction, Jacobians, and wave-feedback terms.
+"""
+struct NonlinearWorkspace{A, P}
+    spectral1::A
+    spectral2::A
+    spectral3::A
+    spectral4::A
+    spectral5::A
+    spectral6::A
+    physical1::P
+    physical2::P
+    physical3::P
+    physical4::P
+    physical5::P
+    physical6::P
+end
+
+function NonlinearWorkspace(spectral_template, plans)
+    spectral1 = similar(spectral_template)
+    spectral2 = similar(spectral_template)
+    spectral3 = similar(spectral_template)
+    spectral4 = similar(spectral_template)
+    spectral5 = similar(spectral_template)
+    spectral6 = similar(spectral_template)
+
+    physical1 = _allocate_fft_dst(spectral_template, plans)
+    physical2 = _allocate_fft_dst(spectral_template, plans)
+    physical3 = _allocate_fft_dst(spectral_template, plans)
+    physical4 = _allocate_fft_dst(spectral_template, plans)
+    physical5 = _allocate_fft_dst(spectral_template, plans)
+    physical6 = _allocate_fft_dst(spectral_template, plans)
+
+    return NonlinearWorkspace(spectral1, spectral2, spectral3, spectral4, spectral5, spectral6,
+                              physical1, physical2, physical3, physical4, physical5, physical6)
+end
+
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.
 function _prefilter_spectral!(dst, src, G::Grid, Lmask)
     nx, ny = G.nx, G.ny
@@ -134,7 +178,7 @@ so the physical derivatives are extracted via `real()`.
 jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
-function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
+function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -149,8 +193,10 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
 
     #= Step 1: Compute spectral derivatives
     In spectral space: ∂/∂x → ikₓ, ∂/∂y → ikᵧ =#
-    φₓₖ = similar(φₖ); φᵧₖ = similar(φₖ)
-    χₓₖ = similar(χₖ); χᵧₖ = similar(χₖ)
+    φₓₖ = workspace === nothing ? similar(φₖ) : workspace.spectral1
+    φᵧₖ = workspace === nothing ? similar(φₖ) : workspace.spectral2
+    χₓₖ = workspace === nothing ? similar(χₖ) : workspace.spectral3
+    χᵧₖ = workspace === nothing ? similar(χₖ) : workspace.spectral4
 
     φₓ_arr = parent(φₓₖ); φᵧ_arr = parent(φᵧₖ)
     χₓ_arr = parent(χₓₖ); χᵧ_arr = parent(χᵧₖ)
@@ -176,8 +222,10 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
     end
 
     #= Step 2: Transform derivatives to real space =#
-    φₓ = _allocate_fft_dst(φₓₖ, plans); φᵧ = _allocate_fft_dst(φᵧₖ, plans)
-    χₓ = _allocate_fft_dst(χₓₖ, plans); χᵧ = _allocate_fft_dst(χᵧₖ, plans)
+    φₓ = workspace === nothing ? _allocate_fft_dst(φₓₖ, plans) : workspace.physical1
+    φᵧ = workspace === nothing ? _allocate_fft_dst(φᵧₖ, plans) : workspace.physical2
+    χₓ = workspace === nothing ? _allocate_fft_dst(χₓₖ, plans) : workspace.physical3
+    χᵧ = workspace === nothing ? _allocate_fft_dst(χᵧₖ, plans) : workspace.physical4
 
     fft_backward!(φₓ, φₓₖ, plans)
     fft_backward!(φᵧ, φᵧₖ, plans)
@@ -192,7 +240,7 @@ function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
 
     For real fields: IFFT(im*k*φ̂) is real (up to roundoff), so we use real()
     to extract the physical derivative. =#
-    Jᵣ = _allocate_fft_dst(φₖ, plans)
+    Jᵣ = workspace === nothing ? _allocate_fft_dst(φₖ, plans) : workspace.physical5
     J_arr = parent(Jᵣ)
 
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
@@ -407,7 +455,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
 end
 
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
-function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_real::Bool=false)
+function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing,
+                         use_real::Bool=false, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     u_arr = parent(u); v_arr = parent(v)
@@ -422,21 +471,21 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_rea
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
-    χᵣ = _allocate_fft_dst(χk, plans)
-    χk_f = similar(χk)
+    χᵣ = workspace === nothing ? _allocate_fft_dst(χk, plans) : workspace.physical1
+    χk_f = workspace === nothing ? similar(χk) : workspace.spectral1
 
     _prefilter_spectral!(χk_f, χk, G, Lmask)
     fft_backward!(χᵣ, χk_f, plans)
     χᵣ_arr = parent(χᵣ)
 
-    uterm_r = _allocate_fft_dst(χk, plans)
-    vterm_r = _allocate_fft_dst(χk, plans)
+    uterm_r = workspace === nothing ? _allocate_fft_dst(χk, plans) : workspace.physical2
+    vterm_r = workspace === nothing ? _allocate_fft_dst(χk, plans) : workspace.physical3
 
     uterm_r_arr = parent(uterm_r) 
     vterm_r_arr = parent(vterm_r)
 
-    uterm_k = similar(χk); 
-    vterm_k = similar(χk)
+    uterm_k = workspace === nothing ? similar(χk) : workspace.spectral2
+    vterm_k = workspace === nothing ? similar(χk) : workspace.spectral3
 
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
@@ -471,8 +520,9 @@ end
 
 Compute advection of q using divergence form without splitting wave fields.
 """
-function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing)
-    return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask, use_real=true)
+function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing, workspace=nothing)
+    return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask,
+                           use_real=true, workspace=workspace)
 end
 
 """
@@ -480,8 +530,9 @@ end
 
 Compute advection of complex L⁺A directly (YBJ+ path).
 """
-function convol_waqg_L⁺A!(nL⁺Ak, u, v, L⁺Ak, G::Grid, plans; Lmask=nothing)
-    return _convol_advect!(nL⁺Ak, u, v, L⁺Ak, G, plans; Lmask=Lmask, use_real=false)
+function convol_waqg_L⁺A!(nL⁺Ak, u, v, L⁺Ak, G::Grid, plans; Lmask=nothing, workspace=nothing)
+    return _convol_advect!(nL⁺Ak, u, v, L⁺Ak, G, plans; Lmask=Lmask,
+                           use_real=false, workspace=workspace)
 end
 
 #=
@@ -627,7 +678,7 @@ end
 
 Compute wave refraction term ζ*L⁺A directly for complex L⁺A (YBJ+ path).
 """
-function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψₖ)
@@ -638,7 +689,7 @@ function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=no
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
-    ζₖ = similar(ψₖ)
+    ζₖ = workspace === nothing ? similar(ψₖ) : workspace.spectral1
     ζₖ_arr = parent(ζₖ)
 
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
@@ -654,9 +705,9 @@ function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=no
         end
     end
 
-    ζᵣ = _allocate_fft_dst(ζₖ, plans)
-    L⁺Aᵣ = _allocate_fft_dst(L⁺Ak, plans)
-    L⁺Ak_f = similar(L⁺Ak)
+    ζᵣ = workspace === nothing ? _allocate_fft_dst(ζₖ, plans) : workspace.physical1
+    L⁺Aᵣ = workspace === nothing ? _allocate_fft_dst(L⁺Ak, plans) : workspace.physical2
+    L⁺Ak_f = workspace === nothing ? similar(L⁺Ak) : workspace.spectral2
     _prefilter_spectral!(L⁺Ak_f, L⁺Ak, G, Lmask)
     fft_backward!(ζᵣ, ζₖ, plans)
     fft_backward!(L⁺Aᵣ, L⁺Ak_f, plans)
@@ -664,7 +715,7 @@ function refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, ψₖ, G::Grid, plans; Lmask=no
     ζᵣ_arr = parent(ζᵣ)
     L⁺Aᵣ_arr = parent(L⁺Aᵣ)
 
-    rL⁺Aᵣ = similar(L⁺Aᵣ)
+    rL⁺Aᵣ = workspace === nothing ? similar(L⁺Aᵣ) : workspace.physical3
     rL⁺Aᵣ_arr = parent(rL⁺Aᵣ)
 
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
@@ -864,13 +915,13 @@ end
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 """
-function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
+function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     qʷₖ_arr = parent(qʷₖ)
 
     # Prefilter inputs to avoid aliasing when upstream fields are not masked
-    Bk_f = similar(Bk)
+    Bk_f = workspace === nothing ? similar(Bk) : workspace.spectral1
     _prefilter_spectral!(Bk_f, Bk, G, Lmask)
 
     Bk_arr = parent(Bk_f)
@@ -880,7 +931,8 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     # Spectral derivatives of B
-    Bₓₖ = similar(Bk); Bᵧₖ = similar(Bk)
+    Bₓₖ = workspace === nothing ? similar(Bk) : workspace.spectral2
+    Bᵧₖ = workspace === nothing ? similar(Bk) : workspace.spectral3
     Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
@@ -893,9 +945,9 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     end
 
     # Transform to physical space
-    Bᵣ = _allocate_fft_dst(Bk, plans)
-    Bₓᵣ = _allocate_fft_dst(Bₓₖ, plans)
-    Bᵧᵣ = _allocate_fft_dst(Bᵧₖ, plans)
+    Bᵣ = workspace === nothing ? _allocate_fft_dst(Bk, plans) : workspace.physical1
+    Bₓᵣ = workspace === nothing ? _allocate_fft_dst(Bₓₖ, plans) : workspace.physical2
+    Bᵧᵣ = workspace === nothing ? _allocate_fft_dst(Bᵧₖ, plans) : workspace.physical3
     fft_backward!(Bᵣ, Bk_f, plans)
     fft_backward!(Bₓᵣ, Bₓₖ, plans)
     fft_backward!(Bᵧᵣ, Bᵧₖ, plans)
@@ -906,7 +958,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
 
     # (i/2f)J(B*, B) term in physical space (PDF Eq. 29, 47)
     f₀ = par.f₀
-    qʷᵣ = similar(Bᵣ)
+    qʷᵣ = workspace === nothing ? similar(Bᵣ) : workspace.physical4
     qʷᵣ_arr = parent(qʷᵣ)
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
     nz_phys, nx_phys, ny_phys = size(qʷᵣ_arr)
@@ -917,7 +969,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     end
 
     # |B|^2 term
-    mag² = _allocate_fft_dst(Bk, plans)
+    mag² = workspace === nothing ? _allocate_fft_dst(Bk, plans) : workspace.physical5
     mag²_arr = parent(mag²)
     # Physical array dimensions (already defined above as nz_phys, nx_phys, ny_phys)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
@@ -925,7 +977,7 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
     end
 
     # Transform to spectral
-    tempₖ = similar(Bk)
+    tempₖ = workspace === nothing ? similar(Bk) : workspace.spectral4
     fft_forward!(tempₖ, mag², plans)
     fft_forward!(qʷₖ, qʷᵣ, plans)
     tempₖ_arr = parent(tempₖ)
@@ -1187,4 +1239,4 @@ end # module
 # Export nonlinear operators to main QGYBJplus module
 using .Nonlinear: jacobian_spectral!, convol_waqg!, convol_waqg_q!, convol_waqg_L⁺A!,
                   refraction_waqg!, refraction_waqg_L⁺A!, compute_qw!, compute_qw_complex!,
-                  dissipation_q_nv!, int_factor
+                  dissipation_q_nv!, int_factor, NonlinearWorkspace

@@ -617,34 +617,8 @@ function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Fl
 end
 
 function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition. Use init_mpi_grid() first.")
-    end
-
-    pencil_xy = decomp.pencil_xy
-
-    # Allocate spectral (complex) fields
-    q   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(q, 0)
-    psi = PencilArray{Complex{T}}(undef, pencil_xy); fill!(psi, 0)
-    A   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(A, 0)
-    L⁺A = PencilArray{Complex{T}}(undef, pencil_xy); fill!(L⁺A, 0)
-    C   = PencilArray{Complex{T}}(undef, pencil_xy); fill!(C, 0)
-
-    # Allocate real-space (real) fields
-    u = PencilArray{T}(undef, pencil_xy); fill!(u, 0)
-    v = PencilArray{T}(undef, pencil_xy); fill!(v, 0)
-    w = PencilArray{T}(undef, pencil_xy); fill!(w, 0)
-
-    # Allocate wave velocity amplitude fields (for GLM particle advection)
-    LA_real = PencilArray{T}(undef, pencil_xy); fill!(LA_real, 0)
-    LA_imag = PencilArray{T}(undef, pencil_xy); fill!(LA_imag, 0)
-
-    # Allocate vertical wave displacement coefficient fields (for GLM particle advection)
-    ξz_cos = PencilArray{T}(undef, pencil_xy); fill!(ξz_cos, 0)
-    ξz_sin = PencilArray{T}(undef, pencil_xy); fill!(ξz_sin, 0)
-
-    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
+    plans = plan_mpi_transforms(grid, mpi_config)
+    return init_mpi_state(grid, plans, mpi_config; T)
 end
 
 # Alias for backward compatibility
@@ -1138,16 +1112,16 @@ const _U53 = 0x1.0p-53
     return x ⊻ (x >> 31)
 end
 
-@inline function _hash_u01(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+@inline function _hash_u01(seed::UInt64, vals::Vararg{Int}; tag::Integer=0)
     x = seed
     @inbounds for v in vals
         x = _mix64(x ⊻ UInt64(v))
     end
-    x = _mix64(x ⊻ tag)
+    x = _mix64(x ⊻ UInt64(tag))
     return Float64((x >> 11) + 1) * _U53
 end
 
-@inline function _hash_randn(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+@inline function _hash_randn(seed::UInt64, vals::Vararg{Int}; tag::Integer=0)
     u1 = _hash_u01(seed, vals...; tag=tag)
     u2 = _hash_u01(seed, vals...; tag=tag + 1)
     return sqrt(-2 * log(u1)) * cos(2 * pi * u2)

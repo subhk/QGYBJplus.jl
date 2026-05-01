@@ -62,7 +62,7 @@ using Printf
 =#
 
 """
-    Simulation{T, G, S, P, M, W}
+    Simulation{T, G, S, P, M, W, R}
 
 High-level container for all simulation components.
 
@@ -75,7 +75,7 @@ High-level container for all simulation components.
 - `workspace`: Pre-allocated workspace arrays
 - `N2_profile`: Stratification profile N²(z) on unstaggered (face) levels
 """
-mutable struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W}
+mutable struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W, R}
     grid::G
     state::S
     params::QGParams{T}
@@ -83,7 +83,7 @@ mutable struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W}
     mpi_config::M
     workspace::W
     N2_profile::Vector{T}
-    run_options::Any
+    run_options::R
 end
 
 # Convenience accessors
@@ -534,10 +534,12 @@ function initialize_simulation(;
 
     MPI.Barrier(mpi_config.comm)
 
+    run_options = default_run_options(T)
+
     return Simulation{T, typeof(grid), typeof(state), typeof(plans),
-                      typeof(mpi_config), typeof(workspace)}(
+                      typeof(mpi_config), typeof(workspace), typeof(run_options)}(
         grid, state, params, plans, mpi_config, workspace, N2_profile,
-        default_run_options(T)
+        run_options
     )
 end
 

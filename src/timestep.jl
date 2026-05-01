@@ -122,15 +122,20 @@ The prognostic PV remains the balanced-flow `q`. This helper returns a copy of
 that prognostic `q`; callers must restore it after `invert_q_to_psi!`.
 """
 function replace_q_with_wave_feedback_rhs!(S::State, G::Grid, par::QGParams, plans, L;
-                                           L⁺ARk=nothing, L⁺AIk=nothing)
-    q_base = copy(S.q)
+                                           L⁺ARk=nothing, L⁺AIk=nothing,
+                                           q_base=nothing, qwk=nothing,
+                                           nonlinear_workspace=nothing)
+    q_base = q_base === nothing ? copy(S.q) : q_base
     q_base_arr = parent(q_base)
     q_arr = parent(S.q)
-    qwk = similar(S.q)
+    q_base_arr .= q_arr
+
+    qwk = qwk === nothing ? similar(S.q) : qwk
     qwk_arr = parent(qwk)
 
     if par.ybj_plus
-        compute_qw_complex!(qwk, S.L⁺A, par, G, plans; Lmask=L)
+        compute_qw_complex!(qwk, S.L⁺A, par, G, plans; Lmask=L,
+                            workspace=nonlinear_workspace)
     else
         if L⁺ARk === nothing || L⁺AIk === nothing
             L⁺ARk = similar(S.L⁺A)
@@ -151,6 +156,53 @@ end
 
 restore_prognostic_q!(S::State, q_base) = (parent(S.q) .= parent(q_base); S)
 
+"""
+    ExpRK2Workspace(state, plans=nothing)
+
+Reusable scratch storage for `exp_rk2_step!`.
+
+Allocate this once per simulation and pass it as `timestep_workspace` to avoid
+allocating RK stage states, tendency arrays, and velocity FFT scratch on every
+time step. Pass `plans` when using MPI so physical FFT buffers are allocated on
+the FFT input pencil.
+"""
+struct ExpRK2Workspace{S, A, P, N}
+    stage::S
+    rhsq₀::A
+    rhsB₀::A
+    rhsq₁::A
+    rhsB₁::A
+    nqk::A
+    dqk::A
+    nL⁺Ak::A
+    rL⁺Ak::A
+    q_base::A
+    qwk::A
+    uk::A
+    vk::A
+    tmpu::P
+    tmpv::P
+    nonlinear::N
+end
+
+function ExpRK2Workspace(S::State, plans=nothing)
+    uk = similar(S.psi)
+    vk = similar(S.psi)
+
+    return ExpRK2Workspace(
+        copy_state(S),
+        similar(S.q), similar(S.L⁺A),
+        similar(S.q), similar(S.L⁺A),
+        similar(S.q), similar(S.q),
+        similar(S.L⁺A), similar(S.L⁺A),
+        similar(S.q), similar(S.q),
+        uk, vk,
+        allocate_fft_backward_dst(uk, plans),
+        allocate_fft_backward_dst(vk, plans),
+        NonlinearWorkspace(S.psi, plans),
+    )
+end
+
 function _etd_coefficients(λdt, dt)
     E = exp(-λdt)
 
@@ -164,13 +216,15 @@ function _etd_coefficients(λdt, dt)
 end
 
 function _update_diagnostics!(S::State, G::Grid, par::QGParams, plans, a, L;
-                              workspace=nothing, N2_profile=nothing)
+                              workspace=nothing, N2_profile=nothing,
+                              timestep_workspace=nothing)
     if !par.fixed_flow
         invert_q_to_psi!(S, G; a, par=par, workspace=workspace)
     end
 
     compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile,
-                        workspace=workspace, dealias_mask=L)
+                        workspace=workspace, dealias_mask=L,
+                        velocity_workspace=timestep_workspace)
 
     if par.passive_scalar || par.no_dispersion
         fill!(parent(S.A), zero(eltype(parent(S.A))))
@@ -185,20 +239,30 @@ function _update_diagnostics!(S::State, G::Grid, par::QGParams, plans, a, L;
 end
 
 function _compute_etdrk2_rhs!(rhsq, rhsB, S::State, G::Grid, par::QGParams, plans;
-                              a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
+                              a, dealias_mask=nothing, workspace=nothing,
+                              N2_profile=nothing, timestep_workspace=nothing)
     par.ybj_plus || error("The exponential RK2 time stepper currently requires ybj_plus=true.")
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
-    _update_diagnostics!(S, G, par, plans, a, L; workspace=workspace, N2_profile=N2_profile)
+    _update_diagnostics!(S, G, par, plans, a, L; workspace=workspace,
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
 
-    nqk = similar(S.q)
-    dqk = similar(S.q)
-    nL⁺Ak = similar(S.L⁺A)
-    rL⁺Ak = similar(S.L⁺A)
+    if timestep_workspace === nothing
+        nqk = similar(S.q)
+        dqk = similar(S.q)
+        nL⁺Ak = similar(S.L⁺A)
+        rL⁺Ak = similar(S.L⁺A)
+    else
+        nqk = timestep_workspace.nqk
+        dqk = timestep_workspace.dqk
+        nL⁺Ak = timestep_workspace.nL⁺Ak
+        rL⁺Ak = timestep_workspace.rL⁺Ak
+    end
 
-    convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
-    convol_waqg_L⁺A!(nL⁺Ak, S.u, S.v, S.L⁺A, G, plans; Lmask=L)
-    refraction_waqg_L⁺A!(rL⁺Ak, S.L⁺A, S.psi, G, plans; Lmask=L)
+    nonlinear_workspace = timestep_workspace === nothing ? nothing : timestep_workspace.nonlinear
+    convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L, workspace=nonlinear_workspace)
+    convol_waqg_L⁺A!(nL⁺Ak, S.u, S.v, S.L⁺A, G, plans; Lmask=L, workspace=nonlinear_workspace)
+    refraction_waqg_L⁺A!(rL⁺Ak, S.L⁺A, S.psi, G, plans; Lmask=L, workspace=nonlinear_workspace)
     dissipation_q_nv!(dqk, S.q, par, G; workspace=workspace)
 
     if par.inviscid
@@ -250,17 +314,30 @@ explicitly with ETDRK2.
 """
 function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
                        a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
-                       particle_tracker=nothing, current_time=nothing)
+                       particle_tracker=nothing, current_time=nothing,
+                       timestep_workspace=nothing)
     par.ybj_plus || error("exp_rk2_step! currently requires ybj_plus=true.")
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
-    rhsq₀ = similar(Sn.q)
-    rhsB₀ = similar(Sn.L⁺A)
-    _compute_etdrk2_rhs!(rhsq₀, rhsB₀, Sn, G, par, plans;
-                         a=a, dealias_mask=L, workspace=workspace, N2_profile=N2_profile)
+    if timestep_workspace === nothing
+        rhsq₀ = similar(Sn.q)
+        rhsB₀ = similar(Sn.L⁺A)
+        rhsq₁ = similar(Sn.q)
+        rhsB₁ = similar(Sn.L⁺A)
+        Sstage = copy_state(Sn)
+    else
+        rhsq₀ = timestep_workspace.rhsq₀
+        rhsB₀ = timestep_workspace.rhsB₀
+        rhsq₁ = timestep_workspace.rhsq₁
+        rhsB₁ = timestep_workspace.rhsB₁
+        Sstage = timestep_workspace.stage
+    end
 
-    Sstage = copy_state(Sn)
+    _compute_etdrk2_rhs!(rhsq₀, rhsB₀, Sn, G, par, plans;
+                         a=a, dealias_mask=L, workspace=workspace,
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
+
     qn_arr = parent(Sn.q)
     Bn_arr = parent(Sn.L⁺A)
     qstage_arr = parent(Sstage.q)
@@ -283,10 +360,9 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
         Bstage_arr[k, i, j] = 0
     end
 
-    rhsq₁ = similar(Sn.q)
-    rhsB₁ = similar(Sn.L⁺A)
     _compute_etdrk2_rhs!(rhsq₁, rhsB₁, Sstage, G, par, plans;
-                         a=a, dealias_mask=L, workspace=workspace, N2_profile=N2_profile)
+                         a=a, dealias_mask=L, workspace=workspace,
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
 
     qnp1_arr = parent(Snp1.q)
     Bnp1_arr = parent(Snp1.L⁺A)
@@ -315,10 +391,14 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
     q_base = nothing
     if wave_feedback_enabled
-        q_base = replace_q_with_wave_feedback_rhs!(Snp1, G, par, plans, L)
+        q_base = replace_q_with_wave_feedback_rhs!(Snp1, G, par, plans, L;
+                                                   q_base = timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
+                                                   qwk = timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
+                                                   nonlinear_workspace = timestep_workspace === nothing ? nothing : timestep_workspace.nonlinear)
     end
 
-    _update_diagnostics!(Snp1, G, par, plans, a, L; workspace=workspace, N2_profile=N2_profile)
+    _update_diagnostics!(Snp1, G, par, plans, a, L; workspace=workspace,
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
 
     if q_base !== nothing
         restore_prognostic_q!(Snp1, q_base)

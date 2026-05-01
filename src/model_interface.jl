@@ -8,7 +8,7 @@ with the configuration system, including time stepping with output management.
 using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
-using ..QGYBJplus: exp_rk2_step!
+using ..QGYBJplus: exp_rk2_step!, ExpRK2Workspace
 using ..QGYBJplus: invert_q_to_psi!, invert_L⁺A_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
@@ -280,13 +280,15 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     # ETDRK2 uses two time levels: current and next.
     Sn = copy_state(sim.state)
     Snp1 = copy_state(sim.state)
+    timestep_workspace = ExpRK2Workspace(sim.state, sim.plans)
 
     # Main time stepping loop
     @info "Starting main time integration loop"
 
     for step in 1:sim.params.nt
         exp_rk2_step!(Snp1, Sn, sim.grid, sim.params, sim.plans;
-                      a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile)
+                      a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile,
+                      timestep_workspace=timestep_workspace)
 
         Sn, Snp1 = Snp1, Sn
 
@@ -1203,10 +1205,12 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
     Sn = copy_state(S)
     Snp1 = copy_state(S)
+    timestep_workspace = ExpRK2Workspace(S, plans)
 
     for step in 1:nt
         exp_rk2_step!(Snp1, Sn, G, par, plans;
-                      a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+                      a=a_ell, dealias_mask=L_mask, workspace=workspace,
+                      N2_profile=N2_profile, timestep_workspace=timestep_workspace)
 
         Sn, Snp1 = Snp1, Sn
 

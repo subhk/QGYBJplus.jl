@@ -167,7 +167,9 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true,
+                        use_ybj_w=false, N2_profile=nothing, workspace=nothing,
+                        dealias_mask=nothing, velocity_workspace=nothing)
 
 Compute geostrophic velocities from the spectral streamfunction ψ̂.
 
@@ -203,6 +205,7 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS (quadratic term).
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
+- `velocity_workspace`: Optional pre-allocated spectral and FFT scratch arrays.
 
 # Returns
 Modified State with updated u, v, w fields.
@@ -214,7 +217,10 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
+                             compute_w=true, use_ybj_w=false, N2_profile=nothing,
+                             workspace=nothing, dealias_mask=nothing,
+                             velocity_workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -225,8 +231,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
 
     # Spectral differentiation: û = -i ky ψ̂, v̂ = i kx ψ̂
     ψk = S.psi
-    uk = similar(ψk)
-    vk = similar(ψk)
+    uk = velocity_workspace === nothing ? similar(ψk) : velocity_workspace.uk
+    vk = velocity_workspace === nothing ? similar(ψk) : velocity_workspace.vk
     uk_arr = parent(uk)
     vk_arr = parent(vk)
 
@@ -246,9 +252,9 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     end
 
     # Allocate destination arrays on correct pencil for fft_backward!
-    # For MPI: must be on input_pencil (physical space), not output_pencil
-    tmpu = _allocate_fft_dst(uk, plans)
-    tmpv = _allocate_fft_dst(vk, plans)
+    # For MPI: must be on input_pencil (physical space), not output_pencil.
+    tmpu = velocity_workspace === nothing ? _allocate_fft_dst(uk, plans) : velocity_workspace.tmpu
+    tmpv = velocity_workspace === nothing ? _allocate_fft_dst(vk, plans) : velocity_workspace.tmpv
     fft_backward!(tmpu, uk, plans)
     fft_backward!(tmpv, vk, plans)
 

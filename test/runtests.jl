@@ -514,6 +514,24 @@ end
     @test all(isfinite, Snp1.A)
 end
 
+@testset "Exponential RK2 workspace limits repeat allocations" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         ybj_plus=true, fixed_flow=true, no_feedback=true,
+                         no_wave_feedback=true, dt=1.0, nt=1)
+    G, S, plans, a = setup_model(par)
+    L = dealias_mask(G)
+    Snp1 = copy_state(S)
+    timestep_workspace = ExpRK2Workspace(S, plans)
+
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L,
+                  timestep_workspace=timestep_workspace)
+    step_allocations = @allocated exp_rk2_step!(Snp1, S, G, par, plans; a=a,
+                                                dealias_mask=L,
+                                                timestep_workspace=timestep_workspace)
+
+    @test step_allocations < 4_500_000
+end
+
 @testset "Nonlinear operator normalization and balance" begin
     par = default_params(nx=32, ny=32, nz=1, Lx=2*pi, Ly=2*pi, Lz=1.0)
     G = init_grid(par)

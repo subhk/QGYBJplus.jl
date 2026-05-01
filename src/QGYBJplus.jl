@@ -30,7 +30,7 @@ export
     initialize_from_config,
 
     # Time stepping
-    exp_rk2_step!,
+    exp_rk2_step!, ExpRK2Workspace,
     sumL⁺A!, compute_sigma, compute_A!,
 
     # Diagnostics
