@@ -114,9 +114,8 @@ function plan_transforms!(G::Grid, parallel_config=nothing)
     end
 
     # Default: serial FFTW mode
-    # Note: FFTW threading is NOT enabled by default because:
-    # 1. It can conflict with Julia threading in the IMEX loop
-    # 2. For small grids, thread overhead exceeds benefit
+    # Note: FFTW threading is NOT enabled by default because for small grids
+    # thread overhead often exceeds the benefit.
     # Users can enable FFTW threading manually if needed for large grids
     # Note: We don't pre-plan here for simplicity. FFTW caches plans internally.
     return Plans(backend=:fftw)

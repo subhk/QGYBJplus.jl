@@ -76,160 +76,22 @@ For variable coefficients (stratification):
 
 ## Time Integration
 
-### Leapfrog with Robert-Asselin Filter and Integrating Factors
+QGYBJplus uses a single production time stepper: second-order exponential Runge-Kutta (ETDRK2). Horizontal hyperdiffusion is handled exactly with integrating factors, while advection, refraction, dispersion, and vertical PV diffusion are evaluated explicitly by the RK stages.
 
-The primary time stepping scheme is **leapfrog** with Robert-Asselin filtering and **integrating factors** for hyperdiffusion.
-
-#### Forward Euler (First Step)
-
-The first step uses forward Euler to bootstrap the leapfrog scheme:
+For a spectral mode with diagonal hyperdiffusion rate `λ`, the method uses
 
 ```math
-q^{n+1} = \left[ q^n - \Delta t \cdot J(\psi, q)^n + \Delta t \cdot D_q^n \right] \cdot e^{-\lambda \Delta t}
+E = \exp(-\lambda \Delta t), \quad \Delta t\varphi_1 = \frac{1 - E}{\lambda}, \quad \Delta t\varphi_2 = \frac{E - 1 + \lambda\Delta t}{(\lambda\Delta t)^2}\Delta t.
 ```
 
-For the wave envelope (in real/imaginary form):
-
-```math
-B_R^{n+1} = \left[ B_R^n - \Delta t \cdot J(\psi, B_R) - \Delta t \cdot \frac{N^2 k_h^2}{2 f_0} A_I + \Delta t \cdot \frac{1}{2} r_{BI} \right] \cdot e^{-\lambda_w \Delta t}
-```
-
-```math
-B_I^{n+1} = \left[ B_I^n - \Delta t \cdot J(\psi, B_I) + \Delta t \cdot \frac{N^2 k_h^2}{2 f_0} A_R - \Delta t \cdot \frac{1}{2} r_{BR} \right] \cdot e^{-\lambda_w \Delta t}
-```
-
-where ``N^2`` is the buoyancy frequency squared and ``f_0`` is the Coriolis parameter.
-
-#### Leapfrog (Subsequent Steps)
-
-Subsequent steps use centered leapfrog with integrating factors:
-
-```math
-q^{n+1} = q^{n-1} \cdot e^{-2\lambda \Delta t} - 2\Delta t \cdot J(\psi, q)^n \cdot e^{-\lambda \Delta t} + 2\Delta t \cdot D_q^n \cdot e^{-2\lambda \Delta t}
-```
-
-```math
-B_R^{n+1} = B_R^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_R) + \frac{N^2 k_h^2}{2 f_0} A_I - \frac{1}{2} r_{BI} \right]^n \cdot e^{-\lambda_w \Delta t}
-```
-
-```math
-B_I^{n+1} = B_I^{n-1} \cdot e^{-2\lambda_w \Delta t} - 2\Delta t \cdot \left[ J(\psi, B_I) - \frac{N^2 k_h^2}{2 f_0} A_R + \frac{1}{2} r_{BR} \right]^n \cdot e^{-\lambda_w \Delta t}
-```
-
-#### Robert-Asselin Filter
-
-The Robert-Asselin filter damps the computational mode that can grow with leapfrog:
-
-```math
-\tilde{q}^n = q^n + \gamma \left( q^{n-1} - 2q^n + q^{n+1} \right)
-```
-
-where ``\gamma \approx 0.001`` (typically very small to minimize physical mode damping).
+The implementation advances the prognostic fields with
 
 ```julia
-# First step: Forward Euler
-first_projection_step!(state, grid, params, plans; a=a_vec, dealias_mask=mask)
-
-# Subsequent steps: Leapfrog with Robert-Asselin
-leapfrog_step!(state_np1, state_n, state_nm1, grid, params, plans;
-               a=a_vec, dealias_mask=mask)
+Snp1 = copy_state(S)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell, dealias_mask=L)
 ```
 
-### Integrating Factor Method
-
-The integrating factor ``\lambda`` handles hyperdiffusion exactly:
-
-```math
-\lambda = \nu_{h1} \left( |k_x|^{2 \cdot ilap1} + |k_y|^{2 \cdot ilap1} \right) + \nu_{h2} \left( |k_x|^{2 \cdot ilap2} + |k_y|^{2 \cdot ilap2} \right)
-```
-
-where (using Unicode parameters):
-- ``\nu_{h1}`` (`νₕ₁`), `ilap1`: First hyperdiffusion operator (default: biharmonic with ilap1=2)
-- ``\nu_{h2}`` (`νₕ₂`), `ilap2`: Second hyperdiffusion operator (default: hyper-6 with ilap2=6)
-
-The wave field has its own integrating factor ``\lambda_w`` with potentially different coefficients.
-
-**Advantages of integrating factors:**
-- Hyperdiffusion is treated **exactly** (no stability restriction)
-- Allows much larger time steps than explicit diffusion treatment
-- Second-order accuracy preserved for advective terms
-
-### Second-Order IMEX-CNAB with Strang Splitting
-
-For applications where the dispersion CFL constraint (dt ≤ 2f/N² ≈ 2s) is limiting, we provide a **second-order IMEX-CNAB** scheme that treats dispersion implicitly and uses Strang splitting for refraction.
-
-#### The Challenge: Refraction Instability
-
-The YBJ+ equation includes a refraction term ``-(i/2)\zeta B`` which, when discretized with forward Euler, is unconditionally unstable:
-
-```math
-|1 - i \Delta t \zeta/2| = \sqrt{1 + (\Delta t \zeta/2)^2} > 1
-```
-
-This amplifies energy regardless of time step size.
-
-#### Solution: Strang Splitting + IMEX-CNAB
-
-We use **Strang splitting** for refraction (second-order) combined with **Adams-Bashforth 2** for advection (second-order):
-
-**Stage 1 - First Half-Refraction (Strang):**
-```math
-B^* = B^n \times \exp(-i \frac{\Delta t}{2} \frac{\zeta}{2})
-```
-
-**Stage 2 - IMEX-CNAB for Advection + Dispersion:**
-```math
-B^{**} - \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^{n+1} = B^* + \frac{\Delta t}{2} i \alpha_{\text{disp}} k_h^2 A^* + \frac{3\Delta t}{2} N^n - \frac{\Delta t}{2} N^{n-1}
-```
-
-where ``N^n = -J(\psi^n, B^n)`` is the advection tendency at time ``n``, and Adams-Bashforth 2 extrapolation ``\frac{3}{2}N^n - \frac{1}{2}N^{n-1}`` provides second-order accuracy.
-
-**Stage 3 - Second Half-Refraction (Strang):**
-```math
-B^{n+1} = B^{**} \times \exp(-i \frac{\Delta t}{2} \frac{\zeta}{2})
-```
-
-Since ``|\exp(-i \theta)| = 1`` for real ``\theta``, refraction is **exactly energy-preserving**.
-
-**Mean-Flow Update (q):** The PV equation is advanced with Adams–Bashforth 2 on
-``-J(\psi,q) + \text{diffusion}``, using the integrating factor for hyperdiffusion.
-To keep the coupled system second-order, the second refraction half-step uses
-``\psi^{n+1}`` predicted from the updated ``q`` (and ``q^w`` when wave feedback is enabled).
-
-#### Critical: Consistent A*
-
-After applying refraction to get ``B^*``, we must compute ``A^* = (L^+)^{-1} B^*`` (not use ``A^n``). Using ``A^n`` with ``B^*`` breaks the consistency required by IMEX-CN, causing instability.
-
-#### Modified Elliptic Problem
-
-Substituting ``B = L^+ A`` into the IMEX-CN equation:
-```math
-(L^+ - \beta) A^{n+1} = \text{RHS}
-```
-where ``\beta = (\Delta t/2) \cdot i \cdot \alpha_{\text{disp}} \cdot k_h^2``.
-
-This is a tridiagonal system for each ``(k_x, k_y)`` mode, solved with the Thomas algorithm.
-
-#### Temporal Accuracy
-
-| Component | Method | Order |
-|:----------|:-------|:------|
-| Refraction | Strang splitting | 2nd |
-| Dispersion | Crank-Nicolson | 2nd |
-| Advection | Adams-Bashforth 2 | 2nd |
-| **Overall** | **IMEX-CNAB** | **2nd** |
-
-Note: The first time step uses forward Euler for advection (AB2 bootstrap), so the very first step is first-order.
-
-#### Stability Summary
-
-| Term | Treatment | Stability |
-|:-----|:----------|:----------|
-| Refraction | Exact integrating factor | Unconditionally stable |
-| Dispersion | Implicit Crank-Nicolson | Unconditionally stable |
-| Advection | Explicit Adams-Bashforth 2 | CFL: ``\Delta t < \Delta x / U_{\max}`` |
-
-For typical oceanographic parameters (U ≈ 0.3 m/s, dx ≈ 300m), this allows **dt ≈ 20s** vs **dt ≈ 2s** for explicit leapfrog—a **10x speedup**.
+The high-level `run!` and `run_simulation!` APIs call this stepper automatically; users do not choose among timestep methods.
 
 ## Elliptic Inversions
 
@@ -518,7 +380,7 @@ nx_local, ny_local, nz_local = size(data)
 | Horizontal derivatives | Spectral | - |
 | Vertical derivatives | 2nd | - |
 | Elliptic solvers | 2nd (vertical) | - |
-| Time stepping (Leapfrog) | - | 2nd |
+| Time stepping (exponential RK2) | - | 2nd |
 | Integrating factors | - | Exact |
 
 ### Conservation Tests
@@ -552,7 +414,7 @@ using Profile
 
 # Profile time stepping
 @profile for _ in 1:100
-    leapfrog_step!(state_np1, state_n, state_nm1, grid, params, plans;
+    exp_rk2_step!(state_np1, state_n, state_nm1, grid, params, plans;
                    a=a_vec, dealias_mask=mask, workspace=workspace)
 end
 

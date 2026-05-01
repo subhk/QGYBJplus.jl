@@ -66,7 +66,7 @@ All arrays are pre-allocated to avoid GC:
 G, S, plans, a_ell = setup_model(params)
 
 # Reused every time step
-leapfrog_step!(S, G, params, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, params, plans; a=a_ell)
 ```
 
 ### Memory Usage Estimate
@@ -140,7 +140,7 @@ using BenchmarkTools
 @btime invert_q_to_psi!($state, $grid, $params, $a_ell)
 
 # Time full step
-@btime leapfrog_step!($S, $G, $params, $plans, $a_ell)
+@btime exp_rk2_step!($Snp1, $S, $G, $params, $plans; a=$a_ell)
 ```
 
 ## Numerical Efficiency
@@ -263,7 +263,7 @@ G_gpu = cu(G)
 plans_gpu = plan_gpu_transforms!(G_gpu)
 
 # Run on GPU
-leapfrog_step!(S_gpu, G_gpu, params, plans_gpu, a_ell_gpu)
+exp_rk2_step!(Snp1_gpu, S_gpu, G_gpu, params, plans_gpu; a=a_ell_gpu)
 ```
 
 ### When to Use GPU
@@ -360,15 +360,15 @@ function benchmark_simulation(nx, ny, nz; nsteps=100, Lx=500e3, Ly=500e3, Lz=400
     compute_q_from_psi!(S, G, plans, a_ell)
 
     # Warm-up
-    first_projection_step!(S, G, params, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, params, plans; a=a_ell)
     for _ in 1:9
-        leapfrog_step!(S, G, params, plans, a_ell)
+        exp_rk2_step!(Snp1, S, G, params, plans; a=a_ell)
     end
 
     # Timed run
     t_start = time()
     for _ in 1:nsteps
-        leapfrog_step!(S, G, params, plans, a_ell)
+        exp_rk2_step!(Snp1, S, G, params, plans; a=a_ell)
     end
     t_end = time()
 

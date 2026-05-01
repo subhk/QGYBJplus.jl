@@ -715,8 +715,8 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
 
     # Note: Geostrophic velocities (u, v) are NOT computed here.
     # The State struct has u, v as real-space arrays, and proper velocity computation
-    # requires FFT plans and workspace. Velocities will be computed consistently by
-    # compute_velocities! during the first projection step (first_projection_step!).
+    # requires FFT plans and workspace. Velocities are computed consistently by
+    # the simulation time stepper.
 
     # Compute buoyancy from thermal wind balance
     # b = ∂ψ/∂z (in QG approximation with constant N²)

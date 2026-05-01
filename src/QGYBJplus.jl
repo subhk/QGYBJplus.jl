@@ -30,8 +30,7 @@ export
     initialize_from_config,
 
     # Time stepping
-    first_projection_step!, leapfrog_step!,
-    IMEXWorkspace, init_imex_workspace, imex_cn_step!, first_imex_step!,
+    exp_rk2_step!,
     sumL⁺A!, compute_sigma, compute_A!,
 
     # Diagnostics
@@ -114,7 +113,6 @@ include("operators.jl")
 include("runtime.jl")
 include("nonlinear.jl")
 include("timestep.jl")
-include("timestep_imex.jl")
 include("initconds.jl")
 include("ybj_normal.jl")
 

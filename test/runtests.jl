@@ -34,7 +34,7 @@ const TEST_Lz = 4000.0 # 4 km
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, N²=-1.0)
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, f₀=0.0)
 
-    # Robert-Asselin filter coefficient
+    # Legacy time-filter parameter
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=-0.1)
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=1.5)
 
@@ -82,7 +82,10 @@ end
 end
 
 @testset "Oceananigans-style interface" begin
-    grid = RectilinearGrid(size=(8, 8, 4), extent=(TEST_Lx, TEST_Ly, TEST_Lz), centered=true)
+    grid = RectilinearGrid(size=(8, 8, 4),
+                           x=(-TEST_Lx/2, TEST_Lx/2),
+                           y=(-TEST_Ly/2, TEST_Ly/2),
+                           z=(-TEST_Lz, 0.0))
     model = QGYBJModel(grid=grid,
                        coriolis=FPlane(f=1e-4),
                        stratification=ConstantStratification(N²=1e-5),
@@ -98,7 +101,6 @@ end
     simulation = Simulation(model;
                             Δt=10.0,
                             stop_time=25.0,
-                            timestepper=:leapfrog,
                             output=NetCDFOutput(path="interface_output",
                                                 schedule=TimeInterval(20.0),
                                                 fields=(:ψ, :waves)),
@@ -113,7 +115,6 @@ end
     @test model.params.νₕ₁ʷ == 1e5
     @test simulation.params.dt == 10.0
     @test simulation.params.nt == 2
-    @test simulation.run_options.timestepper == :leapfrog
     @test simulation.run_options.output_dir == "interface_output"
     @test simulation.run_options.save_interval == 20.0
     @test simulation.run_options.diagnostics_interval == 3
@@ -252,14 +253,10 @@ end
     invert_L⁺A_to_A!(S, G, par, a)
     @test all(isfinite, real.(S.A))
 
-    # One projection step should run without error
+    # One ETDRK2 step should run without error
     L = dealias_mask(G)
-    first_projection_step!(S, G, par, plans; a, dealias_mask=L)
-    @test all(isfinite, real.(S.q))
-
-    # Leapfrog step should also update fields
-    Snp1 = deepcopy(S); Snm1 = deepcopy(S)
-    leapfrog_step!(Snp1, S, Snm1, G, par, plans; a, dealias_mask=L)
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans; a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
 end
@@ -304,7 +301,7 @@ end
     end
 end
 
-@testset "IMEX-CN step (wave feedback enabled)" begin
+@testset "Exponential RK2 step (wave feedback enabled)" begin
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
                          dt=0.01, no_feedback=false, no_wave_feedback=false)
     G, S, plans, a = setup_model(par)
@@ -313,11 +310,8 @@ end
     # Seed a nontrivial wave mode
     S.L⁺A[3, 2, 2] = 1.0 + 0.2im
 
-    imex_ws = init_imex_workspace(S, G)
-    first_imex_step!(S, G, par, plans, imex_ws; a=a, dealias_mask=L)
-
     Snp1 = copy_state(S)
-    imex_cn_step!(Snp1, S, G, par, plans, imex_ws; a=a, dealias_mask=L)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
     @test all(isfinite, imag.(Snp1.q))
@@ -351,14 +345,18 @@ end
     invert_q_to_psi!(S, G; a, par=par)
     @test all(iszero, S.psi[:, 1, 1])
 
-    # Run one normal-branch step to ensure it executes
+    # The production stepper is YBJ+ only; keep the normal-YBJ helper path
+    # covered through its diagnostic reconstruction.
     S.L⁺A[4, 3, 3] = 0.5 + 0.2im
-    first_projection_step!(S, G, par, plans; a, dealias_mask=L)
-    Snp1 = deepcopy(S); Snm1 = deepcopy(S)
+    L⁺ARk = similar(S.L⁺A)
+    L⁺AIk = similar(S.L⁺A)
+    QGYBJplus.split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, S.L⁺A)
+    zero_rhs = similar(S.L⁺A)
+    fill!(parent(zero_rhs), 0)
+    sigma = compute_sigma(par, G, zero_rhs, zero_rhs, zero_rhs, zero_rhs; Lmask=L)
+    compute_A!(S.A, S.C, L⁺ARk, L⁺AIk, sigma, par, G; Lmask=L)
 
-    leapfrog_step!(Snp1, S, Snm1, G, par, plans; a, dealias_mask=L)
-
-    @test all(isfinite, real.(Snp1.q))
+    @test all(isfinite, real.(S.A))
 end
 
 #=
@@ -431,11 +429,13 @@ end
     S_feedback = copy_state(S_no_feedback)
     L = dealias_mask(G)
 
-    first_projection_step!(S_no_feedback, G, par_no_feedback, plans; a=a, dealias_mask=L)
-    first_projection_step!(S_feedback, G, par_feedback, plans; a=a, dealias_mask=L)
+    S_no_feedback_np1 = copy_state(S_no_feedback)
+    S_feedback_np1 = copy_state(S_feedback)
+    exp_rk2_step!(S_no_feedback_np1, S_no_feedback, G, par_no_feedback, plans; a=a, dealias_mask=L)
+    exp_rk2_step!(S_feedback_np1, S_feedback, G, par_feedback, plans; a=a, dealias_mask=L)
 
-    @test isapprox(parent(S_feedback.q), parent(S_no_feedback.q); rtol=1e-12, atol=1e-12)
-    @test sum(abs2, parent(S_feedback.psi) .- parent(S_no_feedback.psi)) > 0
+    @test isapprox(parent(S_feedback_np1.q), parent(S_no_feedback_np1.q); rtol=1e-12, atol=1e-12)
+    @test sum(abs2, parent(S_feedback_np1.psi) .- parent(S_no_feedback_np1.psi)) > 0
 end
 
 @testset "Vertical velocity with N² profile" begin
@@ -492,8 +492,8 @@ end
     @test all(isfinite, S.w)
 end
 
-@testset "First projection step with A initialization" begin
-    # Test that first_projection_step! properly initializes A before using it
+@testset "Exponential RK2 step initializes A" begin
+    # Test that exp_rk2_step! initializes A before using it
     # (Previously A was zero when first used for dispersion)
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
     G, S, plans, a = setup_model(par)
@@ -505,13 +505,13 @@ end
     # A should initially be zero
     @test all(iszero, S.A)
 
-    # Run first projection step
-    first_projection_step!(S, G, par, plans; a=a, dealias_mask=L)
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
 
-    # After projection step, A should be computed (not zero if B was non-zero)
+    # After the step, A should be computed (not zero if B was non-zero)
     # Due to physics switches and filtering, A might still be small but the
     # computation should have happened
-    @test all(isfinite, S.A)
+    @test all(isfinite, Snp1.A)
 end
 
 @testset "Nonlinear operator normalization and balance" begin

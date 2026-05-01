@@ -40,7 +40,6 @@ set!(model; ψ=dipole, pv_method=:barotropic,
 simulation = Simulation(model;
                         Δt=2.0,
                         stop_time=15 * inertial_period(model),
-                        timestepper=:leapfrog,
                         output=NetCDFOutput(path="output",
                                             schedule=TimeInterval(inertial_period(model)),
                                             fields=(:ψ, :waves)))
@@ -141,7 +140,6 @@ function NetCDFOutput(; path::AbstractString = "output",
 end
 
 mutable struct SimulationRunOptions{T}
-    timestepper::Symbol
     output_dir::String
     save_interval::Union{Nothing, T}
     diagnostics_interval::Int
@@ -153,7 +151,6 @@ end
 
 function default_run_options(::Type{T}) where T
     return SimulationRunOptions{T}(
-        :imex_cn,
         "output",
         nothing,
         10,
@@ -329,7 +326,7 @@ _fixed_flow(flow) = flow === true || flow == :fixed
 """
     QGYBJModel(; grid, coriolis=FPlane(f=1e-4), stratification=ConstantStratification(N²=1e-5),
                  closure=HorizontalHyperdiffusivity(), flow=:evolving, feedback=:none,
-                 ybj_plus=true, asselin_filter=1e-3, Δt=1.0, stop_iteration=1000)
+                 ybj_plus=true, Δt=1.0, stop_iteration=1000)
 
 Construct a complete QG-YBJ+ model while hiding MPI grids, FFT plans, workspaces,
 and stratification bookkeeping.
@@ -341,7 +338,6 @@ function QGYBJModel(; grid::RectilinearGridSpec,
     flow = :evolving,
     feedback = :none,
     ybj_plus::Bool = true,
-    asselin_filter::Real = 1e-3,
     Δt::Real = 1.0,
     stop_iteration::Int = 1000,
     topology = nothing,
@@ -373,7 +369,6 @@ function QGYBJModel(; grid::RectilinearGridSpec,
         νₕ₂ʷ = closure.waves2,
         ilap1w = closure.wave_laplacian_order,
         ilap2w = closure.wave_laplacian_order2,
-        γ = asselin_filter,
         topology = topology,
         parallel_io = parallel_io,
         verbose = verbose
@@ -428,8 +423,8 @@ This is the main entry point for the high-level API. It handles:
 - `νₕ₁ʷ`: Horizontal hyperdiffusion for waves [m⁴/s] (default: 0)
 - `ilap1w`: Hyperdiffusion order (default: 2 for ∇⁴)
 
-## Robert-Asselin filter
-- `γ`: Filter coefficient (default: 1e-3)
+## Legacy compatibility
+- `γ`: Retained low-level parameter; the production stepper does not use a Robert-Asselin filter.
 
 ## MPI options
 - `topology`: Process grid (px, py), auto-computed if not specified
@@ -475,7 +470,7 @@ function initialize_simulation(;
     νₕ₂ʷ::Real = 10.0,
     ilap1w::Int = 2,
     ilap2w::Int = 6,
-    # Robert-Asselin filter
+    # Legacy compatibility
     γ::Real = 1e-3,
     # MPI options
     topology = nothing,
@@ -864,13 +859,9 @@ function _configure_time_stepping!(sim::Simulation; Δt=nothing, stop_time=nothi
 end
 
 function _configure_output!(sim::Simulation; output=nothing, diagnostics=nothing,
-    timestepper=nothing, verbose=nothing)
+    verbose=nothing)
 
     options = sim.run_options
-
-    if timestepper !== nothing
-        options.timestepper = timestepper
-    end
 
     if verbose !== nothing
         options.verbose = verbose
@@ -903,13 +894,13 @@ end
 
 """
     Simulation(model::Simulation; Δt=nothing, stop_time=nothing, stop_iteration=nothing,
-               timestepper=nothing, output=nothing, diagnostics=nothing, verbose=nothing)
+               output=nothing, diagnostics=nothing, verbose=nothing)
 
 Configure a model's run clock in the Oceananigans style and return the same
 high-level simulation object.
 """
 function Simulation(model::Simulation; Δt=nothing, stop_time=nothing, stop_iteration=nothing,
-    timestepper=nothing, output=nothing, diagnostics=nothing, verbose=nothing)
+    output=nothing, diagnostics=nothing, verbose=nothing)
 
     _configure_time_stepping!(model;
         Δt = Δt,
@@ -917,7 +908,6 @@ function Simulation(model::Simulation; Δt=nothing, stop_time=nothing, stop_iter
         stop_iteration = stop_iteration)
 
     return _configure_output!(model;
-        timestepper = timestepper,
         output = output,
         diagnostics = diagnostics,
         verbose = verbose)
@@ -932,19 +922,17 @@ This wraps `run_simulation!` with a simpler interface.
 
 # Keyword Arguments
 - `output_dir`: Output directory (default: "output")
-- `timestepper`: Time-stepping method, `:leapfrog` or `:imex_cn` (default: `:imex_cn`)
 - `save_interval`: Save interval in simulation time units
 - `diagnostics_interval`: Diagnostics interval in time steps (default: 10)
 - `verbose`: Print progress (default: true on root)
 
 # Example
 ```julia
-run!(sim; output_dir="output", timestepper=:imex_cn)
+run!(sim; output_dir="output")
 ```
 """
 function run!(sim::Simulation;
     output_dir::Union{String, Nothing} = nothing,
-    timestepper::Union{Symbol, Nothing} = nothing,
     Δt = nothing,
     stop_time = nothing,
     stop_iteration = nothing,
@@ -964,7 +952,6 @@ function run!(sim::Simulation;
         stop_iteration = stop_iteration)
 
     _configure_output!(sim;
-        timestepper = timestepper,
         output = output,
         diagnostics = diagnostics,
         verbose = verbose)
@@ -1038,8 +1025,7 @@ function run!(sim::Simulation;
         workspace = workspace,
         N2_profile = N2_profile,
         print_progress = mpi_config.is_root && options.verbose,
-        diagnostics_interval = options.diagnostics_interval,
-        timestepper = options.timestepper
+        diagnostics_interval = options.diagnostics_interval
     )
 
     if mpi_config.is_root && options.verbose

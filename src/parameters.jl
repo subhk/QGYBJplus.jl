@@ -54,7 +54,7 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 - `f₀`: Coriolis parameter (typically 1.0 for nondimensional)
 - `N²`: Buoyancy frequency squared (default 1.0)
 - `W2F`: DEPRECATED - no longer used (kept for backward compatibility)
-- `γ`: Robert-Asselin filter coefficient (typically 10⁻³)
+- `γ`: Legacy time-filter parameter retained for compatibility
 - `linear_vert_structure`: Legacy Fortran flag (0 or 1), typically 0
 
 # Viscosity/Hyperviscosity
@@ -130,7 +130,7 @@ Base.@kwdef mutable struct QGParams{T}
     f₀::T                      # Coriolis parameter (1.0 for nondimensional)
     N²::T                      # Buoyancy frequency squared (default 1.0)
     W2F::T                     # DEPRECATED: not used (dimensional equations have B with actual amplitude)
-    γ::T                       # Robert-Asselin filter parameter (typ. 10⁻³)
+    γ::T                       # Legacy time-filter parameter
 
     #= ====================================================================
                         VISCOSITY / HYPERVISCOSITY
@@ -276,7 +276,7 @@ With f₀=1, N²=1 (constant_N stratification):
 - `νₕ₁, νₕ₂`: Flow hyperviscosity coefficients (default: 0.01, 10.0)
 - `ilap1, ilap2`: Laplacian powers (default: 2, 6)
 - `νₕ₁ʷ, νₕ₂ʷ`: Wave hyperviscosity coefficients (default: 0.0, 10.0)
-- `γ`: Robert-Asselin filter (default: 1e-3)
+- `γ`: Legacy time-filter parameter (default: 1e-3)
 
 **Physics Switches:**
 - `ybj_plus`: Use YBJ+ formulation (default: true)
@@ -359,8 +359,8 @@ function default_params(; nx=64, ny=64, nz=64,
     # Note: f₀ can be negative for southern hemisphere simulations (f₀ < 0 when latitude < 0)
     f₀ != 0 || throw(ArgumentError("f₀ (Coriolis parameter) cannot be zero (use negative values for southern hemisphere)"))
 
-    # Robert-Asselin filter coefficient
-    0 <= γ <= 1 || throw(ArgumentError("γ (Robert-Asselin coefficient) must be in [0,1] (got γ=$γ)"))
+    # Legacy time-filter parameter
+    0 <= γ <= 1 || throw(ArgumentError("γ must be in [0,1] (got γ=$γ)"))
 
     # Hyperviscosity coefficients must be non-negative
     νₕ₁ >= 0 || throw(ArgumentError("νₕ₁ must be non-negative (got νₕ₁=$νₕ₁)"))

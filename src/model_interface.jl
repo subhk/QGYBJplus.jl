@@ -8,8 +8,7 @@ with the configuration system, including time stepping with output management.
 using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
-using ..QGYBJplus: first_projection_step!, leapfrog_step!
-using ..QGYBJplus: IMEXWorkspace, init_imex_workspace, imex_cn_step!
+using ..QGYBJplus: exp_rk2_step!
 using ..QGYBJplus: invert_q_to_psi!, invert_L⁺A_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
@@ -42,7 +41,7 @@ mutable struct QGYBJSimulation{T}
     params::QGParams{T}
     grid::Grid
     state::State
-    state_old::State  # For leapfrog
+    state_old::State  # Reserved workspace state
     
     # Transform plans
     plans
@@ -139,7 +138,7 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
         N² = N²_value,  # From config.stratification.N0 for constant_N
 
-        γ = T(1e-3),    # Robert-Asselin filter
+        γ = T(1e-3),    # Legacy parameter retained for compatibility
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), 
         
         ilap1 = config.ilap1, ilap2 = config.ilap2,
@@ -250,9 +249,7 @@ end
 
 Run the complete simulation with output management.
 
-Uses leapfrog time stepping with Robert-Asselin filter, which requires
-three time levels (n-1, n, n+1). The simulation struct only stores two
-states, so a third is allocated internally for the integration.
+Uses the model's second-order exponential Runge-Kutta time stepper.
 """
 function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) where T
     @info "Starting QG-YBJ simulation"
@@ -280,44 +277,19 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
                         write_psi=write_psi, write_waves=write_waves)
     end
 
-    # Leapfrog requires 3 time levels: Snm1 (n-1), Sn (n), Snp1 (n+1)
-    # sim.state will be used as the "current" state for output
-    # We allocate working states for the time integration
-
-    # Save initial state as Snm1 (time 0)
-    # Use copy_state instead of deepcopy to preserve PencilArray topology
-    Snm1 = copy_state(sim.state)
-
-    # First projection step (Forward Euler to initialize leapfrog)
-    # Advances sim.state from time 0 to time dt
-    @info "Performing first projection step"
-    first_projection_step!(sim.state, sim.grid, sim.params, sim.plans;
-                          a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile)
-
-    sim.time_step = 1
-    sim.current_time = sim.params.dt
-
-    # Sn = state at time dt (after first projection step)
+    # ETDRK2 uses two time levels: current and next.
     Sn = copy_state(sim.state)
-    # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
     Snp1 = copy_state(sim.state)
-
-    # Output after first step if needed
-    check_and_output!(sim)
 
     # Main time stepping loop
     @info "Starting main time integration loop"
 
-    for step in 2:sim.params.nt
-        # Leapfrog time step: compute Snp1 from Sn and Snm1
-        leapfrog_step!(Snp1, Sn, Snm1, sim.grid, sim.params, sim.plans;
+    for step in 1:sim.params.nt
+        exp_rk2_step!(Snp1, Sn, sim.grid, sim.params, sim.plans;
                       a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile)
 
-        # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
-        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+        Sn, Snp1 = Snp1, Sn
 
-        # Update sim.state to point to current state (for output/diagnostics)
-        # Copy the current state (Sn after rotation) to sim.state
         sim.state.q .= Sn.q
         sim.state.psi .= Sn.psi
         sim.state.L⁺A .= Sn.L⁺A
@@ -1016,7 +988,7 @@ end
 Run a complete QG-YBJ+ simulation with automatic time-stepping, output, and diagnostics.
 
 This is the recommended high-level interface that handles all the details of:
-- Leapfrog time integration with Robert-Asselin filter
+- Exponential RK2 time integration
 - State array rotation (no manual management needed)
 - Periodic output to NetCDF files
 - Progress reporting and diagnostics
@@ -1039,10 +1011,6 @@ This is the recommended high-level interface that handles all the details of:
   When `nothing`, uses constant N² from `par.N²`.
 - `print_progress::Bool=true`: Print progress to stdout
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
-- `timestepper::Symbol=:leapfrog`: Time-stepping method. Options:
-  - `:leapfrog`: Leapfrog with Robert-Asselin filter (default, explicit, CFL-limited)
-  - `:imex_cn`: IMEX Crank-Nicolson (implicit dispersion, allows larger dt)
-
 # Returns
 - Final `State` at the end of the simulation
 
@@ -1063,16 +1031,11 @@ output_config = OutputConfig(
     wave_interval = 2π / par.f₀
 )
 
-# Run simulation - all time-stepping handled automatically
+# Run simulation - time-stepping handled automatically
 S_final = run_simulation!(S, G, par, plans; output_config=output_config)
-
-# Or use IMEX for larger timesteps
-S_final = run_simulation!(S, G, par, plans;
-                          output_config=output_config,
-                          timestepper=:imex_cn)
 ```
 
-See also: `OutputConfig`, `leapfrog_step!`, `imex_cn_step!`
+See also: `OutputConfig`, `exp_rk2_step!`
 """
 function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          output_config::Union{OutputConfig,Nothing}=nothing,
@@ -1082,8 +1045,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          N2_profile=nothing,
                          print_progress::Bool=true,
                          progress_interval::Int=0,
-                         diagnostics_interval::Int=0,
-                         timestepper::Symbol=:leapfrog)
+                         diagnostics_interval::Int=0)
 
     # Setup parallel config if not provided (for I/O)
     # MPI is required, so use the mpi_config directly
@@ -1127,10 +1089,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
     L_mask = dealias_mask(G)
 
-    # Initial velocity computation
-    # Skip omega equation for IMEX-CN (not needed and expensive)
-    skip_w = timestepper == :imex_cn
-    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile, compute_w=!skip_w)
+    # Initial diagnostics for progress reporting and output.
+    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile)
 
     # Initialize A from B via elliptic inversion: A = (L⁺)⁻¹·B
     # This is needed before the first diagnostics printout (step 0)
@@ -1168,11 +1128,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                      max(1, round(Int, output_config.psi_interval / dt)) : 0
     wave_save_steps = output_config !== nothing && output_config.save_waves && output_config.wave_interval > 0 ?
                       max(1, round(Int, output_config.wave_interval / dt)) : 0
-    # Print header
-    timestepper_name = timestepper == :imex_cn ? "IMEX Crank-Nicolson" : "Leapfrog"
     if is_root && print_progress
         println("\n" * "="^60)
-        println("Starting time integration ($timestepper_name)...")
+        println("Starting time integration (exponential RK2)...")
         println("  Steps: $nt, dt: $dt")
         if psi_save_steps > 0 || wave_save_steps > 0
             if psi_save_steps > 0 && wave_save_steps > 0
@@ -1243,82 +1201,27 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         end
     end
 
-    # Branch based on timestepper
-    if timestepper == :leapfrog
-        # ==================== LEAPFROG TIME STEPPING ====================
-        # Setup leapfrog states - save initial state BEFORE advancing
-        # Snm1 = state at time 0 (initial condition)
-        # Use copy_state instead of deepcopy to preserve PencilArray topology
-        Snm1 = copy_state(S)
+    Sn = copy_state(S)
+    Snp1 = copy_state(S)
 
-        # First projection step (Forward Euler to initialize leapfrog)
-        # Advances S from time 0 to time dt
-        first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+    for step in 1:nt
+        exp_rk2_step!(Snp1, Sn, G, par, plans;
+                      a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
-        # Sn = state at time dt (after first projection step)
-        Sn = copy_state(S)
-        # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
-        Snp1 = copy_state(S)
+        Sn, Snp1 = Snp1, Sn
 
-        # Time integration loop
-        for step in 1:nt
-            # Leapfrog step
-            leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                           a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
-
-            # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
-            Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-
-            current_time = step * dt
-
-            report_step(Sn, step, current_time)
-        end
-
-        # Copy final state back to S
-        copyto!(parent(S.psi), parent(Sn.psi))
-        copyto!(parent(S.q), parent(Sn.q))
-        copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
-        copyto!(parent(S.A), parent(Sn.A))
-        copyto!(parent(S.C), parent(Sn.C))
-        copyto!(parent(S.u), parent(Sn.u))
-        copyto!(parent(S.v), parent(Sn.v))
-        copyto!(parent(S.w), parent(Sn.w))
-
-    elseif timestepper == :imex_cn
-        # ==================== IMEX CRANK-NICOLSON ====================
-        # IMEX only needs two time levels: Sn (current) and Snp1 (next)
-        # Dispersion is treated implicitly for unconditional stability
-
-        # Initialize IMEX workspace
-        imex_ws = init_imex_workspace(S, G)
-
-        # Setup states
-        Sn = copy_state(S)
-        Snp1 = copy_state(S)
-
-        for step in 1:nt
-            imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws;
-                          a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
-
-            Sn, Snp1 = Snp1, Sn
-
-            current_time = step * dt
-            report_step(Sn, step, current_time)
-        end
-
-        # Copy final state back to S
-        copyto!(parent(S.psi), parent(Sn.psi))
-        copyto!(parent(S.q), parent(Sn.q))
-        copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
-        copyto!(parent(S.A), parent(Sn.A))
-        copyto!(parent(S.C), parent(Sn.C))
-        copyto!(parent(S.u), parent(Sn.u))
-        copyto!(parent(S.v), parent(Sn.v))
-        copyto!(parent(S.w), parent(Sn.w))
-
-    else
-        error("Unknown timestepper: $timestepper. Valid options: :leapfrog, :imex_cn")
+        current_time = step * dt
+        report_step(Sn, step, current_time)
     end
+
+    copyto!(parent(S.psi), parent(Sn.psi))
+    copyto!(parent(S.q), parent(Sn.q))
+    copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
+    copyto!(parent(S.A), parent(Sn.A))
+    copyto!(parent(S.C), parent(Sn.C))
+    copyto!(parent(S.u), parent(Sn.u))
+    copyto!(parent(S.v), parent(Sn.v))
+    copyto!(parent(S.w), parent(Sn.w))
 
     # Print completion message
     if is_root && print_progress
@@ -1501,7 +1404,7 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         f₀ = config.f0,
         N² = N2_value,
         W2F = T(0.01),  # Default (deprecated parameter)
-        γ = T(1e-3),    # Robert-Asselin filter coefficient
+        γ = T(1e-3),    # Legacy parameter retained for compatibility
 
         # Legacy viscosity (use hyperdiffusion instead)
         νₕ = config.nu_h,

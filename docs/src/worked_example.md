@@ -53,7 +53,7 @@ const N² = 1e-5     # Buoyancy frequency squared [s⁻²]
 
 # Time stepping
 const T_inertial = 2π / f₀           # Inertial period ≈ 17.5 hours
-const dt = 10.0                       # Time step [s] - use IMEX for larger dt
+const dt = 10.0                       # Time step [s] - use exponential RK2 for larger dt
 const n_inertial_periods = 5          # Simulation duration
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
@@ -253,73 +253,26 @@ This mimics wind-generated near-inertial waves that are strongest near the surfa
 
 ## Step 5: Run the Time-Stepping Loop
 
+Use the high-level simulation API for normal runs:
+
 ```julia
-# ============================================================================
-#                       TIME INTEGRATION
-# ============================================================================
-
-# Create state arrays for leapfrog (need 3 time levels)
-Snm1 = copy_state(S)  # n-1
-Sn = copy_state(S)    # n
-Snp1 = copy_state(S)  # n+1
-
-# Initialize with projection step (Forward Euler)
-println("\nRunning projection step...")
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
-copy_state!(Snm1, Sn)
-
-# Storage for diagnostics
-times = Float64[]
-wave_energies = Float64[]
-flow_energies = Float64[]
-
-# Diagnostic output interval (every 0.5 inertial periods)
-diag_interval = round(Int, 0.5 * T_inertial / dt)
-
-println("Starting main time loop...")
-println("="^60)
-
-for step in 1:nt
-    # Leapfrog step with Robert-Asselin filter
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                   a=a_ell, dealias_mask=L)
-
-    # Rotate time levels (efficient pointer swap)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-
-    # Periodic diagnostics
-    if step % diag_interval == 0
-        current_time = step * dt
-        time_IP = current_time / T_inertial  # Time in inertial periods
-
-        # Compute energies
-        KE = flow_kinetic_energy(Sn.u, Sn.v)
-        # Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
-        WKE, WPE, WCE = compute_detailed_wave_energy(Sn, G, par)
-
-        # Store for later analysis
-        push!(times, time_IP)
-        push!(wave_energies, WKE)
-        push!(flow_energies, KE)
-
-        @printf("  t = %.2f IP | Flow KE = %.4e | Wave KE = %.4e\n",
-                time_IP, KE, WKE)
-    end
-end
-
-println("="^60)
-println("Simulation complete!")
+simulation = Simulation(model;
+                        Δt = dt,
+                        stop_iteration = nt)
+run!(simulation)
 ```
 
-**What happens each time step?**
+For a manual low-level loop, use `exp_rk2_step!` with two state objects:
 
-1. **Invert** q → ψ and B → A
-2. **Compute** u, v from ψ
-3. **Evaluate** tendencies: J(ψ,q), J(ψ,B), refraction ζ·B, dispersion k²A
-4. **Update**: φ^{n+1} = φ^{n-1} + 2·dt·F^n
-5. **Rotate** time levels: Snm1 ← Sn ← Snp1
+```julia
+Sn = copy_state(S)
+Snp1 = copy_state(S)
 
----
+for step in 1:nt
+    exp_rk2_step!(Snp1, Sn, G, par, plans; a=a_ell, dealias_mask=L)
+    Sn, Snp1 = Snp1, Sn
+end
+```
 
 ## Step 6: Analyze Results
 
@@ -448,11 +401,11 @@ L = dealias_mask(G)
 
 # === Time stepping ===
 Snm1, Sn, Snp1 = copy_state(S), copy_state(S), copy_state(S)
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
+exp_rk2_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
 copy_state!(Snm1, Sn)
 
 for step in 1:nt
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
+    exp_rk2_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
     Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 end
 
@@ -475,54 +428,4 @@ Now that you've built a complete simulation:
 
 ## Common Modifications
 
-### Use IMEX Time Stepping (10x faster)
-
-```julia
-# Replace leapfrog with IMEX-CN
-imex_ws = init_imex_workspace(Sn, G)
-first_imex_step!(Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-
-for step in 1:nt
-    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-    parent(Sn.L⁺A) .= parent(Snp1.L⁺A)
-    parent(Sn.q) .= parent(Snp1.q)
-end
-```
-
-### Add Particle Tracking
-
-```julia
-# Create particles at mid-depth
-pconfig = particles_in_box(-2000.0; x_max=Lx, y_max=Ly, nx=20, ny=20)
-tracker = ParticleTracker(pconfig, G)
-initialize_particles!(tracker, pconfig)
-
-# In time loop, add:
-advect_particles!(tracker, Sn, G, dt, current_time)
-
-# After simulation:
-write_particle_trajectories("trajectories.nc", tracker)
-```
-
-### Use Realistic Stratification
-
-```julia
-par = default_params(
-    Lx=Lx, Ly=Ly, Lz=Lz, nx=nx, ny=ny, nz=nz,
-    stratification = :skewed_gaussian,  # Realistic pycnocline
-    # Other parameters...
-)
-G, S, plans, a_ell, N2_profile = setup_model_with_profile(par)
-```
-
-### Use an Analytical N(z) Profile
-
-```julia
-a = 0.01    # s^-1
-b = -2.0e-6 # s^-1 m^-1
-@inline N(z) = a + b * z  # z is negative below the surface
-
-domain = create_domain_config(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz)
-strat = create_stratification_config(type=:analytical, N_func=N)
-sim = setup_simulation(domain, strat)
-```
+Adjust `Δt`, grid resolution, hyperdiffusion coefficients, output cadence, and initial conditions through the high-level model and simulation constructors. The timestep method is fixed to exponential RK2.

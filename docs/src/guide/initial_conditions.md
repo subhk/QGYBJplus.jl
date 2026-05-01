@@ -210,9 +210,9 @@ compute_q_from_psi!(S, G, plans, a_ell)
 
 # Spin-up phase (develop turbulence) - no waves
 spinup_steps = 1000
-first_projection_step!(S, G, par, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 for step = 2:spinup_steps
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 
 # Now add waves
@@ -220,7 +220,7 @@ init_analytical_waves!(S, G; amplitude=0.01)
 
 # Production run
 for step = 1:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 ```
 

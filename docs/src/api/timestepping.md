@@ -1,479 +1,54 @@
-# [Time Stepping](@id api-timestepping)
+# Time Stepping
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-This page documents the time integration functions.
+QGYBJplus uses one production time stepper: a second-order exponential
+Runge-Kutta method, exposed as `exp_rk2_step!` and used automatically by
+`run!` and `run_simulation!`.
 
-## Available Time Stepping Schemes
+The equations remain dimensional. Horizontal hyperdiffusion is handled exactly
+with integrating factors, while advection, refraction, dispersion, and vertical
+PV diffusion are evaluated explicitly by the RK stages.
 
-QGYBJ+.jl provides two time stepping methods:
+## High-Level Use
 
-| Method | Description | When to Use |
-|:-------|:------------|:------------|
-| **Leapfrog** | Explicit, 2nd order | Default, dt ≤ 2f/N² (~2s) |
-| **IMEX-CN** | Implicit dispersion, explicit advection | Large dt (~20s), 10x speedup |
+Most users should configure a model and run it:
 
-### Choosing a Method
-
-Use the `timestepper` keyword in `run_simulation!`:
 ```julia
-# Leapfrog (default, explicit)
-run_simulation!(S, G, par, plans; timestepper=:leapfrog, ...)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       x=(-250e3, 250e3),
+                       y=(-250e3, 250e3),
+                       z=(-4000.0, 0.0))
 
-# IMEX Crank-Nicolson (implicit dispersion)
-run_simulation!(S, G, par, plans; timestepper=:imex_cn, ...)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5))
+
+simulation = Simulation(model; Δt=300.0, stop_iteration=200)
+run!(simulation)
 ```
 
----
+There is no `timestepper` keyword. The simulation path always uses exponential
+RK2.
 
-## Leapfrog Scheme (Default)
+## Low-Level Step
 
-The **Leapfrog scheme with Robert-Asselin filter** provides second-order accuracy with computational mode damping.
+For development or tests, call the stepper directly:
 
-### Overview
+```julia
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0,
+                     nx=64, ny=64, nz=32)
+G, S, plans, a = setup_model(par)
+L = dealias_mask(G)
 
-The time stepping consists of two functions:
-1. `first_projection_step!` - Forward Euler initialization
-2. `leapfrog_step!` - Main leapfrog integration with Robert-Asselin filter
+Snp1 = copy_state(S)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
+```
 
-## Forward Euler Projection Step
+## API
 
 ```@docs
-first_projection_step!
+exp_rk2_step!
 ```
-
-**Purpose:** Initialize the leapfrog scheme by providing values at times n and n-1.
-
-**Algorithm:**
-1. Compute tendencies at time n (advection, refraction, diffusion)
-2. Apply physics switches (linear, inviscid, etc.)
-3. Forward Euler update with integrating factors
-4. Wave feedback (optional)
-5. Diagnostic inversions (q → ψ → u, v)
-
-**Usage:**
-```julia
-# Serial mode
-first_projection_step!(state, grid, params, plans; a=a_ell, dealias_mask=L)
-
-# Parallel mode (2D decomposition)
-first_projection_step!(state, grid, params, plans; a=a_ell, dealias_mask=L, workspace=workspace)
-```
-
-## Leapfrog Step with Robert-Asselin Filter
-
-```@docs
-leapfrog_step!
-```
-
-**The Leapfrog scheme:**
-```math
-\phi^{n+1} = \phi^{n-1} + 2\Delta t \times F^n
-```
-
-**Robert-Asselin filter (damps computational mode):**
-```math
-\tilde{\phi}^n = \phi^n + \gamma(\phi^{n-1} - 2\phi^n + \phi^{n+1})
-```
-
-**With integrating factor for hyperdiffusion:**
-```math
-\phi^{n+1} = \phi^{n-1} \times e^{-2\lambda\Delta t} + 2\Delta t \times F^n \times e^{-\lambda\Delta t}
-```
-
-**Usage:**
-```julia
-# Serial mode
-leapfrog_step!(Snp1, Sn, Snm1, grid, params, plans; a=a_ell, dealias_mask=L)
-
-# Parallel mode (2D decomposition)
-leapfrog_step!(Snp1, Sn, Snm1, grid, params, plans; a=a_ell, dealias_mask=L, workspace=workspace)
-
-# Time level rotation after each step
-Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-```
-
-## Forward Euler Update
-
-Used for the first (projection) step:
-```math
-\phi^{n+1} = \left[\phi^n - \Delta t \times F\right] \times e^{-\lambda\Delta t}
-```
-
-The integrating factor `e^{-λΔt}` handles hyperdiffusion exactly.
-
-## Tendency Computation
-
-Each time step computes the following tendencies:
-
-**QG Potential Vorticity:**
-```math
-F_q = -J(\psi, q) + \nu_z \frac{\partial^2 q}{\partial z^2}
-```
-
-**Wave Envelope (complex form, YBJ+):**
-```math
-F_B = -J(\psi, B) + i\,\alpha_{\text{disp}}\,k_h^2 A - \frac{i}{2}\zeta B
-```
-
-**Equivalent real/imaginary parts:**
-```math
-F_{BR} = -J(\psi, BR) - \frac{k_h^2}{2}A_I + \frac{1}{2}BI \times \zeta
-```
-```math
-F_{BI} = -J(\psi, BI) + \frac{k_h^2}{2}A_R - \frac{1}{2}BR \times \zeta
-```
-
-### Nonlinear Terms
-
-```@docs
-convol_waqg!
-convol_waqg_q!
-convol_waqg_L⁺A!
-refraction_waqg!
-refraction_waqg_L⁺A!
-compute_qw!
-compute_qw_complex!
-```
-
-**Advection:**
-- `convol_waqg_q!` computes J(ψ, q)
-- `convol_waqg_L⁺A!` computes J(ψ, L⁺A) for the complex YBJ+ envelope
-- `convol_waqg!` computes J(ψ, q), J(ψ, (L⁺A)_R), J(ψ, (L⁺A)_I) for explicit real/imag decomposition
-
-**Refraction:**
-- `refraction_waqg_L⁺A!` computes ζ × L⁺A for complex L⁺A
-- `refraction_waqg!` computes (L⁺A)_R × ζ and (L⁺A)_I × ζ for the decomposed form
-
-**Wave feedback:**
-- `compute_qw_complex!` computes qʷ directly from complex L⁺A
-- `compute_qw!` computes qʷ from (L⁺A)_R/(L⁺A)_I
-
-### Vertical Diffusion
-
-```@docs
-dissipation_q_nv!
-```
-
-Computes νz ∂²q/∂z² using the tridiagonal solver. Automatically handles 2D decomposition transposes.
-
-## Integrating Factors
-
-### Purpose
-
-For stiff hyperdiffusion terms, we use an integrating factor approach:
-```math
-\tilde{\phi} = \phi \times e^{\nu k^{2p} t}
-```
-
-This allows exact treatment of the linear diffusion while using explicit time stepping.
-
-### Function
-
-```@docs
-int_factor
-```
-
-**Usage:**
-```julia
-# Compute factor for a spectral mode
-If = int_factor(kx, ky, params; waves=false)   # For mean flow (q)
-Ifw = int_factor(kx, ky, params; waves=true)   # For waves (B)
-
-# Apply in time stepping
-q_new = q_old * exp(-2*If) - 2*dt * tendency * exp(-If)   # Leapfrog
-q_new = q_old * exp(-If) - dt * tendency                    # Euler
-```
-
-## Complete Simulation Loop
-
-### Setup and Run
-
-```julia
-using QGYBJplus
-
-# Initialize
-params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
-grid = init_grid(params)
-plans = plan_transforms!(grid)
-a_ell = a_ell_ut(params, grid)
-L = dealias_mask(grid)
-
-# Create three state arrays for leapfrog
-Snm1 = init_state(grid)  # n-1
-Sn = init_state(grid)    # n
-Snp1 = init_state(grid)  # n+1
-
-# Initialize with random fields
-init_random_psi!(Sn, grid, params, plans; a=a_ell)
-
-# Projection step (Forward Euler initialization)
-first_projection_step!(Sn, grid, params, plans; a=a_ell, dealias_mask=L)
-
-# Copy for n-1 state
-copy_state!(Snm1, Sn)
-
-# Main time loop
-for iter in 1:nsteps
-    leapfrog_step!(Snp1, Sn, Snm1, grid, params, plans; a=a_ell, dealias_mask=L)
-
-    # Rotate time levels
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-end
-```
-
-### Parallel Mode (2D Decomposition)
-
-```julia
-using MPI, PencilArrays, PencilFFTs, QGYBJplus
-
-MPI.Init()
-mpi_config = QGYBJplus.setup_mpi_environment()
-
-# Initialize with MPI
-params = default_params(Lx=1000e3, Ly=1000e3, Lz=5000.0, nx=256, ny=256, nz=128)
-grid = QGYBJplus.init_mpi_grid(params, mpi_config)
-plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
-workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
-
-a_ell = a_ell_ut(params, grid)
-L = dealias_mask(grid)
-
-# Create states
-Snm1 = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
-Sn = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
-Snp1 = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
-
-# Initialize
-init_random_psi!(Sn, grid, params, plans; a=a_ell)
-first_projection_step!(Sn, grid, params, plans; a=a_ell, dealias_mask=L, workspace=workspace)
-copy_state!(Snm1, Sn)
-
-# Main loop with workspace for 2D decomposition
-for iter in 1:nsteps
-    leapfrog_step!(Snp1, Sn, Snm1, grid, params, plans;
-                   a=a_ell, dealias_mask=L, workspace=workspace)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-end
-
-MPI.Finalize()
-```
-
-## CFL Condition
-
-### Stability Constraint
-
-```julia
-function compute_cfl(state, grid, dt)
-    u_max = maximum(abs.(state.u))
-    v_max = maximum(abs.(state.v))
-    return dt * max(u_max/grid.dx, v_max/grid.dy)
-end
-```
-
-For stability, CFL < 1 is required. Recommended: CFL ≈ 0.5.
-
-### Adaptive Time Stepping
-
-```julia
-function adaptive_dt(state, grid; cfl_target=0.5, dt_max=0.01)
-    u_max = maximum(abs.(state.u)) + 1e-10  # Avoid division by zero
-    v_max = maximum(abs.(state.v)) + 1e-10
-
-    dt = cfl_target * min(grid.dx/u_max, grid.dy/v_max)
-    return min(dt, dt_max)
-end
-```
-
-## Robert-Asselin Filter Parameter
-
-The filter coefficient γ (`γ` in `QGParams`) controls damping of the computational mode:
-
-- **Too large** (γ > 0.01): Excessive damping, accuracy loss
-- **Too small** (γ < 0.0001): Computational mode growth
-- **Recommended**: γ ≈ 0.001 (default)
-
-```julia
-params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32, γ=0.001)
-```
-
-Note: Type `\gamma<tab>` in the Julia REPL to enter `γ`.
-
-## Time Level Management
-
-The leapfrog scheme requires three time levels:
-
-| Variable | Description | Usage |
-|:---------|:------------|:------|
-| `Snm1` | State at n-1 | Input, receives filtered n values |
-| `Sn` | State at n | Input (unchanged) |
-| `Snp1` | State at n+1 | Output |
-
-After each step, rotate the pointers:
-```julia
-Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-```
-
-This avoids data copying by just swapping references.
-
-## Physics Switches
-
-The time stepping respects these `QGParams` switches:
-
-| Switch | Effect |
-|:-------|:-------|
-| `linear` | Zero nonlinear advection J(ψ, q), J(ψ, B) |
-| `inviscid` | Zero vertical diffusion νz ∂²q/∂z² |
-| `passive_scalar` | Waves as passive tracers (no dispersion/refraction) |
-| `no_dispersion` | Zero wave dispersion (A = 0) |
-| `fixed_flow` | Mean flow doesn't evolve (q unchanged) |
-| `no_wave_feedback` | No qʷ feedback term |
-
-## Performance
-
-### Timing Breakdown
-
-Typical distribution:
-| Component | Fraction |
-|:----------|:---------|
-| FFTs | 40-50% |
-| Elliptic solves | 20-30% |
-| Array operations | 15-25% |
-| Transpose operations (2D) | 5-10% |
-
-### 2D Decomposition Notes
-
-When using 2D decomposition:
-- Pass `workspace` argument to avoid repeated allocation
-- Vertical operations (inversions, diffusion) use automatic transposes
-- The workspace contains pre-allocated z-pencil arrays
-
-```julia
-# Pre-allocate workspace (once)
-workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
-
-# Reuse for all steps
-for step in 1:nsteps
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                   a=a, dealias_mask=L, workspace=workspace)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-end
-```
-
----
-
-## IMEX Crank-Nicolson Scheme
-
-The **IMEX-CNAB scheme** (Crank-Nicolson for implicit terms, Adams-Bashforth 2 for explicit terms) treats dispersion implicitly for unconditional stability, allowing timesteps ~10x larger than leapfrog.
-
-### Why IMEX-CNAB?
-
-The YBJ+ wave equation has three terms with different timescales:
-- **Advection**: J(ψ,B) - slow, O(hours)
-- **Refraction**: (i/2)ζB - moderate, O(minutes)
-- **Dispersion**: i·αdisp·kₕ²·A - fast, CFL-limited to dt ≤ 2f/N² (~2s)
-
-IMEX-CNAB treats dispersion implicitly with Crank-Nicolson, removing the stiff CFL constraint.
-
-### Algorithm: Strang Splitting + IMEX-CNAB
-
-The scheme uses **Strang splitting** for refraction (second-order accurate) combined with IMEX-CNAB for advection/dispersion:
-
-**Stage 1 (First Half-Refraction - Strang):**
-```math
-B^* = B^n \times \exp\left(-i \frac{\Delta t}{2} \frac{\zeta}{2}\right)
-```
-Applied in physical space with exact integrating factor (energy-preserving).
-
-**Stage 2 (IMEX-CNAB for Advection + Dispersion):**
-```math
-B^{**} = B^* + \frac{\Delta t}{2}[D^* + D^{**}] + \Delta t \left[\frac{3}{2}N^n - \frac{1}{2}N^{n-1}\right]
-```
-where:
-- D = i·αdisp·kₕ²·A (dispersion, treated implicitly with Crank-Nicolson)
-- N = -J(ψ,B) (advection, treated explicitly with Adams-Bashforth 2)
-
-**Stage 3 (Second Half-Refraction - Strang):**
-```math
-B^{n+1} = B^{**} \times \exp\left(-i \frac{\Delta t}{2} \frac{\zeta}{2}\right)
-```
-The symmetric half-steps ensure second-order accuracy in time.
-
-### Functions
-
-```@docs
-init_imex_workspace
-imex_cn_step!
-first_imex_step!
-```
-
-### Usage
-
-```julia
-# Initialize IMEX workspace
-imex_ws = init_imex_workspace(state, grid)
-Snp1 = copy_state(state)
-
-# Time stepping loop
-for step in 1:nsteps
-    imex_cn_step!(Snp1, Sn, grid, params, plans, imex_ws;
-                  a=a_ell, dealias_mask=L, workspace=workspace,
-                  N2_profile=N2_profile)
-
-    # Copy for next step (only need 2 time levels, not 3 like leapfrog)
-    parent(Sn.L⁺A) .= parent(Snp1.L⁺A)
-    parent(Sn.A) .= parent(Snp1.A)
-    parent(Sn.q) .= parent(Snp1.q)
-    parent(Sn.psi) .= parent(Snp1.psi)
-end
-```
-
-### Stability Properties
-
-| Term | Treatment | Stability |
-|:-----|:----------|:----------|
-| Refraction | Exact integrating factor (Strang split) | **Unconditionally stable** |
-| Dispersion | Implicit Crank-Nicolson | **Unconditionally stable** |
-| Advection | Explicit Adams-Bashforth 2 | CFL: dt < dx/U_max |
-
-For U = 0.335 m/s and dx ≈ 273m (256 grid, 70km domain): **dt_max ≈ 800s**
-
-This allows dt = 20s (vs dt = 2s for leapfrog), a **10x speedup**.
-
-### Key Implementation Details
-
-1. **Strang Splitting**: Refraction is split symmetrically with two half-steps: `exp(-i·(dt/2)·ζ/2)` before and after the IMEX solve
-2. **Adams-Bashforth 2**: Advection uses `(3/2)N^n - (1/2)N^{n-1}` extrapolation for both `q` and `B` (bootstraps with forward Euler on first step)
-3. **Consistent A***: After first half-refraction, A* = (L⁺)⁻¹B* is computed (critical for IMEX-CN consistency)
-4. **Modified Elliptic Solve**: Each mode solves (L⁺ - β)·A^{n+1} = RHS where β = (dt/2)·i·αdisp·kₕ²
-5. **Updated Refraction**: The second refraction half-step uses a ψ^{n+1} predictor (with q^w when enabled) to keep the coupled system second-order
-
-### When to Use
-
-- **Use IMEX-CN** when dispersion CFL is limiting (typical oceanographic simulations)
-- **Use Leapfrog** for academic tests requiring exact 2nd-order temporal accuracy
-
----
-
-## API Summary
-
-All time stepping functions documented above:
-
-**Leapfrog:**
-- `first_projection_step!` - Forward Euler initialization step
-- `leapfrog_step!` - Main leapfrog integration with Robert-Asselin filter
-
-**IMEX-CN:**
-- `init_imex_workspace` - Allocate IMEX workspace arrays
-- `imex_cn_step!` - IMEX Crank-Nicolson step with operator splitting
-- `first_imex_step!` - First-order forward Euler initialization
-
-**Common:**
-- `convol_waqg_q!` / `convol_waqg_L⁺A!` - Complex-form advection for q and L⁺A
-- `refraction_waqg_L⁺A!` - Complex-form wave refraction term
-- `convol_waqg!` / `refraction_waqg!` - Real/imag-decomposed advection/refraction
-- `dissipation_q_nv!` - Vertical diffusion
-- `int_factor` - Integrating factor for hyperdiffusion
-- `compute_qw_complex!` / `compute_qw!` - Wave feedback term (see [Physics API](physics.md))

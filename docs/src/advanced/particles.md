@@ -122,10 +122,10 @@ tracker = ParticleTracker(particle_config, G)
 initialize_particles!(tracker, particle_config)
 
 # Particles co-evolve with the fluid
-first_projection_step!(S, G, par, plans; a=a, particle_tracker=tracker, current_time=0.0)
+exp_rk2_step!(S, G, par, plans; a=a, particle_tracker=tracker, current_time=0.0)
 for step in 1:nsteps
     current_time = step * par.dt
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a,
+    exp_rk2_step!(Snp1, Sn, Snm1, G, par, plans; a=a,
                    particle_tracker=tracker, current_time=current_time)
     Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 end

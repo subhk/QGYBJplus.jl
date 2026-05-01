@@ -69,8 +69,7 @@ src/
 ├── parameters.jl      # QGParams
 ├── grid.jl            # Grid struct
 ├── elliptic.jl        # q→ψ, B→A inversions
-├── timestep.jl        # Leapfrog
-├── timestep_imex.jl   # IMEX-CN (faster)
+├── timestep.jl        # Exponential RK2
 ├── simulation.jl      # High-level API
 └── parallel_mpi.jl    # MPI support
 ```

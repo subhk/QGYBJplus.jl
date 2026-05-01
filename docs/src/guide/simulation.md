@@ -41,77 +41,30 @@ init_random_psi!(S, G; amplitude=0.1)
 compute_q_from_psi!(S, G, plans, a_ell)
 
 # Time loop
-first_projection_step!(S, G, par, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 ```
 
 ## Time Stepping
 
-### Available Schemes
-
-| Scheme | Description | Best For |
-|:-------|:------------|:---------|
-| `:leapfrog` | Explicit, 2nd order, Robert-Asselin filter | dt ≤ 2f/N² (~2s), academic tests |
-| `:imex_cn` | IMEX Crank-Nicolson with operator splitting | **Large dt (~20s), production runs** |
-
-### Using `run_simulation!` (Recommended)
+The simulation API uses one time-stepping method: second-order exponential RK. There is no `timestepper` keyword.
 
 ```julia
-# Leapfrog (default)
-run_simulation!(S, G, par, plans;
-    timestepper=:leapfrog, ...)
+simulation = Simulation(model;
+                        Δt = 300.0,
+                        stop_iteration = 200)
 
-# IMEX-CN (10x larger timestep)
-run_simulation!(S, G, par, plans;
-    timestepper=:imex_cn, ...)
+run!(simulation)
 ```
 
-### Manual Time Loop (Leapfrog)
+For low-level development, call the stepper directly:
 
 ```julia
-# First step uses forward Euler
-first_projection_step!(S, G, par, plans, a_ell)
-
-# Subsequent steps use leapfrog
-for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
-end
-```
-
-### Manual Time Loop (IMEX-CN)
-
-```julia
-imex_ws = init_imex_workspace(S, G)
 Snp1 = copy_state(S)
-
-for step = 1:par.nt
-    imex_cn_step!(Snp1, S, G, par, plans, imex_ws;
-                  a=a_ell, dealias_mask=L,
-                  workspace=workspace, N2_profile=N2)
-
-    # Copy for next step (only 2 time levels needed)
-    parent(S.L⁺A) .= parent(Snp1.L⁺A)
-    parent(S.A) .= parent(Snp1.A)
-    parent(S.q) .= parent(Snp1.q)
-    parent(S.psi) .= parent(Snp1.psi)
-end
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell, dealias_mask=L)
 ```
-
-### Choosing a Timestep
-
-| Scheme | Stability Constraint | Typical dt |
-|:-------|:--------------------|:-----------|
-| Leapfrog | dt ≤ min(2f/N², dx/U) | ~2s (dispersion-limited) |
-| IMEX-CN | dt ≤ dx/U | ~20s (advection CFL only) |
-
-Each time step performs:
-1. Compute nonlinear terms (Jacobians, refraction)
-2. Apply dissipation via integrating factors
-3. Update prognostic variables (q, B)
-4. Invert elliptic equations (q→ψ, B→A)
-5. Compute velocities
 
 ## Progress Monitoring
 
@@ -119,7 +72,7 @@ Each time step performs:
 
 ```julia
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
     if step % 100 == 0
         println("Step $step / $(par.nt) ($(100*step/par.nt)%)")
@@ -131,7 +84,7 @@ end
 
 ```julia
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
     if step % 100 == 0
         compute_velocities!(S, G, plans)
@@ -148,7 +101,7 @@ end
 using ProgressMeter
 
 @showprogress for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 ```
 
@@ -161,9 +114,9 @@ using JLD2
 
 checkpoint_interval = 1000
 
-first_projection_step!(S, G, par, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
     if step % checkpoint_interval == 0
         filename = "checkpoint_$(lpad(step, 8, '0')).jld2"
@@ -182,7 +135,7 @@ using JLD2
 
 # Continue simulation
 for step = step+1:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 ```
 
@@ -199,7 +152,7 @@ function check_cfl(S, G, dt)
 end
 
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
     compute_velocities!(S, G, plans)
 
     cfl = check_cfl(S, G, par.dt)
@@ -216,7 +169,7 @@ compute_velocities!(S, G, plans)
 E0 = flow_kinetic_energy(S.u, S.v)
 
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
     if step % 100 == 0
         compute_velocities!(S, G, plans)
@@ -238,9 +191,9 @@ using QGYBJplus
 
 output_interval = 100
 
-first_projection_step!(S, G, par, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
     time = step * par.dt
 
     if step % output_interval == 0
@@ -261,7 +214,7 @@ WE_history = Float64[]
 time_history = Float64[]
 
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
     push!(time_history, step * par.dt)
     compute_velocities!(S, G, plans)
@@ -369,9 +322,9 @@ function run_production(;
     compute_q_from_psi!(S, G, plans, a_ell)
 
     # Time loop
-    first_projection_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
     for step = 2:nsteps
-        leapfrog_step!(S, G, par, plans, a_ell)
+        exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 
         # Output
         if step % output_interval == 0
@@ -407,7 +360,7 @@ end
 
 ### Instability
 
-- **Switch to IMEX-CN**: Use `timestepper=:imex_cn` for unconditional dispersion stability
+- **Switch to exponential RK2**: Use `` for unconditional dispersion stability
 - Reduce time step (`dt`)
 - Increase dissipation (`νₕ₂`, `ilap2`)
 - Check initial conditions for sharp gradients

@@ -50,14 +50,14 @@ G, S, plans, a_ell = setup_model(par)
 init_random_psi!(S, G; amplitude=0.1)
 compute_q_from_psi!(S, G, plans, a_ell)
 
-first_projection_step!(S, G, par, plans, a_ell)
+exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
 end
 ```
 
-!!! tip "IMEX"
-    Use `imex_cn_step!()` instead of `leapfrog_step!()` for ~10× faster wave-dominated problems.
+!!! tip "exponential RK2"
+    Use `run!` for normal simulations and `exp_rk2_step!` only for low-level development.
 
 ## Parameter Reference
 
@@ -75,7 +75,7 @@ end
 |:----------|:--------|:------------|
 | `f₀` | 1.0 | Coriolis parameter |
 | `N²` | 1.0 | Buoyancy frequency squared |
-| `γ` | 1e-3 | Robert-Asselin filter |
+| `γ` | 1e-3 | Legacy compatibility parameter |
 
 Unicode: type `f\_0<tab>` → `f₀`, `\nu<tab>` → `ν`
 

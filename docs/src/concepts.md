@@ -99,15 +99,14 @@ L^+A = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}{\part
 
 ---
 
-## Time Stepping Options
+## Time Stepping
 
 | Method | Speed | Best For | How It Works |
 |:-------|:------|:---------|:-------------|
-| **Leapfrog** | Standard | General use | Explicit, simple, stable |
-| **IMEX-CN** | 10× faster | Wave-dominated | Treats fast dispersion implicitly |
+| **Exponential RK2** | Standard | Production runs | Integrating factors for horizontal hyperdiffusion, explicit RK stages for the remaining dimensional tendencies |
 
-!!! note "Choosing a Method"
-    Use IMEX-CN when wave dispersion limits your timestep. Leapfrog is simpler and sufficient when eddies dominate.
+There is no timestepper switch in the user API; `run!` and `run_simulation!`
+use exponential RK2.
 
 ---
 

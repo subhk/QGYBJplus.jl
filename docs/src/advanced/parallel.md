@@ -28,7 +28,7 @@ a_vec = a_ell_ut(params, grid)
 
 for step in 1:1000
     invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
-    leapfrog_step!(state, state, state, grid, params, plans; a=a_vec, workspace=workspace)
+    exp_rk2_step!(state, state, state, grid, params, plans; a=a_vec, workspace=workspace)
 end
 
 MPI.Finalize()
