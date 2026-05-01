@@ -46,9 +46,12 @@ export
     create_output_config, create_model_config,
     QGYBJSimulation, setup_simulation, run_simulation!,
     create_simple_config, run_simple_simulation, setup_model_with_config,
-    Simulation, initialize_simulation, run!,
+    RectilinearGrid, RectilinearGridSpec,
+    FPlane, ConstantStratification, HorizontalHyperdiffusivity, SurfaceWave,
+    TimeInterval, IterationInterval, NetCDFOutput,
+    QGYBJModel, Simulation, initialize_simulation, run!, set!,
     set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
-    get_inertial_period, get_duration, get_duration_ip,
+    get_inertial_period, inertial_period, get_duration, get_duration_ip,
 
     # I/O
     OutputManager, write_state_file,

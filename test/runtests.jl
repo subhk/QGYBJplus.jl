@@ -81,6 +81,46 @@ end
     @test size(S_small.q) == (par_small.nz, par_small.nx, par_small.ny)
 end
 
+@testset "Oceananigans-style interface" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(TEST_Lx, TEST_Ly, TEST_Lz), centered=true)
+    model = QGYBJModel(grid=grid,
+                       coriolis=FPlane(f=1e-4),
+                       stratification=ConstantStratification(N²=1e-5),
+                       closure=HorizontalHyperdiffusivity(waves=1e5),
+                       flow=:fixed,
+                       feedback=:none,
+                       verbose=false)
+
+    ψ = (x, y, z) -> 1.0e3 * sin(2π * x / TEST_Lx) * cos(2π * y / TEST_Ly)
+    set!(model; ψ=ψ, pv_method=:barotropic,
+         waves=SurfaceWave(amplitude=0.05, scale=500.0))
+
+    simulation = Simulation(model;
+                            Δt=10.0,
+                            stop_time=25.0,
+                            timestepper=:leapfrog,
+                            output=NetCDFOutput(path="interface_output",
+                                                schedule=TimeInterval(20.0),
+                                                fields=(:ψ, :waves)),
+                            diagnostics=IterationInterval(3),
+                            verbose=false)
+
+    @test model.grid.x0 == -TEST_Lx / 2
+    @test model.grid.y0 == -TEST_Ly / 2
+    @test model.params.fixed_flow
+    @test model.params.no_feedback
+    @test model.params.no_wave_feedback
+    @test model.params.νₕ₁ʷ == 1e5
+    @test simulation.params.dt == 10.0
+    @test simulation.params.nt == 2
+    @test simulation.run_options.timestepper == :leapfrog
+    @test simulation.run_options.output_dir == "interface_output"
+    @test simulation.run_options.save_interval == 20.0
+    @test simulation.run_options.diagnostics_interval == 3
+    @test any(!iszero, parent(model.state.psi))
+    @test any(!iszero, parent(model.state.L⁺A))
+end
+
 @testset "Vertical discretization" begin
     par = default_params(nx=4, ny=4, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, νz=1.0)
     G = init_grid(par)

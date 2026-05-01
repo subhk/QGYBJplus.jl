@@ -89,6 +89,7 @@ struct MPIConfig
     topology::Tuple{Int,Int}
     use_mpi::Bool
     parallel_io::Bool
+    verbose::Bool
 end
 
 # Alias for backward compatibility
@@ -133,7 +134,7 @@ mpi_config = QGYBJplus.setup_mpi_environment()
 mpi_config = QGYBJplus.setup_mpi_environment(topology=(4, 4))
 ```
 """
-function setup_mpi_environment(; topology=nothing, parallel_io=true)
+function setup_mpi_environment(; topology=nothing, parallel_io=true, verbose=true)
     if !MPI.Initialized()
         MPI.Init()
     end
@@ -151,7 +152,7 @@ function setup_mpi_environment(; topology=nothing, parallel_io=true)
         topo = topology
     end
 
-    if is_root
+    if is_root && verbose
         @info "MPI initialized with 2D decomposition" nprocs topology=topo
     end
 
@@ -161,7 +162,7 @@ function setup_mpi_environment(; topology=nothing, parallel_io=true)
     # Julia's GC may finalize MPI-dependent objects while MPI.Finalize is being called,
     # leading to heap corruption ("corrupted double-linked list" errors).
 
-    return MPIConfig(comm, rank, nprocs, is_root, topo, true, parallel_io)
+    return MPIConfig(comm, rank, nprocs, is_root, topo, true, parallel_io, verbose)
 end
 
 # Alias for backward compatibility
@@ -231,7 +232,7 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
         error("Grid dimension for dim=$(decomp_dims[2]) is smaller than process topology py=$py.")
     end
 
-    if mpi_config.is_root
+    if mpi_config.is_root && mpi_config.verbose
         @info "Topology validation passed" nx ny nz topology=topo decomp_dims=decomp_dims
     end
 
@@ -255,7 +256,7 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
     local_range_xz = range_local(pencil_xz)
     local_range_z = range_local(pencil_z)
 
-    if mpi_config.is_root
+    if mpi_config.is_root && mpi_config.verbose
         @info "Pencil decompositions created" xy_decomp=decomp_dims xz_decomp=(1, 3) z_decomp=decomp_dims
     end
 
@@ -469,7 +470,7 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
     return Grid{T, typeof(kh2_pencil)}(
         nx, ny, nz,
         params.Lx, params.Ly, params.Lz,
-        params.x0, params.y0,  # Domain origin (centered=true gives -Lx/2, -Ly/2)
+        params.x0, params.y0,
         dx, dy,
         z, dz,
         kx, ky,

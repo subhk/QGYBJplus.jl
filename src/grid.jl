@@ -11,8 +11,8 @@ This file defines the fundamental data structures for the QG-YBJ+ model:
 GRID STRUCTURE:
 ---------------
 The model uses a doubly-periodic horizontal domain with:
-- x ∈ [x0, x0+Lx) with nx points (default x0=0, use centered=true for x0=-Lx/2)
-- y ∈ [y0, y0+Ly) with ny points (default y0=0, use centered=true for y0=-Ly/2)
+- x ∈ [x0, x0+Lx) with nx points
+- y ∈ [y0, y0+Ly) with ny points
 - z ∈ [-Lz, 0] with nz staggered points (from -Lz+dz/2 to -dz/2)
 
 SPECTRAL REPRESENTATION:
@@ -84,7 +84,7 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 ## Grid Dimensions
 - `nx, ny, nz::Int`: Number of grid points in x, y, z directions
 - `Lx, Ly, Lz::T`: Domain size in x, y, z in meters (REQUIRED - no default)
-- `x0, y0::T`: Domain origin in x, y (0 = standard [0,Lx), -Lx/2 = centered [-Lx/2,Lx/2))
+- `x0, y0::T`: Domain origin in x and y
 - `dx, dy::T`: Grid spacing in x, y (computed as Lx/nx, Ly/ny)
 
 ## Vertical Grid
@@ -125,8 +125,8 @@ Base.@kwdef mutable struct Grid{T, AT}
     Lx::T                  # Domain size in x [m] (REQUIRED)
     Ly::T                  # Domain size in y [m] (REQUIRED)
     Lz::T                  # Domain size in z [m] (REQUIRED)
-    x0::T                  # Domain origin in x [m] (0 = standard, -Lx/2 = centered)
-    y0::T                  # Domain origin in y [m] (0 = standard, -Ly/2 = centered)
+    x0::T                  # Domain origin in x [m]
+    y0::T                  # Domain origin in y [m]
     dx::T                  # Grid spacing in x: dx = Lx/nx
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
@@ -216,7 +216,7 @@ function init_grid(par::QGParams)
     # No MPI decomposition by default (serial mode)
     decomp = nothing
 
-    # Domain origin (use centered=true in default_params for x0=-Lx/2, y0=-Ly/2)
+    # Domain origin
     x0 = par.x0
     y0 = par.y0
 

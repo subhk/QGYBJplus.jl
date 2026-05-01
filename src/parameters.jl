@@ -44,7 +44,7 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 # Domain Parameters
 - `nx, ny, nz`: Grid resolution in x, y, z directions
 - `Lx, Ly, Lz`: Domain size in x, y, z in meters (REQUIRED - no default)
-- `x0, y0`: Domain origin in x, y (default: 0, use -Lx/2,-Ly/2 for centered domain)
+- `x0, y0`: Domain origin in x and y (default: 0)
 
 # Time Stepping
 - `dt`: Time step size
@@ -108,8 +108,8 @@ Base.@kwdef mutable struct QGParams{T}
     Lx::T                      # Domain size in x [m] (REQUIRED)
     Ly::T                      # Domain size in y [m] (REQUIRED)
     Lz::T                      # Domain size in z [m] (REQUIRED)
-    x0::T                      # Domain origin in x [m] (default: 0, use -Lx/2 for centered)
-    y0::T                      # Domain origin in y [m] (default: 0, use -Ly/2 for centered)
+    x0::T                      # Domain origin in x [m]
+    y0::T                      # Domain origin in y [m]
 
     #= ====================================================================
                             TIME STEPPING
@@ -262,8 +262,7 @@ With f₀=1, N²=1 (constant_N stratification):
 **Domain and Time:**
 - `nx, ny, nz`: Grid resolution (default: 64)
 - `Lx, Ly, Lz`: Domain size in meters (REQUIRED - no default)
-- `centered`: If true, center domain at origin: x ∈ [-Lx/2, Lx/2) (default: false)
-- `x0, y0`: Domain origin (default: 0, or -Lx/2,-Ly/2 if centered=true)
+- `x0, y0`: Domain origin (default: 0)
 - `dt`: Time step (default: 0.001)
 - `nt`: Number of steps (default: 10000)
 
@@ -296,8 +295,8 @@ Note: Wave feedback is enabled only when BOTH `no_feedback=false` AND `no_wave_f
 # Basic dimensional setup - domain size is REQUIRED
 par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
 
-# Centered domain: x,y ∈ [-Lx/2, Lx/2) - useful for dipole simulations
-par = default_params(Lx=70e3, Ly=70e3, Lz=2000.0, centered=true)  # x,y ∈ [-35km, 35km)
+# Explicit origin for a domain x,y ∈ [-L/2, L/2)
+par = default_params(Lx=70e3, Ly=70e3, Lz=2000.0, x0=-35e3, y0=-35e3)
 
 # Custom resolution with steady flow
 par = default_params(nx=128, ny=128, nz=64, Lx=500e3, Ly=500e3, Lz=4000.0, fixed_flow=true)
@@ -318,9 +317,8 @@ See also: [`QGParams`](@ref)
 """
 function default_params(; nx=64, ny=64, nz=64,
                            Lx::Real, Ly::Real, Lz::Real,  # REQUIRED - no defaults
-                           x0::Union{Real,Nothing}=nothing,  # Domain origin in x (nothing = use centered flag)
-                           y0::Union{Real,Nothing}=nothing,  # Domain origin in y (nothing = use centered flag)
-                           centered::Bool=false,          # If true, center domain at origin: x ∈ [-Lx/2, Lx/2)
+                           x0::Union{Real,Nothing}=nothing,
+                           y0::Union{Real,Nothing}=nothing,
                            dt=1e-3, nt=10_000, f₀=1.0, N²=1.0,
                            W2F=nothing, γ=1e-3,  # W2F is deprecated
                            νₕ=0.0, νᵥ=0.0,
@@ -393,21 +391,17 @@ function default_params(; nx=64, ny=64, nz=64,
 
     T = Float64
 
-    # Compute domain origin from centered flag if not explicitly provided
+    # Domain origin. Use explicit x0/y0 to shift the periodic box.
     x0_val = if x0 !== nothing
         T(x0)
-    elseif centered
-        T(-Lx/2)  # Center at origin: x ∈ [-Lx/2, Lx/2)
     else
-        T(0)      # Standard: x ∈ [0, Lx)
+        T(0)
     end
 
     y0_val = if y0 !== nothing
         T(y0)
-    elseif centered
-        T(-Ly/2)  # Center at origin: y ∈ [-Ly/2, Ly/2)
     else
-        T(0)      # Standard: y ∈ [0, Ly)
+        T(0)
     end
 
     #= Dimensional parameters f₀ and N²:
