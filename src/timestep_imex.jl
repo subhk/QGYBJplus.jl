@@ -990,20 +990,13 @@ function imex_cn_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans, im
     imex_ws.has_prev_tendency[] = true
 
     #= Step 6: Wave feedback on mean flow =#
+    # q* = q - qʷ is only the diagnostic RHS for ψ inversion. Keep q itself as
+    # the prognostic balanced-flow PV, as in the QG-YBJp Fortran integrator.
     if wave_feedback_enabled
-        # Reuse qtemp from workspace to avoid allocation every timestep
-        # (allocation inside tight loops causes heap corruption in MPI)
-        qwk = imex_ws.qtemp
-        qwk_arr = parent(qwk)
-        compute_qw_complex!(qwk, Snp1.L⁺A, par, G, plans; Lmask=L)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, Snp1.q)
-            j_global = local_to_global(j, 3, Snp1.q)
-            if L[i_global, j_global]
-                qnp1_arr[k, i, j] -= qwk_arr[k, i, j]
-            end
-        end
+        qbase = replace_q_with_wave_feedback_rhs!(Snp1, G, par, plans, L)
+        invert_q_to_psi!(Snp1, G; a=a, par=par, workspace=workspace)
+        restore_prognostic_q!(Snp1, qbase)
+        psi_pred_valid = true
     end
 
     #= Step 7: Update diagnostics for new state =#

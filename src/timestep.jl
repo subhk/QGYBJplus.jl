@@ -91,9 +91,8 @@ function split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, L⁺A)
     L⁺A_arr = parent(L⁺A)
     L⁺ARk_arr = parent(L⁺ARk)
     L⁺AIk_arr = parent(L⁺AIk)
-    nz_local, nx_local, ny_local = size(L⁺A_arr)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    @local_spectral_loop L⁺A begin
         L⁺ARk_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
         L⁺AIk_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
     end
@@ -117,13 +116,50 @@ function combine_real_imag_to_L⁺A!(L⁺A, L⁺ARk, L⁺AIk)
     L⁺A_arr = parent(L⁺A)
     L⁺ARk_arr = parent(L⁺ARk)
     L⁺AIk_arr = parent(L⁺AIk)
-    nz_local, nx_local, ny_local = size(L⁺A_arr)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    @local_spectral_loop L⁺A begin
         L⁺A_arr[k, i, j] = Complex(real(L⁺ARk_arr[k, i, j]), 0) + im*Complex(real(L⁺AIk_arr[k, i, j]), 0)
     end
     return L⁺A
 end
+
+"""
+    replace_q_with_wave_feedback_rhs!(S, G, par, plans, L; L⁺ARk=nothing, L⁺AIk=nothing)
+
+Temporarily replace `S.q` by the inversion right-hand side `q* = q - qʷ`.
+
+The prognostic PV remains the balanced-flow `q`. This helper returns a copy of
+that prognostic `q`; callers must restore it after `invert_q_to_psi!`.
+"""
+function replace_q_with_wave_feedback_rhs!(S::State, G::Grid, par::QGParams, plans, L;
+                                           L⁺ARk=nothing, L⁺AIk=nothing)
+    q_base = copy(S.q)
+    q_base_arr = parent(q_base)
+    q_arr = parent(S.q)
+    qwk = similar(S.q)
+    qwk_arr = parent(qwk)
+
+    if par.ybj_plus
+        compute_qw_complex!(qwk, S.L⁺A, par, G, plans; Lmask=L)
+    else
+        if L⁺ARk === nothing || L⁺AIk === nothing
+            L⁺ARk = similar(S.L⁺A)
+            L⁺AIk = similar(S.L⁺A)
+        end
+        split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, S.L⁺A)
+        compute_qw!(qwk, L⁺ARk, L⁺AIk, par, G, plans; Lmask=L)
+    end
+
+    @dealiased_spectral_loop S.q L begin
+        q_arr[k, i, j] = q_base_arr[k, i, j] - qwk_arr[k, i, j]
+    end begin
+        q_arr[k, i, j] = 0
+    end
+
+    return q_base
+end
+
+restore_prognostic_q!(S::State, q_base) = (parent(S.q) .= parent(q_base); S)
 
 #=
 ================================================================================
@@ -209,11 +245,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     #= Setup - get local dimensions for PencilArray compatibility =#
     q_arr = parent(S.q)
     L⁺A_arr = parent(S.L⁺A)
-    psi_arr = parent(S.psi)
     A_arr = parent(S.A)
     C_arr = parent(S.C)
 
-    nz_local, nx_local, ny_local = size(q_arr)
     nz = G.nz
 
     # Note: In xy-pencil format, z is fully local (nz_local = nz).
@@ -243,12 +277,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
 
         # Split B into real and imaginary parts for computation
         L⁺ARk = similar(S.L⁺A); L⁺AIk = similar(S.L⁺A)
-        L⁺ARk_arr = parent(L⁺ARk); L⁺AIk_arr = parent(L⁺AIk)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            L⁺ARk_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
-            L⁺AIk_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
-        end
+        split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, S.L⁺A)
     end
 
     #= Step 1: Compute diagnostic fields ψ, velocities, and A =#
@@ -333,11 +362,7 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     else
         L⁺ARok = similar(S.L⁺A); L⁺AIok = similar(S.L⁺A)
         L⁺ARok_arr = parent(L⁺ARok); L⁺AIok_arr = parent(L⁺AIok)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            L⁺ARok_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
-            L⁺AIok_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
-        end
+        split_L⁺A_to_real_imag!(L⁺ARok, L⁺AIok, S.L⁺A)
     end
 
     #= Step 4: Forward Euler with integrating factors =#
@@ -362,89 +387,60 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     αdisp_const = par.f₀ / 2.0
     fill!(αdisp_profile, αdisp_const)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, S.q)
-        j_global = local_to_global(j, 3, S.q)
+    @dealiased_wavenumber_loop S.q G L begin
+        # Integrating factors for hyperdiffusion
+        λₑ = int_factor(kₓ, kᵧ, par; waves=false)   # For mean flow
+        λʷ = int_factor(kₓ, kᵧ, par; waves=true)    # For waves
 
-        if L[i_global, j_global]
-            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-            # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-            kₕ² = kₓ^2 + kᵧ^2
-
-            # Integrating factors for hyperdiffusion
-            λₑ = int_factor(kₓ, kᵧ, par; waves=false)   # For mean flow
-            λʷ = int_factor(kₓ, kᵧ, par; waves=true)    # For waves
-
-            #= Update q (QGPV) =#
-            if par.fixed_flow
-                # Keep q unchanged when mean flow is fixed
-                q_arr[k, i, j] = qok_arr[k, i, j]
-            else
-                # q^(n+1) = [q^n - dt×J(ψ,q) + dt×diffusion] × exp(-λ×dt)
-                q_arr[k, i, j] = ( qok_arr[k, i, j] - par.dt*nqk_arr[k, i, j] + par.dt*dqk_arr[k, i, j] ) * exp(-λₑ)
-            end
-
-            if par.ybj_plus
-                #= Update B (wave envelope) - YBJ+ equation (1.4) from Asselin & Young (2019)
-                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
-                k_global = local_to_global(k, 1, S.q)
-                αdisp = αdisp_profile[k_global]
-                L⁺A_arr[k, i, j] = ( L⁺Aok_arr[k, i, j] - par.dt*nL⁺Ak_arr[k, i, j]
-                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rL⁺Ak_arr[k, i, j]) ) * exp(-λʷ)
-            else
-                #= Update B (wave envelope) - Normal YBJ (PDF Eq. 45-46)
-                In terms of real/imaginary parts (with αdisp = f/2):
-                    ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
-                    ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
-                k_global = local_to_global(k, 1, S.q)
-                αdisp = αdisp_profile[k_global]
-                L⁺ARnew = ( L⁺ARok_arr[k, i, j] - par.dt*nL⁺ARk_arr[k, i, j]
-                          - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
-                          + par.dt*0.5*rL⁺AIk_arr[k, i, j] ) * exp(-λʷ)
-                L⁺AInew = ( L⁺AIok_arr[k, i, j] - par.dt*nL⁺AIk_arr[k, i, j]
-                          + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
-                          - par.dt*0.5*rL⁺ARk_arr[k, i, j] ) * exp(-λʷ)
-
-                # Recombine into complex B
-                L⁺A_arr[k, i, j] = Complex(real(L⁺ARnew), 0) + im*Complex(real(L⁺AInew), 0)
-            end
+        #= Update q (QGPV) =#
+        if par.fixed_flow
+            # Keep q unchanged when mean flow is fixed
+            q_arr[k, i, j] = qok_arr[k, i, j]
         else
-            # Zero out dealiased modes
-            q_arr[k, i, j] = 0
-            L⁺A_arr[k, i, j] = 0
+            # q^(n+1) = [q^n - dt×J(ψ,q) + dt×diffusion] × exp(-λ×dt)
+            q_arr[k, i, j] = ( qok_arr[k, i, j] - par.dt*nqk_arr[k, i, j] + par.dt*dqk_arr[k, i, j] ) * exp(-λₑ)
         end
+
+        if par.ybj_plus
+            #= Update B (wave envelope) - YBJ+ equation (1.4) from Asselin & Young (2019)
+            ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
+            k_global = local_to_global(k, 1, S.q)
+            αdisp = αdisp_profile[k_global]
+            L⁺A_arr[k, i, j] = ( L⁺Aok_arr[k, i, j] - par.dt*nL⁺Ak_arr[k, i, j]
+                               + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rL⁺Ak_arr[k, i, j]) ) * exp(-λʷ)
+        else
+            #= Update B (wave envelope) - Normal YBJ (PDF Eq. 45-46)
+            In terms of real/imaginary parts (with αdisp = f/2):
+                ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI + (1/2)ζ·BI
+                ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR - (1/2)ζ·BR =#
+            k_global = local_to_global(k, 1, S.q)
+            αdisp = αdisp_profile[k_global]
+            L⁺ARnew = ( L⁺ARok_arr[k, i, j] - par.dt*nL⁺ARk_arr[k, i, j]
+                      - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
+                      + par.dt*0.5*rL⁺AIk_arr[k, i, j] ) * exp(-λʷ)
+            L⁺AInew = ( L⁺AIok_arr[k, i, j] - par.dt*nL⁺AIk_arr[k, i, j]
+                      + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
+                      - par.dt*0.5*rL⁺ARk_arr[k, i, j] ) * exp(-λʷ)
+
+            # Recombine into complex B
+            L⁺A_arr[k, i, j] = Complex(real(L⁺ARnew), 0) + im*Complex(real(L⁺AInew), 0)
+        end
+    end begin
+        # Zero out dealiased modes
+        q_arr[k, i, j] = 0
+        L⁺A_arr[k, i, j] = 0
     end
 
     #= Step 5: Wave feedback on mean flow =#
-    # q* = q - qʷ where qʷ is the wave feedback term
+    # q* = q - qʷ is only the diagnostic RHS for ψ inversion. The prognostic
+    # q field remains the balanced-flow PV, matching the QG-YBJp stepping.
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
+    q_base = nothing
     if wave_feedback_enabled
-        qwk = similar(S.q)
-        qwk_arr = parent(qwk)
-
-        if par.ybj_plus
-            compute_qw_complex!(qwk, S.L⁺A, par, G, plans; Lmask=L)
+        q_base = if par.ybj_plus
+            replace_q_with_wave_feedback_rhs!(S, G, par, plans, L)
         else
-            # Rebuild BR/BI from updated B
-            @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                L⁺ARk_arr[k, i, j] = Complex(real(L⁺A_arr[k, i, j]), 0)
-                L⁺AIk_arr[k, i, j] = Complex(imag(L⁺A_arr[k, i, j]), 0)
-            end
-
-            # Compute qʷ from B
-            compute_qw!(qwk, L⁺ARk, L⁺AIk, par, G, plans; Lmask=L)
-        end
-
-        # Subtract from q
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, S.q)
-            j_global = local_to_global(j, 3, S.q)
-            if L[i_global, j_global]
-                q_arr[k, i, j] -= qwk_arr[k, i, j]
-            else
-                q_arr[k, i, j] = 0
-            end
+            replace_q_with_wave_feedback_rhs!(S, G, par, plans, L; L⁺ARk, L⁺AIk)
         end
     end
 
@@ -453,6 +449,9 @@ function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, deal
     # Invert q → ψ (only if mean flow evolves)
     if !par.fixed_flow
         invert_q_to_psi!(S, G; a, par=par, workspace=workspace)
+        if q_base !== nothing
+            restore_prognostic_q!(S, q_base)
+        end
     end
 
     # Recover A from B
@@ -593,7 +592,6 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     qnp1_arr = parent(Snp1.q)
     L⁺Anp1_arr = parent(Snp1.L⁺A)
 
-    nz_local, nx_local, ny_local = size(qn_arr)
     nz = G.nz
 
     # Note: In xy-pencil format, z is fully local (nz_local = nz).
@@ -629,22 +627,15 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
 
         # Split L⁺A into real/imaginary
         L⁺ARk = similar(Sn.L⁺A); L⁺AIk = similar(Sn.L⁺A)
-        L⁺ARk_arr = parent(L⁺ARk); L⁺AIk_arr = parent(L⁺AIk)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            L⁺ARk_arr[k, i, j] = Complex(real(L⁺An_arr[k, i, j]), 0)
-            L⁺AIk_arr[k, i, j] = Complex(imag(L⁺An_arr[k, i, j]), 0)
-        end
+        split_L⁺A_to_real_imag!(L⁺ARk, L⁺AIk, Sn.L⁺A)
 
         # Compute tendencies
         convol_waqg!(nqk, nL⁺ARk, nL⁺AIk, Sn.u, Sn.v, Sn.q, L⁺ARk, L⁺AIk, G, plans; Lmask=L)
         refraction_waqg!(rL⁺ARk, rL⁺AIk, L⁺ARk, L⁺AIk, Sn.psi, G, plans; Lmask=L)
     end
 
-    # Vertical diffusion at time n (NOT n-1!)
-    # Previous code used Snm1.q which lagged the operator and broke second-order accuracy.
-    # All tendencies should be evaluated at time n and multiplied by exp(-λdt).
-    dissipation_q_nv!(dqk, Sn.q, par, G; workspace=workspace)
+    # Vertical diffusion is lagged at time n-1, following QG-YBJp.
+    dissipation_q_nv!(dqk, Snm1.q, par, G; workspace=workspace)
 
     #= Step 3: Apply physics switches =#
     if par.inviscid; dqk .= 0; end
@@ -696,60 +687,52 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     αdisp_const = par.f₀ / 2.0
     fill!(αdisp_profile, αdisp_const)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
+    @dealiased_wavenumber_loop Sn.q G L begin
+        λₑ  = int_factor(kₓ, kᵧ, par; waves=false)
+        λʷ = int_factor(kₓ, kᵧ, par; waves=true)
 
-        if L[i_global, j_global]
-            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-            # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-            kₕ² = kₓ^2 + kᵧ^2
-            λₑ  = int_factor(kₓ, kᵧ, par; waves=false)
-            λʷ = int_factor(kₓ, kᵧ, par; waves=true)
-
-            #= Update q
-            q^(n+1) = q^(n-1)×e^(-2λdt) + 2dt×[-J(ψ,q)^n + diff^n]×e^(-λdt)
-            All tendencies (advection, diffusion) evaluated at time n, scaled by e^(-λdt).
-            Previous code incorrectly used diff at n-1 with e^(-2λdt), breaking second-order accuracy. =#
-            if par.fixed_flow
-                qtemp_arr[k, i, j] = qn_arr[k, i, j]  # Keep unchanged
-            else
-                qtemp_arr[k, i, j] = qnm1_arr[k, i, j]*exp(-2λₑ) +
-                               2*par.dt*(-nqk_arr[k, i, j] + dqk_arr[k, i, j])*exp(-λₑ)
-            end
-
-            if par.ybj_plus
-                #= Update B (complex) - YBJ+ equation (1.4) from Asselin & Young (2019)
-                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
-                k_global = local_to_global(k, 1, Sn.q)
-                αdisp = αdisp_profile[k_global]
-                L⁺Atemp_arr[k, i, j] = L⁺Anm1_arr[k, i, j]*exp(-2λʷ) +
-                               2*par.dt*( -nL⁺Ak_arr[k, i, j] +
-                                          im*αdisp*kₕ²*An_arr[k, i, j] -
-                                          0.5im*rL⁺Ak_arr[k, i, j] )*exp(-λʷ)
-            else
-                #= Update B (real and imaginary parts) - PDF Eq. 45-46
-                BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
-                BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
-                k_global = local_to_global(k, 1, Sn.q)
-                αdisp = αdisp_profile[k_global]
-                L⁺ARtemp_arr[k, i, j] = Complex(real(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nL⁺ARk_arr[k, i, j] +
-                                          αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) -
-                                          0.5*rL⁺AIk_arr[k, i, j] )*exp(-λʷ)
-                L⁺AItemp_arr[k, i, j] = Complex(imag(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nL⁺AIk_arr[k, i, j] -
-                                          αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) +
-                                          0.5*rL⁺ARk_arr[k, i, j] )*exp(-λʷ)
-            end
+        #= Update q
+        q^(n+1) = q^(n-1)×e^(-2λdt) - 2dt×J(ψ,q)^n×e^(-λdt)
+                   + 2dt×diff^(n-1)×e^(-2λdt). =#
+        if par.fixed_flow
+            qtemp_arr[k, i, j] = qn_arr[k, i, j]  # Keep unchanged
         else
-            qtemp_arr[k, i, j] = 0
-            if par.ybj_plus
-                L⁺Atemp_arr[k, i, j] = 0
-            else
-                L⁺ARtemp_arr[k, i, j] = 0; L⁺AItemp_arr[k, i, j] = 0
-            end
+            qtemp_arr[k, i, j] = qnm1_arr[k, i, j]*exp(-2λₑ) +
+                           2*par.dt*(-nqk_arr[k, i, j])*exp(-λₑ) +
+                           2*par.dt*dqk_arr[k, i, j]*exp(-2λₑ)
+        end
+
+        if par.ybj_plus
+            #= Update B (complex) - YBJ+ equation (1.4) from Asselin & Young (2019)
+            ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
+            k_global = local_to_global(k, 1, Sn.q)
+            αdisp = αdisp_profile[k_global]
+            L⁺Atemp_arr[k, i, j] = L⁺Anm1_arr[k, i, j]*exp(-2λʷ) +
+                           2*par.dt*( -nL⁺Ak_arr[k, i, j] +
+                                      im*αdisp*kₕ²*An_arr[k, i, j] -
+                                      0.5im*rL⁺Ak_arr[k, i, j] )*exp(-λʷ)
+        else
+            #= Update B (real and imaginary parts) - PDF Eq. 45-46
+            BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI - (1/2)ζ·BI]×e^(-λdt)
+            BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR + (1/2)ζ·BR]×e^(-λdt) =#
+            k_global = local_to_global(k, 1, Sn.q)
+            αdisp = αdisp_profile[k_global]
+            L⁺ARtemp_arr[k, i, j] = Complex(real(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                           2*par.dt*( nL⁺ARk_arr[k, i, j] +
+                                      αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) -
+                                      0.5*rL⁺AIk_arr[k, i, j] )*exp(-λʷ)
+            L⁺AItemp_arr[k, i, j] = Complex(imag(L⁺Anm1_arr[k, i, j]),0)*exp(-2λʷ) -
+                           2*par.dt*( nL⁺AIk_arr[k, i, j] -
+                                      αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) +
+                                      0.5*rL⁺ARk_arr[k, i, j] )*exp(-λʷ)
+        end
+    end begin
+        qtemp_arr[k, i, j] = 0
+        if par.ybj_plus
+            L⁺Atemp_arr[k, i, j] = 0
+        else
+            L⁺ARtemp_arr[k, i, j] = 0
+            L⁺AItemp_arr[k, i, j] = 0
         end
     end
 
@@ -761,29 +744,24 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     Previous code stored in Snm1, but after rotation the old unfiltered Sn became the
     new Snm1, effectively leaving leapfrog unfiltered. =#
     γ = par.γ
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for dealias mask lookup
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
+    @dealiased_spectral_loop Sn.q L begin
+        # Filter q - store in Sn so it becomes new Snm1 after rotation
+        qn_arr[k, i, j] = qn_arr[k, i, j] + γ*( qnm1_arr[k, i, j] - 2qn_arr[k, i, j] + qtemp_arr[k, i, j] )
 
-        if L[i_global, j_global]
-            # Filter q - store in Sn so it becomes new Snm1 after rotation
-            qn_arr[k, i, j] = qn_arr[k, i, j] + γ*( qnm1_arr[k, i, j] - 2qn_arr[k, i, j] + qtemp_arr[k, i, j] )
-
-            # Filter B - store in Sn so it becomes new Snm1 after rotation
-            if par.ybj_plus
-                L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Atemp_arr[k, i, j] )
-            else
-                L⁺Anp1_local = Complex(real(L⁺ARtemp_arr[k, i, j]),0) + im*Complex(real(L⁺AItemp_arr[k, i, j]),0)
-                L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Anp1_local )
-            end
+        # Filter B - store in Sn so it becomes new Snm1 after rotation
+        if par.ybj_plus
+            L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Atemp_arr[k, i, j] )
         else
-            qn_arr[k, i, j] = 0; L⁺An_arr[k, i, j] = 0
+            L⁺Anp1_local = Complex(real(L⁺ARtemp_arr[k, i, j]),0) + im*Complex(real(L⁺AItemp_arr[k, i, j]),0)
+            L⁺An_arr[k, i, j] = L⁺An_arr[k, i, j] + γ*( L⁺Anm1_arr[k, i, j] - 2L⁺An_arr[k, i, j] + L⁺Anp1_local )
         end
+    end begin
+        qn_arr[k, i, j] = 0
+        L⁺An_arr[k, i, j] = 0
     end
 
     #= Step 6: Accept the new solution =#
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    @local_spectral_loop Snp1.q begin
         qnp1_arr[k, i, j] = qtemp_arr[k, i, j]
         if par.ybj_plus
             L⁺Anp1_arr[k, i, j] = L⁺Atemp_arr[k, i, j]
@@ -793,34 +771,12 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     end
 
     #= Step 7: Wave feedback on mean flow =#
+    # q* = q - qʷ is only the diagnostic RHS for ψ inversion. The prognostic
+    # q field remains the balanced-flow PV, matching the QG-YBJp stepping.
     wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
+    qnp1_base = nothing
     if wave_feedback_enabled
-        qwk = similar(Snp1.q)
-        qwk_arr = parent(qwk)
-
-        if par.ybj_plus
-            compute_qw_complex!(qwk, Snp1.L⁺A, par, G, plans; Lmask=L)
-        else
-            # Rebuild BR/BI from updated B
-            L⁺ARk2 = similar(Snp1.L⁺A); L⁺AIk2 = similar(Snp1.L⁺A)
-            L⁺ARk2_arr = parent(L⁺ARk2); L⁺AIk2_arr = parent(L⁺AIk2)
-            @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                L⁺ARk2_arr[k, i, j] = Complex(real(L⁺Anp1_arr[k, i, j]),0)
-                L⁺AIk2_arr[k, i, j] = Complex(imag(L⁺Anp1_arr[k, i, j]),0)
-            end
-
-            compute_qw!(qwk, L⁺ARk2, L⁺AIk2, par, G, plans; Lmask=L)
-        end
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, Snp1.q)
-            j_global = local_to_global(j, 3, Snp1.q)
-            if L[i_global, j_global]
-                qnp1_arr[k, i, j] -= qwk_arr[k, i, j]
-            else
-                qnp1_arr[k, i, j] = 0
-            end
-        end
+        qnp1_base = replace_q_with_wave_feedback_rhs!(Snp1, G, par, plans, L)
     end
 
     #= Step 8: Update diagnostics for new state =#
@@ -828,6 +784,9 @@ function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
     # Invert q → ψ (handles 2D decomposition transposes internally)
     if !par.fixed_flow
         invert_q_to_psi!(Snp1, G; a, par=par, workspace=workspace)
+        if qnp1_base !== nothing
+            restore_prognostic_q!(Snp1, qnp1_base)
+        end
     end
 
     # Recover A from B

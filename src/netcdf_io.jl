@@ -31,6 +31,50 @@ end
     return permutedims(arr, (3, 1, 2))
 end
 
+@inline _horizontal_units(G::Grid) = G.Lx ≈ 2π && G.Ly ≈ 2π ? "radians" : "m"
+@inline _vertical_units(G::Grid) = G.Lz ≈ 2π ? "nondimensional" : "m"
+@inline _time_units() = "s"
+
+function _annotate_coordinates!(x_var, y_var, z_var, time_var, G::Grid)
+    x_var.attrib["units"] = _horizontal_units(G)
+    x_var.attrib["long_name"] = "x coordinate"
+    x_var.attrib["axis"] = "X"
+    y_var.attrib["units"] = _horizontal_units(G)
+    y_var.attrib["long_name"] = "y coordinate"
+    y_var.attrib["axis"] = "Y"
+    z_var.attrib["units"] = _vertical_units(G)
+    z_var.attrib["long_name"] = "vertical coordinate"
+    z_var.attrib["positive"] = "up"
+    z_var.attrib["description"] = "Cell-center z coordinate; z=0 is the surface and negative z is below the surface."
+    z_var.attrib["axis"] = "Z"
+    time_var.attrib["units"] = _time_units()
+    time_var.attrib["long_name"] = "simulation time"
+    time_var.attrib["description"] = "Elapsed seconds since the start of the simulation."
+    time_var.attrib["axis"] = "T"
+end
+
+function _annotate_state_file!(ds, title::String, G::Grid, time, params)
+    ds.attrib["title"] = title
+    ds.attrib["Conventions"] = "CF-1.8"
+    ds.attrib["source"] = "QGYBJplus.jl"
+    ds.attrib["equation_form"] = "dimensional"
+    ds.attrib["field_layout"] = "Variables are stored as (x, y, z); internal spectral arrays use (z, x, y)."
+    ds.attrib["vertical_coordinate"] = "z is cell-centered, with z=0 at the surface and negative values below the surface."
+    ds.attrib["created_at"] = string(now())
+    ds.attrib["model_time"] = time
+
+    if params !== nothing
+        ds.attrib["nx"] = params.nx
+        ds.attrib["ny"] = params.ny
+        ds.attrib["nz"] = params.nz
+        ds.attrib["Lx"] = params.Lx
+        ds.attrib["Ly"] = params.Ly
+        ds.attrib["Lz"] = params.Lz
+        ds.attrib["f0"] = params.f₀
+        ds.attrib["dt"] = params.dt
+    end
+end
+
 """
     OutputManager
 
@@ -40,7 +84,7 @@ mutable struct OutputManager{T}
     output_dir::String
     state_file_pattern::String
     
-    # Output intervals (in model time units)
+    # Output intervals (in seconds since simulation start)
     psi_interval::T
     wave_interval::T
     diagnostics_interval::T
@@ -277,15 +321,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
-        # Add coordinate attributes (units depend on whether dimensional or not)
-        x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
-        x_var.attrib["long_name"] = "x coordinate"
-        y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
-        y_var.attrib["long_name"] = "y coordinate"
-        z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "z coordinate (vertical)"
-        time_var.attrib["units"] = "model time units"
-        time_var.attrib["long_name"] = "time"
+        _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
 
         # Stream function
         # Note: psir is already normalized by fft_backward!, no additional division needed
@@ -294,7 +330,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             psir_arr = parent(psir)
             psi_var[:,:,:] = _to_xyz(real.(psir_arr))
             psi_var.attrib["units"] = "m²/s"
-            psi_var.attrib["long_name"] = "stream function"
+            psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
+            psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
         end
 
         # Wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
@@ -309,8 +346,10 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
 
             LAr_var.attrib["units"] = "m/s"
             LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
+            LAr_var.attrib["description"] = "Real part of LA, where u₀ + i v₀ = exp(-i f t) LA."
             LAi_var.attrib["units"] = "m/s"
             LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
+            LAi_var.attrib["description"] = "Imaginary part of LA, where u₀ + i v₀ = exp(-i f t) LA."
         end
         
         # Horizontal velocities (if requested)
@@ -364,20 +403,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             end
         end
 
-        # Global attributes
-        ds.attrib["title"] = "QG-YBJ Model State"
-        ds.attrib["created_at"] = string(now())
-        ds.attrib["model_time"] = time
+        _annotate_state_file!(ds, "QG-YBJ Model State", G, time, params)
         ds.attrib["file_counter"] = manager.psi_counter
-
-        # Add parameter information if provided
-        if !isnothing(params)
-            ds.attrib["nx"] = params.nx
-            ds.attrib["ny"] = params.ny
-            ds.attrib["nz"] = params.nz
-            ds.attrib["f0"] = params.f₀
-            ds.attrib["dt"] = params.dt
-        end
         
         # Add run information
         for (key, value) in manager.run_info
@@ -655,22 +682,15 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
-        # Add coordinate attributes (units depend on whether dimensional or not)
-        x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
-        x_var.attrib["long_name"] = "x coordinate"
-        y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
-        y_var.attrib["long_name"] = "y coordinate"
-        z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "z coordinate (vertical)"
-        time_var.attrib["units"] = "model time units"
-        time_var.attrib["long_name"] = "time"
+        _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
 
         # Write streamfunction (already normalized by fft_backward!)
         if write_psi && gathered_psi !== nothing
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
             psi_var.attrib["units"] = "m²/s"
-            psi_var.attrib["long_name"] = "stream function"
+            psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
+            psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
         end
 
         # Write wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
@@ -684,8 +704,10 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
             LAr_var.attrib["units"] = "m/s"
             LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
+            LAr_var.attrib["description"] = "Real part of LA, where u₀ + i v₀ = exp(-i f t) LA."
             LAi_var.attrib["units"] = "m/s"
             LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
+            LAi_var.attrib["description"] = "Imaginary part of LA, where u₀ + i v₀ = exp(-i f t) LA."
         end
 
         if write_velocities && gathered_u !== nothing && gathered_v !== nothing
@@ -733,19 +755,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             end
         end
 
-        # Global attributes
-        ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
-        ds.attrib["created_at"] = string(now())
-        ds.attrib["model_time"] = time
-
-        # Add parameter information if provided
-        if params !== nothing
-            ds.attrib["nx"] = params.nx
-            ds.attrib["ny"] = params.ny
-            ds.attrib["nz"] = params.nz
-            ds.attrib["f0"] = params.f₀
-            ds.attrib["dt"] = params.dt
-        end
+        _annotate_state_file!(ds, "QG-YBJ Model State (Gathered)", G, time, params)
     end
     # Note: Log message is handled by the calling function (write_parallel_state_file)
 end
@@ -764,7 +774,7 @@ function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time:
         
         time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
         time_var[1] = time
-        time_var.attrib["units"] = "model time units"
+        time_var.attrib["units"] = "s"
         
         # Write diagnostic quantities
         for (name, value) in diagnostics
@@ -779,6 +789,9 @@ function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time:
         end
         
         ds.attrib["title"] = "QG-YBJ Model Diagnostics"
+        ds.attrib["Conventions"] = "CF-1.8"
+        ds.attrib["source"] = "QGYBJplus.jl"
+        ds.attrib["equation_form"] = "dimensional"
         ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
     end
@@ -792,7 +805,7 @@ end
 """
     read_initial_psi(filename::String, G::Grid, plans; parallel_config=nothing)
 
-Read initial stream function from NetCDF file.
+Read initial quasi-geostrophic streamfunction from NetCDF file.
 Supports both serial and parallel (2D decomposition) modes.
 
 In parallel mode:
@@ -1174,10 +1187,10 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
         x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        time_var.attrib["units"] = "model time units"
+        time_var.attrib["units"] = "s"
 
         psi_var.attrib["units"] = "m²/s"
-        psi_var.attrib["long_name"] = "stream function"
+        psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
         LAr_var.attrib["units"] = "m/s"
         LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
         LAi_var.attrib["units"] = "m/s"
@@ -1201,7 +1214,7 @@ end
 """
     ncdump_psi(S, G, plans; path="psi.out.nc")
 
-Legacy compatibility wrapper for writing stream function to NetCDF.
+Legacy compatibility wrapper for writing quasi-geostrophic streamfunction to NetCDF.
 Directly writes psi field without using OutputManager.
 """
 function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
@@ -1236,13 +1249,13 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         y_var.attrib["long_name"] = "y coordinate"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "z coordinate (vertical)"
+        z_var.attrib["long_name"] = "vertical coordinate"
 
         # Write psi (already normalized by fft_backward!)
         psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
         psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
         psi_var.attrib["units"] = "m²/s"
-        psi_var.attrib["long_name"] = "stream function"
+        psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
 
         ds.attrib["title"] = "QG-YBJ Stream Function"
         ds.attrib["created_at"] = string(now())
@@ -1303,7 +1316,7 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         y_var.attrib["long_name"] = "y coordinate"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "z coordinate (vertical)"
+        z_var.attrib["long_name"] = "vertical coordinate"
 
         # Write wave velocity envelope LA real and imaginary parts
         LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
@@ -1327,7 +1340,7 @@ end
 """
     ncread_psi!(S, G, plans; path="psi000.in.nc", parallel_config=nothing)
 
-Legacy compatibility wrapper for reading stream function from NetCDF.
+Legacy compatibility wrapper for reading quasi-geostrophic streamfunction from NetCDF.
 Uses the enhanced I/O system internally.
 Supports both serial and parallel (2D decomposition) modes.
 """

@@ -28,7 +28,7 @@ dipole = (x, y, z) -> begin
     y_rot = (x + y) / sqrt(2)
     (U / κ) * sin(κ * x_rot) * cos(κ * y_rot)
 end
-set_mean_flow!(sim; psi_func=dipole)
+set_mean_flow!(sim; psi_func=dipole, pv_method=:barotropic)
 set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)
 
 # Run simulation
@@ -226,8 +226,8 @@ end
 =#
 
 """
-    set_mean_flow!(sim::Simulation; psi_func, method=:function, amplitude=1.0,
-                   spectral_slope=-3.0, seed=0)
+    set_mean_flow!(sim::Simulation; psi_func, method=:function, pv_method=:qg,
+                   amplitude=1.0, spectral_slope=-3.0, seed=0)
 
 Set up the balanced mean flow from an analytical streamfunction or random noise.
 
@@ -238,10 +238,14 @@ slab before the FFT.
 
 For `method=:random`, a deterministic MPI-safe random spectrum is generated.
 
+Use `pv_method=:barotropic` for the simple Asselin et al. (2020) initialization
+`q̂ = -kₕ² ψ̂`. Use `pv_method=:qg` for full QG PV, including vertical stretching.
+
 # Arguments
 - `sim`: Simulation object
 - `psi_func`: Function returning ψ(x, y, z) when `method=:function`
 - `method`: `:function` or `:random` (alias `:analytical` for `:function`)
+- `pv_method`: `:qg` for full QG PV or `:barotropic` for `q̂ = -kₕ² ψ̂`
 - `amplitude`: Random-field amplitude (used for `:random`)
 - `spectral_slope`: Spectral slope for random field (default: -3)
 - `seed`: Random seed (default: 0)
@@ -255,13 +259,14 @@ dipole = (x, y, z) -> begin
     y_rot = (x + y) / sqrt(2)
     (U / κ) * sin(κ * x_rot) * cos(κ * y_rot)
 end
-set_mean_flow!(sim; psi_func=dipole)
+set_mean_flow!(sim; psi_func=dipole, pv_method=:barotropic)
 set_mean_flow!(sim; method=:random, amplitude=0.1, spectral_slope=-3.0, seed=42)
 ```
 """
 function set_mean_flow!(sim::Simulation;
     psi_func = nothing,
     method::Symbol = :function,
+    pv_method::Symbol = :qg,
     amplitude::Real = 1.0,
     spectral_slope::Real = -3.0,
     seed::Int = 0)
@@ -306,7 +311,18 @@ function set_mean_flow!(sim::Simulation;
         throw(ArgumentError("Unknown method=$method. Use :function or :random."))
     end
 
-    add_balanced_component!(S, G, sim.params, sim.plans; N2_profile=sim.N2_profile)
+    if pv_method == :qg || pv_method == :balanced
+        add_balanced_component!(S, G, sim.params, sim.plans; N2_profile=sim.N2_profile)
+    elseif pv_method == :barotropic || pv_method == :asselin
+        if sim.mpi_config.is_root
+            println("Setting barotropic PV from streamfunction: q̂ = -kₕ² ψ̂")
+        end
+        compute_barotropic_q_from_psi!(S.q, S.psi, G)
+    elseif pv_method == :none
+        nothing
+    else
+        throw(ArgumentError("Unknown pv_method=$pv_method. Use :qg, :barotropic, or :none."))
+    end
 
     return sim
 end
@@ -356,7 +372,7 @@ function set_surface_waves!(sim::Simulation;
     # Allocate physical-space array
     L⁺A_phys = allocate_fft_backward_dst(S.L⁺A, plans)
     L⁺A_arr = parent(L⁺A_phys)
-    T = eltype(L⁺A_arr)
+    T = typeof(real(zero(eltype(L⁺A_arr))))
 
     dz = G.Lz / G.nz
     for k_local in axes(L⁺A_arr, 1)

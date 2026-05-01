@@ -32,6 +32,17 @@ using NCDatasets
 
 # NCDatasets is always available since it's a required dependency (using NCDatasets above)
 const HAS_NCDS = true
+const ENERGY_UNITS = "model energy units"
+const TIME_UNITS = "s"
+
+function annotate_energy_file!(ds, title::String, description::String)
+    ds.attrib["title"] = title
+    ds.attrib["Conventions"] = "CF-1.8"
+    ds.attrib["source"] = "QGYBJplus.jl"
+    ds.attrib["equation_form"] = "dimensional"
+    ds.attrib["created_at"] = string(Dates.now())
+    ds.attrib["description"] = description
+end
 
 """
     EnergyDiagnosticsManager
@@ -136,13 +147,13 @@ end
 
 """
     write_energy_file(filepath, varname, times, values;
-                      units="nondimensional", long_name="energy")
+                      units=ENERGY_UNITS, long_name="energy")
 
 Write a single energy time series to a NetCDF file.
 """
 function write_energy_file(filepath::String, varname::String,
                            times::Vector{T}, values::Vector{T};
-                           units::String="nondimensional",
+                           units::String=ENERGY_UNITS,
                            long_name::String="energy") where T
     if !HAS_NCDS
         error("NCDatasets not available. Install NCDatasets.jl or skip NetCDF I/O.")
@@ -155,8 +166,9 @@ function write_energy_file(filepath::String, varname::String,
         # Time coordinate
         time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
         time_var[:] = times
-        time_var.attrib["units"] = "model time units"
+        time_var.attrib["units"] = TIME_UNITS
         time_var.attrib["long_name"] = "simulation time"
+        time_var.attrib["description"] = "Elapsed seconds since the start of the simulation."
 
         # Energy variable
         energy_var = NCDatasets.defVar(ds, varname, Float64, ("time",))
@@ -164,9 +176,8 @@ function write_energy_file(filepath::String, varname::String,
         energy_var.attrib["units"] = units
         energy_var.attrib["long_name"] = long_name
 
-        # Global attributes
-        ds.attrib["title"] = "QG-YBJ Energy Diagnostic: $long_name"
-        ds.attrib["created_at"] = string(Dates.now())
+        annotate_energy_file!(ds, "QG-YBJ Energy Diagnostic: $long_name",
+                              "Single-component energy time series.")
         ds.attrib["n_timesteps"] = length(times)
         if !isempty(times)
             ds.attrib["time_start"] = times[1]
@@ -192,7 +203,7 @@ function write_all_energy_files!(manager::EnergyDiagnosticsManager)
     write_energy_file(
         manager.wave_KE_file, "wave_KE",
         manager.time_series, manager.wave_KE_series;
-        units="nondimensional",
+        units=ENERGY_UNITS,
         long_name="wave kinetic energy"
     )
     @info "Wrote wave KE to: $(manager.wave_KE_file)"
@@ -201,7 +212,7 @@ function write_all_energy_files!(manager::EnergyDiagnosticsManager)
     write_energy_file(
         manager.wave_PE_file, "wave_PE",
         manager.time_series, manager.wave_PE_series;
-        units="nondimensional",
+        units=ENERGY_UNITS,
         long_name="wave potential energy"
     )
     @info "Wrote wave PE to: $(manager.wave_PE_file)"
@@ -210,7 +221,7 @@ function write_all_energy_files!(manager::EnergyDiagnosticsManager)
     write_energy_file(
         manager.wave_CE_file, "wave_CE",
         manager.time_series, manager.wave_CE_series;
-        units="nondimensional",
+        units=ENERGY_UNITS,
         long_name="wave correction energy (YBJ+)"
     )
     @info "Wrote wave CE to: $(manager.wave_CE_file)"
@@ -219,7 +230,7 @@ function write_all_energy_files!(manager::EnergyDiagnosticsManager)
     write_energy_file(
         manager.mean_flow_KE_file, "mean_flow_KE",
         manager.time_series, manager.mean_flow_KE_series;
-        units="nondimensional",
+        units=ENERGY_UNITS,
         long_name="mean flow kinetic energy"
     )
     @info "Wrote mean flow KE to: $(manager.mean_flow_KE_file)"
@@ -228,7 +239,7 @@ function write_all_energy_files!(manager::EnergyDiagnosticsManager)
     write_energy_file(
         manager.mean_flow_PE_file, "mean_flow_PE",
         manager.time_series, manager.mean_flow_PE_series;
-        units="nondimensional",
+        units=ENERGY_UNITS,
         long_name="mean flow potential energy"
     )
     @info "Wrote mean flow PE to: $(manager.mean_flow_PE_file)"
@@ -254,29 +265,35 @@ function write_total_energy_file!(manager::EnergyDiagnosticsManager{T}) where T
         # Time coordinate
         time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
         time_var[:] = manager.time_series
-        time_var.attrib["units"] = "model time units"
+        time_var.attrib["units"] = TIME_UNITS
         time_var.attrib["long_name"] = "simulation time"
+        time_var.attrib["description"] = "Elapsed seconds since the start of the simulation."
 
         # All energy variables
         wke_var = NCDatasets.defVar(ds, "wave_KE", Float64, ("time",))
         wke_var[:] = manager.wave_KE_series
         wke_var.attrib["long_name"] = "wave kinetic energy"
+        wke_var.attrib["units"] = ENERGY_UNITS
 
         wpe_var = NCDatasets.defVar(ds, "wave_PE", Float64, ("time",))
         wpe_var[:] = manager.wave_PE_series
         wpe_var.attrib["long_name"] = "wave potential energy"
+        wpe_var.attrib["units"] = ENERGY_UNITS
 
         wce_var = NCDatasets.defVar(ds, "wave_CE", Float64, ("time",))
         wce_var[:] = manager.wave_CE_series
         wce_var.attrib["long_name"] = "wave correction energy"
+        wce_var.attrib["units"] = ENERGY_UNITS
 
         mke_var = NCDatasets.defVar(ds, "mean_flow_KE", Float64, ("time",))
         mke_var[:] = manager.mean_flow_KE_series
         mke_var.attrib["long_name"] = "mean flow kinetic energy"
+        mke_var.attrib["units"] = ENERGY_UNITS
 
         mpe_var = NCDatasets.defVar(ds, "mean_flow_PE", Float64, ("time",))
         mpe_var[:] = manager.mean_flow_PE_series
         mpe_var.attrib["long_name"] = "mean flow potential energy"
+        mpe_var.attrib["units"] = ENERGY_UNITS
 
         # Computed totals
         total_wave = manager.wave_KE_series .+ manager.wave_PE_series .+ manager.wave_CE_series
@@ -286,20 +303,21 @@ function write_total_energy_file!(manager::EnergyDiagnosticsManager{T}) where T
         twave_var = NCDatasets.defVar(ds, "total_wave_energy", Float64, ("time",))
         twave_var[:] = total_wave
         twave_var.attrib["long_name"] = "total wave energy (KE + PE + CE)"
+        twave_var.attrib["units"] = ENERGY_UNITS
 
         tflow_var = NCDatasets.defVar(ds, "total_flow_energy", Float64, ("time",))
         tflow_var[:] = total_flow
         tflow_var.attrib["long_name"] = "total mean flow energy (KE + PE)"
+        tflow_var.attrib["units"] = ENERGY_UNITS
 
         ttotal_var = NCDatasets.defVar(ds, "total_energy", Float64, ("time",))
         ttotal_var[:] = total_all
         ttotal_var.attrib["long_name"] = "total system energy"
+        ttotal_var.attrib["units"] = ENERGY_UNITS
 
-        # Global attributes
-        ds.attrib["title"] = "QG-YBJ Total Energy Summary"
-        ds.attrib["created_at"] = string(Dates.now())
+        annotate_energy_file!(ds, "QG-YBJ Total Energy Summary",
+                              "All energy components in one file for convenience.")
         ds.attrib["n_timesteps"] = nt
-        ds.attrib["description"] = "All energy components in one file for convenience"
     end
 
     @info "Wrote total energy summary to: $(manager.total_energy_file)"

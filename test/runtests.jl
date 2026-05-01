@@ -1,5 +1,6 @@
 using Test
 using QGYBJplus
+using NCDatasets
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -223,6 +224,46 @@ end
     @test all(isfinite, real.(Snp1.q))
 end
 
+@testset "Barotropic flow initialization" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G, S, plans, a = setup_model(par)
+
+    fill!(parent(S.psi), 0)
+    S.psi[1, 1, 1] = 3.0 + 0.0im
+    S.psi[2, 3, 4] = 1.0 + 2.0im
+    compute_barotropic_q_from_psi!(S.q, S.psi, G)
+
+    kₕ² = G.kx[3]^2 + G.ky[4]^2
+    @test S.q[1, 1, 1] == 0
+    @test S.q[2, 3, 4] == -kₕ² * S.psi[2, 3, 4]
+end
+
+@testset "State NetCDF metadata is self describing" begin
+    outdir = mktempdir()
+    par = default_params(nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G, S, plans, a = setup_model(par)
+    invert_q_to_psi!(S, G; a, par=par)
+
+    config = create_output_config(output_dir=outdir,
+                                  state_file_pattern="state%04d.nc",
+                                  save_psi=true,
+                                  save_waves=false,
+                                  save_velocities=false,
+                                  save_diagnostics=false)
+    manager = OutputManager(config, par)
+    filepath = write_state_file(manager, S, G, plans, 60.0; params=par,
+                                write_psi=true, write_waves=false)
+
+    NCDataset(filepath, "r") do ds
+        @test ds.attrib["equation_form"] == "dimensional"
+        @test ds.attrib["field_layout"] == "Variables are stored as (x, y, z); internal spectral arrays use (z, x, y)."
+        @test ds["time"].attrib["units"] == "s"
+        @test ds["time"].attrib["description"] == "Elapsed seconds since the start of the simulation."
+        @test ds["z"].attrib["positive"] == "up"
+        @test ds["psi"].attrib["long_name"] == "quasi-geostrophic streamfunction"
+    end
+end
+
 @testset "IMEX-CN step (wave feedback enabled)" begin
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
                          dt=0.01, no_feedback=false, no_wave_feedback=false)
@@ -313,40 +354,48 @@ Tests for key physics operators that were identified as error-prone:
     @test all(isfinite, real.(S.C))
 end
 
-@testset "Hyperdiffusion integrating factor - isotropic form" begin
-    # Test that hyperdiffusion uses isotropic form: ν(kx² + ky²)^n
-    # not anisotropic: ν(|kx|^{2n} + |ky|^{2n})
+@testset "Hyperdiffusion integrating factor - QG-YBJp separable form" begin
+    # QG-YBJp uses separable powers: ν(|kx|^(2n) + |ky|^(2n)).
     par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
-                        νₕ₁=1.0, ilap1=2)  # Biharmonic with ν=1
+                         νₕ₁=1.0, νₕ₂=0.0, ilap1=2)
 
     # Access the int_factor function through QGYBJplus module
-    # For isotropic form: int_factor(kx, ky) = dt * ν * (kx² + ky²)^2
-    # For anisotropic form: int_factor(kx, ky) = dt * ν * (|kx|^4 + |ky|^4)
-
-    # At kx=ky=1 (normalized), isotropic gives: dt * ν * 2^2 = 4*dt*ν
-    # At kx=1,ky=0: isotropic gives: dt * ν * 1^2 = dt*ν
-    # At kx=0,ky=1: isotropic gives: dt * ν * 1^2 = dt*ν
-
-    # For anisotropic at kx=ky=1: dt * ν * (1 + 1) = 2*dt*ν
-    # This would be different from isotropic (4*dt*ν vs 2*dt*ν)
-
-    # We can verify the isotropic behavior by checking that
-    # modes at 45° angles dissipate more than axis-aligned modes
-    # (since sqrt(2)² = 2 > 1² = 1)
-
-    # For now, just verify the integrating factor is accessible and finite
     if isdefined(QGYBJplus.Nonlinear, :int_factor)
         kx, ky = 1.0, 1.0
         dt = par.dt
         int_f = QGYBJplus.Nonlinear.int_factor(kx, ky, par; waves=false)
         @test isfinite(int_f)
         @test int_f > 0  # Should be positive dissipation
+        @test isapprox(int_f, 2dt; rtol=1e-12)
 
-        # Verify isotropic: at (1,1) should have same factor as at (sqrt(2), 0)
+        # Separable QG-YBJp form differs from isotropic (kx² + ky²)^n.
         int_f_diagonal = QGYBJplus.Nonlinear.int_factor(1.0, 1.0, par; waves=false)
         int_f_axis = QGYBJplus.Nonlinear.int_factor(sqrt(2.0), 0.0, par; waves=false)
-        @test isapprox(int_f_diagonal, int_f_axis, rtol=1e-10)
+        @test !isapprox(int_f_diagonal, int_f_axis, rtol=1e-10)
     end
+end
+
+@testset "Wave feedback does not alter prognostic q" begin
+    common = (nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+              dt=1e-3, inviscid=true, νₕ₁=0.0, νₕ₂=0.0, νₕ₁ʷ=0.0, νₕ₂ʷ=0.0,
+              fixed_flow=false, ybj_plus=true)
+    par_no_feedback = default_params(; common..., no_feedback=true, no_wave_feedback=true)
+    par_feedback = default_params(; common..., no_feedback=false, no_wave_feedback=false)
+
+    G, S_no_feedback, plans, a = setup_model(par_no_feedback)
+    S_no_feedback.q[1, 2, 1] = 1.0 + 0.0im
+    S_no_feedback.q[2, 1, 2] = -0.4 + 0.0im
+    S_no_feedback.L⁺A[1, 2, 2] = 2.0 + 0.7im
+    S_no_feedback.L⁺A[2, 3, 2] = -0.6 + 1.1im
+
+    S_feedback = copy_state(S_no_feedback)
+    L = dealias_mask(G)
+
+    first_projection_step!(S_no_feedback, G, par_no_feedback, plans; a=a, dealias_mask=L)
+    first_projection_step!(S_feedback, G, par_feedback, plans; a=a, dealias_mask=L)
+
+    @test isapprox(parent(S_feedback.q), parent(S_no_feedback.q); rtol=1e-12, atol=1e-12)
+    @test sum(abs2, parent(S_feedback.psi) .- parent(S_no_feedback.psi)) > 0
 end
 
 @testset "Vertical velocity with N² profile" begin

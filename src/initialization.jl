@@ -401,7 +401,7 @@ function init_surface_waves!(L⁺Ak, G::Grid, amplitude::Real, surface_depth::Re
     # Initialize in real space with LOCAL dimensions (input pencil for MPI)
     L⁺A_phys = _allocate_fft_dst(L⁺Ak, plans)
     L⁺A_arr = parent(L⁺A_phys)
-    T = eltype(L⁺A_arr)
+    T = typeof(real(zero(eltype(L⁺A_arr))))
 
     dz = G.Lz / G.nz
     for k_local in axes(L⁺A_arr, 1)
@@ -783,6 +783,34 @@ function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, dz)
             q_arr[nz, i_local, j_local] = -kh2 * psi_arr[nz, i_local, j_local] + vert_term / dz2
         end
     end
+end
+
+"""
+    compute_barotropic_q_from_psi!(q, psi, G)
+
+Compute barotropic potential vorticity from a spectral streamfunction.
+
+This is the simple Asselin et al. (2020) dipole initialization:
+
+    q = ∇ₕ²ψ,    q̂ = -kₕ² ψ̂.
+
+Use this when the imposed mean flow is vertically uniform and should not include
+the vertical QG stretching term.
+"""
+function compute_barotropic_q_from_psi!(q, psi, G::Grid)
+    q_arr = parent(q)
+    psi_arr = parent(psi)
+    size(q_arr) == size(psi_arr) || throw(DimensionMismatch("q and psi must have the same local size"))
+
+    nz_local, nx_local, ny_local = size(psi_arr)
+    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        i_global = local_to_global(i_local, 2, psi)
+        j_global = local_to_global(j_local, 3, psi)
+        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
+        q_arr[k, i_local, j_local] = -kₕ² * psi_arr[k, i_local, j_local]
+    end
+
+    return q
 end
 
 """

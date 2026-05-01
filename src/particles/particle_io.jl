@@ -22,6 +22,16 @@ using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 
 # NCDatasets is always available since it's a required dependency (using NCDatasets above)
 const HAS_NCDS = true
+const PARTICLE_TIME_UNITS = "s"
+
+function _annotate_particle_dataset!(ds, title::String)
+    ds.attrib["title"] = title
+    ds.attrib["Conventions"] = "CF-1.8"
+    ds.attrib["source"] = "QGYBJplus.jl"
+    ds.attrib["equation_form"] = "dimensional"
+    ds.attrib["coordinate_system"] = "x and y are horizontal coordinates in meters; z is vertical position in meters with z=0 at the surface and negative z below the surface."
+    ds.attrib["created_at"] = string(now())
+end
 
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file,
@@ -415,22 +425,21 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
             defVar_w[:] = w
 
             # Set variable attributes
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
+            defVar_x.attrib["units"] = "m"
+            defVar_x.attrib["long_name"] = "x position (meters)"
+            defVar_y.attrib["units"] = "m"
+            defVar_y.attrib["long_name"] = "y position (meters)"
+            defVar_z.attrib["units"] = "m"
+            defVar_z.attrib["long_name"] = "z position (meters, negative below surface)"
+            defVar_u.attrib["units"] = "m s-1"
+            defVar_u.attrib["long_name"] = "x velocity (m s-1)"
+            defVar_v.attrib["units"] = "m s-1"
+            defVar_v.attrib["long_name"] = "y velocity (m s-1)"
+            defVar_w.attrib["units"] = "m s-1"
+            defVar_w.attrib["long_name"] = "z velocity (m s-1)"
 
             # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Snapshot"
-            ds.attrib["created_at"] = string(now())
+            _annotate_particle_dataset!(ds, "QG-YBJ Particle Snapshot")
             ds.attrib["time"] = time
             ds.attrib["iteration"] = iteration
             ds.attrib["number_of_particles"] = length(ids)
@@ -489,25 +498,24 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
 
             # Set variable attributes
             defVar_particle.attrib["long_name"] = "particle identifier"
-            defVar_time.attrib["units"] = "model time units"
+            defVar_time.attrib["units"] = PARTICLE_TIME_UNITS
             defVar_time.attrib["long_name"] = "time"
 
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
+            defVar_x.attrib["units"] = "m"
+            defVar_x.attrib["long_name"] = "x position (meters)"
+            defVar_y.attrib["units"] = "m"
+            defVar_y.attrib["long_name"] = "y position (meters)"
+            defVar_z.attrib["units"] = "m"
+            defVar_z.attrib["long_name"] = "z position (meters, negative below surface)"
+            defVar_u.attrib["units"] = "m s-1"
+            defVar_u.attrib["long_name"] = "x velocity (m s-1)"
+            defVar_v.attrib["units"] = "m s-1"
+            defVar_v.attrib["long_name"] = "y velocity (m s-1)"
+            defVar_w.attrib["units"] = "m s-1"
+            defVar_w.attrib["long_name"] = "z velocity (m s-1)"
 
             # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Trajectories (Streaming)"
-            ds.attrib["created_at"] = string(now())
+            _annotate_particle_dataset!(ds, "QG-YBJ Particle Trajectories (Streaming)")
             ds.attrib["number_of_particles"] = np_global
             ds.attrib["output_mode"] = "streaming"
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
@@ -677,25 +685,23 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
 
             # Set variable attributes
             defVar_particle.attrib["long_name"] = "particle identifier"
-            defVar_time.attrib["units"] = "model time units"
+            defVar_time.attrib["units"] = PARTICLE_TIME_UNITS
             defVar_time.attrib["long_name"] = "time"
 
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
+            defVar_x.attrib["units"] = "m"
+            defVar_x.attrib["long_name"] = "x position (meters)"
+            defVar_y.attrib["units"] = "m"
+            defVar_y.attrib["long_name"] = "y position (meters)"
+            defVar_z.attrib["units"] = "m"
+            defVar_z.attrib["long_name"] = "z position (meters, negative below surface)"
+            defVar_u.attrib["units"] = "m s-1"
+            defVar_u.attrib["long_name"] = "x velocity (m s-1)"
+            defVar_v.attrib["units"] = "m s-1"
+            defVar_v.attrib["long_name"] = "y velocity (m s-1)"
+            defVar_w.attrib["units"] = "m s-1"
+            defVar_w.attrib["long_name"] = "z velocity (m s-1)"
 
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Trajectories"
-            ds.attrib["created_at"] = string(now())
+            _annotate_particle_dataset!(ds, "QG-YBJ Particle Trajectories")
             ds.attrib["number_of_particles"] = np
             ds.attrib["number_of_timesteps"] = nt
             ds.attrib["start_time"] = manager.time_series[1]
@@ -934,19 +940,17 @@ function _write_particle_trajectories_arrays(filename::String,
 
             # Set attributes
             particle_var.attrib["long_name"] = "particle identifier"
-            time_var.attrib["units"] = "model time units"
+            time_var.attrib["units"] = PARTICLE_TIME_UNITS
             time_var.attrib["long_name"] = "time"
 
-            x_var.attrib["units"] = "nondimensional"
-            x_var.attrib["long_name"] = "x position (horizontal)"
-            y_var.attrib["units"] = "nondimensional"
-            y_var.attrib["long_name"] = "y position (horizontal)"
-            z_var.attrib["units"] = "nondimensional"
-            z_var.attrib["long_name"] = "z position (vertical)"
+            x_var.attrib["units"] = "m"
+            x_var.attrib["long_name"] = "x position (meters)"
+            y_var.attrib["units"] = "m"
+            y_var.attrib["long_name"] = "y position (meters)"
+            z_var.attrib["units"] = "m"
+            z_var.attrib["long_name"] = "z position (meters, negative below surface)"
 
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Trajectories"
-            ds.attrib["created_at"] = string(now())
+            _annotate_particle_dataset!(ds, "QG-YBJ Particle Trajectories")
             ds.attrib["number_of_particles"] = np
             ds.attrib["integration_method"] = string(config.integration_method)
             ds.attrib["use_ybj_w"] = config.use_ybj_w
@@ -976,9 +980,9 @@ end
 Read particle trajectory history from NetCDF file.
 
 Returns a NamedTuple with fields:
-- `x`: Matrix of x positions (np × ntime)
-- `y`: Matrix of y positions (np × ntime)
-- `z`: Matrix of z positions (np × ntime)
+- `x`: Matrix of x position (meters)s (np × ntime)
+- `y`: Matrix of y position (meters)s (np × ntime)
+- `z`: Matrix of z position (meters, negative below surface)s (np × ntime)
 - `time`: Vector of time values (ntime)
 - `particle_ids`: Vector of particle identifiers (np)
 - `attributes`: Dict of global attributes from the file
@@ -994,7 +998,7 @@ write_particle_trajectories("particles.nc", tracker)
 traj = read_particle_trajectories("particles.nc")
 println("Number of particles: ", size(traj.x, 1))
 println("Number of time steps: ", length(traj.time))
-println("Initial x positions: ", traj.x[:, 1])
+println("Initial x position (meters)s: ", traj.x[:, 1])
 ```
 """
 function read_particle_trajectories(filename::String)
@@ -1118,23 +1122,21 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             # Set attributes
             particle_var.attrib["long_name"] = "particle identifier"
 
-            x_var.attrib["units"] = "nondimensional"
-            x_var.attrib["long_name"] = "x position (horizontal)"
-            y_var.attrib["units"] = "nondimensional"
-            y_var.attrib["long_name"] = "y position (horizontal)"
-            z_var.attrib["units"] = "nondimensional"
-            z_var.attrib["long_name"] = "z position (vertical)"
+            x_var.attrib["units"] = "m"
+            x_var.attrib["long_name"] = "x position (meters)"
+            y_var.attrib["units"] = "m"
+            y_var.attrib["long_name"] = "y position (meters)"
+            z_var.attrib["units"] = "m"
+            z_var.attrib["long_name"] = "z position (meters, negative below surface)"
 
-            u_var.attrib["units"] = "nondimensional/time"
-            u_var.attrib["long_name"] = "x velocity"
-            v_var.attrib["units"] = "nondimensional/time"
-            v_var.attrib["long_name"] = "y velocity"
-            w_var.attrib["units"] = "nondimensional/time"
-            w_var.attrib["long_name"] = "z velocity"
+            u_var.attrib["units"] = "m s-1"
+            u_var.attrib["long_name"] = "x velocity (m s-1)"
+            v_var.attrib["units"] = "m s-1"
+            v_var.attrib["long_name"] = "y velocity (m s-1)"
+            w_var.attrib["units"] = "m s-1"
+            w_var.attrib["long_name"] = "z velocity (m s-1)"
 
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Snapshot"
-            ds.attrib["created_at"] = string(now())
+            _annotate_particle_dataset!(ds, "QG-YBJ Particle Snapshot")
             ds.attrib["time"] = time
             ds.attrib["number_of_particles"] = length(data.ids)
             ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
@@ -1190,26 +1192,24 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
 
                 # Set attributes
                 particle_var.attrib["long_name"] = "particle identifier"
-                time_var.attrib["units"] = "model time units"
+                time_var.attrib["units"] = PARTICLE_TIME_UNITS
                 time_var.attrib["long_name"] = "time"
 
-                x_var.attrib["units"] = "nondimensional"
-                x_var.attrib["long_name"] = "x position (horizontal)"
-                y_var.attrib["units"] = "nondimensional"
-                y_var.attrib["long_name"] = "y position (horizontal)"
-                z_var.attrib["units"] = "nondimensional"
-                z_var.attrib["long_name"] = "z position (vertical)"
+                x_var.attrib["units"] = "m"
+                x_var.attrib["long_name"] = "x position (meters)"
+                y_var.attrib["units"] = "m"
+                y_var.attrib["long_name"] = "y position (meters)"
+                z_var.attrib["units"] = "m"
+                z_var.attrib["long_name"] = "z position (meters, negative below surface)"
 
-                u_var.attrib["units"] = "nondimensional/time"
-                u_var.attrib["long_name"] = "x velocity"
-                v_var.attrib["units"] = "nondimensional/time"
-                v_var.attrib["long_name"] = "y velocity"
-                w_var.attrib["units"] = "nondimensional/time"
-                w_var.attrib["long_name"] = "z velocity"
+                u_var.attrib["units"] = "m s-1"
+                u_var.attrib["long_name"] = "x velocity (m s-1)"
+                v_var.attrib["units"] = "m s-1"
+                v_var.attrib["long_name"] = "y velocity (m s-1)"
+                w_var.attrib["units"] = "m s-1"
+                w_var.attrib["long_name"] = "z velocity (m s-1)"
 
-                # Global attributes
-                ds.attrib["title"] = "QG-YBJ Particle Trajectories (Time Series)"
-                ds.attrib["created_at"] = string(now())
+                _annotate_particle_dataset!(ds, "QG-YBJ Particle Trajectories (Time Series)")
                 ds.attrib["number_of_particles"] = np_global
                 ds.attrib["integration_method"] = string(tracker.config.integration_method)
                 ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
@@ -1326,7 +1326,7 @@ function write_particle_trajectories_by_zlevel(base_filename::String, tracker::P
         return Dict()
     end
 
-    # Get initial z positions (first time in history)
+    # Get initial z position (meters, negative below surface)s (first time in history)
     initial_z = particles.z_history[1]
 
     # Group particles by z-level

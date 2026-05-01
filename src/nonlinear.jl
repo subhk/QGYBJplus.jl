@@ -1125,7 +1125,7 @@ The hyperdiffusion operator is:
 
 In spectral space, this becomes multiplication by:
 
-    λ = ν₁|k|^(2n₁) + ν₂|k|^(2n₂)
+    λ = ν₁(|kx|^(2n₁) + |ky|^(2n₁)) + ν₂(|kx|^(2n₂) + |ky|^(2n₂))
 
 The integrating factor for one time step is: exp(-λ×dt)
 
@@ -1137,9 +1137,10 @@ For efficiency, we return just λ×dt (the exponent).
 - `waves::Bool`: If true, use wave hyperdiffusion (nuh1w, ilap1w, etc.)
 
 # Returns
-    λ×dt = dt × [ν₁(kx² + ky²)^n₁ + ν₂(kx² + ky²)^n₂] = dt × [ν₁ kₕ^(2n₁) + ν₂ kₕ^(2n₂)]
+    λ×dt = dt × [ν₁(|kx|^(2n₁) + |ky|^(2n₁)) +
+                 ν₂(|kx|^(2n₂) + |ky|^(2n₂))]
 
-Note: Uses isotropic form `(kx² + ky²)^n` for proper damping of diagonal modes.
+Note: This follows QG-YBJp's separable hyperdiffusion operator.
 
 # Usage in Time Stepping
 ```julia
@@ -1166,21 +1167,18 @@ function int_factor(kₓ::Real, kᵧ::Real, par; waves::Bool=false)
     end
 
     Δt = par.dt
-    # Use isotropic form: ν * (kx² + ky²)^n = ν * kh^{2n}
-    # This is the standard (-∇²)^n hyperdiffusion operator.
-    # Previous form ν*(|kx|^{2n} + |ky|^{2n}) under-damped diagonal modes.
-    kₕ² = kₓ^2 + kᵧ^2
-
     if waves
         # Wave field hyperdiffusion (often smaller or zero)
         ν₁ʷ = par.νₕ₁ʷ; n₁ʷ = par.ilap1w
         ν₂ʷ = par.νₕ₂ʷ; n₂ʷ = par.ilap2w
-        return Δt * ( ν₁ʷ * kₕ²^n₁ʷ + ν₂ʷ * kₕ²^n₂ʷ )
+        return Δt * ( ν₁ʷ * (abs(kₓ)^(2n₁ʷ) + abs(kᵧ)^(2n₁ʷ)) +
+                      ν₂ʷ * (abs(kₓ)^(2n₂ʷ) + abs(kᵧ)^(2n₂ʷ)) )
     else
         # Mean flow hyperdiffusion
         ν₁ = par.νₕ₁; n₁ = par.ilap1
         ν₂ = par.νₕ₂; n₂ = par.ilap2
-        return Δt * ( ν₁ * kₕ²^n₁ + ν₂ * kₕ²^n₂ )
+        return Δt * ( ν₁ * (abs(kₓ)^(2n₁) + abs(kᵧ)^(2n₁)) +
+                      ν₂ * (abs(kₓ)^(2n₂) + abs(kᵧ)^(2n₂)) )
     end
 end
 
