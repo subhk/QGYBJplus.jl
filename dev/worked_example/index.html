@@ -22,7 +22,7 @@ const N² = 1e-5     # Buoyancy frequency squared [s⁻²]
 
 # Time stepping
 const T_inertial = 2π / f₀           # Inertial period ≈ 17.5 hours
-const dt = 10.0                       # Time step [s] - use IMEX for larger dt
+const dt = 10.0                       # Time step [s] - use exponential RK2 for larger dt
 const n_inertial_periods = 5          # Simulation duration
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
@@ -157,61 +157,16 @@ S.L⁺A .= S.A
 println(&quot;\nWave field created:&quot;)
 println(&quot;  Amplitude: $A0 m/s&quot;)
 println(&quot;  Decay depth: $decay_depth m&quot;)
-println(&quot;  Vertical structure: exp(-z/$decay_depth)&quot;)</code></pre><p>This mimics wind-generated near-inertial waves that are strongest near the surface and decay with depth.</p><hr/><h2 id="Step-5:-Run-the-Time-Stepping-Loop"><a class="docs-heading-anchor" href="#Step-5:-Run-the-Time-Stepping-Loop">Step 5: Run the Time-Stepping Loop</a><a id="Step-5:-Run-the-Time-Stepping-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Step-5:-Run-the-Time-Stepping-Loop" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
-#                       TIME INTEGRATION
-# ============================================================================
-
-# Create state arrays for leapfrog (need 3 time levels)
-Snm1 = copy_state(S)  # n-1
-Sn = copy_state(S)    # n
-Snp1 = copy_state(S)  # n+1
-
-# Initialize with projection step (Forward Euler)
-println(&quot;\nRunning projection step...&quot;)
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
-copy_state!(Snm1, Sn)
-
-# Storage for diagnostics
-times = Float64[]
-wave_energies = Float64[]
-flow_energies = Float64[]
-
-# Diagnostic output interval (every 0.5 inertial periods)
-diag_interval = round(Int, 0.5 * T_inertial / dt)
-
-println(&quot;Starting main time loop...&quot;)
-println(&quot;=&quot;^60)
+println(&quot;  Vertical structure: exp(-z/$decay_depth)&quot;)</code></pre><p>This mimics wind-generated near-inertial waves that are strongest near the surface and decay with depth.</p><hr/><h2 id="Step-5:-Run-the-Time-Stepping-Loop"><a class="docs-heading-anchor" href="#Step-5:-Run-the-Time-Stepping-Loop">Step 5: Run the Time-Stepping Loop</a><a id="Step-5:-Run-the-Time-Stepping-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Step-5:-Run-the-Time-Stepping-Loop" title="Permalink"></a></h2><p>Use the high-level simulation API for normal runs:</p><pre><code class="language-julia hljs">simulation = Simulation(model;
+                        Δt = dt,
+                        stop_iteration = nt)
+run!(simulation)</code></pre><p>For a manual low-level loop, use <code>exp_rk2_step!</code> with two state objects:</p><pre><code class="language-julia hljs">Sn = copy_state(S)
+Snp1 = copy_state(S)
 
 for step in 1:nt
-    # Leapfrog step with Robert-Asselin filter
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                   a=a_ell, dealias_mask=L)
-
-    # Rotate time levels (efficient pointer swap)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-
-    # Periodic diagnostics
-    if step % diag_interval == 0
-        current_time = step * dt
-        time_IP = current_time / T_inertial  # Time in inertial periods
-
-        # Compute energies
-        KE = flow_kinetic_energy(Sn.u, Sn.v)
-        # Wave kinetic energy per YBJ+ equation (4.7): WKE = (1/2)|LA|²
-        WKE, WPE, WCE = compute_detailed_wave_energy(Sn, G, par)
-
-        # Store for later analysis
-        push!(times, time_IP)
-        push!(wave_energies, WKE)
-        push!(flow_energies, KE)
-
-        @printf(&quot;  t = %.2f IP | Flow KE = %.4e | Wave KE = %.4e\n&quot;,
-                time_IP, KE, WKE)
-    end
-end
-
-println(&quot;=&quot;^60)
-println(&quot;Simulation complete!&quot;)</code></pre><p><strong>What happens each time step?</strong></p><ol><li><strong>Invert</strong> q → ψ and B → A</li><li><strong>Compute</strong> u, v from ψ</li><li><strong>Evaluate</strong> tendencies: J(ψ,q), J(ψ,B), refraction ζ·B, dispersion k²A</li><li><strong>Update</strong>: φ^{n+1} = φ^{n-1} + 2·dt·F^n</li><li><strong>Rotate</strong> time levels: Snm1 ← Sn ← Snp1</li></ol><hr/><h2 id="Step-6:-Analyze-Results"><a class="docs-heading-anchor" href="#Step-6:-Analyze-Results">Step 6: Analyze Results</a><a id="Step-6:-Analyze-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Step-6:-Analyze-Results" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
+    exp_rk2_step!(Snp1, Sn, G, par, plans; a=a_ell, dealias_mask=L)
+    Sn, Snp1 = Snp1, Sn
+end</code></pre><h2 id="Step-6:-Analyze-Results"><a class="docs-heading-anchor" href="#Step-6:-Analyze-Results">Step 6: Analyze Results</a><a id="Step-6:-Analyze-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Step-6:-Analyze-Results" title="Permalink"></a></h2><pre><code class="language-julia hljs"># ============================================================================
 #                       ANALYZE RESULTS
 # ============================================================================
 
@@ -317,40 +272,12 @@ L = dealias_mask(G)
 
 # === Time stepping ===
 Snm1, Sn, Snp1 = copy_state(S), copy_state(S), copy_state(S)
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
+exp_rk2_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
 copy_state!(Snm1, Sn)
 
 for step in 1:nt
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
+    exp_rk2_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
     Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 end
 
-println(&quot;Done! Final KE = &quot;, flow_kinetic_energy(Sn.u, Sn.v))</code></pre><hr/><h2 id="What&#39;s-Next?"><a class="docs-heading-anchor" href="#What&#39;s-Next?">What&#39;s Next?</a><a id="What&#39;s-Next?-1"></a><a class="docs-heading-anchor-permalink" href="#What&#39;s-Next?" title="Permalink"></a></h2><p>Now that you&#39;ve built a complete simulation:</p><ol><li><strong><a href="../guide/configuration/#configuration">Configuration Guide</a></strong> - Customize all parameters</li><li><strong><a href="../guide/stratification/#stratification">Stratification</a></strong> - Use realistic N²(z) profiles</li><li><strong><a href="../advanced/parallel/#parallel">MPI Parallelization</a></strong> - Scale to larger domains</li><li><strong><a href="../advanced/particles/#particles">Particle Advection</a></strong> - Track Lagrangian trajectories</li><li><strong><a href="../physics/overview/#physics-overview">Physics Overview</a></strong> - Understand the equations deeply</li></ol><hr/><h2 id="Common-Modifications"><a class="docs-heading-anchor" href="#Common-Modifications">Common Modifications</a><a id="Common-Modifications-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Modifications" title="Permalink"></a></h2><h3 id="Use-IMEX-Time-Stepping-(10x-faster)"><a class="docs-heading-anchor" href="#Use-IMEX-Time-Stepping-(10x-faster)">Use IMEX Time Stepping (10x faster)</a><a id="Use-IMEX-Time-Stepping-(10x-faster)-1"></a><a class="docs-heading-anchor-permalink" href="#Use-IMEX-Time-Stepping-(10x-faster)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Replace leapfrog with IMEX-CN
-imex_ws = init_imex_workspace(Sn, G)
-first_imex_step!(Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-
-for step in 1:nt
-    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-    parent(Sn.L⁺A) .= parent(Snp1.L⁺A)
-    parent(Sn.q) .= parent(Snp1.q)
-end</code></pre><h3 id="Add-Particle-Tracking"><a class="docs-heading-anchor" href="#Add-Particle-Tracking">Add Particle Tracking</a><a id="Add-Particle-Tracking-1"></a><a class="docs-heading-anchor-permalink" href="#Add-Particle-Tracking" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Create particles at mid-depth
-pconfig = particles_in_box(-2000.0; x_max=Lx, y_max=Ly, nx=20, ny=20)
-tracker = ParticleTracker(pconfig, G)
-initialize_particles!(tracker, pconfig)
-
-# In time loop, add:
-advect_particles!(tracker, Sn, G, dt, current_time)
-
-# After simulation:
-write_particle_trajectories(&quot;trajectories.nc&quot;, tracker)</code></pre><h3 id="Use-Realistic-Stratification"><a class="docs-heading-anchor" href="#Use-Realistic-Stratification">Use Realistic Stratification</a><a id="Use-Realistic-Stratification-1"></a><a class="docs-heading-anchor-permalink" href="#Use-Realistic-Stratification" title="Permalink"></a></h3><pre><code class="language-julia hljs">par = default_params(
-    Lx=Lx, Ly=Ly, Lz=Lz, nx=nx, ny=ny, nz=nz,
-    stratification = :skewed_gaussian,  # Realistic pycnocline
-    # Other parameters...
-)
-G, S, plans, a_ell, N2_profile = setup_model_with_profile(par)</code></pre><h3 id="Use-an-Analytical-N(z)-Profile"><a class="docs-heading-anchor" href="#Use-an-Analytical-N(z)-Profile">Use an Analytical N(z) Profile</a><a id="Use-an-Analytical-N(z)-Profile-1"></a><a class="docs-heading-anchor-permalink" href="#Use-an-Analytical-N(z)-Profile" title="Permalink"></a></h3><pre><code class="language-julia hljs">a = 0.01    # s^-1
-b = -2.0e-6 # s^-1 m^-1
-@inline N(z) = a + b * z  # z is negative below the surface
-
-domain = create_domain_config(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz)
-strat = create_stratification_config(type=:analytical, N_func=N)
-sim = setup_simulation(domain, strat)</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../quickstart/">« Quick Start</a><a class="docs-footer-nextpage" href="../physics/overview/">Model Overview »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 1 May 2026 12:44">Friday 1 May 2026</span>. Using Julia version 1.10.11.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+println(&quot;Done! Final KE = &quot;, flow_kinetic_energy(Sn.u, Sn.v))</code></pre><hr/><h2 id="What&#39;s-Next?"><a class="docs-heading-anchor" href="#What&#39;s-Next?">What&#39;s Next?</a><a id="What&#39;s-Next?-1"></a><a class="docs-heading-anchor-permalink" href="#What&#39;s-Next?" title="Permalink"></a></h2><p>Now that you&#39;ve built a complete simulation:</p><ol><li><strong><a href="../guide/configuration/#configuration">Configuration Guide</a></strong> - Customize all parameters</li><li><strong><a href="../guide/stratification/#stratification">Stratification</a></strong> - Use realistic N²(z) profiles</li><li><strong><a href="../advanced/parallel/#parallel">MPI Parallelization</a></strong> - Scale to larger domains</li><li><strong><a href="../advanced/particles/#particles">Particle Advection</a></strong> - Track Lagrangian trajectories</li><li><strong><a href="../physics/overview/#physics-overview">Physics Overview</a></strong> - Understand the equations deeply</li></ol><hr/><h2 id="Common-Modifications"><a class="docs-heading-anchor" href="#Common-Modifications">Common Modifications</a><a id="Common-Modifications-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Modifications" title="Permalink"></a></h2><p>Adjust <code>Δt</code>, grid resolution, hyperdiffusion coefficients, output cadence, and initial conditions through the high-level model and simulation constructors. The timestep method is fixed to exponential RK2.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../quickstart/">« Quick Start</a><a class="docs-footer-nextpage" href="../physics/overview/">Model Overview »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 1 May 2026 13:06">Friday 1 May 2026</span>. Using Julia version 1.10.11.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
