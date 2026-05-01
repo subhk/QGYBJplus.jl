@@ -120,23 +120,55 @@ IterationInterval(interval::Integer) = IterationInterval(Int(interval))
 
 """
     NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves),
-                   velocities=false)
+                   velocities=false, z_levels=nothing, z=nothing)
 
 Declarative NetCDF output configuration for `Simulation`.
 """
-struct NetCDFOutput{S}
+struct NetCDFOutput{S, Z}
     path::String
     schedule::S
     fields::Tuple
     velocities::Bool
+    z_levels::Z
 end
+
+_collect_output_z_levels(::Type{T}, z::Real) where T = T[T(z)]
+_collect_output_z_levels(::Type{T}, z_levels) where T = collect(T, z_levels)
+_is_netcdf_output_collection(output) =
+    output isa Tuple || output isa AbstractVector ? all(item -> item isa NetCDFOutput, output) : false
 
 function NetCDFOutput(; path::AbstractString = "output",
     schedule = nothing,
     fields = (:ψ, :waves),
-    velocities::Bool = false)
+    velocities::Bool = false,
+    z_levels = nothing,
+    z = nothing)
 
-    return NetCDFOutput(String(path), schedule, Tuple(fields), velocities)
+    if z_levels !== nothing && z !== nothing
+        throw(ArgumentError("Specify either z_levels or z, not both."))
+    end
+
+    requested_z_levels = z_levels === nothing ? z : z_levels
+    output_z_levels = requested_z_levels === nothing ? nothing : _collect_output_z_levels(Float64, requested_z_levels)
+
+    return NetCDFOutput(String(path), schedule, Tuple(fields), velocities, output_z_levels)
+end
+
+function _output_config_from_netcdf_output(output::NetCDFOutput, ::Type{T}) where T
+    interval = output.schedule isa TimeInterval ? T(output.schedule.interval) : one(T)
+    return OutputConfig{T}(
+        output_dir = output.path,
+        state_file_pattern = "state%04d.nc",
+        psi_interval = interval,
+        wave_interval = interval,
+        diagnostics_interval = interval,
+        save_psi = :ψ in output.fields || :psi in output.fields,
+        save_waves = :waves in output.fields || :B in output.fields || :L⁺A in output.fields,
+        save_velocities = output.velocities || :velocities in output.fields,
+        save_vorticity = false,
+        save_diagnostics = false,
+        z_levels = output.z_levels === nothing ? T[] : _collect_output_z_levels(T, output.z_levels),
+    )
 end
 
 mutable struct SimulationRunOptions{T}
@@ -147,6 +179,8 @@ mutable struct SimulationRunOptions{T}
     save_psi::Bool
     save_waves::Bool
     save_velocities::Bool
+    output_z_levels::Union{Nothing, Vector{T}}
+    outputs
 end
 
 function default_run_options(::Type{T}) where T
@@ -158,6 +192,8 @@ function default_run_options(::Type{T}) where T
         true,
         true,
         false,
+        nothing,
+        nothing,
     )
 end
 
@@ -308,6 +344,18 @@ _coriolis_frequency(coriolis::FPlane) = coriolis.f
 
 _stratification_N²(N²::Real) = N²
 _stratification_N²(stratification::ConstantStratification) = stratification.N²
+function _stratification_N²(stratification::FileProfile)
+    N2_sum = zero(eltype(stratification.data))
+    for value in stratification.data
+        N2_sum += stratification.is_N2 ? value : value^2
+    end
+    return N2_sum / length(stratification.data)
+end
+_stratification_N²(stratification::StratificationProfile) = evaluate_N2(stratification, 0.0)
+
+_stratification_profile(::Real) = nothing
+_stratification_profile(::ConstantStratification) = nothing
+_stratification_profile(stratification::StratificationProfile) = stratification
 
 function _feedback_flags(feedback)
     if feedback === false || feedback == :none || feedback == :off
@@ -329,7 +377,9 @@ _fixed_flow(flow) = flow === true || flow == :fixed
                  ybj_plus=true, Δt=1.0, stop_iteration=1000)
 
 Construct a complete QG-YBJ+ model while hiding MPI grids, FFT plans, workspaces,
-and stratification bookkeeping.
+and stratification bookkeeping. `stratification` may be a
+`ConstantStratification` or any `StratificationProfile`, including
+`FileStratification("profile.nc")`.
 """
 function QGYBJModel(; grid::RectilinearGridSpec,
     coriolis = FPlane(f = 1e-4),
@@ -357,6 +407,7 @@ function QGYBJModel(; grid::RectilinearGridSpec,
         nt = stop_iteration,
         f₀ = _coriolis_frequency(coriolis),
         N² = _stratification_N²(stratification),
+        stratification_profile = _stratification_profile(stratification),
         ybj_plus = ybj_plus,
         fixed_flow = _fixed_flow(flow),
         no_feedback = no_feedback,
@@ -409,6 +460,7 @@ This is the main entry point for the high-level API. It handles:
 ## Physical parameters
 - `f₀`: Coriolis parameter [s⁻¹] (default: 1e-4)
 - `N²`: Buoyancy frequency squared [s⁻²] (default: 1e-5)
+- `stratification_profile`: Optional `StratificationProfile` interpolated to the numerical grid
 
 ## Time stepping
 - `dt`: Time step [s] (default: 1.0)
@@ -453,6 +505,7 @@ function initialize_simulation(;
     # Physical parameters
     f₀::Real = 1e-4,
     N²::Real = 1e-5,
+    stratification_profile = nothing,
     # Time stepping
     dt::Real = 1.0,
     nt::Int = 1000,
@@ -524,8 +577,11 @@ function initialize_simulation(;
     state = init_mpi_state(grid, plans, mpi_config)
     workspace = init_mpi_workspace(grid, mpi_config)
 
-    # Compute stratification profile
-    N2_profile = compute_stratification_profile(ConstantN{T}(sqrt(N²)), grid)
+    # Compute stratification profile on the numerical grid. The scalar params.N²
+    # remains a dimensional fallback for routines that do not receive a profile.
+    profile = stratification_profile === nothing ? ConstantN{T}(sqrt(T(N²))) : stratification_profile
+    N2_profile = T.(compute_stratification_profile(profile, grid))
+    params.N² = sum(N2_profile) / length(N2_profile)
 
     if mpi_config.is_root && verbose
         println("Initialization complete.")
@@ -871,13 +927,27 @@ function _configure_output!(sim::Simulation; output=nothing, diagnostics=nothing
 
     if output !== nothing
         if output isa NetCDFOutput
+            options.outputs = output
             options.output_dir = output.path
             options.save_interval = output.schedule isa TimeInterval ? output.schedule.interval : nothing
             options.save_psi = :ψ in output.fields || :psi in output.fields
             options.save_waves = :waves in output.fields || :B in output.fields || :L⁺A in output.fields
             options.save_velocities = output.velocities || :velocities in output.fields
+            T = typeof(sim.params.dt)
+            options.output_z_levels = output.z_levels === nothing ? nothing : _collect_output_z_levels(T, output.z_levels)
+        elseif _is_netcdf_output_collection(output)
+            outputs = Tuple(output)
+            options.outputs = outputs
+            first_output = first(outputs)
+            options.output_dir = first_output.path
+            options.save_interval = first_output.schedule isa TimeInterval ? first_output.schedule.interval : nothing
+            options.save_psi = :ψ in first_output.fields || :psi in first_output.fields
+            options.save_waves = :waves in first_output.fields || :B in first_output.fields || :L⁺A in first_output.fields
+            options.save_velocities = first_output.velocities || :velocities in first_output.fields
+            T = typeof(sim.params.dt)
+            options.output_z_levels = first_output.z_levels === nothing ? nothing : _collect_output_z_levels(T, first_output.z_levels)
         else
-            throw(ArgumentError("output must be a NetCDFOutput."))
+            throw(ArgumentError("output must be a NetCDFOutput or a tuple/vector of NetCDFOutput objects."))
         end
     end
 
@@ -946,7 +1016,9 @@ function run!(sim::Simulation;
     progress::Union{Nothing, Bool} = nothing,
     save_psi::Union{Bool, Nothing} = nothing,
     save_waves::Union{Bool, Nothing} = nothing,
-    save_velocities::Union{Bool, Nothing} = nothing)
+    save_velocities::Union{Bool, Nothing} = nothing,
+    z_levels = nothing,
+    z = nothing)
 
     _configure_time_stepping!(sim;
         Δt = Δt,
@@ -988,6 +1060,15 @@ function run!(sim::Simulation;
         options.save_velocities = save_velocities
     end
 
+    if z_levels !== nothing && z !== nothing
+        throw(ArgumentError("Specify either z_levels or z, not both."))
+    end
+
+    requested_z_levels = z_levels === nothing ? z : z_levels
+    if requested_z_levels !== nothing
+        options.output_z_levels = _collect_output_z_levels(typeof(sim.params.dt), requested_z_levels)
+    end
+
     G = sim.grid
     S = sim.state
     params = sim.params
@@ -1006,19 +1087,27 @@ function run!(sim::Simulation;
     T_inertial = 2π / params.f₀
     interval = options.save_interval === nothing ? T_inertial : options.save_interval
 
-    # Configure output
-    output_config = OutputConfig(
-        output_dir = options.output_dir,
-        state_file_pattern = "state%04d.nc",
-        psi_interval = interval,
-        wave_interval = interval,
-        diagnostics_interval = interval,
-        save_psi = options.save_psi,
-        save_waves = options.save_waves,
-        save_velocities = options.save_velocities,
-        save_vorticity = false,
-        save_diagnostics = false
-    )
+    # Configure output. A single NetCDFOutput writes one stream; a tuple/vector
+    # writes multiple streams, for example full domain plus a z-slice directory.
+    output_config = if options.outputs isa NetCDFOutput
+        _output_config_from_netcdf_output(options.outputs, typeof(params.dt))
+    elseif _is_netcdf_output_collection(options.outputs)
+        [_output_config_from_netcdf_output(output, typeof(params.dt)) for output in options.outputs]
+    else
+        OutputConfig(
+            output_dir = options.output_dir,
+            state_file_pattern = "state%04d.nc",
+            psi_interval = interval,
+            wave_interval = interval,
+            diagnostics_interval = interval,
+            save_psi = options.save_psi,
+            save_waves = options.save_waves,
+            save_velocities = options.save_velocities,
+            save_vorticity = false,
+            save_diagnostics = false,
+            z_levels = options.output_z_levels === nothing ? Float64[] : options.output_z_levels
+        )
+    end
 
     # Run simulation
     run_simulation!(S, G, params, plans;
@@ -1057,6 +1146,7 @@ finalize_simulation!(sim)
 """
 function finalize_simulation!(sim::Simulation)
     MPI.Barrier(sim.mpi_config.comm)
+    clear_mpi_transpose_buffer_cache!()
     GC.gc(true)  # Force garbage collection before MPI finalization
     MPI.Finalize()
 end

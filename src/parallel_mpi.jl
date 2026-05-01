@@ -283,6 +283,23 @@ const _transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, Tuple{Int,Int}, 
 const _plan_transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, Any}()
 const _buffer_cache_lock = ReentrantLock()
 
+"""
+    clear_mpi_transpose_buffer_cache!()
+
+Release cached intermediate MPI transpose buffers.
+
+The cache avoids repeated scratch allocation during a run. Call this when a
+simulation is being finalized or when a long-running Julia session is done with
+a family of MPI grids.
+"""
+function clear_mpi_transpose_buffer_cache!()
+    lock(_buffer_cache_lock) do
+        empty!(_transpose_buffer_cache)
+        empty!(_plan_transpose_buffer_cache)
+    end
+    return nothing
+end
+
 @inline function _decomp_diff_count(a::NTuple{2, Int}, b::NTuple{2, Int})
     return (a[1] != b[1]) + (a[2] != b[2])
 end

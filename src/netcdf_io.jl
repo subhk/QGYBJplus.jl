@@ -27,6 +27,54 @@ const _allocate_fft_dst = allocate_fft_backward_dst
     return permutedims(arr, (2, 3, 1))
 end
 
+function _output_z_indices(G::Grid, z_levels)
+    if z_levels === nothing || isempty(z_levels)
+        return collect(1:G.nz)
+    end
+
+    indices = Vector{Int}(undef, length(z_levels))
+    @inbounds for n in eachindex(z_levels)
+        z = z_levels[n]
+        nearest = 1
+        nearest_distance = abs(G.z[1] - z)
+        for k in 2:G.nz
+            distance = abs(G.z[k] - z)
+            if distance < nearest_distance
+                nearest = k
+                nearest_distance = distance
+            end
+        end
+        indices[n] = nearest
+    end
+
+    return indices
+end
+
+@inline _output_z_coordinates(G::Grid, indices::AbstractVector{<:Integer}) = G.z[indices]
+
+function _is_native_z_selection(arr::AbstractArray, z_indices::AbstractVector{<:Integer})
+    length(z_indices) == size(arr, 1) || return false
+    @inbounds for (n, k) in enumerate(z_indices)
+        k == n || return false
+    end
+    return true
+end
+
+function _to_xyz_at_z_indices(arr::AbstractArray, z_indices::AbstractVector{<:Integer})
+    if _is_native_z_selection(arr, z_indices)
+        return _to_xyz(arr)
+    end
+
+    output = Array{Float64}(undef, size(arr, 2), size(arr, 3), length(z_indices))
+    @inbounds for ℓ in eachindex(z_indices)
+        k = z_indices[ℓ]
+        for j in axes(arr, 3), i in axes(arr, 2)
+            output[i, j, ℓ] = real(arr[k, i, j])
+        end
+    end
+    return output
+end
+
 @inline function _from_xyz(arr::AbstractArray)
     return permutedims(arr, (3, 1, 2))
 end
@@ -105,6 +153,7 @@ mutable struct OutputManager{T}
     save_vertical_velocity::Bool
     save_vorticity::Bool
     save_diagnostics::Bool
+    z_levels::Vector{T}
     
     # Parallel configuration (optional)
     parallel_config
@@ -149,6 +198,7 @@ function OutputManager(config, params::QGParams{T}, parallel_config=nothing) whe
         hasfield(typeof(config), :save_vertical_velocity) ? config.save_vertical_velocity : false,
         config.save_vorticity,
         config.save_diagnostics,
+        hasfield(typeof(config), :z_levels) ? collect(T, config.z_levels) : T[],
         parallel_config,
         run_info
     )
@@ -297,12 +347,15 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         zeta_r = _allocate_fft_dst(zeta_k, plans)
         fft_backward!(zeta_r, zeta_k, plans)
     end
+
+    z_indices = _output_z_indices(G, manager.z_levels)
+    z_coordinates = _output_z_coordinates(G, z_indices)
     
     NCDatasets.Dataset(filepath, "c") do ds
         # Define dimensions
         ds.dim["x"] = G.nx
         ds.dim["y"] = G.ny
-        ds.dim["z"] = G.nz
+        ds.dim["z"] = length(z_coordinates)
         ds.dim["time"] = 1
         
         # Create coordinate variables
@@ -318,17 +371,21 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Use domain origin from Grid.
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
-        z_var[:] = G.z  # Use actual grid z-values
+        z_var[:] = z_coordinates
         time_var[1] = time
 
         _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
+        if !isempty(manager.z_levels)
+            z_var.attrib["requested_z_levels"] = join(string.(manager.z_levels), ", ")
+            z_var.attrib["description"] = "Nearest native grid z coordinates saved for requested z_levels."
+        end
 
         # Stream function
         # Note: psir is already normalized by fft_backward!, no additional division needed
         if write_psi
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             psir_arr = parent(psir)
-            psi_var[:,:,:] = _to_xyz(real.(psir_arr))
+            psi_var[:,:,:] = _to_xyz_at_z_indices(real.(psir_arr), z_indices)
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
             psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
@@ -341,8 +398,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
             LAr_arr = parent(LAr)
-            LAr_var[:,:,:] = _to_xyz(real.(LAr_arr))  # Real part of LA
-            LAi_var[:,:,:] = _to_xyz(imag.(LAr_arr))  # Imaginary part of LA
+            LAr_var[:,:,:] = _to_xyz_at_z_indices(real.(LAr_arr), z_indices)  # Real part of LA
+            LAi_var[:,:,:] = _to_xyz_at_z_indices(imag.(LAr_arr), z_indices)  # Imaginary part of LA
 
             LAr_var.attrib["units"] = "m/s"
             LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
@@ -359,8 +416,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
             # u, v are already in physical space - write directly
-            u_var[:,:,:] = _to_xyz(parent(S.u))
-            v_var[:,:,:] = _to_xyz(parent(S.v))
+            u_var[:,:,:] = _to_xyz_at_z_indices(parent(S.u), z_indices)
+            v_var[:,:,:] = _to_xyz_at_z_indices(parent(S.v), z_indices)
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -371,7 +428,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Vertical velocity (if requested)
         if write_vertical_velocity && hasfield(typeof(S), :w)
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = _to_xyz(parent(S.w))  # w is already in real space
+            w_var[:,:,:] = _to_xyz_at_z_indices(parent(S.w), z_indices)  # w is already in real space
             
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
@@ -381,7 +438,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Relative vorticity (if requested)
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
+            zeta_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(zeta_r)), z_indices)
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -394,7 +451,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             f0_sq = params.f₀^2
             N2_val = params.N²
             if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
+                a_ell_arr = fill(f0_sq / N2_val, length(z_coordinates))  # Cell-centered values
                 a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
                 a_ell_var[:] = a_ell_arr
                 a_ell_var.attrib["units"] = "s²"
@@ -454,7 +511,8 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
                                        write_waves=write_waves,
                                        write_velocities=write_velocities,
                                        write_vertical_velocity=write_vertical_velocity,
-                                       write_vorticity=write_vorticity)
+                                       write_vorticity=write_vorticity,
+                                       z_levels=manager.z_levels)
         else
             # Gather to rank 0 and write
             # IMPORTANT: gather_state_for_io calls gather_to_root which is a collective
@@ -475,7 +533,8 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
                                           write_waves=write_waves,
                                           write_velocities=write_velocities,
                                           write_vertical_velocity=write_vertical_velocity,
-                                          write_vorticity=write_vorticity)
+                                          write_vorticity=write_vorticity,
+                                          z_levels=manager.z_levels)
             end
             MPI.Barrier(parallel_config.comm)
         end
@@ -522,7 +581,8 @@ This is simpler and more reliable than parallel NetCDF.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
                                     params=nothing, write_psi=true, write_waves=true,
-                                    write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
+                                    write_velocities=false, write_vertical_velocity=false,
+                                    write_vorticity=false, z_levels=nothing)
     # MPI is imported at module level
 
     rank = MPI.Comm_rank(parallel_config.comm)
@@ -542,7 +602,8 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
                                   write_waves=write_waves,
                                   write_velocities=write_velocities,
                                   write_vertical_velocity=write_vertical_velocity,
-                                  write_vorticity=write_vorticity)
+                                  write_vorticity=write_vorticity,
+                                  z_levels=z_levels)
     end
 
     MPI.Barrier(parallel_config.comm)
@@ -597,7 +658,7 @@ The gathered_state should be a named tuple with fields:
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
                                    params=nothing, write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false,
-                                   write_vorticity=false)
+                                   write_vorticity=false, z_levels=nothing)
 
     # Extract gathered fields
     gathered_psi = gathered_state.psi
@@ -659,11 +720,14 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         fft_backward!(zeta_r, zeta_k, temp_plans)
     end
 
+    z_indices = _output_z_indices(G, z_levels)
+    z_coordinates = _output_z_coordinates(G, z_indices)
+
     NCDatasets.Dataset(filepath, "c") do ds
         # Define dimensions
         ds.dim["x"] = G.nx
         ds.dim["y"] = G.ny
-        ds.dim["z"] = G.nz
+        ds.dim["z"] = length(z_coordinates)
         ds.dim["time"] = 1
 
         # Create coordinate variables
@@ -679,15 +743,19 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         # Use domain origin from Grid.
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
-        z_var[:] = G.z  # Use actual grid z-values
+        z_var[:] = z_coordinates
         time_var[1] = time
 
         _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
+        if z_levels !== nothing && !isempty(z_levels)
+            z_var.attrib["requested_z_levels"] = join(string.(z_levels), ", ")
+            z_var.attrib["description"] = "Nearest native grid z coordinates saved for requested z_levels."
+        end
 
         # Write streamfunction (already normalized by fft_backward!)
         if write_psi && gathered_psi !== nothing
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
+            psi_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(psir)), z_indices)
             psi_var.attrib["units"] = "m²/s"
             psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
             psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
@@ -699,8 +767,8 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = _to_xyz(real.(parent(LAr)))  # Real part of LA
-            LAi_var[:,:,:] = _to_xyz(imag.(parent(LAr)))  # Imaginary part of LA
+            LAr_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(LAr)), z_indices)  # Real part of LA
+            LAi_var[:,:,:] = _to_xyz_at_z_indices(imag.(parent(LAr)), z_indices)  # Imaginary part of LA
 
             LAr_var.attrib["units"] = "m/s"
             LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
@@ -714,8 +782,8 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             u_var = NCDatasets.defVar(ds, "u", Float64, ("x", "y", "z"))
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
-            u_var[:,:,:] = _to_xyz(parent(gathered_u))
-            v_var[:,:,:] = _to_xyz(parent(gathered_v))
+            u_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_u), z_indices)
+            v_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_v), z_indices)
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -725,7 +793,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vertical_velocity && gathered_w !== nothing
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = _to_xyz(parent(gathered_w))
+            w_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_w), z_indices)
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
             w_var.attrib["description"] = "Diagnostic vertical velocity from omega equation"
@@ -733,7 +801,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
+            zeta_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(zeta_r)), z_indices)
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -746,7 +814,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             f0_sq = params.f₀^2
             N2_val = params.N²
             if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
+                a_ell_arr = fill(f0_sq / N2_val, length(z_coordinates))  # Cell-centered values
                 a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
                 a_ell_var[:] = a_ell_arr
                 a_ell_var.attrib["units"] = "s²"

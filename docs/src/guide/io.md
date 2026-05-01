@@ -18,6 +18,40 @@ QGYBJ+.jl supports multiple output formats:
 
 ## NetCDF Output
 
+### Oceananigans-Style Output
+
+```julia
+output = NetCDFOutput(path = "output",
+                      schedule = TimeInterval(3600),
+                      fields = (:ψ, :waves),
+                      z = [0.0, -500.0, -1000.0])
+
+simulation = Simulation(model; output)
+run!(simulation)
+```
+
+The `z` or `z_levels` keyword selects the nearest native grid levels before
+writing. For example, `z = 0.0` writes the model level closest to the surface.
+The NetCDF `z` coordinate stores the actual saved grid level, and the requested
+levels are recorded in the coordinate metadata.
+
+To save both the full domain and selected z levels during the same run, pass a
+tuple of output streams:
+
+```julia
+full_output = NetCDFOutput(path = "output/full",
+                           schedule = TimeInterval(3600),
+                           fields = (:ψ, :waves))
+
+surface_output = NetCDFOutput(path = "output/surface",
+                              schedule = TimeInterval(3600),
+                              fields = (:ψ, :waves),
+                              z = 0.0)
+
+simulation = Simulation(model; output = (full_output, surface_output))
+run!(simulation)
+```
+
 ### Basic Setup
 
 ```julia

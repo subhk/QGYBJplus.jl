@@ -140,13 +140,13 @@ function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing, workspace=nothi
     if need_transpose
         _omega_eqn_rhs_2d!(rhs, psi, G, plans, Lmask, workspace)
     else
-        _omega_eqn_rhs_direct!(rhs, psi, G, plans, Lmask)
+        _omega_eqn_rhs_direct!(rhs, psi, G, plans, Lmask, workspace)
     end
     return rhs
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
+function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -159,7 +159,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     @assert nz_local == nz "Vertical dimension must be fully local for omega RHS"
 
     # ψ_z in spectral space (simple finite difference)
-    ψzₖ = similar(psi)
+    ψzₖ = workspace === nothing ? similar(psi) : workspace.spectral1
     ψzₖ_arr = parent(ψzₖ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         if k == nz
@@ -170,8 +170,10 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     end
 
     # Build needed spectral derivatives
-    bxₖ = similar(psi); byₖ = similar(psi)
-    xxₖ = similar(psi); xyₖ = similar(psi)
+    bxₖ = workspace === nothing ? similar(psi) : workspace.spectral2
+    byₖ = workspace === nothing ? similar(psi) : workspace.spectral3
+    xxₖ = workspace === nothing ? similar(psi) : workspace.spectral4
+    xyₖ = workspace === nothing ? similar(psi) : workspace.spectral5
     bxₖ_arr = parent(bxₖ); byₖ_arr = parent(byₖ)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
@@ -192,8 +194,10 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     end
 
     # To real space - use helper for correct pencil allocation
-    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
-    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
+    bxᵣ = workspace === nothing ? _allocate_fft_dst(bxₖ, plans) : workspace.physical1
+    byᵣ = workspace === nothing ? _allocate_fft_dst(byₖ, plans) : workspace.physical2
+    xxᵣ = workspace === nothing ? _allocate_fft_dst(xxₖ, plans) : workspace.physical3
+    xyᵣ = workspace === nothing ? _allocate_fft_dst(xyₖ, plans) : workspace.physical4
     fft_backward!(bxᵣ, bxₖ, plans)
     fft_backward!(byᵣ, byₖ, plans)
     fft_backward!(xxᵣ, xxₖ, plans)
@@ -203,7 +207,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
     # Real-space RHS
-    rhsᵣ = similar(bxᵣ)
+    rhsᵣ = workspace === nothing ? similar(bxᵣ) : workspace.physical5
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )

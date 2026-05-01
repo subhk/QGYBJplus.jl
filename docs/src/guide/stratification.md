@@ -217,19 +217,50 @@ a_ell = a_ell_from_N2(N2_profile, par)
 
 ### From Data File
 
-Load stratification from a NetCDF file:
+Load stratification from a NetCDF file and interpolate it to the numerical
+vertical grid:
 
 ```julia
 using QGYBJplus, NCDatasets
 
-# Read N² profile from file
-N2_profile = read_stratification_profile("N2_data.nc", G)
+profile = FileStratification("stratification.nc")  # reads variables "z" and "N"
 
-# Or read raw data for custom processing
-z_data, N2_data = read_stratification_raw("N2_data.nc")
+grid = RectilinearGrid(size=(256, 256, 128),
+                       x=(-35e3, 35e3),
+                       y=(-35e3, 35e3),
+                       z=(-4000, 0))
+
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=profile)
 ```
 
-`z_data` should be depths (positive below the surface). The model grid uses `z ∈ [-Lz, 0]`, so file profiles are interpreted in depth coordinates.
+`FileStratification` expects dimensional values. By default it reads buoyancy
+frequency `N` and stores `N²(z)` on the solver grid. The vertical coordinate may
+be physical `z <= 0` or positive depth below the surface. If the file stores
+`N²` directly, pass the variable name:
+
+```julia
+profile = FileStratification("stratification.nc"; N2="N2")
+```
+
+For lower-level workflows:
+
+```julia
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0)
+G = init_grid(par)
+profile = FileStratification("stratification.nc")
+N2_profile = compute_stratification_profile(profile, G)
+```
+
+The same constructor also accepts JLD2 files with the same keys:
+
+```julia
+using JLD2
+
+jldsave("stratification.jld2"; z=z_data, N=N_data)
+profile = FileStratification("stratification.jld2")
+```
 
 ## Effects on Dynamics
 

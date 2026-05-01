@@ -1039,8 +1039,13 @@ S_final = run_simulation!(S, G, par, plans; output_config=output_config)
 
 See also: `OutputConfig`, `exp_rk2_step!`
 """
+_normalize_output_configs(::Nothing) = OutputConfig[]
+_normalize_output_configs(config::OutputConfig) = [config]
+_normalize_output_configs(configs::Tuple) = collect(configs)
+_normalize_output_configs(configs::AbstractVector) = configs
+
 function run_simulation!(S::State, G::Grid, par::QGParams, plans;
-                         output_config::Union{OutputConfig,Nothing}=nothing,
+                         output_config=nothing,
                          mpi_config=nothing,
                          parallel_config=nothing,
                          workspace=nothing,
@@ -1101,16 +1106,20 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         invert_L⁺A_to_A!(S, G, par, a_ell; workspace=workspace)
     end
 
-    # Create output manager if config provided
-    output_manager = nothing
-    if output_config !== nothing
-        output_manager = OutputManager(output_config, par, parallel_config)
+    # Create output managers if config provided. A collection of OutputConfig
+    # objects allows one run to write multiple products, such as full-domain
+    # state files and nearest-level z slices.
+    output_configs = _normalize_output_configs(output_config)
+    output_managers = [OutputManager(config, par, parallel_config) for config in output_configs]
+    if !isempty(output_managers)
 
         # Save initial state
         if is_root && print_progress
             println("Saving initial state...")
         end
-        write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
+        for output_manager in output_managers
+            write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
+        end
     end
 
     # Determine progress interval
@@ -1126,21 +1135,23 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
 
     # Compute save intervals in steps
-    psi_save_steps = output_config !== nothing && output_config.save_psi && output_config.psi_interval > 0 ?
-                     max(1, round(Int, output_config.psi_interval / dt)) : 0
-    wave_save_steps = output_config !== nothing && output_config.save_waves && output_config.wave_interval > 0 ?
-                      max(1, round(Int, output_config.wave_interval / dt)) : 0
+    psi_save_steps = [config.save_psi && config.psi_interval > 0 ?
+                      max(1, round(Int, config.psi_interval / dt)) : 0 for config in output_configs]
+    wave_save_steps = [config.save_waves && config.wave_interval > 0 ?
+                       max(1, round(Int, config.wave_interval / dt)) : 0 for config in output_configs]
     if is_root && print_progress
         println("\n" * "="^60)
         println("Starting time integration (exponential RK2)...")
         println("  Steps: $nt, dt: $dt")
-        if psi_save_steps > 0 || wave_save_steps > 0
-            if psi_save_steps > 0 && wave_save_steps > 0
-                println("  Saving ψ every $psi_save_steps steps, waves every $wave_save_steps steps")
-            elseif psi_save_steps > 0
-                println("  Saving ψ every $psi_save_steps steps")
-            else
-                println("  Saving waves every $wave_save_steps steps")
+        for (config, psi_steps, wave_steps) in zip(output_configs, psi_save_steps, wave_save_steps)
+            if psi_steps > 0 || wave_steps > 0
+                if psi_steps > 0 && wave_steps > 0
+                    println("  Saving $(config.output_dir): ψ every $psi_steps steps, waves every $wave_steps steps")
+                elseif psi_steps > 0
+                    println("  Saving $(config.output_dir): ψ every $psi_steps steps")
+                else
+                    println("  Saving $(config.output_dir): waves every $wave_steps steps")
+                end
             end
         end
         println("  Diagnostics every $diagnostics_interval steps")
@@ -1173,9 +1184,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
             end
         end
 
-        if output_manager !== nothing
-            write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
-            write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
+        for (output_manager, psi_steps, wave_steps) in zip(output_managers, psi_save_steps, wave_save_steps)
+            write_psi = psi_steps > 0 && step % psi_steps == 0
+            write_waves = wave_steps > 0 && step % wave_steps == 0
             if write_psi || write_waves
                 write_state_file(output_manager, state, G, plans, current_time, parallel_config;
                                  params=par, write_psi=write_psi, write_waves=write_waves)
@@ -1231,8 +1242,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     if is_root && print_progress
         println("\n" * "="^60)
         println("Simulation complete!")
-        if output_manager !== nothing
-            println("Output saved to: $(output_config.output_dir)/")
+        if !isempty(output_configs)
+            println("Output saved to: " * join((config.output_dir * "/" for config in output_configs), ", "))
         end
         println("="^60)
     end

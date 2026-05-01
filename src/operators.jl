@@ -135,27 +135,95 @@ const _allocate_fft_dst = allocate_fft_backward_dst
 # (Direct import via `using ..QGYBJplus: invert_L⁺A_to_A!` can fail in some loading contexts)
 # @inline invert_L⁺A_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_L⁺A_to_A!(args...; kwargs...)
 
-function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid)
+function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid, scratch=nothing)
     N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
     N2_const_T = N2_type(N2_const)
+    scratch_profile = if scratch !== nothing && hasfield(typeof(scratch), :N2_profile)
+        resize!(scratch.N2_profile, nz)
+    else
+        nothing
+    end
 
     if N2_profile === nothing
-        return fill(N2_const_T, nz)
+        if scratch_profile !== nothing
+            fill!(scratch_profile, N2_const_T)
+            return scratch_profile
+        else
+            return fill(N2_const_T, nz)
+        end
     end
 
     if length(N2_profile) != nz
         @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=$(N2_const)"
-        return fill(N2_const_T, nz)
+        if scratch_profile !== nothing
+            fill!(scratch_profile, N2_const_T)
+            return scratch_profile
+        else
+            return fill(N2_const_T, nz)
+        end
+    end
+
+    if scratch_profile !== nothing &&
+       (!(eltype(N2_profile) <: Real) || eltype(N2_profile) != N2_type)
+        @inbounds for k in 1:nz
+            scratch_profile[k] = N2_type(real(N2_profile[k]))
+        end
+        return scratch_profile
     end
 
     if !(eltype(N2_profile) <: Real)
-        N2_profile = real.(N2_profile)
+        return real.(N2_profile)
+    elseif eltype(N2_profile) != N2_type
+        return N2_type.(N2_profile)
+    else
+        return N2_profile
     end
-    if eltype(N2_profile) != N2_type
-        N2_profile = N2_type.(N2_profile)
-    end
+end
 
-    return N2_profile
+function _vertical_tridiagonal_workspace(workspace, n_interior::Int, ::Type{C}) where C
+    if workspace !== nothing && hasfield(typeof(workspace), :vertical_d)
+        n_offdiag = max(n_interior - 1, 0)
+        resize!(workspace.vertical_d, n_interior)
+        resize!(workspace.vertical_dₗ, n_offdiag)
+        resize!(workspace.vertical_dᵤ, n_offdiag)
+        resize!(workspace.vertical_rhs, n_interior)
+        resize!(workspace.vertical_dₗ_work, n_offdiag)
+        resize!(workspace.vertical_d_work, n_interior)
+        resize!(workspace.vertical_dᵤ_work, n_offdiag)
+        resize!(workspace.vertical_rhsᵣ, n_interior)
+        resize!(workspace.vertical_rhsᵢ, n_interior)
+        resize!(workspace.vertical_solᵣ, n_interior)
+        resize!(workspace.vertical_solᵢ, n_interior)
+        return (
+            workspace.vertical_d,
+            workspace.vertical_dₗ,
+            workspace.vertical_dᵤ,
+            workspace.vertical_rhs,
+            workspace.vertical_dₗ_work,
+            workspace.vertical_d_work,
+            workspace.vertical_dᵤ_work,
+            workspace.vertical_rhsᵣ,
+            workspace.vertical_rhsᵢ,
+            workspace.vertical_solᵣ,
+            workspace.vertical_solᵢ,
+        )
+    else
+        R = typeof(real(zero(C)))
+        n_offdiag = max(n_interior - 1, 0)
+        return (
+            zeros(R, n_interior),
+            zeros(R, n_offdiag),
+            zeros(R, n_offdiag),
+            zeros(C, n_interior),
+            zeros(R, n_offdiag),
+            zeros(R, n_interior),
+            zeros(R, n_offdiag),
+            zeros(R, n_interior),
+            zeros(R, n_interior),
+            zeros(R, n_interior),
+            zeros(R, n_interior),
+        )
+    end
 end
 
 #=
@@ -280,6 +348,7 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
 
     # Compute vertical velocity if requested
     if compute_w
+        omega_workspace = velocity_workspace === nothing ? nothing : velocity_workspace.nonlinear
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
             compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace)
@@ -287,7 +356,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
             compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, 
-                                workspace=workspace, dealias_mask=dealias_mask)
+                                workspace=workspace, dealias_mask=dealias_mask,
+                                omega_workspace=omega_workspace)
         end
     else
         # Set w to zero (leading-order QG approximation)
@@ -366,7 +436,8 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 Matches omega equation solver in the Fortran implementation.
 """
 function compute_vertical_velocity!(S::State, G::Grid, plans, params; 
-                            N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+                            N2_profile=nothing, workspace=nothing,
+                            dealias_mask=nothing, omega_workspace=nothing)
     # Compute default dealiasing mask if not provided
     # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
     if dealias_mask === nothing
@@ -379,13 +450,13 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params;
     if need_transpose
         _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, dealias_mask)
     else
-        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask)
+        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask, omega_workspace)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask)
+function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask, omega_workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -397,8 +468,9 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # Get RHS of omega equation with proper dealiasing
     # Previous code never passed dealias_mask, causing aliasing in the quadratic RHS term
-    rhsk = similar(S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
+    rhsk = omega_workspace === nothing ? similar(S.psi) : omega_workspace.spectral6
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask,
+                                      workspace=omega_workspace)
     rhsk_arr = parent(rhsk)
 
     # Get stratification parameters
@@ -416,11 +488,11 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, omega_workspace)
 
     # Solve the full omega equation: ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
     # Note: The RHS from omega_eqn_rhs! is 2 J(ψ_z, ∇²ψ), so we multiply by f/N² below
-    wk = similar(S.psi)
+    wk = omega_workspace === nothing ? similar(S.psi) : omega_workspace.spectral5
     wk_arr = parent(wk)
     fill!(wk_arr, 0.0)
 
@@ -430,17 +502,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     # Pre-allocate work arrays outside loop to reduce GC pressure
     n_interior = nz - 2  # Interior points (constant for all wavenumbers)
     if n_interior > 0
-        d = zeros(Float64, n_interior)
-        dₗ = zeros(Float64, n_interior-1)
-        dᵤ = zeros(Float64, n_interior-1)
-        rhs = zeros(eltype(S.psi), n_interior)
-        dₗ_work = zeros(Float64, n_interior-1)
-        d_work = zeros(Float64, n_interior)
-        dᵤ_work = zeros(Float64, n_interior-1)
-        rhsᵣ = zeros(Float64, n_interior)
-        rhsᵢ = zeros(Float64, n_interior)
-        solᵣ = zeros(Float64, n_interior)
-        solᵢ = zeros(Float64, n_interior)
+        d, dₗ, dᵤ, rhs, dₗ_work, d_work, dᵤ_work, rhsᵣ, rhsᵢ, solᵣ, solᵢ =
+            _vertical_tridiagonal_workspace(omega_workspace, n_interior, eltype(S.psi))
     end
 
     # For each LOCAL horizontal wavenumber (kₓ, kᵧ), solve tridiagonal system
@@ -519,7 +582,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     end
 
     # Transform to real space
-    tmpw = _allocate_fft_dst(wk, plans)
+    tmpw = omega_workspace === nothing ? _allocate_fft_dst(wk, plans) : omega_workspace.physical6
     fft_backward!(tmpw, wk, plans)
     tmpw_arr = parent(tmpw)
 

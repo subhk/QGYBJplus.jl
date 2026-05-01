@@ -69,7 +69,7 @@ use the FFT backward destination pencil. The workspace is intentionally generic
 because nonlinear kernels run sequentially and can reuse the same buffers for
 advection, refraction, Jacobians, and wave-feedback terms.
 """
-struct NonlinearWorkspace{A, P}
+struct NonlinearWorkspace{A, P, R, C}
     spectral1::A
     spectral2::A
     spectral3::A
@@ -82,6 +82,18 @@ struct NonlinearWorkspace{A, P}
     physical4::P
     physical5::P
     physical6::P
+    vertical_d::Vector{R}
+    vertical_dₗ::Vector{R}
+    vertical_dᵤ::Vector{R}
+    vertical_rhs::Vector{C}
+    vertical_dₗ_work::Vector{R}
+    vertical_d_work::Vector{R}
+    vertical_dᵤ_work::Vector{R}
+    vertical_rhsᵣ::Vector{R}
+    vertical_rhsᵢ::Vector{R}
+    vertical_solᵣ::Vector{R}
+    vertical_solᵢ::Vector{R}
+    N2_profile::Vector{R}
 end
 
 function NonlinearWorkspace(spectral_template, plans)
@@ -99,8 +111,26 @@ function NonlinearWorkspace(spectral_template, plans)
     physical5 = _allocate_fft_dst(spectral_template, plans)
     physical6 = _allocate_fft_dst(spectral_template, plans)
 
+    C = eltype(spectral_template)
+    R = typeof(real(zero(C)))
+    nz = size(parent(spectral_template), 1)
+    n_interior = max(nz - 2, 0)
+    n_offdiag = max(n_interior - 1, 0)
+
     return NonlinearWorkspace(spectral1, spectral2, spectral3, spectral4, spectral5, spectral6,
-                              physical1, physical2, physical3, physical4, physical5, physical6)
+                              physical1, physical2, physical3, physical4, physical5, physical6,
+                              zeros(R, n_interior),
+                              zeros(R, n_offdiag),
+                              zeros(R, n_offdiag),
+                              zeros(C, n_interior),
+                              zeros(R, n_offdiag),
+                              zeros(R, n_interior),
+                              zeros(R, n_offdiag),
+                              zeros(R, n_interior),
+                              zeros(R, n_interior),
+                              zeros(R, n_interior),
+                              zeros(R, n_interior),
+                              zeros(R, nz))
 end
 
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.

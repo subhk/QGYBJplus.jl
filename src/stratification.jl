@@ -11,8 +11,10 @@ Provides various stratification profiles including:
 - Analytical N(z) or N²(z) profiles
 """
 
+using JLD2
+using NCDatasets
 using SpecialFunctions: erf
-using ..QGYBJplus: Grid, read_stratification_raw
+using ..QGYBJplus: Grid
 
 """
     StratificationProfile{T}
@@ -79,13 +81,47 @@ end
 """
     FileProfile{T} <: StratificationProfile{T}
 
-Stratification profile from file.
+Stratification profile loaded from file.
 """
 struct FileProfile{T} <: StratificationProfile{T}
     filename::String
-    z_data::Vector{T}    # Depths (positive below surface)
-    N2_data::Vector{T}
+    z_data::Vector{T}     # Physical z coordinate [m], sorted bottom to surface.
+    data::Vector{T}       # N [s⁻¹] or N² [s⁻²].
+    is_N2::Bool
 end
+
+function FileProfile{T}(filename::AbstractString,
+                        z_data::AbstractVector,
+                        N2_data::AbstractVector) where T
+    z_model, values = _normalize_file_stratification(T.(z_data), T.(N2_data), T)
+    return FileProfile{T}(String(filename), z_model, values, true)
+end
+
+"""
+    FileStratification(filename; z="z", N="N", N2=nothing, N²=nothing)
+    FileProfile(filename; z="z", N="N", N2=nothing, N²=nothing)
+
+Load a dimensional stratification profile from a NetCDF file.
+
+By default the file is expected to contain vertical coordinate `z` and
+buoyancy frequency `N`. If the file stores buoyancy frequency squared, pass
+`N2="variable_name"` (or `N²="variable_name"`). Positive `z` coordinates are
+interpreted as depth below the surface and converted to physical `z <= 0`.
+"""
+function FileProfile(filename::AbstractString;
+                     z::AbstractString = "z",
+                     N::Union{Nothing, AbstractString} = "N",
+                     N2::Union{Nothing, AbstractString} = nothing,
+                     N²::Union{Nothing, AbstractString} = nothing,
+                     T::Type{<:AbstractFloat} = Float64)
+
+    z_data, data, is_N2 = _read_file_stratification(filename; z, N, N2, N², T)
+    z_model, values = _normalize_file_stratification(z_data, data, T)
+
+    return FileProfile{T}(String(filename), z_model, values, is_N2)
+end
+
+FileStratification(args...; kwargs...) = FileProfile(args...; kwargs...)
 
 """
     AnalyticalProfile{T} <: StratificationProfile{T}
@@ -155,6 +191,134 @@ function create_stratification_profile(config)
     else
         error("Unknown stratification type: $(config.type)")
     end
+end
+
+function _read_file_stratification(filename::AbstractString;
+                                   z::AbstractString,
+                                   N::Union{Nothing, AbstractString},
+                                   N2::Union{Nothing, AbstractString},
+                                   N²::Union{Nothing, AbstractString},
+                                   T::Type{<:AbstractFloat})
+    extension = lowercase(splitext(String(filename))[2])
+    if extension == ".jld2"
+        return _read_jld2_stratification(filename; z, N, N2, N², T)
+    else
+        return _read_netcdf_stratification(filename; z, N, N2, N², T)
+    end
+end
+
+function _read_netcdf_stratification(filename::AbstractString;
+                                     z::AbstractString,
+                                     N::Union{Nothing, AbstractString},
+                                     N2::Union{Nothing, AbstractString},
+                                     N²::Union{Nothing, AbstractString},
+                                     T::Type{<:AbstractFloat})
+    z_data = T[]
+    values = T[]
+    is_N2 = false
+
+    N2_name = N2 === nothing ? N² : N2
+
+    NCDataset(filename, "r") do ds
+        haskey(ds, z) || throw(ArgumentError("No vertical coordinate '$z' found in $filename."))
+        z_data = vec(T.(Array(ds[z][:])))
+
+        if N2_name !== nothing
+            haskey(ds, N2_name) || throw(ArgumentError("No N² variable '$N2_name' found in $filename."))
+            values = vec(T.(Array(ds[N2_name][:])))
+            is_N2 = true
+        elseif N !== nothing && haskey(ds, N)
+            values = vec(T.(Array(ds[N][:])))
+            is_N2 = false
+        else
+            found_N2 = findfirst(name -> haskey(ds, name), _common_N2_names())
+            if found_N2 !== nothing
+                name = _common_N2_names()[found_N2]
+                values = vec(T.(Array(ds[name][:])))
+                is_N2 = true
+            else
+                expected = _expected_stratification_variable_message(N)
+                throw(ArgumentError("No stratification variable found in $filename. Expected $expected."))
+            end
+        end
+    end
+
+    return z_data, values, is_N2
+end
+
+function _read_jld2_stratification(filename::AbstractString;
+                                   z::AbstractString,
+                                   N::Union{Nothing, AbstractString},
+                                   N2::Union{Nothing, AbstractString},
+                                   N²::Union{Nothing, AbstractString},
+                                   T::Type{<:AbstractFloat})
+    data = JLD2.load(filename)
+    haskey(data, z) || throw(ArgumentError("No vertical coordinate '$z' found in $filename."))
+
+    z_data = vec(T.(data[z]))
+    N2_name = N2 === nothing ? N² : N2
+
+    if N2_name !== nothing
+        haskey(data, N2_name) || throw(ArgumentError("No N² variable '$N2_name' found in $filename."))
+        return z_data, vec(T.(data[N2_name])), true
+    elseif N !== nothing && haskey(data, N)
+        return z_data, vec(T.(data[N])), false
+    else
+        found_N2 = findfirst(name -> haskey(data, name), _common_N2_names())
+        if found_N2 !== nothing
+            name = _common_N2_names()[found_N2]
+            return z_data, vec(T.(data[name])), true
+        end
+    end
+
+    expected = _expected_stratification_variable_message(N)
+    throw(ArgumentError("No stratification variable found in $filename. Expected $expected."))
+end
+
+_common_N2_names() = ("N2", "N²", "N_squared", "buoyancy_frequency_squared",
+                      "brunt_vaisala_frequency_squared")
+
+_expected_stratification_variable_message(N) =
+    N === nothing ? join(_common_N2_names(), ", ") :
+    string("'", N, "' or one of ", join(_common_N2_names(), ", "))
+
+function _normalize_file_stratification(z_data::AbstractVector,
+                                        values::AbstractVector,
+                                        ::Type{T}) where T
+    length(z_data) == length(values) ||
+        throw(ArgumentError("Stratification coordinate and data lengths differ: " *
+                            "$(length(z_data)) z values, $(length(values)) data values."))
+    length(z_data) >= 2 ||
+        throw(ArgumentError("File-backed stratification requires at least two vertical levels."))
+    all(isfinite, z_data) || throw(ArgumentError("Stratification z values must be finite."))
+    all(isfinite, values) || throw(ArgumentError("Stratification values must be finite."))
+
+    z_model = minimum(z_data) >= zero(T) ? -collect(z_data) : collect(z_data)
+    data = collect(values)
+    permutation = sortperm(z_model)
+    z_sorted = z_model[permutation]
+    values_sorted = data[permutation]
+
+    all(diff(z_sorted) .> zero(T)) ||
+        throw(ArgumentError("Stratification z coordinates must be unique after sorting."))
+
+    return z_sorted, values_sorted
+end
+
+function _linear_interpolate(z_data::AbstractVector{T}, values::AbstractVector{T}, z::Real) where T
+    zT = T(z)
+    if zT <= z_data[1]
+        return values[1]
+    elseif zT >= z_data[end]
+        return values[end]
+    end
+
+    lower = searchsortedlast(z_data, zT)
+    lower = clamp(lower, 1, length(z_data) - 1)
+    upper = lower + 1
+    weight = (zT - z_data[lower]) / (z_data[upper] - z_data[lower])
+
+    return (one(T) - weight) * values[lower] + weight * values[upper]
 end
 
 """
@@ -258,29 +422,15 @@ end
 """
     evaluate_N2(profile::FileProfile, z::Real)
 
-Evaluate N² for file-based profile using interpolation.
+Evaluate N² for file-based profile using physical-z interpolation.
 """
 function evaluate_N2(profile::FileProfile{T}, z::Real) where T
-    depth = -z
-    # Linear interpolation
-    if depth <= profile.z_data[1]
-        return profile.N2_data[1]
-    elseif depth >= profile.z_data[end]
-        return profile.N2_data[end]
+    value = _linear_interpolate(profile.z_data, profile.data, z)
+    if profile.is_N2
+        return max(value, zero(T))
     else
-        # Find surrounding points
-        for i in 1:(length(profile.z_data)-1)
-            if profile.z_data[i] <= depth <= profile.z_data[i+1]
-                # Linear interpolation
-                α = (depth - profile.z_data[i]) / (profile.z_data[i+1] - profile.z_data[i])
-                return (1-α) * profile.N2_data[i] + α * profile.N2_data[i+1]
-            end
-        end
+        return max(value, zero(T))^2
     end
-
-    # Should never reach here - indicates a logic error or malformed profile data
-    error("evaluate_N2: Failed to interpolate N² at depth=$depth. " *
-          "z_data range: [$(profile.z_data[1]), $(profile.z_data[end])]")
 end
 
 """
@@ -396,18 +546,10 @@ end
 
 Load stratification profile from NetCDF file.
 
-Uses `read_stratification_raw` to read both z coordinates and N² values
-without interpolation. The resulting FileProfile can then be evaluated
-at any z (depth = -z) using linear interpolation.
+This is a legacy alias for `FileProfile(filename; kwargs...)`. By default it
+reads variables `z` and `N`, and it also supports `N2`/`N²` variables.
 """
-function load_stratification_from_file(filename::String)
-    T = Float64
-
-    # Use read_stratification_raw which returns (z_data, N2_data) tuple
-    z_data, N2_data = read_stratification_raw(filename)
-
-    return FileProfile{T}(filename, Vector{T}(z_data), Vector{T}(N2_data))
-end
+load_stratification_from_file(filename::String; kwargs...) = FileProfile(filename; kwargs...)
 
 """
     create_standard_profiles(Lz::Real)

@@ -1,5 +1,6 @@
 using Test
 using QGYBJplus
+using JLD2
 using NCDatasets
 
 # Test domain size (small for unit tests)
@@ -67,6 +68,62 @@ end
     @test any(occursin("Empty", e) for e in errors)
 end
 
+@testset "File-backed stratification" begin
+    filename = tempname() * ".nc"
+    z_file = [-TEST_Lz, -TEST_Lz / 2, 0.0]
+    N_file = [1.0e-3, 2.0e-3, 3.0e-3]
+
+    NCDataset(filename, "c") do ds
+        defDim(ds, "z", length(z_file))
+        z_var = defVar(ds, "z", Float64, ("z",))
+        N_var = defVar(ds, "N", Float64, ("z",))
+        z_var[:] = z_file
+        N_var[:] = N_file
+    end
+
+    par = default_params(nx=4, ny=4, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G = init_grid(par)
+
+    profile = FileStratification(filename)
+    N2_profile = compute_stratification_profile(profile, G)
+    expected_N = [1.0e-3, 1.5e-3, 2.0e-3, 2.5e-3]
+    expected_N2 = expected_N .^ 2
+
+    @test N2_profile ≈ expected_N2
+
+    grid = RectilinearGrid(size=(4, 4, 4),
+                           x=(-TEST_Lx/2, TEST_Lx/2),
+                           y=(-TEST_Ly/2, TEST_Ly/2),
+                           z=(-TEST_Lz, 0.0))
+    model = QGYBJModel(grid=grid,
+                       stratification=profile,
+                       verbose=false)
+
+    @test model.N2_profile ≈ expected_N2
+    @test model.params.N² ≈ sum(expected_N2) / length(expected_N2)
+
+    depth_filename = tempname() * ".nc"
+    depth_file = [0.0, TEST_Lz / 2, TEST_Lz]
+    N_depth_file = reverse(N_file)
+
+    NCDataset(depth_filename, "c") do ds
+        defDim(ds, "z", length(depth_file))
+        z_var = defVar(ds, "z", Float64, ("z",))
+        N_var = defVar(ds, "N", Float64, ("z",))
+        z_var[:] = depth_file
+        N_var[:] = N_depth_file
+    end
+
+    depth_profile = FileStratification(depth_filename)
+    @test compute_stratification_profile(depth_profile, G) ≈ expected_N2
+
+    jld2_filename = tempname() * ".jld2"
+    jldsave(jld2_filename; z=z_file, N=N_file)
+
+    jld2_profile = FileStratification(jld2_filename)
+    @test compute_stratification_profile(jld2_profile, G) ≈ expected_N2
+end
+
 @testset "Edge cases" begin
     # nz=1 should work (single vertical level)
     par_nz1 = default_params(nx=8, ny=8, nz=1, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
@@ -103,7 +160,8 @@ end
                             stop_time=25.0,
                             output=NetCDFOutput(path="interface_output",
                                                 schedule=TimeInterval(20.0),
-                                                fields=(:ψ, :waves)),
+                                                fields=(:ψ, :waves),
+                                                z=0.0),
                             diagnostics=IterationInterval(3),
                             verbose=false)
 
@@ -116,6 +174,7 @@ end
     @test simulation.params.dt == 10.0
     @test simulation.params.nt == 2
     @test simulation.run_options.output_dir == "interface_output"
+    @test simulation.run_options.output_z_levels == [0.0]
     @test simulation.run_options.save_interval == 20.0
     @test simulation.run_options.diagnostics_interval == 3
     @test any(!iszero, parent(model.state.psi))
@@ -298,6 +357,56 @@ end
         @test ds["time"].attrib["description"] == "Elapsed seconds since the start of the simulation."
         @test ds["z"].attrib["positive"] == "up"
         @test ds["psi"].attrib["long_name"] == "quasi-geostrophic streamfunction"
+    end
+
+    z_config = create_output_config(output_dir=outdir,
+                                    state_file_pattern="z_state%04d.nc",
+                                    save_psi=true,
+                                    save_waves=false,
+                                    save_velocities=false,
+                                    save_diagnostics=false,
+                                    z_levels=[0.0, -TEST_Lz])
+    z_manager = OutputManager(z_config, par)
+    z_filepath = write_state_file(z_manager, S, G, plans, 120.0; params=par,
+                                  write_psi=true, write_waves=false)
+
+    NCDataset(z_filepath, "r") do ds
+        @test ds["z"][:] ≈ [G.z[end], G.z[1]]
+        @test size(ds["psi"]) == (G.nx, G.ny, 2)
+        @test ds["z"].attrib["description"] == "Nearest native grid z coordinates saved for requested z_levels."
+    end
+
+    full_outdir = mktempdir()
+    surface_outdir = mktempdir()
+    par_multi = default_params(nx=4, ny=4, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                               nt=1, dt=1.0, fixed_flow=true, no_feedback=true,
+                               no_wave_feedback=true)
+    G_multi, S_multi, plans_multi, a_multi = setup_model(par_multi)
+    invert_q_to_psi!(S_multi, G_multi; a=a_multi, par=par_multi)
+
+    full_config = create_output_config(output_dir=full_outdir,
+                                       save_psi=true,
+                                       save_waves=false,
+                                       save_velocities=false,
+                                       save_diagnostics=false)
+    surface_config = create_output_config(output_dir=surface_outdir,
+                                          save_psi=true,
+                                          save_waves=false,
+                                          save_velocities=false,
+                                          save_diagnostics=false,
+                                          z_levels=[0.0])
+
+    run_simulation!(S_multi, G_multi, par_multi, plans_multi;
+                    output_config=(full_config, surface_config),
+                    print_progress=false,
+                    diagnostics_interval=1)
+
+    NCDataset(joinpath(full_outdir, "state0001.nc"), "r") do ds
+        @test size(ds["psi"]) == (G_multi.nx, G_multi.ny, G_multi.nz)
+    end
+    NCDataset(joinpath(surface_outdir, "state0001.nc"), "r") do ds
+        @test ds["z"][:] ≈ [G_multi.z[end]]
+        @test size(ds["psi"]) == (G_multi.nx, G_multi.ny, 1)
     end
 end
 
@@ -525,11 +634,15 @@ end
 
     exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L,
                   timestep_workspace=timestep_workspace)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
+
+    without_workspace_allocations = @allocated exp_rk2_step!(Snp1, S, G, par, plans;
+                                                             a=a, dealias_mask=L)
     step_allocations = @allocated exp_rk2_step!(Snp1, S, G, par, plans; a=a,
                                                 dealias_mask=L,
                                                 timestep_workspace=timestep_workspace)
 
-    @test step_allocations < 4_500_000
+    @test step_allocations < 0.9 * without_workspace_allocations
 end
 
 @testset "Nonlinear operator normalization and balance" begin

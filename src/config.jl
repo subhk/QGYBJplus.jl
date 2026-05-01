@@ -138,6 +138,9 @@ Base.@kwdef struct OutputConfig{T}
     save_vertical_velocity::Bool = false
     save_vorticity::Bool = false
     save_diagnostics::Bool = true
+
+    # Optional physical z levels for 3D output. Empty means save native grid levels.
+    z_levels::Vector{T} = T[]
 end
 
 """

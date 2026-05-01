@@ -60,6 +60,7 @@ export
 
     # Stratification
     StratificationProfile, ConstantN, SkewedGaussian, TanhProfile, AnalyticalProfile,
+    FileProfile, FileStratification,
     create_stratification_profile, compute_stratification_profile,
 
     # MPI parallel interface
@@ -69,6 +70,7 @@ export
     init_mpi_workspace, plan_mpi_transforms,
     gather_to_root, scatter_from_root, mpi_barrier, mpi_reduce_sum, local_indices,
     write_mpi_field, init_mpi_random_field!, parallel_initialize_fields!,
+    clear_mpi_transpose_buffer_cache!,
     reduce_sum_if_mpi, reduce_min_if_mpi, reduce_max_if_mpi,
     transpose_to_z_pencil!, transpose_to_xy_pencil!,
     get_local_range_xy, get_local_range_z, local_to_global_xy, local_to_global_z,
