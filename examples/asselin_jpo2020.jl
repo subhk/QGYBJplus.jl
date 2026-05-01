@@ -14,22 +14,12 @@ USAGE:
     mpirun -n 4 julia --project examples/asselin_jpo2020.jl
     mpirun -n 16 julia --project examples/asselin_jpo2020.jl
 
-TIME-STEPPING OPTIONS:
-----------------------
-This example supports two time-stepping methods:
-- :leapfrog (default in Fortran): Explicit leapfrog with Robert-Asselin filter
-                                  Requires dt ≤ 2f/N² ≈ 2s for dispersion CFL
-- :imex_cn: IMEX Crank-Nicolson with implicit dispersion
-            Allows dt ~ 20s (10x speedup), only limited by advection CFL
-
-Set TIMESTEPPER in the parameters section below to choose.
+The model uses a second-order exponential Runge-Kutta time stepper. Equations
+and parameters are kept in dimensional form.
 
 ================================================================================
 =#
 
-using MPI
-using PencilArrays
-using PencilFFTs
 using QGYBJplus
 using Printf
 
@@ -37,214 +27,105 @@ using Printf
 #                       SIMULATION PARAMETERS
 # ============================================================================
 
-const nx = 256
-const ny = 256
-const nz = 128
+nx = 256
+ny = 256
+nz = 128
 
 # Physical parameters from Asselin et al. (2020)
-const f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
-const N² = 1e-5              # Buoyancy frequency squared [s⁻²]
+f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
+N² = 1.0e-5            # Buoyancy frequency squared [s⁻²]
 
 # Domain size [m] (Asselin et al. 2020)
 # Grid is in cardinal (X,Y) coordinates with 70 km periodic domain
 # Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
-const Lx = 70e3              # 70 km horizontal domain in (X,Y)
-const Ly = 70e3              # 70 km horizontal domain in (X,Y)
-const Lz = 2000.0            # 2 km depth, surface at z = 0
+Lx = 70.0e3            # 70 km horizontal domain in (X,Y)
+Ly = 70.0e3            # 70 km horizontal domain in (X,Y)
+Lz = 3.0e3             # H = 3 km depth, surface at z = 0
 
 # Time stepping
-const n_inertial_periods = 15
-const T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
-
-# Time-stepping method selection:
-# - :leapfrog (default): Explicit leapfrog with Robert-Asselin filter
-#                        CFL-limited by wave dispersion: dt ≤ 2f/N² ≈ 25s
-# - :imex_cn: IMEX Crank-Nicolson with implicit dispersion
-#             Allows larger dt (limited only by advection CFL)
-const TIMESTEPPER = :imex_cn  # Options: :leapfrog or :imex_cn
-
-# Timestep selection based on method
-# IMEX allows ~10x larger timesteps since dispersion is treated implicitly
-const dt = TIMESTEPPER == :imex_cn ? 20.0 : 2.0  # [s]
-const nt = round(Int, n_inertial_periods * T_inertial / dt)
+n_inertial_periods = 15.0
+T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
+dt = 2.0                # [s]
+nt = round(Int, n_inertial_periods * T_inertial / dt)
 
 # Wave parameters
-const u0_wave = 0.10         # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
-const surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
+u0_wave = 0.10         # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
+surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
-const U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
-const k_dipole = sqrt(2) * π / Lx  # κ = √2π/(70 km) per Asselin et al. (2020)
-const psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
+U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
+k_dipole = sqrt(2) * π / Lx  # κ = √2π/(70 km) per Asselin et al. (2020)
+psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
+vorticity_gradient = 2 * k_dipole^2 * U0_flow  # γ = 2κ²U ≈ 2.7e-9 m⁻¹ s⁻¹
+rossby_rms = k_dipole * U0_flow / f₀           # κU/f ≈ 0.17
 
 # Output settings
-const output_dir = "output_asselin"
-const save_interval_IP = 1.0  # Save every 1 inertial period
-const diag_interval_IP = 0.5  # Print diagnostics every 0.5 inertial periods
+output_dir = "output_asselin"
+save_interval_IP = 5.0  # Paper figures use 5, 10, and 15 inertial periods
+diag_interval_IP = 0.5  # Print diagnostics every 0.5 inertial periods
 
-# ============================================================================
-#                       MAIN FUNCTION
-# ============================================================================
+"""
+    asselin_dipole_streamfunction(X, Y, z)
 
-function main()
-    MPI.Init()
-    mpi_config = QGYBJplus.setup_mpi_environment(parallel_io=false)
-    is_root = mpi_config.is_root
+Dimensional streamfunction from Asselin et al. (2020), Eq. (2).
 
-    # Create output directory
-    if is_root
-        mkpath(output_dir)
-        println("="^70)
-        println("Asselin et al. (2020) Dipole - MPI Parallel")
-        println("="^70)
-        println("Processes: $(mpi_config.nprocs), Topology: $(mpi_config.topology)")
-        @printf("Resolution: %d × %d × %d, Duration: %.1f IP\n", nx, ny, nz, n_inertial_periods)
-        println("Output directory: $output_dir")
-    end
-    MPI.Barrier(mpi_config.comm)
+The code grid uses cardinal coordinates `(X, Y)`. The paper's dipole formula is
+written in coordinates rotated by 45 degrees:
 
-    # Parameters matching Asselin et al. (2020)
-    # Fully dimensional simulation with physical domain size
-    # Domain centered at origin: x,y ∈ [-35km, +35km) as in Fig. 2 of paper
-    # Biharmonic (4th order) hyperdiffusion for waves
-    # For meaningful damping at grid scale: λʷ = dt × ν × k_max⁴ ≈ 0.1
-    # k_max = π×nx/Lx ≈ 5.7e-3 m⁻¹, k_max⁴ ≈ 1.1e-9 m⁻⁴
-    # νₕ₁ʷ ≈ 0.01 / (dt × k_max⁴) ≈ 1e5 m⁴/s
-    νₕ₁ʷ_wave = 1.0e5  # [m⁴/s] - grid-scale damping ~0.1% per timestep
-
-    par = QGYBJplus.default_params(
-        nx = nx, ny = ny, nz = nz,
-        Lx = Lx, Ly = Ly, Lz = Lz,  # Domain size [m]
-        centered = true,       # Center domain at origin: x,y ∈ [-Lx/2, Lx/2)
-        dt = dt, nt = nt,
-        f₀ = f₀,               # Coriolis parameter [s⁻¹]
-        N² = N²,               # Buoyancy frequency squared [s⁻²]
-        ybj_plus = true,
-        fixed_flow = true,
-        no_wave_feedback = true,
-        νₕ₁ʷ = νₕ₁ʷ_wave,      # ∇⁴ hyperdiffusion for waves
-        ilap1w = 2,            # 4th order (biharmonic)
-        γ = 0.001               # Stronger Robert-Asselin filter (default: 1e-3)
-    )
-
-    # Initialize distributed grid, plans, and state
-    G = QGYBJplus.init_mpi_grid(par, mpi_config)
-    plans = QGYBJplus.plan_mpi_transforms(G, mpi_config)
-    S = QGYBJplus.init_mpi_state(G, plans, mpi_config)
-    workspace = QGYBJplus.init_mpi_workspace(G, mpi_config)
-
-    # Compute N2 profile for consistent physics across all operations
-    # This is passed to run_simulation! for use in elliptic inversions and vertical velocity
-    # Use constant stratification matching the N² parameter defined above
-    N2_profile = QGYBJplus.compute_stratification_profile(
-        QGYBJplus.ConstantN{Float64}(sqrt(N²)),
-        G
-    )
-
-    # Local index ranges (physical vs spectral pencils)
-    local_range_phys = QGYBJplus.get_local_range_physical(plans)
-    local_range_spec = QGYBJplus.get_local_range_spectral(plans)
-
-    # Set up dipole: ψ = U κ⁻¹ sin(κx) cos(κy) in rotated (x,y) coordinates
-    # Grid is in cardinal (X,Y); transform via x=(X-Y)/√2, y=(X+Y)/√2 (Fig. 1)
-    # This creates a barotropic dipole eddy with velocity scale U0_flow (Eq. 2 in paper)
-    # With centered=true, domain is X,Y ∈ [-35km, +35km) matching Fig. 2 of paper
-    if is_root; println("\nSetting up dipole..."); end
-    psi_phys = QGYBJplus.allocate_fft_backward_dst(S.psi, plans)
-    psi_phys_arr = parent(psi_phys)
-    for k_local in axes(psi_phys_arr, 1)
-        for j_local in axes(psi_phys_arr, 3)
-            j_global = local_range_phys[3][j_local]
-            Y = G.y0 + (j_global - 1) * G.dy  # Y in cardinal coords (uses Grid origin)
-            for i_local in axes(psi_phys_arr, 2)
-                i_global = local_range_phys[2][i_local]
-                X = G.x0 + (i_global - 1) * G.dx  # X in cardinal coords (uses Grid origin)
-                # Transform to rotated (x,y) for dipole formula
-                x = (X - Y) / sqrt(2)
-                y = (X + Y) / sqrt(2)
-                # Dimensional streamfunction [m²/s]
-                psi_phys_arr[k_local, i_local, j_local] = complex(psi0 * sin(k_dipole * x) * cos(k_dipole * y))
-            end
-        end
-    end
-    QGYBJplus.fft_forward!(S.psi, psi_phys, plans)
-
-    # Compute vorticity: ζ = ∇²ψ (on f-plane, q = ζ)
-    # In spectral space: ζ̂ = -kh² × ψ̂
-    # For dipole: ζ = -2κU sin(κx) cos(κy) per Eq. (3)
-    q_local = parent(S.q)
-    psi_local = parent(S.psi)
-    for k_local in axes(q_local, 1)
-        for j_local in axes(q_local, 3)
-            j_global = local_range_spec[3][j_local]
-            for i_local in axes(q_local, 2)
-                i_global = local_range_spec[2][i_local]
-                kh2 = G.kx[i_global]^2 + G.ky[j_global]^2
-                q_local[k_local, i_local, j_local] = -kh2 * psi_local[k_local, i_local, j_local]
-            end
-        end
-    end
-
-    # Set up wave IC: surface-confined, horizontally uniform (k=0 mode only)
-    # Initial condition: u(z,t=0) = u0 exp(-d^2/s^2), v(t=0) = 0 (Eq. 4 in paper)
-    # where d = -z is the depth from the surface (z=0).
-    # Grid has z=0 at surface, z<0 below, so depth d = -z is positive.
-    if is_root; println("Setting up waves..."); end
-    B_phys = QGYBJplus.allocate_fft_backward_dst(S.L⁺A, plans)
-    B_phys_arr = parent(B_phys)
-    for k_local in axes(B_phys_arr, 1)
-        k_global = local_range_phys[1][k_local]
-        depth = -G.z[k_global]  # Distance from surface z=0 [m]
-        wave_profile = exp(-(depth^2) / (surface_layer_depth^2))
-        wave_value = complex(u0_wave * wave_profile)
-        B_phys_arr[k_local, :, :] .= wave_value
-    end
-    QGYBJplus.fft_forward!(S.L⁺A, B_phys, plans)
-
-    # Configure output
-    output_config = QGYBJplus.OutputConfig(
-        output_dir = output_dir,
-        state_file_pattern = "state%04d.nc",
-        psi_interval = save_interval_IP * T_inertial,
-        wave_interval = save_interval_IP * T_inertial,
-        diagnostics_interval = diag_interval_IP * T_inertial,
-        save_psi = true,
-        save_waves = true,
-        save_velocities = false,
-        save_vorticity = false,
-        save_diagnostics = false
-    )
-
-    # Compute diagnostics interval in steps for progress printing
-    diag_steps = max(1, round(Int, diag_interval_IP * T_inertial / dt))
-
-    # Run simulation - all time-stepping handled automatically
-    # This handles: state management, initial projection step,
-    # output file saving, progress reporting, and energy diagnostics
-    # The timestepper can be :leapfrog (explicit) or :imex_cn (implicit dispersion)
-    QGYBJplus.run_simulation!(S, G, par, plans;
-        output_config = output_config,
-        mpi_config = mpi_config,
-        workspace = workspace,
-        N2_profile = N2_profile,  # Pass stratification profile for consistent physics
-        print_progress = is_root,
-        diagnostics_interval = diag_steps,
-        timestepper = TIMESTEPPER  # :leapfrog or :imex_cn
-    )
-
-    if is_root
-        println("\nOutput files saved to: $output_dir/")
-        println("  - Variables: psi (flow), LAr, LAi (waves)")
-    end
-
-    # Ensure all MPI operations are complete before finalization
-    MPI.Barrier(mpi_config.comm)
-
-    # Force garbage collection BEFORE MPI.Finalize to prevent heap corruption
-    # from Julia finalizers running after MPI is shut down
-    GC.gc(true)  # Full garbage collection
-
-    MPI.Finalize()
+    x = (X - Y) / √2,   y = (X + Y) / √2.
+"""
+function asselin_dipole_streamfunction(X, Y, z)
+    x = (X - Y) / sqrt(2)
+    y = (X + Y) / sqrt(2)
+    return psi0 * sin(k_dipole * x) * cos(k_dipole * y)
 end
 
-main()
+# The paper specifies weak horizontal wave hyperdiffusion but not a coefficient.
+# This value keeps the damping confined to the grid scale.
+νₕ₁ʷ_wave = 1.0e5  # [m⁴/s]
+
+grid = RectilinearGrid(size = (nx, ny, nz),
+                       x = (-Lx/2, Lx/2),
+                       y = (-Ly/2, Ly/2),
+                       z = (-Lz, 0))
+
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = f₀),
+                   stratification = ConstantStratification(N² = N²),
+                   closure = HorizontalHyperdiffusivity(waves = νₕ₁ʷ_wave,
+                                                         wave_laplacian_order = 2),
+                   flow = :fixed,
+                   feedback = :none,
+                   ybj_plus = true,
+                   parallel_io = false,
+                   verbose = false)
+
+set!(model;
+     ψ = asselin_dipole_streamfunction,
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = u0_wave,
+                         scale = surface_layer_depth,
+                         profile = :gaussian))
+
+simulation = Simulation(model;
+                        Δt = dt,
+                        stop_time = n_inertial_periods * inertial_period(model),
+                        output = NetCDFOutput(path = output_dir,
+                                              schedule = TimeInterval(save_interval_IP * inertial_period(model)),
+                                              fields = (:ψ, :waves)),
+                        diagnostics = IterationInterval(max(1, round(Int, diag_interval_IP * inertial_period(model) / dt))),
+                        verbose = true)
+
+if is_root(simulation)
+    println("="^70)
+    println("Asselin et al. (2020) Dipole")
+    println("="^70)
+    @printf("Resolution: %d × %d × %d, Duration: %.1f IP\n", nx, ny, nz, n_inertial_periods)
+    @printf("Domain: %.1f km × %.1f km × %.1f km\n", Lx/1e3, Ly/1e3, Lz/1e3)
+    @printf("Timestepper: exponential RK2, dt = %.1f s\n", dt)
+    @printf("Dipole checks: γ = %.3e m⁻¹ s⁻¹, κU/f = %.3f\n", vorticity_gradient, rossby_rms)
+    println("Output directory: $output_dir")
+end
+
+run!(simulation)
+finalize_simulation!(simulation)
