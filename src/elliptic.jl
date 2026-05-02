@@ -171,12 +171,12 @@ For 2D decomposition:
 2. Perform tridiagonal solve on z-pencil data
 3. Transpose ψ from z-pencil back to xy-pencil
 
-The discrete system is tridiagonal with structure (for interior row k):
-- Upper diagonal: du[k] = a[k+1]  (interface above cell k)
-- Diagonal: d[k] = -(a[k+1] + a[k]) - kₕ² dz²
-- Lower diagonal: dl[k] = a[k]  (interface below cell k)
+The discrete system is tridiagonal with structure (for interior row `k`):
+- Upper diagonal: `du[k] = a[k+1]` (interface above cell `k`)
+- Diagonal: `d[k] = -(a[k+1] + a[k]) - kₕ² dz²`
+- Lower diagonal: `dl[k] = a[k]` (interface below cell `k`)
 
-where a[k] = f₀²/N²[k] is evaluated at the interface below cell k.
+where `a[k] = f₀²/N²[k]` is evaluated at the interface below cell `k`.
 
 # Fortran Correspondence
 This matches `psi_solver` in elliptic.f90.

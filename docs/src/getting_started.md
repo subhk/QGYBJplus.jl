@@ -1,81 +1,80 @@
-# [Installation & Getting Started](@id getting_started)
+# [Installation](@id getting_started)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-## Installation
+## Install
+
+After registration, install with:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
+Pkg.add("QGYBJplus")
 ```
 
-Or develop locally:
+For development from GitHub:
+
+```julia
+using Pkg
+Pkg.add(url = "https://github.com/subhk/QGYBJplus.jl")
+```
+
+Or clone the repository:
+
 ```bash
 git clone https://github.com/subhk/QGYBJplus.jl
-cd QGYBJ+.jl
-julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+cd QGYBJplus.jl
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-### MPI Support
-
-MPI parallel packages (MPI.jl, PencilArrays.jl, PencilFFTs.jl) are included as dependencies and installed automatically.
-
-To run MPI simulations, you need a system MPI library:
-- **macOS**: `brew install open-mpi`
-- **Ubuntu**: `apt install libopenmpi-dev`
-
-## Quick Example
+## Check the Installation
 
 ```julia
 using QGYBJplus
 
-config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain (REQUIRED)
-    nx=64, ny=64, nz=32,
-    dt=0.001, total_time=1.0
-)
+grid = RectilinearGrid(size = (16, 16, 8),
+                       x = (-50e3, 50e3),
+                       y = (-50e3, 50e3),
+                       z = (-1000.0, 0.0))
 
-result = run_simple_simulation(config)
-println("KE: ", flow_kinetic_energy(result.state.u, result.state.v))
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = 1e-4),
+                   stratification = ConstantStratification(N² = 1e-5),
+                   flow = :fixed,
+                   feedback = :none,
+                   Δt = 300.0,
+                   stop_iteration = 1,
+                   verbose = false)
 ```
 
-## Core Types
+If this runs without error, the package and its Julia dependencies are
+available.
 
-### QGParams
-```julia
-params = default_params(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # REQUIRED
-    nx=64, ny=64, nz=32,
-    f₀=1.0, N²=1.0,
-    ybj_plus=true
-)
+## MPI
+
+MPI support is included through `MPI.jl`, `PencilArrays.jl`, and
+`PencilFFTs.jl`. To run distributed simulations you also need an MPI
+implementation installed on the system, such as OpenMPI or MPICH.
+
+Typical system installs are:
+
+```bash
+# macOS
+brew install open-mpi
+
+# Ubuntu/Debian
+sudo apt install libopenmpi-dev
 ```
 
-Unicode: type `f\_0<tab>` → `f₀`, `\nu<tab>` → `ν`
+Then run scripts with `mpiexec`, for example:
 
-### Grid & State
-```julia
-grid = init_grid(params)     # Coordinates, wavenumbers
-state = init_state(grid)     # Fields: q, B, psi, A, u, v
-plans = plan_transforms!(grid)  # FFT plans
+```bash
+mpiexec -n 4 julia --project=. examples/my_simulation.jl
 ```
 
-## Code Structure
+## Where to Go Next
 
-```
-src/
-├── parameters.jl      # QGParams
-├── grid.jl            # Grid struct
-├── elliptic.jl        # q→ψ, B→A inversions
-├── timestep.jl        # Exponential RK2
-├── simulation.jl      # High-level API
-└── parallel_mpi.jl    # MPI support
-```
-
-## What's Next?
-
-- [Quick Start](@ref quickstart) - Tutorial
-- [Configuration](@ref configuration) - All parameters
-- [MPI Parallelization](@ref parallel) - Large-scale runs
+- [Quick Start](@ref quickstart) for the recommended script structure.
+- [Configuration](@ref configuration) for model options.
+- [I/O and Output](@ref io-output) for NetCDF output.

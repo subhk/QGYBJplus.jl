@@ -4,129 +4,100 @@
 CurrentModule = QGYBJplus
 ```
 
-## Two APIs
+This page summarizes the high-level model configuration. For normal scripts,
+prefer `RectilinearGrid`, `QGYBJModel`, `Simulation`, and `run!`.
 
-| Use Case | API |
-|:---------|:----|
-| Quick start | `create_simple_config()` → `run_simple_simulation()` |
-| Full control | `default_params()` → `setup_model()` → manual stepping |
+## Grid
 
-!!! warning "Different Defaults"
-    | Flag | Simple API | Full API |
-    |:-----|:-----------|:---------|
-    | `inviscid` | `true` | `false` |
-    | `no_wave_feedback` | `false` | `true` |
-
-## Simple API
+Use physical coordinate ranges:
 
 ```julia
-config = create_simple_config(
-    # Domain (REQUIRED)
-    Lx=500e3, Ly=500e3, Lz=4000.0,
-    # Grid
-    nx=64, ny=64, nz=32,
-    # Time
-    dt=0.001, total_time=1.0,
-    # Physics
-    ybj_plus=true, inviscid=true, linear=false,
-    # Output
-    output_interval=100
-)
-result = run_simple_simulation(config)
+grid = RectilinearGrid(size = (128, 128, 64),
+                       x = (-250e3, 250e3),
+                       y = (-250e3, 250e3),
+                       z = (-4000.0, 0.0))
 ```
 
-## Full API
+The vertical grid is cell centered. The surface is `z = 0`, the bottom is
+`z = -Lz`, and saved model levels are the native cell centers.
+
+## Model
 
 ```julia
-par = default_params(
-    Lx=500e3, Ly=500e3, Lz=4000.0,
-    nx=64, ny=64, nz=32,
-    dt=0.001, nt=1000,
-    f₀=1.0, N²=1.0,
-    ybj_plus=true, inviscid=false
-)
-
-G, S, plans, a_ell = setup_model(par)
-init_random_psi!(S, G; amplitude=0.1)
-compute_q_from_psi!(S, G, plans, a_ell)
-
-exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
-for step = 2:par.nt
-    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
-end
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = 1e-4),
+                   stratification = ConstantStratification(N² = 1e-5),
+                   closure = HorizontalHyperdiffusivity(waves = 1e5),
+                   flow = :fixed,
+                   feedback = :none,
+                   ybj_plus = true,
+                   Δt = 300.0,
+                   stop_iteration = 100)
 ```
 
-!!! tip "exponential RK2"
-    Use `run!` for normal simulations and `exp_rk2_step!` only for low-level development.
+Common options:
 
-## Parameter Reference
+| Keyword | Meaning |
+|:--------|:--------|
+| `coriolis` | Usually `FPlane(f = f₀)` |
+| `stratification` | Constant, analytic, or file-backed `N²` profile |
+| `closure` | Horizontal hyperdiffusion settings |
+| `flow` | Use `:fixed` for prescribed mean flow |
+| `feedback` | Use `:none` for one-way wave evolution |
+| `ybj_plus` | Use the YBJ+ wave model |
+| `Δt` | Dimensional time step in seconds |
 
-### Domain (REQUIRED)
+The equations are solved in dimensional form, so parameters should be given in
+SI units.
 
-| Parameter | Description |
-|:----------|:------------|
-| `Lx`, `Ly` | Horizontal domain size [m] |
-| `Lz` | Vertical depth [m] |
-| `nx`, `ny`, `nz` | Grid points (default: 64) |
+## Initial Conditions
 
-### Physics
-
-| Parameter | Default | Description |
-|:----------|:--------|:------------|
-| `f₀` | 1.0 | Coriolis parameter |
-| `N²` | 1.0 | Buoyancy frequency squared |
-| `γ` | 1e-3 | Legacy compatibility parameter |
-
-Unicode: type `f\_0<tab>` → `f₀`, `\nu<tab>` → `ν`
-
-### Model Flags
-
-| Flag | Default | Effect |
-|:-----|:--------|:-------|
-| `ybj_plus` | true | Use YBJ+ formulation |
-| `inviscid` | false | Disable dissipation |
-| `linear` | false | Disable nonlinear terms |
-| `no_wave_feedback` | true | Disable qʷ term |
-| `no_dispersion` | false | Disable wave dispersion |
-| `fixed_flow` | false | Keep ψ constant |
-
-### Dissipation
-
-Two hyperdiffusion operators: `ν₁(-∇²)^ilap1 + ν₂(-∇²)^ilap2`
-
-| Parameter | Default | Description |
-|:----------|:--------|:------------|
-| `νₕ₁`, `νₕ₂` | 0.01, 10.0 | Hyperviscosity (flow) |
-| `ilap1`, `ilap2` | 2, 6 | Laplacian power |
-| `νₕ₁ʷ`, `νₕ₂ʷ` | 0.0, 10.0 | Hyperviscosity (waves) |
-
-Higher `ilap` = more scale-selective: 1 (∇²), 2 (∇⁴), 4 (∇⁸)
-
-## Examples
-
-### QG-Only (No Waves)
 ```julia
-par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, no_dispersion=true)
+ψᵢ = (x, y, z) -> 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3)
+
+set!(model;
+     ψ = ψᵢ,
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = 0.05, scale = 500.0))
 ```
 
-### Linear Wave Propagation
+`pv_method = :barotropic` computes the barotropic PV from the streamfunction.
+
+## Output
+
 ```julia
-config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,
-    linear=true, inviscid=true, no_wave_feedback=true
-)
+output = NetCDFOutput(path = "output",
+                      schedule = TimeInterval(inertial_period(model)),
+                      fields = (:ψ, :waves))
 ```
 
-## Save/Load
+Use multiple streams to save different products:
 
 ```julia
-using JLD2
-@save "config.jld2" par
-@load "config.jld2" par
+surface = NetCDFOutput(path = "output/surface",
+                       schedule = TimeInterval(inertial_period(model)),
+                       fields = (:ψ, :waves),
+                       z = 0.0)
+
+simulation = Simulation(model; output = (output, surface))
+```
+
+## Low-Level Parameters
+
+`default_params`, `setup_model`, and `exp_rk2_step!` remain available for kernel
+tests and numerical-method development. They expose more internal state than
+most user scripts need.
+
+```julia
+params = default_params(Lx = 500e3, Ly = 500e3, Lz = 4000.0,
+                        nx = 64, ny = 64, nz = 32,
+                        dt = 300.0, nt = 100)
+
+grid, state, plans, a_ell = setup_model(params)
 ```
 
 ## See Also
 
+- [Quick Start](@ref quickstart)
 - [Stratification](@ref stratification)
 - [I/O and Output](@ref io-output)
-- [MPI Parallelization](@ref parallel)

@@ -4,270 +4,89 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes how to set up initial conditions for QGYBJ+.jl simulations.
+Use `set!` to initialize fields in high-level scripts.
 
-## Overview
-
-Initial conditions must be specified for:
-- **Potential vorticity** ``q`` (or streamfunction ``\psi``)
-- **Wave envelope** ``B`` (or wave amplitude ``A``)
-
-## Random Initialization
-
-### Random Streamfunction
-
-The most common way to initialize a simulation is with random streamfunction:
+## Mean Flow from a Streamfunction
 
 ```julia
-using QGYBJplus
+ψᵢ = (x, y, z) -> 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3)
 
-# Create parameters and setup
-par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
-G, S, plans, a_ell = setup_model(par)
-
-# Random streamfunction
-init_random_psi!(S, G; amplitude=0.1, seed=12345)
-
-# Compute q from psi (required before time stepping)
-compute_q_from_psi!(S, G, plans, a_ell)
+set!(model;
+     ψ = ψᵢ,
+     pv_method = :barotropic)
 ```
 
-The random field is band-limited to resolved wavenumbers.
+`pv_method = :barotropic` computes the barotropic PV from the streamfunction.
+This is the most common setup for fixed-flow YBJ or YBJ+ experiments.
 
-## Analytical Initial Conditions
-
-### Analytical Streamfunction
+## Surface-Confined Waves
 
 ```julia
-# Initialize with analytical pattern (e.g., dipole)
-init_analytical_psi!(S, G; mode=:dipole, amplitude=1.0)
-
-# Or single mode
-init_analytical_psi!(S, G; mode=:single, kx=2, ky=2, amplitude=0.5)
-
-# Compute q from psi
-compute_q_from_psi!(S, G, plans, a_ell)
+set!(model;
+     waves = SurfaceWave(amplitude = 0.05,
+                         scale = 500.0,
+                         profile = :gaussian))
 ```
 
-### Analytical Waves
+The amplitude is dimensional velocity scale in m/s. The scale is the vertical
+decay scale in meters.
+
+## Flow and Waves Together
 
 ```julia
-# Initialize wave envelope with analytical pattern
-init_analytical_waves!(S, G; amplitude=0.01, vertical_mode=1)
+set!(model;
+     ψ = ψᵢ,
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = 0.05, scale = 500.0))
 ```
 
-## Balanced Initialization
+## Low-Level Initialization
 
-To ensure the flow starts in geostrophic balance:
+For numerical development, the lower-level state API is still available:
 
 ```julia
-# First set up streamfunction
-init_random_psi!(S, G; amplitude=0.1)
+params = default_params(Lx = 500e3, Ly = 500e3, Lz = 4000.0,
+                        nx = 64, ny = 64, nz = 32)
 
-# Add balanced component
-add_balanced_component!(S, G, plans, a_ell)
+grid, state, plans, a_ell = setup_model(params)
 
-# Compute q from the balanced psi
-compute_q_from_psi!(S, G, plans, a_ell)
+init_random_psi!(state, grid; amplitude = 0.1, seed = 1234)
+compute_q_from_psi!(state, grid, plans, a_ell)
+init_surface_waves!(state, grid, params; amplitude = 0.05, scale = 500.0)
 ```
 
-## From Configuration
+Most user scripts should prefer `set!` because it keeps grid, transforms,
+state, and physics bookkeeping inside the model object.
 
-Using the high-level API, initial conditions can be specified in the configuration:
+## From NetCDF
+
+For advanced workflows, read initial fields and assign them to the low-level
+state:
 
 ```julia
-using QGYBJplus
+ψ = read_initial_psi("initial_psi.nc", grid, plans)
+B = read_initial_waves("initial_waves.nc", grid, plans)
 
-# Create initial condition configuration
-init_config = create_initial_condition_config(
-    psi_type=:random,     # :analytical, :from_file, :random
-    wave_type=:random,    # :zero, :analytical, :from_file, :random
-    wave_amplitude=1e-3,
-    random_seed=1234,
-)
-
-# Use in simulation setup
-domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
-strat = create_stratification_config(type=:constant_N)
-
-sim = setup_simulation(domain, strat; initial_conditions=init_config)
+state.psi .= ψ
+state.L⁺A .= B
 ```
 
-### Exponentially Decaying Surface Waves (Config)
+When running with MPI, pass the MPI configuration so rank 0 reads and scatters
+the data:
 
 ```julia
-using QGYBJplus
-
-init_config = create_initial_condition_config(
-    psi_type=:analytical,
-    wave_type=:surface_exponential,
-    wave_amplitude=0.1,      # u₀ [m/s]
-    wave_surface_depth=50.0, # e-folding depth [m]
-    wave_uniform=true
-)
-
-domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
-strat = create_stratification_config(type=:constant_N)
-
-sim = setup_simulation(domain, strat; initial_conditions=init_config)
+ψ = read_initial_psi("initial_psi.nc", grid, plans; parallel_config = mpi_config)
 ```
 
-## From Data Files
+## Quick Checks
 
-### From NetCDF
+After initializing the flow, compute velocities before inspecting physical
+velocity diagnostics:
 
 ```julia
-using QGYBJplus
-
-par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
-G, S, plans, a_ell = setup_model(par)
-
-# Read initial streamfunction from file
-psi_init = read_initial_psi("initial_conditions.nc", G)
-S.psi .= psi_init
-
-# Read initial waves from file (optional)
-B_init = read_initial_waves("initial_conditions.nc", G)
-S.L⁺A .= B_init
-
-# Compute derived quantities
-compute_q_from_psi!(S, G, plans, a_ell)
-compute_velocities!(S, G, plans)
+compute_velocities!(state, grid; plans, params)
+KE = flow_kinetic_energy(state.u, state.v)
 ```
 
-### From NetCDF with MPI
-
-For MPI runs, prefer the config-based path so rank 0 reads and the field is
-scattered automatically:
-
-```julia
-using QGYBJplus
-
-init_config = create_initial_condition_config(
-    psi_type=:from_file,
-    psi_filename="initial_conditions.nc"
-)
-
-domain = create_domain_config(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
-strat = create_stratification_config(type=:constant_N)
-
-sim = setup_simulation(domain, strat; initial_conditions=init_config)
-```
-
-Run with `mpirun -n 4 julia --project your_script.jl` to enable MPI.
-
-### Using ncread Functions
-
-For legacy compatibility:
-
-```julia
-# Read streamfunction
-ncread_psi!(S, G, "psi_file.nc")
-
-# Read wave envelope
-ncread_la!(S, G, "waves_file.nc")
-```
-
-## Direct Assignment
-
-You can directly assign values in spectral space:
-
-```julia
-using QGYBJplus
-
-par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
-G, S, plans, a_ell = setup_model(par)
-
-# Direct assignment (in spectral space)
-S.psi .= 0.0  # Zero everywhere
-S.L⁺A .= 0.0    # No waves
-
-# Or set specific modes
-# S.psi[kx_idx, ky_idx, kz] = amplitude
-
-# Always compute q from psi after modifying psi
-compute_q_from_psi!(S, G, plans, a_ell)
-```
-
-## Complete Example: Spin-Up
-
-For realistic simulations, start with random initialization and spin up:
-
-```julia
-using QGYBJplus
-
-# Setup
-par = default_params(
-    Lx=500e3, Ly=500e3, Lz=4000.0,
-    nx=64, ny=64, nz=32,
-    dt=0.001, nt=10000
-)
-G, S, plans, a_ell = setup_model(par)
-
-# Initialize flow randomly
-init_random_psi!(S, G; amplitude=0.1)
-compute_q_from_psi!(S, G, plans, a_ell)
-
-# Spin-up phase (develop turbulence) - no waves
-spinup_steps = 1000
-exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
-for step = 2:spinup_steps
-    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
-end
-
-# Now add waves
-init_analytical_waves!(S, G; amplitude=0.01)
-
-# Production run
-for step = 1:par.nt
-    exp_rk2_step!(Snp1, S, G, par, plans; a=a_ell)
-end
-```
-
-## Verification
-
-### Check Initial Energy
-
-```julia
-# Compute velocities first
-compute_velocities!(S, G, plans)
-
-# Check flow kinetic energy
-KE = flow_kinetic_energy(S.u, S.v)
-println("Initial KE: $KE")
-
-# Check wave energy
-WE_B, WE_A = wave_energy(S.L⁺A, S.A)
-println("Initial Wave Energy (B): $WE_B")
-println("Initial Wave Energy (A): $WE_A")
-```
-
-### Visualize
-
-```julia
-using Plots
-
-# Get horizontal slice
-psi_slice = slice_horizontal(S.psi, G, plans; k=G.nz)
-
-heatmap(real(psi_slice), title="Initial Surface ψ", aspect_ratio=1)
-```
-
-## API Reference
-
-The following functions are available for initial conditions:
-
-| Function | Description |
-|:---------|:------------|
-| `init_random_psi!` | Random streamfunction field |
-| `init_analytical_psi!` | Analytical streamfunction pattern |
-| `init_analytical_waves!` | Analytical wave envelope |
-| `add_balanced_component!` | Add balanced component to flow |
-| `compute_q_from_psi!` | Compute PV from streamfunction |
-| `initialize_from_config` | Initialize from configuration object |
-| `read_initial_psi` | Read ψ from NetCDF file |
-| `read_initial_waves` | Read B from NetCDF file |
-| `ncread_psi!` | Legacy NetCDF read for ψ |
-| `ncread_la!` | Legacy NetCDF read for waves |
-
-See the [Grid & State API](../api/grid_state.md) for more details on state initialization.
+For high-level models, `run!` computes the required derived fields before the
+first output.

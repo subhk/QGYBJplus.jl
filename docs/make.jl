@@ -21,10 +21,10 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
-            "Key Concepts" => "concepts.md",
             "Installation" => "getting_started.md",
             "Quick Start" => "quickstart.md",
             "Worked Example" => "worked_example.md",
+            "Key Concepts" => "concepts.md",
         ],
         "Physics & Theory" => [
             "Model Overview" => "physics/overview.md",
@@ -44,17 +44,15 @@ makedocs(
         "Advanced Topics" => [
             "MPI Parallelization" => "advanced/parallel.md",
             "Particle Advection" => "advanced/particles.md",
-            "Parallel Particle Algorithm" => "advanced/parallel_particles.md",
-            "Interpolation" => "advanced/interpolation.md",
             "Performance Tips" => "advanced/performance.md",
         ],
         "API Reference" => [
+            "Overview" => "api/index.md",
             "Core Types" => "api/types.md",
             "Grid & State" => "api/grid_state.md",
             "Physics Functions" => "api/physics.md",
             "Time Stepping" => "api/timestepping.md",
             "Particles" => "api/particles.md",
-            "Full Index" => "api/index.md",
         ],
         "Troubleshooting" => "troubleshooting.md",
     ],

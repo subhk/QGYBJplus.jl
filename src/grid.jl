@@ -488,7 +488,7 @@ q_spectral = S.q          # Complex (nz, nx, ny)
 u_realspace = S.u         # Real (nz, nx, ny)
 ```
 
-See also: [`init_state`](@ref), [`Grid`](@ref)
+See also: [`init_state`](@ref)
 """
 Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Complex{T},3}}
     #= Prognostic fields (spectral space, complex)

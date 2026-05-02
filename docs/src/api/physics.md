@@ -157,11 +157,6 @@ write_all_energy_files!
 
 **Usage:**
 ```julia
-# Automatic (created during setup_simulation)
-sim = setup_simulation(config)
-run_simulation!(sim)  # Energies saved automatically
-
-# Manual
 manager = EnergyDiagnosticsManager("output_dir"; output_interval=1.0)
 record_energies!(manager, time, wke, wpe, wce, mke, mpe)
 write_all_energy_files!(manager)
