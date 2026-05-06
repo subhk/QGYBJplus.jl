@@ -645,6 +645,77 @@ end
     @test step_allocations < 0.9 * without_workspace_allocations
 end
 
+@testset "Elliptic direct workspaces limit allocations" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         ybj_plus=true, fixed_flow=true, no_feedback=true,
+                         no_wave_feedback=true, dt=1.0, nt=1)
+    G, S, plans, a = setup_model(par)
+    fill!(parent(S.q), zero(eltype(parent(S.q))))
+    fill!(parent(S.L⁺A), zero(eltype(parent(S.L⁺A))))
+    S.q[3, 4, 4] = 1.0 + 0.25im
+    S.L⁺A[4, 5, 5] = 0.5 - 0.25im
+
+    nonlinear_workspace = QGYBJplus.NonlinearWorkspace(S.psi, plans)
+
+    invert_q_to_psi!(S, G; a=a, par=par)
+    invert_q_to_psi!(S, G; a=a, par=par, workspace=nonlinear_workspace)
+    no_workspace_q_allocations = @allocated invert_q_to_psi!(S, G; a=a, par=par)
+    workspace_q_allocations = @allocated invert_q_to_psi!(S, G; a=a, par=par,
+                                                          workspace=nonlinear_workspace)
+
+    invert_L⁺A_to_A!(S, G, par, a)
+    invert_L⁺A_to_A!(S, G, par, a; workspace=nonlinear_workspace)
+    no_workspace_A_allocations = @allocated invert_L⁺A_to_A!(S, G, par, a)
+    workspace_A_allocations = @allocated invert_L⁺A_to_A!(S, G, par, a;
+                                                          workspace=nonlinear_workspace)
+
+    @test workspace_q_allocations < no_workspace_q_allocations
+    @test workspace_q_allocations < 512
+    @test workspace_A_allocations < no_workspace_A_allocations
+    @test workspace_A_allocations < 512
+end
+
+@testset "Wave vertical diagnostic workspaces limit allocations" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         ybj_plus=true, fixed_flow=true, no_feedback=true,
+                         no_wave_feedback=true, dt=1.0, nt=1)
+    G, S, plans, a = setup_model(par)
+    S.A[4, 3, 3] = 1.0 + 0.25im
+    S.C[4, 3, 3] = 0.5 - 0.25im
+
+    nonlinear_workspace = QGYBJplus.NonlinearWorkspace(S.psi, plans)
+
+    compute_ybj_vertical_velocity!(S, G, plans, par; skip_inversion=true)
+    compute_ybj_vertical_velocity!(S, G, plans, par; skip_inversion=true,
+                                   workspace=nonlinear_workspace)
+    no_workspace_w_allocations = @allocated compute_ybj_vertical_velocity!(S, G, plans, par;
+                                                                           skip_inversion=true)
+    workspace_w_allocations = @allocated compute_ybj_vertical_velocity!(S, G, plans, par;
+                                                                        skip_inversion=true,
+                                                                        workspace=nonlinear_workspace)
+
+    compute_vertical_wave_displacement!(S, G, plans, par; skip_inversion=true)
+    compute_vertical_wave_displacement!(S, G, plans, par; skip_inversion=true,
+                                        workspace=nonlinear_workspace)
+    no_workspace_ξ_allocations = @allocated compute_vertical_wave_displacement!(S, G, plans, par;
+                                                                                skip_inversion=true)
+    workspace_ξ_allocations = @allocated compute_vertical_wave_displacement!(S, G, plans, par;
+                                                                             skip_inversion=true,
+                                                                             workspace=nonlinear_workspace)
+
+    @test workspace_w_allocations < 0.2 * no_workspace_w_allocations
+    @test workspace_w_allocations < 20_000
+    @test workspace_ξ_allocations < 0.2 * no_workspace_ξ_allocations
+    @test workspace_ξ_allocations < 20_000
+end
+
+@testset "Legacy simulation container keeps concrete field types" begin
+    @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :plans) !== Any
+    @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :output_manager) !== Any
+    @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :grid) <: Grid
+    @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :state) <: State
+end
+
 @testset "Nonlinear operator normalization and balance" begin
     par = default_params(nx=32, ny=32, nz=1, Lx=2*pi, Ly=2*pi, Lz=1.0)
     G = init_grid(par)

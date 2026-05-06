@@ -167,8 +167,15 @@ method that handles distributed transforms automatically.
 """
 function fft_forward!(dst, src, P::Plans)
     # Serial FFTW path: transform each (x,y) plane independently for each z
-    @inbounds for k in axes(src, 1)
-        dst[k, :, :] .= FFTW.fft(src[k, :, :])
+    if eltype(dst) <: Complex && eltype(src) <: Complex
+        @inbounds for k in axes(src, 1)
+            @views copyto!(dst[k, :, :], src[k, :, :])
+            @views FFTW.fft!(dst[k, :, :])
+        end
+    else
+        @inbounds for k in axes(src, 1)
+            @views dst[k, :, :] .= FFTW.fft(src[k, :, :])
+        end
     end
     return dst
 end
@@ -198,8 +205,15 @@ method that uses `ldiv!` for normalized inverse transforms.
 function fft_backward!(dst, src, P::Plans)
     # Serial FFTW path: transform each (x,y) plane independently for each z
     # FFTW.ifft is normalized (divides by nx*ny)
-    @inbounds for k in axes(src, 1)
-        dst[k, :, :] .= FFTW.ifft(src[k, :, :])
+    if eltype(dst) <: Complex && eltype(src) <: Complex
+        @inbounds for k in axes(src, 1)
+            @views copyto!(dst[k, :, :], src[k, :, :])
+            @views FFTW.ifft!(dst[k, :, :])
+        end
+    else
+        @inbounds for k in axes(src, 1)
+            @views dst[k, :, :] .= FFTW.ifft(src[k, :, :])
+        end
     end
     return dst
 end

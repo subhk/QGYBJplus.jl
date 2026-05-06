@@ -842,13 +842,13 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     if need_transpose
         _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
     else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion, t)
+        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion, t)
+function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -869,7 +869,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -891,7 +891,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
-        invert_L⁺A_to_A!(S, G, params, a_vec)
+        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
     end
     # Step 2: Compute vertical derivative A_z using finite differences
     Aₖ_z = S.C  # C was set to A_z by invert_L⁺A_to_A!
@@ -902,8 +902,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
 
     # Step 3: Compute horizontal derivatives of A_z
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
+    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -939,8 +939,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     #     = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
@@ -1006,7 +1006,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -1041,8 +1041,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     # Compute horizontal derivatives of A_z in xy-pencil
     nz_local, nx_local, ny_local = size(Aₖ_z_arr)
     @assert nz_local == nz "Vertical dimension must be fully local for YBJ vertical velocity"
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
+    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -1072,8 +1072,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     #   w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
@@ -1782,13 +1782,13 @@ function compute_vertical_wave_displacement!(S::State, G::Grid, plans, params; N
     if need_transpose
         _compute_vertical_wave_displacement_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)
     else
-        _compute_vertical_wave_displacement_direct!(S, G, plans, params, N2_profile, skip_inversion)
+        _compute_vertical_wave_displacement_direct!(S, G, plans, params, N2_profile, workspace, skip_inversion)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion)
+function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays for output
@@ -1810,7 +1810,7 @@ function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, p
     end
 
     # Get N² profile
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
 
     # Step 1: Recover A from L⁺A using YBJ+ inversion (if needed)
     if skip_inversion
@@ -1823,7 +1823,7 @@ function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, p
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]
         end
-        invert_L⁺A_to_A!(S, G, params, a_vec)
+        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
     end
 
     # Step 2: Get A_z from S.C (computed by invert_L⁺A_to_A!)
@@ -1834,8 +1834,8 @@ function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, p
     @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
 
     # Step 3: Compute horizontal derivatives of A_z in spectral space
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
+    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -1856,8 +1856,8 @@ function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, p
     end
 
     # Step 4: Transform to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
@@ -1922,7 +1922,7 @@ function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, param
     end
 
     # Get N² profile
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
 
     # Step 1: Recover A from L⁺A (handles 2D decomposition internally)
     if skip_inversion
@@ -1946,8 +1946,8 @@ function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, param
     @assert nz_local == nz "Vertical dimension must be fully local for vertical displacement"
 
     # Step 3: Compute horizontal derivatives of A_z in spectral space
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
+    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -1967,8 +1967,8 @@ function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, param
     end
 
     # Step 4: Transform to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)

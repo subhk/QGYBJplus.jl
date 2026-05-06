@@ -7,13 +7,13 @@ with the configuration system, including time stepping with output management.
 
 using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
-using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
+using ..QGYBJplus: Plans, plan_transforms!, init_grid, init_state, fft_backward!
 using ..QGYBJplus: exp_rk2_step!, ExpRK2Workspace
 using ..QGYBJplus: invert_q_to_psi!, invert_L⁺A_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
-using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig
+using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig, MPIPlans
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
 
@@ -33,27 +33,27 @@ using ..QGYBJplus.Diagnostics: flow_kinetic_energy_global, wave_energy_global
 
 Main simulation object containing all model components.
 """
-mutable struct QGYBJSimulation{T}
+mutable struct QGYBJSimulation{T,G<:Grid,S<:State,P<:Union{Plans,MPIPlans},SP}
     # Configuration
     config::ModelConfig{T}
     
     # Model components
     params::QGParams{T}
-    grid::Grid
-    state::State
-    state_old::State  # Reserved workspace state
+    grid::G
+    state::S
+    state_old::S  # Reserved workspace state
     
     # Transform plans
-    plans
+    plans::P
     
     # Output management
-    output_manager
+    output_manager::OutputManager{T}
     
     # MPI configuration
     parallel_config::MPIConfig
     
     # Stratification
-    stratification_profile
+    stratification_profile::SP
     N2_profile::Vector{T}
     
     # Time stepping
@@ -223,7 +223,7 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         "initial_conditions" => ic_diagnostics
     )
 
-    simulation = QGYBJSimulation{T}(
+    simulation = QGYBJSimulation(
         config,
         params,
         grid,

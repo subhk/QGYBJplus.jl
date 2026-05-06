@@ -119,6 +119,44 @@ workspace = (
 If workspace is `nothing`, temporary arrays are allocated internally.
 =#
 
+function _direct_tridiagonal_workspace(workspace, nz::Int, ::Type{R}) where R
+    has_vertical_scratch = workspace !== nothing &&
+        hasfield(typeof(workspace), :vertical_dₗ) &&
+        hasfield(typeof(workspace), :vertical_d) &&
+        hasfield(typeof(workspace), :vertical_dᵤ) &&
+        hasfield(typeof(workspace), :vertical_rhsᵣ) &&
+        hasfield(typeof(workspace), :vertical_rhsᵢ) &&
+        hasfield(typeof(workspace), :vertical_solᵣ) &&
+        hasfield(typeof(workspace), :vertical_solᵢ) &&
+        hasfield(typeof(workspace), :vertical_dₗ_work) &&
+        hasfield(typeof(workspace), :vertical_d_work) &&
+        eltype(workspace.vertical_d) === R
+
+    if has_vertical_scratch
+        dₗ = resize!(workspace.vertical_dₗ, nz)
+        d = resize!(workspace.vertical_d, nz)
+        dᵤ = resize!(workspace.vertical_dᵤ, nz)
+        rhsᵣ = resize!(workspace.vertical_rhsᵣ, nz)
+        rhsᵢ = resize!(workspace.vertical_rhsᵢ, nz)
+        solᵣ = resize!(workspace.vertical_solᵣ, nz)
+        solᵢ = resize!(workspace.vertical_solᵢ, nz)
+        c_work = resize!(workspace.vertical_dₗ_work, nz)
+        d_work = resize!(workspace.vertical_d_work, nz)
+    else
+        dₗ = zeros(R, nz)
+        d = zeros(R, nz)
+        dᵤ = zeros(R, nz)
+        rhsᵣ = zeros(R, nz)
+        rhsᵢ = zeros(R, nz)
+        solᵣ = zeros(R, nz)
+        solᵢ = zeros(R, nz)
+        c_work = zeros(R, nz)
+        d_work = zeros(R, nz)
+    end
+
+    return dₗ, d, dᵤ, rhsᵣ, rhsᵢ, solᵣ, solᵢ, c_work, d_work
+end
+
 #=
 ================================================================================
                     STREAMFUNCTION INVERSION: q → ψ
@@ -219,7 +257,7 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing, wor
         _invert_q_to_psi_2d!(S, G, a, par, workspace)
     else
         # Serial or 1D decomposition: direct solve (z already local)
-        _invert_q_to_psi_direct!(S, G, a, par)
+        _invert_q_to_psi_direct!(S, G, a, par, workspace)
     end
 
     return S
@@ -228,7 +266,7 @@ end
 """
 Direct solve for serial mode or 1D decomposition (z fully local).
 """
-function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
+function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par, workspace)
     nz = G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -241,20 +279,13 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     # Verify z is fully local (required for vertical tridiagonal solve)
     @assert nz_local == nz "Vertical dimension must be fully local (nz_local=$nz_local, nz=$nz)"
 
-    # Tridiagonal matrix diagonals (reused for each wavenumber)
-    dₗ = zeros(eltype(a), nz)   # Lower diagonal
-    d  = zeros(eltype(a), nz)   # Main diagonal
-    dᵤ = zeros(eltype(a), nz)   # Upper diagonal
+    # Tridiagonal matrix diagonals and work arrays (reused for each wavenumber)
+    dₗ, d, dᵤ, rhs, rhsᵢ, solᵣ, solᵢ, c_work, d_work =
+        _direct_tridiagonal_workspace(workspace, nz, eltype(a))
 
     # Vertical grid spacing
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhs  = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
 
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
@@ -318,12 +349,12 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work, d_work)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
         # Combine into complex solution
         @inbounds for k in 1:nz
@@ -366,6 +397,8 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
+    c_work = similar(dᵤ)
+    d_work = similar(d)
 
     # Loop over LOCAL wavenumbers in z-pencil configuration
     for j_local in 1:ny_local, i_local in 1:nx_local
@@ -422,12 +455,12 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_z_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work, d_work)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_z_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
         @inbounds for k in 1:nz
             ψ_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -590,6 +623,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
+    c_work = similar(dᵤ)
+    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 2, rhs)
@@ -647,8 +682,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
         @inbounds for k in 1:nz
             dst_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -736,6 +771,8 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
+    c_work = similar(dᵤ)
+    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 2, G)
@@ -791,8 +828,8 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
         @inbounds for k in 1:nz
             dst_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -917,7 +954,7 @@ function invert_L⁺A_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace
     if need_transpose
         _invert_L⁺A_to_A_2d!(S, G, par, a, workspace)
     else
-        _invert_L⁺A_to_A_direct!(S, G, par, a)
+        _invert_L⁺A_to_A_direct!(S, G, par, a, workspace)
     end
 
     return S
@@ -926,7 +963,7 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
+function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector, workspace)
     nz = G.nz
 
     A_arr = parent(S.A)
@@ -936,20 +973,13 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     nz_local, nx_local, ny_local = size(A_arr)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
-    dₗ = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    dᵤ = zeros(eltype(a), nz)
+    dₗ, d, dᵤ, rhsᵣ, rhsᵢ, solᵣ, solᵢ, c_work, d_work =
+        _direct_tridiagonal_workspace(workspace, nz, eltype(a))
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
     # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
     # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhsᵣ = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 2, S.L⁺A)
@@ -1000,8 +1030,8 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
             rhsᵣ[1] = 0
             rhsᵢ[1] = 0
 
-            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
+            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
             # Remove vertical mean to select a unique null-space representative
             mean_val = zero(Complex{eltype(a)})
@@ -1055,8 +1085,8 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
             rhsᵢ[k] = Δz² * imag(L⁺A_arr[k, i_local, j_local])
         end
 
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
 
         @inbounds for k in 1:nz
             A_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -1102,6 +1132,8 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
     rhs_i = zeros(eltype(a), nz)
     solr  = zeros(eltype(a), nz)
     soli  = zeros(eltype(a), nz)
+    c_work = similar(du)
+    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 2, G)
@@ -1149,8 +1181,8 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
             rhs_r[1] = 0
             rhs_i[1] = 0
 
-            thomas_solve!(solr, dl, d, du, rhs_r)
-            thomas_solve!(soli, dl, d, du, rhs_i)
+            thomas_solve!(solr, dl, d, du, rhs_r, c_work, d_work)
+            thomas_solve!(soli, dl, d, du, rhs_i, c_work, d_work)
 
             mean_val = zero(Complex{eltype(a)})
             @inbounds for k in 1:nz
@@ -1201,8 +1233,8 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
             rhs_i[k] = Δ2 * imag(L⁺A_z_arr[k, i_local, j_local])
         end
 
-        thomas_solve!(solr, dl, d, du, rhs_r)
-        thomas_solve!(soli, dl, d, du, rhs_i)
+        thomas_solve!(solr, dl, d, du, rhs_r, c_work, d_work)
+        thomas_solve!(soli, dl, d, du, rhs_i, c_work, d_work)
 
         @inbounds for k in 1:nz
             A_z_arr[k, i_local, j_local] = solr[k] + im*soli[k]
@@ -1237,6 +1269,7 @@ Steps:
 
 """
     thomas_solve!(x, dl, d, du, b)
+    thomas_solve!(x, dl, d, du, b, c, d_work)
 
 In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 
@@ -1246,16 +1279,21 @@ In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 - `d`: Main diagonal (length n)
 - `du`: Upper diagonal (length n, du[n] unused)
 - `b`: Right-hand side (length n)
+- `c`, `d_work`: Optional scratch vectors. Passing these avoids allocating
+  diagonal copies for every vertical column solve.
 
 # Complexity
 O(n) operations (vs O(n³) for general LU decomposition)
 """
 function thomas_solve!(x, dₗ, d, dᵤ, b)
+    return thomas_solve!(x, dₗ, d, dᵤ, b, similar(dᵤ), similar(d))
+end
+
+function thomas_solve!(x, dₗ, d, dᵤ, b, c, d̃)
     n = length(d)
 
-    # Make working copies
-    c = copy(dᵤ)
-    d̃ = copy(d)
+    copyto!(c, dᵤ)
+    copyto!(d̃, d)
     x .= b
 
     # Singularity tolerance
