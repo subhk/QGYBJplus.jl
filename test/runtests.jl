@@ -920,7 +920,7 @@ end
 
     Bk = BRk .+ im .* BIk
     qwk_complex = zeros(ComplexF64, G.nz, G.nx, G.ny)
-    compute_qw_complex!(qwk_complex, Bk, par_qw, G, plans; Lmask=L)
+    QGYBJplus.compute_qw_complex!(qwk_complex, Bk, par_qw, G, plans; Lmask=L)
 
     qw_complex_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
     fft_backward!(qw_complex_phys, qwk_complex, plans)
@@ -931,7 +931,7 @@ end
 
     qwk_workspace = zeros(ComplexF64, G.nz, G.nx, G.ny)
     nonlinear_workspace = QGYBJplus.NonlinearWorkspace(Bk, plans)
-    compute_qw_complex!(qwk_workspace, Bk, par_qw, G, plans; Lmask=L,
-                        workspace=nonlinear_workspace)
+    QGYBJplus.compute_qw_complex!(qwk_workspace, Bk, par_qw, G, plans; Lmask=L,
+                                  workspace=nonlinear_workspace)
     @test maximum(abs.(qwk_workspace .- qwk_complex)) < 5e-10
 end
