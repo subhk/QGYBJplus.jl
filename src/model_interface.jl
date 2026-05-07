@@ -138,7 +138,6 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
         N² = N²_value,  # From config.stratification.N0 for constant_N
 
-        γ = T(1e-3),    # Legacy parameter retained for compatibility
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), 
         
         ilap1 = config.ilap1, ilap2 = config.ilap2,
@@ -1419,7 +1418,6 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         f₀ = config.f0,
         N² = N2_value,
         W2F = T(0.01),  # Default (deprecated parameter)
-        γ = T(1e-3),    # Legacy parameter retained for compatibility
 
         # Legacy viscosity (use hyperdiffusion instead)
         νₕ = config.nu_h,

@@ -61,7 +61,7 @@ Memory: 256³ complex array ≈ 1 GB. Full simulation needs 5-10× this.
 
 **Pencil topology mismatch**: Use `copy_state(S)` not `deepcopy(S)`:
 ```julia
-Snm1 = copy_state(S)  # Correct
+Snp1 = copy_state(S)  # Correct
 ```
 
 **Deadlock**: Ensure all ranks call collective operations. Debug with:

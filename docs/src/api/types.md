@@ -24,7 +24,6 @@ QGParams
 | `nt` | Int | Number of time steps |
 | `f₀` | Float64 | Coriolis parameter |
 | `N²` | Float64 | Buoyancy frequency squared |
-| `γ` | Float64 | Legacy compatibility parameter |
 | `ybj_plus` | Bool | Use YBJ+ formulation |
 | `no_feedback` | Bool | Master switch: disable all wave-mean coupling |
 | `no_wave_feedback` | Bool | Disable wave feedback on mean flow |
@@ -143,10 +142,10 @@ State
 | `LA_real` | Array{Float64,3} | Real part of wave velocity amplitude LA |
 | `LA_imag` | Array{Float64,3} | Imaginary part of wave velocity amplitude LA |
 
-!!! note "exponential RK2 Time-Stepping"
-    The exponential RK2 scheme uses separate State objects (Snm1, Sn, Snp1) rather than
-    storing previous time levels within a single State struct. This design allows
-    proper handling of MPI parallel arrays (PencilArrays).
+!!! note "Exponential RK2 time-stepping"
+    The exponential RK2 scheme uses separate source and destination `State`
+    objects (`Sn`, `Snp1`) rather than updating a single `State` in place. This
+    design allows proper handling of MPI parallel arrays (PencilArrays).
 
 ### Constructors
 
@@ -164,10 +163,10 @@ For MPI parallel runs, always use `copy_state` instead of `deepcopy`:
 
 ```julia
 # CORRECT: preserves pencil topology
-Snm1 = copy_state(S)
+Snp1 = copy_state(S)
 
 # WRONG: breaks PencilArray transpose operations
-Snm1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
+Snp1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
 ```
 
 ### Accessing Fields

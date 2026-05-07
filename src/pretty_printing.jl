@@ -161,7 +161,6 @@ function Base.show(io::IO, ::MIME"text/plain", par::QGParams{T}) where T
     print_box_row(io, "νₕ₁ʷ (∇^$(2*par.ilap1w))", format_number(par.νₕ₁ʷ), width; key_width)
     print_box_row(io, "νₕ₂ʷ (∇^$(2*par.ilap2w))", format_number(par.νₕ₂ʷ), width; key_width)
     print_box_row(io, "νz (vertical)", format_number(par.νz), width; key_width)
-    print_box_row(io, "R-A filter (γ)", format_number(par.γ), width; key_width)
 
     # Physics switches
     print_section_header(io, "Physics Flags", width)

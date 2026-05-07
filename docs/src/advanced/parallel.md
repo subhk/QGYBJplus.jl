@@ -22,13 +22,15 @@ params = default_params(Lx=1000e3, Ly=1000e3, Lz=5000.0, nx=256, ny=256, nz=128)
 grid = QGYBJplus.init_mpi_grid(params, mpi_config)
 plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
 state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
+next_state = QGYBJplus.copy_state(state)
 workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
 
 a_vec = a_ell_ut(params, grid)
 
 for step in 1:1000
     invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
-    exp_rk2_step!(state, state, state, grid, params, plans; a=a_vec, workspace=workspace)
+    exp_rk2_step!(next_state, state, grid, params, plans; a=a_vec, workspace=workspace)
+    state, next_state = next_state, state
 end
 
 MPI.Finalize()

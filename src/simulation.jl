@@ -475,9 +475,6 @@ This is the main entry point for the high-level API. It handles:
 - `νₕ₁ʷ`: Horizontal hyperdiffusion for waves [m⁴/s] (default: 0)
 - `ilap1w`: Hyperdiffusion order (default: 2 for ∇⁴)
 
-## Legacy compatibility
-- `γ`: Retained low-level parameter; the production stepper does not use a Robert-Asselin filter.
-
 ## MPI options
 - `topology`: Process grid (px, py), auto-computed if not specified
 - `parallel_io`: Enable parallel I/O (default: false)
@@ -523,8 +520,6 @@ function initialize_simulation(;
     νₕ₂ʷ::Real = 10.0,
     ilap1w::Int = 2,
     ilap2w::Int = 6,
-    # Legacy compatibility
-    γ::Real = 1e-3,
     # MPI options
     topology = nothing,
     parallel_io::Bool = false,
@@ -567,8 +562,7 @@ function initialize_simulation(;
         νₕ₁ʷ = T(νₕ₁ʷ),
         νₕ₂ʷ = T(νₕ₂ʷ),
         ilap1w = ilap1w,
-        ilap2w = ilap2w,
-        γ = T(γ)
+        ilap2w = ilap2w
     )
 
     # Initialize grid, plans, state, workspace

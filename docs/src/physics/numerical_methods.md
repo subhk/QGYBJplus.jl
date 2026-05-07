@@ -414,7 +414,7 @@ using Profile
 
 # Profile time stepping
 @profile for _ in 1:100
-    exp_rk2_step!(state_np1, state_n, state_nm1, grid, params, plans;
+    exp_rk2_step!(state_np1, state_n, grid, params, plans;
                    a=a_vec, dealias_mask=mask, workspace=workspace)
 end
 

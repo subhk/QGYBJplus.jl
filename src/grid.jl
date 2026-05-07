@@ -631,9 +631,9 @@ New State struct with copied data but compatible array structure.
 
 # Example
 ```julia
-Snm1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
+Snp1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
 # vs.
-Snm1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
+Snp1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
 ```
 
 See also: [`State`](@ref), [`init_state`](@ref)

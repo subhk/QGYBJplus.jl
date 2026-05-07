@@ -54,7 +54,6 @@ Container for all physical and numerical parameters of the QG-YBJ+ model.
 - `f₀`: Coriolis parameter (typically 1.0 for nondimensional)
 - `N²`: Buoyancy frequency squared (default 1.0)
 - `W2F`: DEPRECATED - no longer used (kept for backward compatibility)
-- `γ`: Legacy time-filter parameter retained for compatibility
 - `linear_vert_structure`: Legacy Fortran flag (0 or 1), typically 0
 
 # Viscosity/Hyperviscosity
@@ -130,7 +129,6 @@ Base.@kwdef mutable struct QGParams{T}
     f₀::T                      # Coriolis parameter (1.0 for nondimensional)
     N²::T                      # Buoyancy frequency squared (default 1.0)
     W2F::T                     # DEPRECATED: not used (dimensional equations have B with actual amplitude)
-    γ::T                       # Legacy time-filter parameter
 
     #= ====================================================================
                         VISCOSITY / HYPERVISCOSITY
@@ -276,7 +274,6 @@ With f₀=1, N²=1 (constant_N stratification):
 - `νₕ₁, νₕ₂`: Flow hyperviscosity coefficients (default: 0.01, 10.0)
 - `ilap1, ilap2`: Laplacian powers (default: 2, 6)
 - `νₕ₁ʷ, νₕ₂ʷ`: Wave hyperviscosity coefficients (default: 0.0, 10.0)
-- `γ`: Legacy time-filter parameter (default: 1e-3)
 
 **Physics Switches:**
 - `ybj_plus`: Use YBJ+ formulation (default: true)
@@ -320,7 +317,7 @@ function default_params(; nx=64, ny=64, nz=64,
                            x0::Union{Real,Nothing}=nothing,
                            y0::Union{Real,Nothing}=nothing,
                            dt=1e-3, nt=10_000, f₀=1.0, N²=1.0,
-                           W2F=nothing, γ=1e-3,  # W2F is deprecated
+                           W2F=nothing,  # W2F is deprecated
                            νₕ=0.0, νᵥ=0.0,
                            νₕ₁=0.01, νₕ₂=10.0, ilap1=2, ilap2=6,
                            νₕ₁ʷ=0.0, νₕ₂ʷ=10.0, ilap1w=2, ilap2w=6,
@@ -358,9 +355,6 @@ function default_params(; nx=64, ny=64, nz=64,
     N² > 0 || throw(ArgumentError("N² (buoyancy frequency squared) must be positive (got N²=$N²)"))
     # Note: f₀ can be negative for southern hemisphere simulations (f₀ < 0 when latitude < 0)
     f₀ != 0 || throw(ArgumentError("f₀ (Coriolis parameter) cannot be zero (use negative values for southern hemisphere)"))
-
-    # Legacy time-filter parameter
-    0 <= γ <= 1 || throw(ArgumentError("γ must be in [0,1] (got γ=$γ)"))
 
     # Hyperviscosity coefficients must be non-negative
     νₕ₁ >= 0 || throw(ArgumentError("νₕ₁ must be non-negative (got νₕ₁=$νₕ₁)"))
@@ -422,7 +416,7 @@ function default_params(; nx=64, ny=64, nz=64,
                          x0=x0_val, y0=y0_val, dt=T(dt), nt,
                          f₀=T(f₀), νₕ=T(νₕ), νᵥ=T(νᵥ),
                          linear_vert_structure, stratification,
-                         N²=T(N²), W2F=T(W2F_val), γ=T(γ),
+                         N²=T(N²), W2F=T(W2F_val),
                          νₕ₁=T(νₕ₁), νₕ₂=T(νₕ₂), ilap1, ilap2,
                          νₕ₁ʷ=T(νₕ₁ʷ), νₕ₂ʷ=T(νₕ₂ʷ), ilap1w, ilap2w,
                          νz=T(νz), inviscid, linear, no_dispersion, passive_scalar,
