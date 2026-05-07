@@ -1201,7 +1201,9 @@ function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=noth
 
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
-    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, include_wave_velocity=include_wave_velocity, N2_profile=N2_profile)
+    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w,
+                             include_wave_velocity=include_wave_velocity,
+                             N2_profile=N2_profile, workspace=workspace)
 
     return S
 end
@@ -1303,7 +1305,7 @@ Call after compute_velocities! to get total velocity.
 - Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
+function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1321,6 +1323,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     else
         1.0  # Default fallback
     end
+    f₀² = f₀^2
 
     # Get N² value from params (default to 1.0 if not available)
     N2_const = if params !== nothing && hasfield(typeof(params), :N²)
@@ -1330,7 +1333,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
 
     # Set up plans if needed
     if plans === nothing
@@ -1345,9 +1348,9 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # ∂_{s*} → (1/2)(ikₓ + i·ikᵧ) = (i/2)(kₓ - kᵧ)... wait, let me recalculate
     # Actually: ∂_{s*}f → (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (i/2)(kₓ + i kᵧ) f̂ = (i/2) k* f̂
     # where k* = kₓ + i kᵧ is the complex wavenumber conjugate
-    LAₖ = similar(S.A)
-    dLA_ds_conjₖ = similar(S.A)  # ∂_{s*}(LA)
-    dAz_ds_conjₖ = similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
+    LAₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(S.A)
+    dLA_ds_conjₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(S.A)  # ∂_{s*}(LA)
+    dAz_ds_conjₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral3)) ? workspace.spectral3 : similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
     LAₖ_arr = parent(LAₖ)
     dLA_ds_conjₖ_arr = parent(dLA_ds_conjₖ)
     dAz_ds_conjₖ_arr = parent(dAz_ds_conjₖ)
@@ -1395,7 +1398,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
 
     # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z
-    Aₖ_zz = similar(S.A)
+    Aₖ_zz = (workspace !== nothing && hasfield(typeof(workspace), :spectral4)) ? workspace.spectral4 : similar(S.A)
     Aₖ_zz_arr = parent(Aₖ_zz)
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -1420,8 +1423,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Δ_H(A_z) = -k_h² · Â_z in spectral space
     # A_{zs} = ∂_s(A_z) = (1/2)(ikₓ + kᵧ) · Â_z  [already computed as dAz_ds_conjₖ]
     # A_{zzs} = ∂_s(A_{zz}) = (1/2)(ikₓ + kᵧ) · Â_{zz}
-    Δ_H_Azₖ = similar(S.A)
-    A_zzsₖ = similar(S.A)
+    Δ_H_Azₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral5)) ? workspace.spectral5 : similar(S.A)
+    A_zzsₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral6)) ? workspace.spectral6 : similar(S.A)
     Δ_H_Azₖ_arr = parent(Δ_H_Azₖ)
     A_zzsₖ_arr = parent(A_zzsₖ)
 
@@ -1485,9 +1488,9 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Transform all fields to physical space
     # The Jacobian J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA) is a product of fields
     # and MUST be computed in physical space, not spectral space
-    LAᵣ = _allocate_fft_dst(LAₖ, plans)
-    dLA_ds_conjᵣ = _allocate_fft_dst(dLA_ds_conjₖ, plans)
-    dAz_ds_conjᵣ = _allocate_fft_dst(dAz_ds_conjₖ, plans)
+    LAᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(LAₖ, plans)
+    dLA_ds_conjᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dLA_ds_conjₖ, plans)
+    dAz_ds_conjᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical3)) ? workspace.physical3 : _allocate_fft_dst(dAz_ds_conjₖ, plans)
     dLA_dzᵣ = _allocate_fft_dst(dLA_dzₖ, plans)
 
     fft_backward!(LAᵣ, LAₖ, plans)
@@ -1527,7 +1530,6 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
     #   This expands to: w^S = -2·Im(K₀)/f₀
     inv_f₀ = 1.0 / f₀
-    f₀² = f₀^2
 
     # Add wave velocity and Stokes drift to existing QG velocities in physical space
     nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)
@@ -1677,7 +1679,7 @@ This function should be called after invert_L⁺A_to_A! has computed A from B.
 The particle advection code then interpolates LA to particle positions and
 computes the time-dependent wave displacement ξ.
 """
-function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=nothing)
+function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1695,7 +1697,7 @@ function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=not
     # Compute LA = B + (k_h²/4)A in spectral space
     # YBJ+ relation: B = L⁺A = LA + (1/4)ΔA, so LA = B - (1/4)ΔA
     # In spectral space: Δ → -k_h², so LA = B + (k_h²/4)A
-    LAₖ = similar(S.A)
+    LAₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(S.A)
     LAₖ_arr = parent(LAₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
@@ -1710,7 +1712,7 @@ function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=not
     end
 
     # Transform LA to physical space
-    LA_phys = allocate_fft_backward_dst(LAₖ, plans)
+    LA_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : allocate_fft_backward_dst(LAₖ, plans)
     fft_backward!(LA_phys, LAₖ, plans)
     LA_phys_arr = parent(LA_phys)
 

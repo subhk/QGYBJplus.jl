@@ -709,6 +709,52 @@ end
     @test workspace_ξ_allocations < 20_000
 end
 
+@testset "Wave velocity diagnostics execute without per-call setup failures" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         ybj_plus=true, fixed_flow=true, no_feedback=true,
+                         no_wave_feedback=true, dt=1.0, nt=1)
+    G, S, plans, a = setup_model(par)
+    S.L⁺A[4, 5, 5] = 0.5 - 0.25im
+    invert_L⁺A_to_A!(S, G, par, a)
+    compute_velocities!(S, G; plans=plans, params=par, compute_w=true)
+
+    compute_wave_velocities!(S, G; plans=plans, params=par, compute_w=true)
+
+    @test all(isfinite, parent(S.u))
+    @test all(isfinite, parent(S.v))
+    @test all(isfinite, parent(S.w))
+end
+
+@testset "Particle field updates reuse cached workspaces" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
+                         ybj_plus=true, fixed_flow=true, no_feedback=true,
+                         no_wave_feedback=true, dt=1.0, nt=1)
+    G, S, plans, a = setup_model(par)
+    S.q[3, 4, 4] = 1.0 + 0.25im
+    S.L⁺A[4, 5, 5] = 0.5 - 0.25im
+    invert_q_to_psi!(S, G; a=a, par=par)
+    invert_L⁺A_to_A!(S, G, par, a)
+
+    particle_config = particles_in_box(Float64, G.z[4];
+                                       x_max=G.Lx, y_max=G.Ly,
+                                       nx=4, ny=4)
+    tracker = ParticleTracker(particle_config, G)
+    initialize_particles!(tracker, particle_config)
+
+    QGYBJplus.UnifiedParticleAdvection.update_velocity_fields!(tracker, S, G; params=par)
+    QGYBJplus.UnifiedParticleAdvection.update_wave_fields!(tracker, S, G; params=par)
+
+    velocity_update_allocations =
+        @allocated QGYBJplus.UnifiedParticleAdvection.update_velocity_fields!(tracker, S, G; params=par)
+    wave_update_allocations =
+        @allocated QGYBJplus.UnifiedParticleAdvection.update_wave_fields!(tracker, S, G; params=par)
+
+    @test velocity_update_allocations < 100_000
+    @test wave_update_allocations < 100_000
+    @test fieldtype(typeof(tracker), :plans) !== Any
+    @test fieldtype(typeof(tracker), :comm) !== Any
+end
+
 @testset "Legacy simulation container keeps concrete field types" begin
     @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :plans) !== Any
     @test fieldtype(QGYBJplus.QGYBJSimulation{Float64}, :output_manager) !== Any

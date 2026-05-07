@@ -75,6 +75,8 @@ const plan_transforms! = _PARENT.plan_transforms!
 const compute_velocities! = _PARENT.compute_velocities!  # QG velocities only (Lagrangian mean)
 const compute_wave_displacement! = _PARENT.compute_wave_displacement!  # Horizontal wave displacement ξ
 const compute_vertical_wave_displacement! = _PARENT.compute_vertical_wave_displacement!  # Vertical wave displacement ξz
+const ExpRK2Workspace = _PARENT.ExpRK2Workspace
+const NonlinearWorkspace = _PARENT.NonlinearWorkspace
 const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
@@ -318,7 +320,7 @@ Main particle tracker that handles both serial and parallel execution.
 The tracker advects mean positions X(t) using QG velocities and separately
 tracks wave displacement ξ for reconstructing physical positions x = X + ξ.
 """
-mutable struct ParticleTracker{T<:AbstractFloat}
+mutable struct ParticleTracker{T<:AbstractFloat,P,C}
     config::ParticleConfig{T}
     particles::ParticleState{T}
 
@@ -344,13 +346,15 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     ξz_sin_field::Array{T,3}
 
     # Transform plans (for velocity computation)
-    plans
+    plans::P
+    velocity_workspace::Union{Nothing,ExpRK2Workspace}
+    wave_workspace::Union{Nothing,NonlinearWorkspace}
 
     # Coriolis parameter for wave displacement computation
     f0::T
 
     # Parallel information (automatically detected)
-    comm::Any           # MPI communicator (nothing for serial)
+    comm::C             # MPI communicator (nothing for serial)
     rank::Int          # MPI rank (0 for serial)
     nprocs::Int        # Number of MPI processes (1 for serial)
     is_parallel::Bool  # True if running in parallel
@@ -440,7 +444,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         # (which may differ from 1D decomposition assumption in 2D pencil decomposition)
         halo_info = nothing  # Will be set up lazily in update_velocity_fields!
 
-        new{T}(
+        new{T,typeof(plans),typeof(comm)}(
             config, particles,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
@@ -449,7 +453,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             u_field, v_field, w_field,
             LA_real_field, LA_imag_field,
             ξz_cos_field, ξz_sin_field,
-            plans, f0,
+            plans, nothing, nothing, f0,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
@@ -462,6 +466,24 @@ mutable struct ParticleTracker{T<:AbstractFloat}
 end
 
 ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
+
+function _particle_velocity_workspace!(tracker::ParticleTracker, state::State)
+    workspace = tracker.velocity_workspace
+    if workspace === nothing || size(parent(workspace.uk)) != size(parent(state.psi))
+        workspace = ExpRK2Workspace(state, tracker.plans)
+        tracker.velocity_workspace = workspace
+    end
+    return workspace
+end
+
+function _particle_wave_workspace!(tracker::ParticleTracker, state::State)
+    workspace = tracker.wave_workspace
+    if workspace === nothing || size(parent(workspace.spectral1)) != size(parent(state.psi))
+        workspace = NonlinearWorkspace(state.psi, tracker.plans)
+        tracker.wave_workspace = workspace
+    end
+    return workspace
+end
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, process_grid=nothing,
@@ -882,6 +904,8 @@ This is computed separately by `update_wave_displacement!`.
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid;
                                 params=nothing, N2_profile=nothing) where T
+    velocity_workspace = _particle_velocity_workspace!(tracker, state)
+
     # Compute ONLY QG velocities (Lagrangian-mean flow)
     # In GLM framework, we do NOT add wave velocity or Stokes drift to advection
     # Skip w computation entirely when use_3d_advection=false for better performance
@@ -890,7 +914,9 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                         params=params,
                         compute_w=tracker.config.use_3d_advection,
                         use_ybj_w=tracker.config.use_ybj_w,
-                        N2_profile=N2_profile)
+                        N2_profile=N2_profile,
+                        workspace=velocity_workspace.nonlinear,
+                        velocity_workspace=velocity_workspace)
 
     # Get actual local dimensions from State arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
@@ -964,15 +990,20 @@ This should be called after update_velocity_fields! and before computing wave di
 function update_wave_fields!(tracker::ParticleTracker{T},
                             state::State, grid::Grid;
                             params=nothing, N2_profile=nothing) where T
+    wave_workspace = _particle_wave_workspace!(tracker, state)
+
     # Compute horizontal wave displacement field LA in physical space
     # This function is defined in operators.jl
-    compute_wave_displacement!(state, grid; plans=tracker.plans, params=params)
+    compute_wave_displacement!(state, grid; plans=tracker.plans, params=params,
+                               workspace=wave_workspace)
 
     # Compute vertical wave displacement coefficients
     # ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
     # skip_inversion=true because compute_wave_displacement! already inverted A
     compute_vertical_wave_displacement!(state, grid, tracker.plans, params;
-                                        N2_profile=N2_profile, skip_inversion=true)
+                                        N2_profile=N2_profile,
+                                        workspace=wave_workspace,
+                                        skip_inversion=true)
 
     # Get actual local dimensions from State arrays
     local_dims = size(parent(state.u))
