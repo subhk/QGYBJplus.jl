@@ -523,6 +523,24 @@ end
     end
 end
 
+@testset "ETDRK2 coefficients are stable for small hyperdiffusion" begin
+    dt = 3.0
+
+    for λdt in (1e-8, 1e-10)
+        E, hφ1, hφ2 = QGYBJplus._etd_coefficients(λdt, dt)
+
+        λdt_big = parse(BigFloat, string(λdt))
+        dt_big = BigFloat(dt)
+        E_expected = exp(-λdt_big)
+        hφ1_expected = dt_big * (1 - E_expected) / λdt_big
+        hφ2_expected = dt_big * (E_expected - 1 + λdt_big) / λdt_big^2
+
+        @test E ≈ Float64(E_expected) rtol=1e-14
+        @test hφ1 ≈ Float64(hφ1_expected) rtol=1e-13
+        @test hφ2 ≈ Float64(hφ2_expected) rtol=1e-13
+    end
+end
+
 @testset "Wave feedback does not alter prognostic q" begin
     common = (nx=8, ny=8, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
               dt=1e-3, inviscid=true, νₕ₁=0.0, νₕ₂=0.0, νₕ₁ʷ=0.0, νₕ₂ʷ=0.0,
@@ -546,6 +564,43 @@ end
 
     @test isapprox(parent(S_feedback_np1.q), parent(S_no_feedback_np1.q); rtol=1e-12, atol=1e-12)
     @test sum(abs2, parent(S_feedback_np1.psi) .- parent(S_no_feedback_np1.psi)) > 0
+end
+
+@testset "ETDRK2 RHS uses wave-feedback effective PV for diagnostics" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=2π, Ly=2π, Lz=2π,
+                         dt=1e-3, inviscid=true, νₕ₁=0.0, νₕ₂=0.0,
+                         νₕ₁ʷ=0.0, νₕ₂ʷ=0.0, fixed_flow=false,
+                         ybj_plus=true, no_feedback=false, no_wave_feedback=false)
+    G, S, plans, a = setup_model(par)
+    L = dealias_mask(G)
+
+    S.q[1, 2, 1] = 1.0 + 0.0im
+    S.q[2, 1, 2] = -0.4 + 0.0im
+    S.L⁺A[1, 2, 1] = 1.0 + 0.3im
+    S.L⁺A[1, 1, 2] = 0.7 - 0.2im
+    S.L⁺A[2, 3, 2] = -0.6 + 1.1im
+    S.L⁺A[3, 2, 3] = 0.5 - 0.4im
+    S.L⁺A[4, 4, 1] = -0.2 + 0.9im
+
+    q_original = copy(parent(S.q))
+
+    S_expected = copy_state(S)
+    q_base = QGYBJplus.replace_q_with_wave_feedback_rhs!(S_expected, G, par, plans, L)
+    invert_q_to_psi!(S_expected, G; a=a, par=par)
+    QGYBJplus.restore_prognostic_q!(S_expected, q_base)
+
+    S_raw = copy_state(S)
+    invert_q_to_psi!(S_raw, G; a=a, par=par)
+    @test sum(abs2, parent(S_expected.psi) .- parent(S_raw.psi)) > 0
+
+    rhsq = similar(S.q)
+    rhsB = similar(S.L⁺A)
+    S_rhs = copy_state(S)
+    QGYBJplus._compute_etdrk2_rhs!(rhsq, rhsB, S_rhs, G, par, plans;
+                                   a=a, dealias_mask=L)
+
+    @test parent(S_rhs.q) ≈ q_original
+    @test parent(S_rhs.psi) ≈ parent(S_expected.psi)
 end
 
 @testset "Vertical velocity with N² profile" begin
@@ -838,7 +893,8 @@ end
     @test maximum(abs.(real.(rBR_phys) .- zeta_expected)) < 5e-10
     @test maximum(abs.(real.(rBI_phys))) < 1e-12
 
-    # ---- compute_qw! normalization ----
+    # ---- compute_qw! normalization, sign, f₀ scaling, and complex path ----
+    par_qw = default_params(nx=32, ny=32, nz=1, Lx=2*pi, Ly=2*pi, Lz=1.0, f₀=2.0)
     BR_phys .= 0.0
     BI_phys .= 0.0
     qw_expected = zeros(Float64, G.nz, G.nx, G.ny)
@@ -848,17 +904,34 @@ end
         yj = y[j]
         BR_phys[1, i, j] = cos(xi) + cos(yj)
         BI_phys[1, i, j] = sin(xi) + sin(yj)
-        qw_expected[1, i, j] = sin(xi - yj) - cos(xi - yj)
+        qw_expected[1, i, j] = (sin(xi - yj) - cos(xi - yj)) / par_qw.f₀
     end
 
     fft_forward!(BRk, BR_phys, plans)
     fft_forward!(BIk, BI_phys, plans)
 
     qwk = zeros(ComplexF64, G.nz, G.nx, G.ny)
-    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+    compute_qw!(qwk, BRk, BIk, par_qw, G, plans; Lmask=L)
 
     qw_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
     fft_backward!(qw_phys, qwk, plans)
 
     @test maximum(abs.(real.(qw_phys) .- qw_expected)) < 5e-10
+
+    Bk = BRk .+ im .* BIk
+    qwk_complex = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    compute_qw_complex!(qwk_complex, Bk, par_qw, G, plans; Lmask=L)
+
+    qw_complex_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    fft_backward!(qw_complex_phys, qwk_complex, plans)
+
+    @test maximum(abs.(qwk_complex .- qwk)) < 5e-10
+    @test maximum(abs.(real.(qw_complex_phys) .- qw_expected)) < 5e-10
+    @test maximum(abs.(imag.(qw_complex_phys))) < 5e-10
+
+    qwk_workspace = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    nonlinear_workspace = QGYBJplus.NonlinearWorkspace(Bk, plans)
+    compute_qw_complex!(qwk_workspace, Bk, par_qw, G, plans; Lmask=L,
+                        workspace=nonlinear_workspace)
+    @test maximum(abs.(qwk_workspace .- qwk_complex)) < 5e-10
 end

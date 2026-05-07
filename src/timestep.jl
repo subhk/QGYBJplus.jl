@@ -14,27 +14,28 @@ TIME INTEGRATION ALGORITHM:
 ---------------------------
 For each time step from n to n+1:
 
-1. Compute tendencies at time n:
+1. Diagnose fields at time n:
+   - If wave feedback is enabled, invert q* = q - qʷ for ψ
+   - Restore prognostic q after the inversion
+
+2. Compute tendencies at time n:
    - Advection: J(ψ, q), J(ψ, B)
    - Refraction: B × ζ
    - Vertical diffusion: νz ∂²q/∂z²
 
-2. Apply physics switches:
+3. Apply physics switches:
    - linear: zero nonlinear terms
    - inviscid: zero dissipation
    - passive_scalar: zero dispersion and refraction
    - fixed_flow: zero q tendency
 
-3. Time step with ETDRK2 and hyperdiffusion integrating factors:
+4. Time step with ETDRK2 and hyperdiffusion integrating factors:
    - a = Eφⁿ + Δt φ₁(LΔt) N(φⁿ)
    - φⁿ⁺¹ = a + Δt φ₂(LΔt) [N(a) - N(φⁿ)]
    where E = exp(LΔt) and L is the diagonal horizontal hyperdiffusion operator.
 
-4. Wave feedback on mean flow:
-   q* = q - qʷ (if wave feedback is enabled)
-
 5. Diagnostic updates:
-   - Invert q → ψ
+   - Invert q or q* → ψ
    - Invert B → A (YBJ+) or compute A directly (normal YBJ)
    - Compute velocities from ψ
 
@@ -156,6 +157,8 @@ end
 
 restore_prognostic_q!(S::State, q_base) = (parent(S.q) .= parent(q_base); S)
 
+_wave_feedback_enabled(par::QGParams) = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
+
 """
     ExpRK2Workspace(state, plans=nothing)
 
@@ -206,25 +209,44 @@ end
 function _etd_coefficients(λdt, dt)
     E = exp(-λdt)
 
-    if abs(λdt) < 1e-12
-        return E, dt, dt / 2
+    if abs(λdt) < 1e-6
+        x = λdt
+        x2 = x * x
+        hφ1 = dt * (1 - x / 2 + x2 / 6 - x2 * x / 24 + x2 * x2 / 120)
+        hφ2 = dt * (1 / 2 - x / 6 + x2 / 24 - x2 * x / 120 + x2 * x2 / 720)
+        return E, hφ1, hφ2
     else
-        hφ1 = dt * (1 - E) / λdt
-        hφ2 = dt * (E - 1 + λdt) / λdt^2
+        expm1_neg = expm1(-λdt)
+        hφ1 = dt * (-expm1_neg) / λdt
+        hφ2 = dt * (expm1_neg + λdt) / λdt^2
         return E, hφ1, hφ2
     end
 end
 
 function _update_diagnostics!(S::State, G::Grid, par::QGParams, plans, a, L;
                               workspace=nothing, N2_profile=nothing,
-                              timestep_workspace=nothing)
+                              timestep_workspace=nothing, compute_w=true,
+                              use_wave_feedback=false)
     if !par.fixed_flow
+        q_base = nothing
+        if use_wave_feedback && _wave_feedback_enabled(par)
+            q_base = replace_q_with_wave_feedback_rhs!(S, G, par, plans, L;
+                                                       q_base = timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
+                                                       qwk = timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
+                                                       nonlinear_workspace = timestep_workspace === nothing ? nothing : timestep_workspace.nonlinear)
+        end
+
         invert_q_to_psi!(S, G; a, par=par, workspace=workspace)
+
+        if q_base !== nothing
+            restore_prognostic_q!(S, q_base)
+        end
     end
 
     compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile,
                         workspace=workspace, dealias_mask=L,
-                        velocity_workspace=timestep_workspace)
+                        velocity_workspace=timestep_workspace,
+                        compute_w=compute_w)
 
     if par.passive_scalar || par.no_dispersion
         fill!(parent(S.A), zero(eltype(parent(S.A))))
@@ -245,7 +267,8 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::State, G::Grid, par::QGParams, plan
 
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
     _update_diagnostics!(S, G, par, plans, a, L; workspace=workspace,
-                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace,
+                         compute_w=false, use_wave_feedback=true)
 
     if timestep_workspace === nothing
         nqk = similar(S.q)
@@ -388,21 +411,9 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
         Bnp1_arr[k, i, j] = 0
     end
 
-    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
-    q_base = nothing
-    if wave_feedback_enabled
-        q_base = replace_q_with_wave_feedback_rhs!(Snp1, G, par, plans, L;
-                                                   q_base = timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
-                                                   qwk = timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
-                                                   nonlinear_workspace = timestep_workspace === nothing ? nothing : timestep_workspace.nonlinear)
-    end
-
     _update_diagnostics!(Snp1, G, par, plans, a, L; workspace=workspace,
-                         N2_profile=N2_profile, timestep_workspace=timestep_workspace)
-
-    if q_base !== nothing
-        restore_prognostic_q!(Snp1, q_base)
-    end
+                         N2_profile=N2_profile, timestep_workspace=timestep_workspace,
+                         use_wave_feedback=true)
 
     if particle_tracker !== nothing && current_time !== nothing
         advect_particles!(particle_tracker, Snp1, G, par.dt, current_time)
