@@ -94,9 +94,18 @@ struct NonlinearWorkspace{A, P, R, C}
     vertical_solᵣ::Vector{R}
     vertical_solᵢ::Vector{R}
     N2_profile::Vector{R}
+    # z-pencil scratch for 2D-decomposition transposed vertical solves. Real
+    # z-pencils under MPI 2D decomposition; unused placeholders in serial/1D
+    # (those paths use the z-local "direct" code, never these fields).
+    q_z::A
+    psi_z::A
+    work_z::A
+    L⁺A_z::A
+    A_z::A
+    C_z::A
 end
 
-function NonlinearWorkspace(spectral_template, plans)
+function NonlinearWorkspace(spectral_template, plans; G=nothing)
     spectral1 = similar(spectral_template)
     spectral2 = similar(spectral_template)
     spectral3 = similar(spectral_template)
@@ -117,6 +126,17 @@ function NonlinearWorkspace(spectral_template, plans)
     n_interior = max(nz - 2, 0)
     n_offdiag = max(n_interior - 1, 0)
 
+    # z-pencil scratch: real z-pencils only under MPI 2D decomposition; otherwise
+    # full-size placeholders (never touched by the serial/1D direct paths).
+    make_z() = (G !== nothing && G.decomp !== nothing) ?
+               allocate_z_pencil(G, ComplexF64) : similar(spectral_template)
+    q_z   = make_z()
+    psi_z = make_z()
+    work_z = make_z()
+    L⁺A_z = make_z()
+    A_z   = make_z()
+    C_z   = make_z()
+
     return NonlinearWorkspace(spectral1, spectral2, spectral3, spectral4, spectral5, spectral6,
                               physical1, physical2, physical3, physical4, physical5, physical6,
                               zeros(R, n_interior),
@@ -130,7 +150,8 @@ function NonlinearWorkspace(spectral_template, plans)
                               zeros(R, n_interior),
                               zeros(R, n_interior),
                               zeros(R, n_interior),
-                              zeros(R, nz))
+                              zeros(R, nz),
+                              q_z, psi_z, work_z, L⁺A_z, A_z, C_z)
 end
 
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.

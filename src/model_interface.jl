@@ -279,7 +279,7 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     # ETDRK2 uses two time levels: current and next.
     Sn = copy_state(sim.state)
     Snp1 = copy_state(sim.state)
-    timestep_workspace = ExpRK2Workspace(sim.state, sim.plans)
+    timestep_workspace = ExpRK2Workspace(sim.state, sim.plans; G=sim.grid)
 
     # Main time stepping loop
     @info "Starting main time integration loop"
@@ -1215,7 +1215,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
 
     Sn = copy_state(S)
     Snp1 = copy_state(S)
-    timestep_workspace = ExpRK2Workspace(S, plans)
+    timestep_workspace = ExpRK2Workspace(S, plans; G=G)
 
     for step in 1:nt
         exp_rk2_step!(Snp1, Sn, G, par, plans;

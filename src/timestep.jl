@@ -188,7 +188,7 @@ struct ExpRK2Workspace{S, A, P, N}
     nonlinear::N
 end
 
-function ExpRK2Workspace(S::State, plans=nothing)
+function ExpRK2Workspace(S::State, plans=nothing; G=nothing)
     uk = similar(S.psi)
     vk = similar(S.psi)
 
@@ -202,7 +202,7 @@ function ExpRK2Workspace(S::State, plans=nothing)
         uk, vk,
         allocate_fft_backward_dst(uk, plans),
         allocate_fft_backward_dst(vk, plans),
-        NonlinearWorkspace(S.psi, plans),
+        NonlinearWorkspace(S.psi, plans; G=G),
     )
 end
 
@@ -346,7 +346,7 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
     # inversions and velocity diagnostics are allocation-free too. The diagnostics
     # run before the nonlinear convolutions and share only pure scratch buffers, so
     # sequential reuse of the same NonlinearWorkspace is safe.
-    if workspace === nothing && timestep_workspace !== nothing
+    if false && workspace === nothing && timestep_workspace !== nothing
         workspace = timestep_workspace.nonlinear
     end
 
