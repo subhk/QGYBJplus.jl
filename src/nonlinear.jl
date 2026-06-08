@@ -126,10 +126,11 @@ function NonlinearWorkspace(spectral_template, plans; G=nothing)
     n_interior = max(nz - 2, 0)
     n_offdiag = max(n_interior - 1, 0)
 
-    # z-pencil scratch: real z-pencils only under MPI 2D decomposition; otherwise
-    # full-size placeholders (never touched by the serial/1D direct paths).
+    # z-pencil scratch: real z-pencils only under MPI decomposition; otherwise
+    # empty 0-sized placeholders (the serial/1D direct paths never touch them, so
+    # allocating full-size arrays here would waste memory at setup).
     make_z() = (G !== nothing && G.decomp !== nothing) ?
-               allocate_z_pencil(G, ComplexF64) : similar(spectral_template)
+               allocate_z_pencil(G, ComplexF64) : similar(spectral_template, 0, 0, 0)
     q_z   = make_z()
     psi_z = make_z()
     work_z = make_z()

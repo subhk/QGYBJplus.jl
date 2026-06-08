@@ -346,7 +346,7 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
     # inversions and velocity diagnostics are allocation-free too. The diagnostics
     # run before the nonlinear convolutions and share only pure scratch buffers, so
     # sequential reuse of the same NonlinearWorkspace is safe.
-    if false && workspace === nothing && timestep_workspace !== nothing
+    if workspace === nothing && timestep_workspace !== nothing
         workspace = timestep_workspace.nonlinear
     end
 
