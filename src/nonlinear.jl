@@ -517,10 +517,22 @@ function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing,
     uterm_k = workspace === nothing ? similar(χk) : workspace.spectral2
     vterm_k = workspace === nothing ? similar(χk) : workspace.spectral3
 
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
-        uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
-        vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
+    # Hoist the `use_real` branch out of the loop so χval has a single concrete
+    # type per loop body (Float64 for q advection, Complex for L⁺A). Inside the
+    # loop the ternary made χval a Union{Float64,ComplexF64}, forcing a per-cell
+    # type check on every grid point.
+    if use_real
+        @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
+            χval = real(χᵣ_arr[k, i_local, j_local])
+            uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
+            vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
+        end
+    else
+        @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
+            χval = χᵣ_arr[k, i_local, j_local]
+            uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
+            vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
+        end
     end
 
     fft_forward!(uterm_k, uterm_r, plans)

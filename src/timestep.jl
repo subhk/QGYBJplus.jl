@@ -341,6 +341,15 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
                        timestep_workspace=nothing)
     par.ybj_plus || error("exp_rk2_step! currently requires ybj_plus=true.")
 
+    # When a timestep workspace is supplied but no separate inversion/diagnostic
+    # workspace is, reuse the timestep workspace's nonlinear scratch so the per-step
+    # inversions and velocity diagnostics are allocation-free too. The diagnostics
+    # run before the nonlinear convolutions and share only pure scratch buffers, so
+    # sequential reuse of the same NonlinearWorkspace is safe.
+    if workspace === nothing && timestep_workspace !== nothing
+        workspace = timestep_workspace.nonlinear
+    end
+
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
     if timestep_workspace === nothing

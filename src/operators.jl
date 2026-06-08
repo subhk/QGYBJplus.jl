@@ -171,13 +171,16 @@ function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid, scratch=nothing)
         return scratch_profile
     end
 
-    if !(eltype(N2_profile) <: Real)
-        return real.(N2_profile)
-    elseif eltype(N2_profile) != N2_type
-        return N2_type.(N2_profile)
-    else
-        return N2_profile
+    # Always return a freshly-typed Vector{N2_type} so the return type is concrete.
+    # Previously this returned `real.(...)`, `N2_type.(...)`, or the original array
+    # depending on eltype, making the inferred return a union that propagated
+    # instability into callers. This branch is only reached when no scratch is
+    # provided (the scratch path returns above), so the extra copy is off the hot path.
+    out = Vector{N2_type}(undef, nz)
+    @inbounds for k in 1:nz
+        out[k] = N2_type(real(N2_profile[k]))
     end
+    return out
 end
 
 function _vertical_tridiagonal_workspace(workspace, n_interior::Int, ::Type{C}) where C

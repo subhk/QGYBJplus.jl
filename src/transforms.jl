@@ -48,29 +48,36 @@ normalized inverse transform.
 
 # Fields
 - `backend::Symbol`: Always `:fftw` for this struct
-- `p_forward`: Reserved (not currently used)
-- `p_backward`: Reserved (not currently used)
-- `f_forward`: Reserved (not currently used)
-- `f_backward`: Reserved (not currently used)
+- `fft_plan`: Cached in-place FFTW forward plan for a single (nx, ny) plane
+- `ifft_plan`: Cached in-place FFTW normalized inverse plan for a single (nx, ny) plane
+- `buf`: Contiguous (nx, ny) scratch buffer reused for every z-slice
 
 # Current Implementation
-The current implementation uses FFTW.fft/ifft directly without pre-planning.
-FFTW internally caches plans for repeated transforms of the same size/type,
-so explicit pre-planning is not critical for performance. The reserved fields
-are kept for potential future optimization with explicit FFTW plan objects.
+`fft_forward!`/`fft_backward!` copy each strided `A[k,:,:]` plane into `buf`,
+apply the cached in-place plan, and copy back. Planning once (in `Plans(G)`) and
+reusing `buf` avoids allocating a fresh FFTW plan on every call and avoids running
+the transform over non-unit-stride views.
 
 # Note
 When MPI/PencilArrays/PencilFFTs are loaded, use `plan_mpi_transforms()` instead,
 which returns `MPIPlans`.
 """
-Base.@kwdef mutable struct Plans
-    backend::Symbol = :fftw          # :fftw for serial mode
-    # Reserved fields for potential future FFTW plan caching
-    # Currently unused - FFTW.fft/ifft are called directly
-    p_forward::Any = nothing
-    p_backward::Any = nothing
-    f_forward::Any = nothing
-    f_backward::Any = nothing
+mutable struct Plans{FP, IP, B}
+    backend::Symbol                  # :fftw for serial mode
+    fft_plan::FP                     # cached in-place 2D forward plan (per x-y plane)
+    ifft_plan::IP                    # cached in-place 2D normalized inverse plan
+    buf::B                           # contiguous (nx, ny) scratch reused for every z-slice
+end
+
+# Build cached FFTW plans for per-(x,y)-plane transforms. Planning once here and
+# reusing one contiguous buffer avoids (1) allocating a fresh FFTW plan on every
+# fft_forward!/fft_backward! call (~336 B/slice) and (2) transforming strided
+# `A[k,:,:]` views (non-unit stride is cache-hostile and FFTW-unfriendly).
+function Plans(G::Grid)
+    buf = Array{ComplexF64}(undef, G.nx, G.ny)
+    fft_plan = FFTW.plan_fft!(buf)
+    ifft_plan = FFTW.plan_ifft!(buf)   # normalized inverse (matches FFTW.ifft!)
+    return Plans(:fftw, fft_plan, ifft_plan, buf)
 end
 
 #=
@@ -117,8 +124,7 @@ function plan_transforms!(G::Grid, parallel_config=nothing)
     # Note: FFTW threading is NOT enabled by default because for small grids
     # thread overhead often exceeds the benefit.
     # Users can enable FFTW threading manually if needed for large grids
-    # Note: We don't pre-plan here for simplicity. FFTW caches plans internally.
-    return Plans(backend=:fftw)
+    return Plans(G)
 end
 
 """
@@ -135,7 +141,7 @@ function setup_parallel_transforms(grid::Grid, pconfig)
         return PARENT.plan_mpi_transforms(grid, pconfig)
     end
     @warn "Parallel transforms requested but MPI plan setup not available. Falling back to FFTW."
-    return Plans(backend=:fftw)
+    return Plans(grid)
 end
 
 #=
@@ -166,11 +172,15 @@ provides a separate `fft_forward!(dst::PencilArray, src::PencilArray, plans::MPI
 method that handles distributed transforms automatically.
 """
 function fft_forward!(dst, src, P::Plans)
-    # Serial FFTW path: transform each (x,y) plane independently for each z
+    # Serial FFTW path: transform each (x,y) plane independently for each z.
+    # Copy each strided z-slice into the cached contiguous buffer, apply the
+    # cached in-place plan, then copy back — no per-call plan allocation.
     if eltype(dst) <: Complex && eltype(src) <: Complex
+        buf = P.buf
         @inbounds for k in axes(src, 1)
-            @views copyto!(dst[k, :, :], src[k, :, :])
-            @views FFTW.fft!(dst[k, :, :])
+            @views copyto!(buf, src[k, :, :])
+            P.fft_plan * buf
+            @views copyto!(dst[k, :, :], buf)
         end
     else
         @inbounds for k in axes(src, 1)
@@ -206,9 +216,11 @@ function fft_backward!(dst, src, P::Plans)
     # Serial FFTW path: transform each (x,y) plane independently for each z
     # FFTW.ifft is normalized (divides by nx*ny)
     if eltype(dst) <: Complex && eltype(src) <: Complex
+        buf = P.buf
         @inbounds for k in axes(src, 1)
-            @views copyto!(dst[k, :, :], src[k, :, :])
-            @views FFTW.ifft!(dst[k, :, :])
+            @views copyto!(buf, src[k, :, :])
+            P.ifft_plan * buf
+            @views copyto!(dst[k, :, :], buf)
         end
     else
         @inbounds for k in axes(src, 1)
