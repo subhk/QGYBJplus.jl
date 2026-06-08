@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Worked Example · QGYBJ+.jl</title><meta name="title" content="Worked Example · QGYBJ+.jl"/><meta property="og:title" content="Worked Example · QGYBJ+.jl"/><meta property="twitter:title" content="Worked Example · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/worked_example/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/custom.css" rel="stylesheet" type="text/css"/></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../getting_started/">Installation</a></li><li><a class="tocitem" href="../quickstart/">Quick Start</a></li><li class="is-active"><a class="tocitem" href>Worked Example</a><ul class="internal"><li><a class="tocitem" href="#Parameters"><span>Parameters</span></a></li><li><a class="tocitem" href="#Grid-and-Model"><span>Grid and Model</span></a></li><li><a class="tocitem" href="#Initial-Conditions"><span>Initial Conditions</span></a></li><li><a class="tocitem" href="#Output"><span>Output</span></a></li><li><a class="tocitem" href="#Run"><span>Run</span></a></li><li><a class="tocitem" href="#Read-the-Results"><span>Read the Results</span></a></li><li><a class="tocitem" href="#Complete-Script"><span>Complete Script</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li><li><a class="tocitem" href="../concepts/">Key Concepts</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="../advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../api/">Overview</a></li><li><a class="tocitem" href="../api/types/">Core Types</a></li><li><a class="tocitem" href="../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../api/particles/">Particles</a></li></ul></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Getting Started</a></li><li class="is-active"><a href>Worked Example</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Worked Example</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/worked_example.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="worked_example"><a class="docs-heading-anchor" href="#worked_example">Worked Example</a><a id="worked_example-1"></a><a class="docs-heading-anchor-permalink" href="#worked_example" title="Permalink"></a></h1><p>This example runs a dimensional QG-YBJ+ experiment with a prescribed barotropic flow and a surface-confined near-inertial wave field.</p><h2 id="Parameters"><a class="docs-heading-anchor" href="#Parameters">Parameters</a><a id="Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Parameters" title="Permalink"></a></h2><pre><code class="language-julia hljs">using QGYBJplus
+using Printf
+
+const Lx = 500e3
+const Ly = 500e3
+const Lz = 4000.0
+
+const nx = 128
+const ny = 128
+const nz = 64
+
+const f₀ = 1e-4
+const N² = 1e-5
+const Δt = 300.0
+const inertial_periods = 5</code></pre><h2 id="Grid-and-Model"><a class="docs-heading-anchor" href="#Grid-and-Model">Grid and Model</a><a id="Grid-and-Model-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-and-Model" title="Permalink"></a></h2><pre><code class="language-julia hljs">grid = RectilinearGrid(size = (nx, ny, nz),
+                       x = (-Lx/2, Lx/2),
+                       y = (-Ly/2, Ly/2),
+                       z = (-Lz, 0.0))
+
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = f₀),
+                   stratification = ConstantStratification(N² = N²),
+                   closure = HorizontalHyperdiffusivity(waves = 1e5),
+                   flow = :fixed,
+                   feedback = :none,
+                   ybj_plus = true,
+                   Δt = Δt,
+                   verbose = true)</code></pre><p>This uses a fixed balanced flow so the wave response is easy to interpret. Set <code>flow = :prognostic</code> and enable feedback for fully coupled experiments.</p><h2 id="Initial-Conditions"><a class="docs-heading-anchor" href="#Initial-Conditions">Initial Conditions</a><a id="Initial-Conditions-1"></a><a class="docs-heading-anchor-permalink" href="#Initial-Conditions" title="Permalink"></a></h2><p>Define a simple dipole-like streamfunction and surface wave:</p><pre><code class="language-julia hljs">U = 0.3
+R = 50e3
+
+ψᵢ = function (x, y, z)
+    r₊² = (x - 75e3)^2 + y^2
+    r₋² = (x + 75e3)^2 + y^2
+    return U * R * (exp(-r₊² / R^2) - exp(-r₋² / R^2))
+end
+
+set!(model;
+     ψ = ψᵢ,
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = 0.05,
+                         scale = 500.0,
+                         profile = :gaussian))</code></pre><p>The streamfunction is dimensional, with units of <code>m²/s</code>. The wave amplitude is a velocity scale in <code>m/s</code>.</p><h2 id="Output"><a class="docs-heading-anchor" href="#Output">Output</a><a id="Output-1"></a><a class="docs-heading-anchor-permalink" href="#Output" title="Permalink"></a></h2><p>Save the full domain and the nearest-surface level:</p><pre><code class="language-julia hljs">save_interval = inertial_period(model)
+
+full_output = NetCDFOutput(path = &quot;output/full&quot;,
+                           schedule = TimeInterval(save_interval),
+                           fields = (:ψ, :waves))
+
+surface_output = NetCDFOutput(path = &quot;output/surface&quot;,
+                              schedule = TimeInterval(save_interval),
+                              fields = (:ψ, :waves),
+                              z = 0.0)</code></pre><p>The surface file stores the actual nearest native grid level in its <code>z</code> coordinate.</p><h2 id="Run"><a class="docs-heading-anchor" href="#Run">Run</a><a id="Run-1"></a><a class="docs-heading-anchor-permalink" href="#Run" title="Permalink"></a></h2><pre><code class="language-julia hljs">simulation = Simulation(model;
+                        stop_time = inertial_periods * inertial_period(model),
+                        output = (full_output, surface_output),
+                        diagnostics = IterationInterval(20),
+                        verbose = true)
+
+if is_root(simulation)
+    @printf(&quot;Running %.1f inertial periods\n&quot;, inertial_periods)
+end
+
+run!(simulation)
+finalize_simulation!(simulation)</code></pre><h2 id="Read-the-Results"><a class="docs-heading-anchor" href="#Read-the-Results">Read the Results</a><a id="Read-the-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Read-the-Results" title="Permalink"></a></h2><pre><code class="language-julia hljs">using NCDatasets
+
+NCDataset(&quot;output/surface/state0001.nc&quot;, &quot;r&quot;) do ds
+    x = ds[&quot;x&quot;][:]
+    y = ds[&quot;y&quot;][:]
+    z = ds[&quot;z&quot;][:]
+    ψ = ds[&quot;psi&quot;][:, :, 1]
+    LA = ds[&quot;LAr&quot;][:, :, 1] .+ im .* ds[&quot;LAi&quot;][:, :, 1]
+
+    @info &quot;Loaded surface output&quot; z = z[1] maximum_wave = maximum(abs, LA)
+end</code></pre><h2 id="Complete-Script"><a class="docs-heading-anchor" href="#Complete-Script">Complete Script</a><a id="Complete-Script-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Script" title="Permalink"></a></h2><pre><code class="language-julia hljs">using QGYBJplus
+using Printf
+
+const Lx, Ly, Lz = 500e3, 500e3, 4000.0
+const nx, ny, nz = 128, 128, 64
+const f₀, N² = 1e-4, 1e-5
+const Δt = 300.0
+const inertial_periods = 5
+
+grid = RectilinearGrid(size = (nx, ny, nz),
+                       x = (-Lx/2, Lx/2),
+                       y = (-Ly/2, Ly/2),
+                       z = (-Lz, 0.0))
+
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = f₀),
+                   stratification = ConstantStratification(N² = N²),
+                   closure = HorizontalHyperdiffusivity(waves = 1e5),
+                   flow = :fixed,
+                   feedback = :none,
+                   ybj_plus = true,
+                   Δt = Δt)
+
+U, R = 0.3, 50e3
+ψᵢ = (x, y, z) -&gt; U * R * (exp(-((x - 75e3)^2 + y^2) / R^2) -
+                           exp(-((x + 75e3)^2 + y^2) / R^2))
+
+set!(model;
+     ψ = ψᵢ,
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = 0.05, scale = 500.0))
+
+save_interval = inertial_period(model)
+full_output = NetCDFOutput(path = &quot;output/full&quot;,
+                           schedule = TimeInterval(save_interval),
+                           fields = (:ψ, :waves))
+surface_output = NetCDFOutput(path = &quot;output/surface&quot;,
+                              schedule = TimeInterval(save_interval),
+                              fields = (:ψ, :waves),
+                              z = 0.0)
+
+simulation = Simulation(model;
+                        stop_time = inertial_periods * inertial_period(model),
+                        output = (full_output, surface_output),
+                        diagnostics = IterationInterval(20))
+
+run!(simulation)
+finalize_simulation!(simulation)</code></pre><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li><a href="../guide/configuration/#configuration">Configuration</a> for model options.</li><li><a href="../guide/io/#io-output">I/O and Output</a> for NetCDF output.</li><li><a href="../guide/stratification/#stratification">Stratification</a> for constant, analytic, and file-backed <code>N²</code> profiles.</li><li><a href="../advanced/parallel/#parallel">MPI Parallelization</a> for distributed runs.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../quickstart/">« Quick Start</a><a class="docs-footer-nextpage" href="../concepts/">Key Concepts »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 8 June 2026 09:28">Monday 8 June 2026</span>. Using Julia version 1.10.11.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
