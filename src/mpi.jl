@@ -201,6 +201,18 @@ struct PencilDecomp{P1, P2, P3}
     topology::Tuple{Int,Int}
 end
 
+# Grid.decomp is declared `::Any` (Grid is defined before PencilDecomp exists),
+# so reads through it infer as `Any`. This assertion restores concrete types for
+# the local_range_* fields, keeping index-mapping helpers type-stable inside
+# per-wavenumber loops (elliptic solvers, omega RHS, YBJ recovery).
+@inline function _decomp(grid::Grid)::PencilDecomp
+    decomp = grid.decomp
+    if decomp === nothing
+        error("Grid does not have MPI decomposition")
+    end
+    return decomp
+end
+
 """
     create_pencil_decomposition(nx, ny, nz, mpi_config; decomp_dims=(2,3)) -> PencilDecomp
 
@@ -414,21 +426,9 @@ end
 # Note: _transpose_output_to_input! and _transpose_input_to_output! are defined after MPIPlans struct
 
 # Grid-based versions
-function transpose_to_z_pencil!(dst, src, grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    transpose_to_z_pencil!(dst, src, decomp)
-end
+transpose_to_z_pencil!(dst, src, grid::Grid) = transpose_to_z_pencil!(dst, src, _decomp(grid))
 
-function transpose_to_xy_pencil!(dst, src, grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    transpose_to_xy_pencil!(dst, src, decomp)
-end
+transpose_to_xy_pencil!(dst, src, grid::Grid) = transpose_to_xy_pencil!(dst, src, _decomp(grid))
 
 #=
 ================================================================================
@@ -881,13 +881,7 @@ end
 ================================================================================
 =#
 
-function get_local_range_xy(grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    return decomp.local_range_xy
-end
+get_local_range_xy(grid::Grid) = _decomp(grid).local_range_xy
 
 """
     get_local_range_physical(plans::MPIPlans)
@@ -915,11 +909,10 @@ end
 Return true if the z-dimension is fully local on each rank.
 """
 function z_is_local(grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
+    if grid.decomp === nothing
         return true
     end
-    return decomp.local_range_xy[1] == 1:grid.nz
+    return _decomp(grid).local_range_xy[1] == 1:grid.nz
 end
 
 function z_is_local(arr::AbstractArray, grid::Grid)
@@ -930,37 +923,15 @@ function z_is_local(arr::AbstractArray, grid::Grid)
     return true
 end
 
-function get_local_range_z(grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    return decomp.local_range_z
-end
+get_local_range_z(grid::Grid) = _decomp(grid).local_range_z
 
-function local_to_global_xy(local_idx::Int, dim::Int, grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    return decomp.local_range_xy[dim][local_idx]
-end
+local_to_global_xy(local_idx::Int, dim::Int, grid::Grid) =
+    _decomp(grid).local_range_xy[dim][local_idx]
 
-function local_to_global_z(local_idx::Int, dim::Int, grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    return decomp.local_range_z[dim][local_idx]
-end
+local_to_global_z(local_idx::Int, dim::Int, grid::Grid) =
+    _decomp(grid).local_range_z[dim][local_idx]
 
-function local_indices(grid::Grid)
-    decomp = grid.decomp
-    if decomp === nothing
-        error("Grid does not have MPI decomposition")
-    end
-    return decomp.local_range_xy
-end
+local_indices(grid::Grid) = _decomp(grid).local_range_xy
 
 #=
 ================================================================================

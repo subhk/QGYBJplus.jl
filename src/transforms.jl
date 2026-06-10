@@ -5,7 +5,7 @@
 
 This module provides FFT transforms for the QG-YBJ+ model. It uses FFTW.jl
 for serial execution and supports MPI-parallel execution via the built-in
-`parallel_mpi.jl` support with PencilFFTs.jl.
+`mpi.jl` support with PencilFFTs.jl.
 
 SERIAL MODE (default):
 - Uses FFTW.jl for efficient FFT computation
@@ -14,7 +14,7 @@ SERIAL MODE (default):
 PARALLEL MODE:
 - Uses PencilFFTs.jl for distributed FFTs
 - Enabled when MPI, PencilArrays, PencilFFTs are loaded and a parallel config is passed
-- See parallel_mpi.jl for MPI plan setup
+- See mpi.jl for MPI plan setup
 
 TRANSFORM CONVENTION:
 - Horizontal 2D FFTs (x,y dimensions) for each vertical level

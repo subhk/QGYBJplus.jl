@@ -319,7 +319,7 @@ for k in local_range[1], i in local_range[2], j in local_range[3]
 end
 ```
 """
-function get_local_range(G::Grid)
+function get_local_range(G::Grid)::NTuple{3, UnitRange{Int}}
     if G.decomp === nothing
         return (1:G.nz, 1:G.nx, 1:G.ny)
     else
@@ -359,7 +359,8 @@ for j_local in axes(ψk, 3), i_local in axes(ψk, 2)
 end
 ```
 """
-function local_to_global(local_idx::Int, dim::Int, G::Grid)
+# `G.decomp` is `::Any`; the return-type annotation keeps callers type-stable.
+function local_to_global(local_idx::Int, dim::Int, G::Grid)::Int
     if G.decomp === nothing
         return local_idx
     else

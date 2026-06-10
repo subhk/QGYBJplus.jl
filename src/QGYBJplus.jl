@@ -105,7 +105,7 @@ using SpecialFunctions: erf
 include("parameters.jl")
 include("grid.jl")
 include("transforms.jl")
-include("parallel_mpi.jl")
+include("mpi.jl")
 include("loop_macros.jl")
 
 # Physics, solvers, and time stepping

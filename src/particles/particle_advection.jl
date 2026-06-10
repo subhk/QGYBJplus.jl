@@ -1588,38 +1588,47 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
             empty!(tracker.send_buffers_id[i])
         end
         
-        # Find particles that need migration
-        keep_indices = Int[]
-        
+        # Find particles that need migration; compact kept particles in place
+        # (avoids per-particle temp arrays and full-vector slice copies)
         use_2d = tracker.local_domain !== nothing &&
                  hasproperty(tracker.local_domain, :py) &&
                  tracker.local_domain.py > 1
 
+        n_keep = 0
         for i in 1:particles.np
             x = particles.x[i]
             y = particles.y[i]
             target_rank = use_2d ? find_target_rank(x, y, tracker) : find_target_rank(x, tracker)
-            
+
             if target_rank == tracker.rank
-                push!(keep_indices, i)
+                n_keep += 1
+                if n_keep != i
+                    particles.x[n_keep] = particles.x[i]
+                    particles.y[n_keep] = particles.y[i]
+                    particles.z[n_keep] = particles.z[i]
+                    particles.id[n_keep] = particles.id[i]
+                    particles.u[n_keep] = particles.u[i]
+                    particles.v[n_keep] = particles.v[i]
+                    particles.w[n_keep] = particles.w[i]
+                end
             else
                 # Package particle for sending
-                particle_data = [particles.x[i], particles.y[i], particles.z[i],
-                               particles.u[i], particles.v[i], particles.w[i]]
-                append!(tracker.send_buffers[target_rank + 1], particle_data)
+                buf = tracker.send_buffers[target_rank + 1]
+                push!(buf, particles.x[i]); push!(buf, particles.y[i]); push!(buf, particles.z[i])
+                push!(buf, particles.u[i]); push!(buf, particles.v[i]); push!(buf, particles.w[i])
                 push!(tracker.send_buffers_id[target_rank + 1], particles.id[i])
             end
         end
-        
+
         # Keep only local particles
-        particles.x = particles.x[keep_indices]
-        particles.y = particles.y[keep_indices]
-        particles.z = particles.z[keep_indices]
-        particles.id = particles.id[keep_indices]
-        particles.u = particles.u[keep_indices]
-        particles.v = particles.v[keep_indices]
-        particles.w = particles.w[keep_indices]
-        particles.np = length(keep_indices)
+        resize!(particles.x, n_keep)
+        resize!(particles.y, n_keep)
+        resize!(particles.z, n_keep)
+        resize!(particles.id, n_keep)
+        resize!(particles.u, n_keep)
+        resize!(particles.v, n_keep)
+        resize!(particles.w, n_keep)
+        particles.np = n_keep
         
         # Exchange particles between ranks
         exchange_particles!(tracker)

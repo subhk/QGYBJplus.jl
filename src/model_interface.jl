@@ -354,7 +354,7 @@ function check_and_output!(sim::QGYBJSimulation)
     end
 end
 
-# MPI reduction functions are now defined in parallel_mpi.jl
+# MPI reduction functions are now defined in mpi.jl
 # Re-export for backward compatibility
 const reduce_if_mpi = reduce_sum_if_mpi
 

@@ -940,3 +940,106 @@ end
                                   workspace=nonlinear_workspace)
     @test maximum(abs.(qwk_workspace .- qwk_complex)) < 5e-10
 end
+
+#=
+================================================================================
+                    PARTICLE PERIODIC-DOMAIN TESTS
+================================================================================
+=#
+
+@testset "Particle advection in periodic domain" begin
+    UPA = QGYBJplus.UnifiedParticleAdvection
+
+    par = default_params(nx=16, ny=16, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G = init_grid(par)
+    dx = G.Lx / G.nx
+    dy = G.Ly / G.ny
+    z_mid = -G.Lz / 2
+
+    cfg = ParticleConfig{Float64}(x_max=G.Lx, y_max=G.Ly, z_level=z_mid)
+    tracker = ParticleTracker(cfg, G)
+    p = tracker.particles
+
+    # Particles near the right x-edge, left x-edge, and top y-edge
+    p.x = [G.Lx - 0.25*dx, 0.25*dx, G.Lx/2]
+    p.y = [G.Ly/2, G.Ly/2, G.Ly - 0.25*dy]
+    p.z = fill(z_mid, 3)
+    p.id = [1, 2, 3]
+    p.u = zeros(3); p.v = zeros(3); p.w = zeros(3)
+    p.np = 3
+    x_init = copy(p.x)
+    y_init = copy(p.y)
+
+    # --- Forward uniform flow: particles 1 and 3 cross x=Lx / y=Ly ---
+    U = 1.0
+    tracker.u_field .= U
+    tracker.v_field .= U
+    tracker.w_field .= 0.0
+
+    dt = 0.4 * dx / U
+    nsteps = 10
+    for _ in 1:nsteps
+        UPA.advect_euler!(tracker, dt)
+        UPA.apply_boundary_conditions!(tracker)
+        # positions stay inside the periodic domain after every step
+        @test all(x -> 0.0 <= x < G.Lx + eps(G.Lx), p.x)
+        @test all(y -> 0.0 <= y < G.Ly + eps(G.Ly), p.y)
+    end
+    # uniform field -> trilinear interpolation is exact; trajectory must match
+    # the analytic mod-wrapped path
+    for i in 1:3
+        @test p.x[i] ≈ mod(x_init[i] + nsteps*dt*U, G.Lx) rtol=1e-12
+        @test p.y[i] ≈ mod(y_init[i] + nsteps*dt*U, G.Ly) rtol=1e-12
+    end
+    # particle 1 actually crossed the x=Lx seam
+    @test p.x[1] < x_init[1]
+    # particle 3 actually crossed the y=Ly seam
+    @test p.y[3] < y_init[3]
+
+    # --- Backward uniform flow: particle 2 crosses x=0 ---
+    x_back = copy(p.x); y_back = copy(p.y)
+    tracker.u_field .= -U
+    tracker.v_field .= -U
+    for _ in 1:nsteps
+        UPA.advect_euler!(tracker, dt)
+        UPA.apply_boundary_conditions!(tracker)
+    end
+    for i in 1:3
+        @test p.x[i] ≈ mod(x_back[i] - nsteps*dt*U, G.Lx) rtol=1e-12
+        @test p.y[i] ≈ mod(y_back[i] - nsteps*dt*U, G.Ly) rtol=1e-12
+    end
+
+    # --- Interpolation continuity across the periodic seam ---
+    # u(x) = sin(2*pi*x/Lx) sampled at grid nodes x_i = (i-1)*dx
+    nx = G.nx
+    for j in 1:G.ny, i in 1:nx, k in 1:G.nz
+        tracker.u_field[k, i, j] = sin(2π*(i-1)/nx)
+    end
+    tracker.v_field .= 0.0
+
+    yq = G.Ly/2
+    δ = 1e-6 * dx
+
+    # mod identity: querying just outside the domain equals the wrapped query
+    u_neg, _, _ = interpolate_velocity_at_position(-δ, yq, z_mid, tracker)
+    u_wrap, _, _ = interpolate_velocity_at_position(G.Lx - δ, yq, z_mid, tracker)
+    @test u_neg ≈ u_wrap atol=1e-12
+    u_past, _, _ = interpolate_velocity_at_position(G.Lx + δ, yq, z_mid, tracker)
+    u_in, _, _ = interpolate_velocity_at_position(δ, yq, z_mid, tracker)
+    @test u_past ≈ u_in atol=1e-12
+
+    # continuity: values just left and right of the seam differ by O(δ)
+    @test abs(u_wrap - u_in) < 1e-6
+
+    # seam midpoint interpolates between last node (i=nx) and first node (i=1)
+    u_mid, _, _ = interpolate_velocity_at_position(G.Lx - 0.5*dx, yq, z_mid, tracker)
+    expected_mid = 0.5 * (sin(2π*(nx-1)/nx) + sin(0.0))
+    @test u_mid ≈ expected_mid rtol=1e-12
+
+    # --- apply_boundary_conditions! wraps far-out positions ---
+    p.x[1] = G.Lx + 0.3*dx
+    p.x[2] = -0.3*dx
+    UPA.apply_boundary_conditions!(tracker)
+    @test p.x[1] ≈ 0.3*dx rtol=1e-10
+    @test p.x[2] ≈ G.Lx - 0.3*dx rtol=1e-10
+end
