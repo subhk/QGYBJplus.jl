@@ -1943,32 +1943,33 @@ function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, param
         invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
     end
 
-    # Step 2: Get A_z from S.C
+    # Step 2: Get A_z from S.C (spectral pencil; z may be distributed)
     Aₖ_z = S.C
     Aₖ_z_arr = parent(Aₖ_z)
     nz_local, nx_local, ny_local = size(Aₖ_z_arr)
 
-    @assert nz_local == nz "Vertical dimension must be fully local for vertical displacement"
-
-    # Step 3: Compute horizontal derivatives of A_z in spectral space
+    # Step 3: Compute horizontal derivatives of A_z in spectral space.
+    # The derivative is pointwise in z, so no transpose is needed even when the
+    # spectral pencil distributes z — map local indices to global ones and zero
+    # the global top level (k = nz), matching the direct path.
     dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
     dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, dAz_dxₖ)
-        j_global = local_to_global(j_local, 3, dAz_dxₖ)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
-        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
-    end
-
-    # Zero the top slice
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        dAz_dxₖ_arr[nz, i_local, j_local] = 0
-        dAz_dyₖ_arr[nz, i_local, j_local] = 0
+    @inbounds for k_local in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
+        k_global = local_to_global(k_local, 1, Aₖ_z)
+        if k_global < nz
+            i_global = local_to_global(i_local, 2, Aₖ_z)
+            j_global = local_to_global(j_local, 3, Aₖ_z)
+            ikₓ = im * G.kx[i_global]
+            ikᵧ = im * G.ky[j_global]
+            dAz_dxₖ_arr[k_local, i_local, j_local] = ikₓ * Aₖ_z_arr[k_local, i_local, j_local]
+            dAz_dyₖ_arr[k_local, i_local, j_local] = ikᵧ * Aₖ_z_arr[k_local, i_local, j_local]
+        else
+            dAz_dxₖ_arr[k_local, i_local, j_local] = 0
+            dAz_dyₖ_arr[k_local, i_local, j_local] = 0
+        end
     end
 
     # Step 4: Transform to physical space

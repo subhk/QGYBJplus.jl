@@ -905,9 +905,9 @@ function _read_initial_psi_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = length(ds.dim["x"])
-            ny_file = length(ds.dim["y"])
-            nz_file = length(ds.dim["z"])
+            nx_file = ds.dim["x"]
+            ny_file = ds.dim["y"]
+            nz_file = ds.dim["z"]
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -950,6 +950,87 @@ function _read_initial_psi_parallel(filename::String, G::Grid, plans, parallel_c
     MPI.Barrier(parallel_config.comm)
 
     # Scatter from rank 0 to all processes
+    psik_local = QGYBJplus.scatter_from_root(psik_global, G, parallel_config; plans=plans)
+
+    return psik_local
+end
+
+"""
+    read_initial_vorticity(filename::String, G::Grid, plans; parallel_config=nothing)
+
+Read an initial 3D relative-vorticity field ζ(x,y,z) from a NetCDF file and
+return the corresponding spectral streamfunction ψ̂ = -ζ̂/kₕ².
+
+The file must contain a 3D variable named `zeta`, `vorticity`, or `vort` with
+dimensions matching the model grid (same conventions as `read_initial_psi`).
+The horizontal-mean mode (kₕ² = 0) of ψ is set to zero; any horizontally
+uniform vorticity in the file carries no streamfunction information.
+
+Supports both serial and parallel (2D decomposition) modes; in parallel mode
+rank 0 reads and inverts, then the spectral field is scattered.
+"""
+function read_initial_vorticity(filename::String, G::Grid, plans; parallel_config=nothing)
+    is_parallel = parallel_config !== nothing && G.decomp !== nothing
+
+    if is_parallel
+        return _read_initial_vorticity_parallel(filename, G, plans, parallel_config)
+    else
+        return _read_initial_vorticity_serial(filename, G, plans)
+    end
+end
+
+const _VORTICITY_VAR_NAMES = ("zeta", "vorticity", "vort", "ζ")
+
+function _read_initial_vorticity_serial(filename::String, G::Grid, plans)
+    @info "Reading initial vorticity from: $filename (serial)"
+
+    ζr = zeros(Float64, G.nz, G.nx, G.ny)
+
+    NCDatasets.Dataset(filename, "r") do ds
+        if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
+            nx_file = ds.dim["x"]
+            ny_file = ds.dim["y"]
+            nz_file = ds.dim["z"]
+
+            if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
+                error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
+            end
+        end
+
+        varname = findfirst(name -> haskey(ds, name), _VORTICITY_VAR_NAMES)
+        varname === nothing &&
+            error("No vorticity variable found in $filename. Expected one of: " *
+                  join(_VORTICITY_VAR_NAMES, ", "))
+        ζr .= _from_xyz(ds[_VORTICITY_VAR_NAMES[varname]][:,:,:])
+    end
+
+    # ζ̂ → ψ̂ = -ζ̂/kₕ² (horizontal-mean mode has no streamfunction: set to 0)
+    ζk = similar(ζr, Complex{Float64})
+    fft_forward!(ζk, ζr, plans)
+
+    psik = similar(ζk)
+    for j in 1:G.ny, i in 1:G.nx
+        kₕ² = G.kx[i]^2 + G.ky[j]^2
+        for k in 1:G.nz
+            psik[k, i, j] = kₕ² > 0 ? -ζk[k, i, j] / kₕ² : 0
+        end
+    end
+
+    return psik
+end
+
+function _read_initial_vorticity_parallel(filename::String, G::Grid, plans, parallel_config)
+    rank = MPI.Comm_rank(parallel_config.comm)
+
+    psik_global = nothing
+    if rank == 0
+        @info "Reading initial vorticity from: $filename (parallel, rank 0)"
+        serial_plans = plan_transforms!(G)
+        psik_global = _read_initial_vorticity_serial(filename, G, serial_plans)
+    end
+
+    MPI.Barrier(parallel_config.comm)
+
     psik_local = QGYBJplus.scatter_from_root(psik_global, G, parallel_config; plans=plans)
 
     return psik_local
@@ -1000,9 +1081,9 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = length(ds.dim["x"])
-            ny_file = length(ds.dim["y"])
-            nz_file = length(ds.dim["z"])
+            nx_file = ds.dim["x"]
+            ny_file = ds.dim["y"]
+            nz_file = ds.dim["z"]
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -1078,7 +1159,7 @@ function read_stratification_raw(filename::String)
             z_data = Array(ds["z"][:])
         elseif haskey(ds.dim, "z")
             # If no z variable, create uniform grid
-            nz_file = length(ds.dim["z"])
+            nz_file = ds.dim["z"]
             z_data = collect(range(0.0, 1.0, length=nz_file))
             @warn "No 'z' variable found, using normalized coordinates [0, 1]"
         else
@@ -1119,7 +1200,7 @@ function read_stratification_profile(filename::String, nz::Int)
         z_file = nothing
 
         if haskey(ds.dim, "z")
-            nz_file = length(ds.dim["z"])
+            nz_file = ds.dim["z"]
             # Try to read z coordinates from file
             if haskey(ds, "z")
                 z_file = Array(ds["z"][:])

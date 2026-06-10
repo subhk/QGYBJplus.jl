@@ -54,7 +54,7 @@ export
 
     # I/O
     OutputManager, write_state_file,
-    read_initial_psi, read_initial_waves,
+    read_initial_psi, read_initial_waves, read_initial_vorticity,
     read_stratification_profile, read_stratification_raw,
     ncdump_psi, ncdump_la, ncread_psi!, ncread_la!,
 

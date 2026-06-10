@@ -1043,3 +1043,150 @@ end
     @test p.x[1] ≈ 0.3*dx rtol=1e-10
     @test p.x[2] ≈ G.Lx - 0.3*dx rtol=1e-10
 end
+
+#=
+================================================================================
+                    WAVE FEEDBACK ANALYTIC VERIFICATION
+================================================================================
+For a two-wave field B = a·exp(iθ₁) + b·exp(iθ₂) with θₘ = kₘx + lₘy and
+real a, b, the wave feedback (Xie & Vanneste 2015; Rocha, Wagner & Young 2018)
+
+    qʷ = (i/2f)·J(B*, B) + (1/4f)·∇²|B|²
+
+has the closed form (Δk = k₁-k₂, Δl = l₁-l₂):
+
+    qʷ = (ab/f)·[ (k₁l₂ - k₂l₁)·sin(θ₁-θ₂) - ((Δk² + Δl²)/2)·cos(θ₁-θ₂) ]
+
+since J(B*,B) = 2i·ab·(k₁l₂-k₂l₁)·sin(θ₂-θ₁) and
+|B|² = a² + b² + 2ab·cos(θ₁-θ₂). Verifies signs, FFT normalization, and
+the spectral Laplacian in both the complex and the split-BR/BI paths.
+=#
+
+@testset "Wave feedback qʷ matches analytic two-wave solution" begin
+    par = default_params(nx=16, ny=16, nz=4, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G, S, plans, _ = setup_model(par)
+    L = dealias_mask(G)
+    f₀ = par.f₀
+
+    # Two waves inside the dealiased band
+    n1, m1 = 1, 2      # wave 1 integer wavenumbers
+    n2, m2 = 2, -1     # wave 2
+    k₁ = 2π * n1 / G.Lx; l₁ = 2π * m1 / G.Ly
+    k₂ = 2π * n2 / G.Lx; l₂ = 2π * m2 / G.Ly
+    a, b = 0.1, 0.07
+
+    B_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    qw_exact = zeros(Float64, G.nz, G.nx, G.ny)
+    Δk = k₁ - k₂; Δl = l₁ - l₂
+    for j in 1:G.ny, i in 1:G.nx
+        x = (i - 1) * G.Lx / G.nx
+        y = (j - 1) * G.Ly / G.ny
+        θ₁ = k₁ * x + l₁ * y
+        θ₂ = k₂ * x + l₂ * y
+        Bval = a * cis(θ₁) + b * cis(θ₂)
+        qw = (a * b / f₀) * ((k₁ * l₂ - k₂ * l₁) * sin(θ₁ - θ₂) -
+                             0.5 * (Δk^2 + Δl^2) * cos(θ₁ - θ₂))
+        for k in 1:G.nz
+            B_phys[k, i, j] = Bval
+            qw_exact[k, i, j] = qw
+        end
+    end
+
+    Bk = similar(S.L⁺A)
+    QGYBJplus.fft_forward!(parent(Bk), B_phys, plans)
+    qw_scale = maximum(abs.(qw_exact))
+
+    # --- Complex path (used by the ybj_plus production branch) ---
+    qwk = similar(S.L⁺A)
+    QGYBJplus.compute_qw_complex!(qwk, Bk, par, G, plans; Lmask=L)
+    qw_num = similar(B_phys)
+    QGYBJplus.fft_backward!(qw_num, parent(qwk), plans)
+    @test maximum(abs.(real.(qw_num) .- qw_exact)) < 1e-12 * qw_scale
+    @test maximum(abs.(imag.(qw_num))) < 1e-12 * qw_scale
+
+    # --- Split BR/BI path (used by the non-plus branch) ---
+    BRk = similar(Bk); BIk = similar(Bk)
+    QGYBJplus.fft_forward!(parent(BRk), complex.(real.(B_phys)), plans)
+    QGYBJplus.fft_forward!(parent(BIk), complex.(imag.(B_phys)), plans)
+    qwk2 = similar(Bk)
+    QGYBJplus.compute_qw!(qwk2, BRk, BIk, par, G, plans; Lmask=L)
+    qw_num2 = similar(B_phys)
+    QGYBJplus.fft_backward!(qw_num2, parent(qwk2), plans)
+    @test maximum(abs.(real.(qw_num2) .- qw_exact)) < 1e-12 * qw_scale
+
+    # --- Single plane wave: J(B*,B) = 0 and |B|² constant → qʷ ≡ 0 ---
+    for j in 1:G.ny, i in 1:G.nx, k in 1:G.nz
+        x = (i - 1) * G.Lx / G.nx
+        y = (j - 1) * G.Ly / G.ny
+        B_phys[k, i, j] = a * cis(k₁ * x + l₁ * y)
+    end
+    QGYBJplus.fft_forward!(parent(Bk), B_phys, plans)
+    QGYBJplus.compute_qw_complex!(qwk, Bk, par, G, plans; Lmask=L)
+    @test maximum(abs.(parent(qwk))) < 1e-14
+end
+
+#=
+================================================================================
+                FILE-BASED STRATIFICATION + 3D VORTICITY IC
+================================================================================
+One NetCDF file carries N²(z) and ζ(x,y,z); the model loads the stratification
+via the :from_file profile and the flow via psi_type = :from_file_vorticity
+(ψ̂ = -ζ̂/kₕ²). Verified against the analytic ψ that generated ζ.
+=#
+
+@testset "Load stratification + 3D vorticity from file" begin
+    par = default_params(nx=16, ny=16, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
+    G, S, plans, _ = setup_model(par)
+
+    fn = joinpath(mktempdir(), "ic_strat_vort.nc")
+
+    # Analytic streamfunction with vertical structure; ζ = ∇²ψ = -kₕ²ψ
+    kx = 2π * 2 / G.Lx; ky = 2π * 3 / G.Ly
+    kh2 = kx^2 + ky^2
+    P = 0.5
+    ψf(x, y, z) = P * cos(kx * x) * sin(ky * y) * (1 + 0.5 * cos(π * z / G.Lz))
+    # The model evaluates N² on unstaggered (face) levels z - dz/2, so store
+    # the profile there for an exact round-trip.
+    z_face = G.z .- (G.Lz / G.nz) / 2
+    N2_data = [1e-5 * exp(z / 1000.0) for z in z_face]
+
+    zeta_xyz = zeros(G.nx, G.ny, G.nz)
+    for k in 1:G.nz, j in 1:G.ny, i in 1:G.nx
+        x = (i - 1) * G.Lx / G.nx
+        y = (j - 1) * G.Ly / G.ny
+        zeta_xyz[i, j, k] = -kh2 * ψf(x, y, G.z[k])
+    end
+
+    NCDatasets.Dataset(fn, "c") do ds
+        NCDatasets.defDim(ds, "x", G.nx)
+        NCDatasets.defDim(ds, "y", G.ny)
+        NCDatasets.defDim(ds, "z", G.nz)
+        zv = NCDatasets.defVar(ds, "z", Float64, ("z",)); zv[:] = z_face
+        nv = NCDatasets.defVar(ds, "N2", Float64, ("z",)); nv[:] = N2_data
+        vv = NCDatasets.defVar(ds, "zeta", Float64, ("x", "y", "z")); vv[:, :, :] = zeta_xyz
+    end
+
+    # --- Stratification from the same file ---
+    profile = create_stratification_profile((type=:from_file, filename=fn))
+    N2_loaded = compute_stratification_profile(profile, G)
+    @test maximum(abs.(N2_loaded .- N2_data)) < 1e-12 * maximum(N2_data)
+
+    # --- ζ file → spectral ψ ---
+    psik = read_initial_vorticity(fn, G, plans)
+    ψ_num = similar(psik)
+    QGYBJplus.fft_backward!(ψ_num, psik, plans)
+    ψ_exact = [ψf((i - 1) * G.Lx / G.nx, (j - 1) * G.Ly / G.ny, G.z[k])
+               for k in 1:G.nz, i in 1:G.nx, j in 1:G.ny]
+    @test maximum(abs.(real.(ψ_num) .- ψ_exact)) < 1e-12 * P
+    @test maximum(abs.(imag.(ψ_num))) < 1e-12 * P
+    @test abs(psik[1, 1, 1]) == 0.0   # horizontal-mean mode zeroed
+
+    # --- Full config path: q computed from the loaded ψ and N² profile ---
+    icc = InitialConditionConfig{Float64}(psi_type=:from_file_vorticity, psi_filename=fn,
+                                          wave_type=:zero)
+    cfg = (initial_conditions=icc,)
+    initialize_from_config(cfg, G, S, plans; params=par, N2_profile=N2_loaded)
+    @test maximum(abs.(parent(S.psi) .- psik)) < 1e-12 * maximum(abs.(psik))
+    @test maximum(abs.(parent(S.q))) > 0
+    @test all(isfinite, parent(S.q))
+end

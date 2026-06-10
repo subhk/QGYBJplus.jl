@@ -92,7 +92,7 @@ cfg = ParticleConfig{Float64}(x_max=Lx, y_max=Ly, z_level=z_mid,
                               nx_particles=NP, ny_particles=NP,
                               use_3d_advection=false,
                               interpolation_method=QGYBJplus.TRILINEAR)
-tracker = ParticleTracker(cfg, gridp, mpi_config)
+tracker = ParticleTracker(cfg, gridp, mpi_config; plans=plansp)
 initialize_particles!(tracker, cfg)
 
 NPtot = NP * NP
@@ -127,9 +127,9 @@ if rank == 0
     bcs = (periodic_x=true, periodic_y=true, periodic_z=false)
 
     dxp = Lx / NP; dyp = Ly / NP
-    xs = Float64[(i - 1) * dxp for j in 1:NP, i in 1:NP][:]
-    ys = Float64[(j - 1) * dyp for j in 1:NP, i in 1:NP][:]
-    # id = (j-1)*NP + i — same enumeration as the comprehensions above
+    # id = (j-1)*NP + i (i fastest) — must match initialize_particles_parallel!
+    xs = Float64[(i - 1) * dxp for j in 1:NP for i in 1:NP]
+    ys = Float64[(j - 1) * dyp for j in 1:NP for i in 1:NP]
     xs_un = copy(xs); ys_un = copy(ys)   # unwrapped, to detect seam crossings
 
     for _ in 1:NSTEPS

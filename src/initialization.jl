@@ -66,6 +66,9 @@ function initialize_from_config(config, G::Grid, S::State, plans;
     elseif config.initial_conditions.psi_type == :from_file
         S.psi .= read_initial_psi(config.initial_conditions.psi_filename, G, plans;
                                   parallel_config=parallel_config)
+    elseif config.initial_conditions.psi_type == :from_file_vorticity
+        S.psi .= read_initial_vorticity(config.initial_conditions.psi_filename, G, plans;
+                                        parallel_config=parallel_config)
     else
         # Zero initialization (type-safe)
         fill!(S.psi, zero(eltype(S.psi)))

@@ -93,7 +93,11 @@ Configuration for initial conditions.
 """
 Base.@kwdef struct InitialConditionConfig{T}
     # Stream function initialization
-    psi_type::Symbol = :analytical  # :analytical, :from_file, :random
+    # :analytical, :random, :zero,
+    # :from_file            — read ψ(x,y,z) from `psi_filename` (NetCDF var "psi")
+    # :from_file_vorticity  — read ζ(x,y,z) from `psi_filename` (NetCDF var
+    #                         "zeta"/"vorticity"/"vort") and invert ψ̂ = -ζ̂/kₕ²
+    psi_type::Symbol = :analytical
     psi_filename::Union{String,Nothing} = nothing
     psi_amplitude::T = 1.0
     

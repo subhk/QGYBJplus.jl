@@ -1208,6 +1208,9 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
     elseif config.initial_conditions.psi_type == :from_file
         state.psi .= read_initial_psi(config.initial_conditions.psi_filename, grid, plans;
                                       parallel_config=mpi_config)
+    elseif config.initial_conditions.psi_type == :from_file_vorticity
+        state.psi .= read_initial_vorticity(config.initial_conditions.psi_filename, grid, plans;
+                                            parallel_config=mpi_config)
     else
         fill!(state.psi, zero(eltype(state.psi)))
     end

@@ -382,7 +382,8 @@ mutable struct ParticleTracker{T<:AbstractFloat,P,C}
     base_output_filename::String       # Base filename for automatic file splitting
     auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing;
+                                plans=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
@@ -433,8 +434,13 @@ mutable struct ParticleTracker{T<:AbstractFloat,P,C}
             ξz_sin_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
-        # Set up transform plans (using unified interface)
-        plans = plan_transforms!(grid, parallel_config)
+        # Set up transform plans (using unified interface). Under MPI, pass the
+        # simulation's plans here: PencilFFTs ties arrays to specific Pencil
+        # objects, so a second independently-created plan set cannot operate on
+        # state arrays allocated with the first.
+        if plans === nothing
+            plans = plan_transforms!(grid, parallel_config)
+        end
 
         # Default Coriolis parameter (will be updated from params in advect_particles!)
         f0 = T(1e-4)
@@ -465,21 +471,22 @@ mutable struct ParticleTracker{T<:AbstractFloat,P,C}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
+ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing; plans=nothing) where T =
+    ParticleTracker{T}(config, grid, parallel_config; plans=plans)
 
-function _particle_velocity_workspace!(tracker::ParticleTracker, state::State)
+function _particle_velocity_workspace!(tracker::ParticleTracker, state::State, grid::Grid)
     workspace = tracker.velocity_workspace
     if workspace === nothing || size(parent(workspace.uk)) != size(parent(state.psi))
-        workspace = ExpRK2Workspace(state, tracker.plans)
+        workspace = ExpRK2Workspace(state, tracker.plans; G=grid)
         tracker.velocity_workspace = workspace
     end
     return workspace
 end
 
-function _particle_wave_workspace!(tracker::ParticleTracker, state::State)
+function _particle_wave_workspace!(tracker::ParticleTracker, state::State, grid::Grid)
     workspace = tracker.wave_workspace
     if workspace === nothing || size(parent(workspace.spectral1)) != size(parent(state.psi))
-        workspace = NonlinearWorkspace(state.psi, tracker.plans)
+        workspace = NonlinearWorkspace(state.psi, tracker.plans; G=grid)
         tracker.wave_workspace = workspace
     end
     return workspace
@@ -564,9 +571,12 @@ function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothi
 
     @assert px * py == nprocs "Process grid ($px × $py) must equal nprocs ($nprocs)"
 
-    # Compute rank coordinates in process grid
-    rank_x = rank % px
-    rank_y = rank ÷ px
+    # Compute rank coordinates in process grid. MUST match the PencilArrays
+    # MPITopology layout (C order: first topology dim varies slowest), since the
+    # tracker's velocity blocks come straight from the pencil-decomposed state:
+    #   rank = rank_x * py + rank_y
+    rank_x = rank ÷ py
+    rank_y = rank % py
 
     # Local sizes for each dimension
     nx_local = compute_local_size(grid.nx, px, rank_x)
@@ -904,7 +914,7 @@ This is computed separately by `update_wave_displacement!`.
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::State, grid::Grid;
                                 params=nothing, N2_profile=nothing) where T
-    velocity_workspace = _particle_velocity_workspace!(tracker, state)
+    velocity_workspace = _particle_velocity_workspace!(tracker, state, grid)
 
     # Compute ONLY QG velocities (Lagrangian-mean flow)
     # In GLM framework, we do NOT add wave velocity or Stokes drift to advection
@@ -990,7 +1000,7 @@ This should be called after update_velocity_fields! and before computing wave di
 function update_wave_fields!(tracker::ParticleTracker{T},
                             state::State, grid::Grid;
                             params=nothing, N2_profile=nothing) where T
-    wave_workspace = _particle_wave_workspace!(tracker, state)
+    wave_workspace = _particle_wave_workspace!(tracker, state, grid)
 
     # Compute horizontal wave displacement field LA in physical space
     # This function is defined in operators.jl
@@ -1120,6 +1130,65 @@ function compute_particle_wave_displacement!(tracker::ParticleTracker{T},
 end
 
 """
+    _wave_field_stencil(x, y, z, tracker)
+
+Trilinear stencil (indices + fractional weights) for interpolating the
+tracker's wave fields (LA, ξz coefficients) at a particle position.
+
+Serial: global indices with periodic wrapping across the domain seam.
+Parallel: the wave fields only hold this rank's block (no halos), so positions
+are shifted into local coordinates and the stencil is clamped at the local
+edges. Particles always live inside their rank's domain after migration, so
+only the outermost half-cell at a rank boundary degrades to nearest-cell
+values — an O(dx) error in the diagnostic wave displacement ξ, not in the
+advected mean positions.
+"""
+function _wave_field_stencil(x::T, y::T, z::T, tracker::ParticleTracker{T}) where T
+    # Wrap into the periodic domain (domain-relative coordinates)
+    x_rel = tracker.config.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) - tracker.x0 : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? wrap_coordinate(y, tracker.y0, tracker.Ly) - tracker.y0 : y - tracker.y0
+    z_min = -tracker.Lz
+    z0 = z_min + tracker.dz / 2
+    z_clamped = clamp(z, z0, zero(T))
+
+    nz_loc, nx_loc, ny_loc = size(tracker.LA_real_field)
+    use_local = tracker.is_parallel && tracker.local_domain !== nothing
+    if use_local
+        x_rel -= tracker.local_domain.x_start - tracker.x0
+        y_rel -= tracker.local_domain.y_start - tracker.y0
+    end
+
+    fx = x_rel / tracker.dx
+    fy = y_rel / tracker.dy
+    fz = (z_clamped - z0) / tracker.dz
+
+    ix = floor(Int, fx); iy = floor(Int, fy); iz = floor(Int, fz)
+    rx = fx - ix; ry = fy - iy; rz = fz - iz
+
+    if !use_local && tracker.config.periodic_x
+        ix1 = mod(ix, nx_loc) + 1
+        ix2 = mod(ix + 1, nx_loc) + 1
+    else
+        ix1 = clamp(ix + 1, 1, nx_loc)
+        ix2 = clamp(ix + 2, 1, nx_loc)
+    end
+
+    if !use_local && tracker.config.periodic_y
+        iy1 = mod(iy, ny_loc) + 1
+        iy2 = mod(iy + 1, ny_loc) + 1
+    else
+        iy1 = clamp(iy + 1, 1, ny_loc)
+        iy2 = clamp(iy + 2, 1, ny_loc)
+    end
+
+    # Z is never periodic
+    iz1 = clamp(iz + 1, 1, nz_loc)
+    iz2 = clamp(iz + 2, 1, nz_loc)
+
+    return ix1, ix2, iy1, iy2, iz1, iz2, rx, ry, rz
+end
+
+"""
     interpolate_xi_z_coeffs_at_position(x, y, z, tracker)
 
 Interpolate vertical wave displacement coefficients at particle position.
@@ -1127,48 +1196,7 @@ Returns (ξz_cos, ξz_sin) tuple.
 """
 function interpolate_xi_z_coeffs_at_position(x::T, y::T, z::T,
                                              tracker::ParticleTracker{T}) where T
-    # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
-    z_min = -tracker.Lz
-    z0 = z_min + tracker.dz / 2
-    z_max = zero(T)
-    z_clamped = clamp(z, z0, z_max)
-
-    # Convert to grid indices (0-based for interpolation)
-    fx = x_rel / tracker.dx
-    fy = y_rel / tracker.dy
-    fz = (z_clamped - z0) / tracker.dz
-
-    # Get integer and fractional parts
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-    iz = floor(Int, fz)
-
-    rx = fx - ix
-    ry = fy - iy
-    rz = fz - iz
-
-    # Handle boundary indices with proper periodic wrapping
-    if tracker.config.periodic_x
-        ix1 = mod(ix, tracker.nx) + 1
-        ix2 = mod(ix + 1, tracker.nx) + 1
-    else
-        ix1 = max(1, min(tracker.nx, ix + 1))
-        ix2 = max(1, min(tracker.nx, ix + 2))
-    end
-
-    if tracker.config.periodic_y
-        iy1 = mod(iy, tracker.ny) + 1
-        iy2 = mod(iy + 1, tracker.ny) + 1
-    else
-        iy1 = max(1, min(tracker.ny, iy + 1))
-        iy2 = max(1, min(tracker.ny, iy + 2))
-    end
-
-    # Z is never periodic
-    iz1 = max(1, min(tracker.nz, iz + 1))
-    iz2 = max(1, min(tracker.nz, iz + 2))
+    ix1, ix2, iy1, iy2, iz1, iz2, rx, ry, rz = _wave_field_stencil(x, y, z, tracker)
 
     # Trilinear interpolation for ξz_cos
     c_z1_y1 = (1-rx) * tracker.ξz_cos_field[iz1, ix1, iy1] + rx * tracker.ξz_cos_field[iz1, ix2, iy1]
@@ -1203,48 +1231,7 @@ Returns (LA_real, LA_imag) tuple.
 """
 function interpolate_LA_at_position(x::T, y::T, z::T,
                                    tracker::ParticleTracker{T}) where T
-    # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
-    z_min = -tracker.Lz
-    z0 = z_min + tracker.dz / 2
-    z_max = zero(T)
-    z_clamped = clamp(z, z0, z_max)
-
-    # Convert to grid indices (0-based for interpolation)
-    fx = x_rel / tracker.dx
-    fy = y_rel / tracker.dy
-    fz = (z_clamped - z0) / tracker.dz
-
-    # Get integer and fractional parts
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-    iz = floor(Int, fz)
-
-    rx = fx - ix
-    ry = fy - iy
-    rz = fz - iz
-
-    # Handle boundary indices with proper periodic wrapping
-    if tracker.config.periodic_x
-        ix1 = mod(ix, tracker.nx) + 1
-        ix2 = mod(ix + 1, tracker.nx) + 1
-    else
-        ix1 = max(1, min(tracker.nx, ix + 1))
-        ix2 = max(1, min(tracker.nx, ix + 2))
-    end
-
-    if tracker.config.periodic_y
-        iy1 = mod(iy, tracker.ny) + 1
-        iy2 = mod(iy + 1, tracker.ny) + 1
-    else
-        iy1 = max(1, min(tracker.ny, iy + 1))
-        iy2 = max(1, min(tracker.ny, iy + 2))
-    end
-
-    # Z is never periodic
-    iz1 = max(1, min(tracker.nz, iz + 1))
-    iz2 = max(1, min(tracker.nz, iz + 2))
+    ix1, ix2, iy1, iy2, iz1, iz2, rx, ry, rz = _wave_field_stencil(x, y, z, tracker)
 
     # Trilinear interpolation for LA_real
     LA_r_z1_y1 = (1-rx) * tracker.LA_real_field[iz1, ix1, iy1] + rx * tracker.LA_real_field[iz1, ix2, iy1]
@@ -1404,8 +1391,8 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
 
         # Convert global positions to extended array coordinates
         # Step 1: Apply periodic wrapping to global coordinates
-        x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
-        y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
+        x_periodic = halo_info.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) : x
+        y_periodic = halo_info.periodic_y ? wrap_coordinate(y, tracker.y0, tracker.Ly) : y
 
         # Step 2: Compute local domain start positions (using HaloExchange functions)
         x_start = tracker.x0 + compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
@@ -1444,8 +1431,8 @@ function interpolate_velocity_local(x::T, y::T, z::T,
                                   tracker::ParticleTracker{T}) where T
     
     # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) - tracker.x0 : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? wrap_coordinate(y, tracker.y0, tracker.Ly) - tracker.y0 : y - tracker.y0
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)
@@ -1632,7 +1619,10 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         
         # Exchange particles between ranks
         exchange_particles!(tracker)
-        
+
+        # Keep per-particle diagnostic arrays sized to the post-migration count
+        _sync_aux_arrays!(particles)
+
     catch e
         @warn "Particle migration failed: $e"
     end
@@ -1647,8 +1637,8 @@ Uses the same domain decomposition logic as compute_local_domain to ensure consi
 Handles uneven division where first `remainder` ranks get one extra grid point.
 """
 function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) - tracker.x0 : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? wrap_coordinate(y, tracker.y0, tracker.Ly) - tracker.y0 : y - tracker.y0
 
     # Grid parameters
     nx = tracker.nx
@@ -1674,7 +1664,8 @@ function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
     rank_x = _rank_for_index(ix, nx, px)
     rank_y = _rank_for_index(iy, ny, py)
 
-    return rank_y * px + rank_x
+    # PencilArrays C-order rank layout (see compute_local_domain)
+    return rank_x * py + rank_y
 end
 
 """
@@ -1682,7 +1673,7 @@ Find which rank should own a particle at position x (1D decomposition fallback).
 """
 function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
     # Fallback for 1D decomposition in x
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    x_rel = tracker.config.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) - tracker.x0 : x - tracker.x0
     nx = tracker.nx
     dx = tracker.dx
     ix = floor(Int, x_rel / dx)
@@ -1787,6 +1778,23 @@ function exchange_particles!(tracker::ParticleTracker{T}) where T
 end
 
 """
+Resize the per-particle diagnostic arrays (wave displacement, LA samples) to
+the current particle count. Their values are recomputed from the fields every
+step, so after migration only the lengths must stay in sync with `np`.
+"""
+function _sync_aux_arrays!(particles::ParticleState)
+    n = particles.np
+    resize!(particles.xi_x, n)
+    resize!(particles.xi_y, n)
+    resize!(particles.xi_z, n)
+    resize!(particles.LA_real, n)
+    resize!(particles.LA_imag, n)
+    resize!(particles.xi_z_cos, n)
+    resize!(particles.xi_z_sin, n)
+    return particles
+end
+
+"""
 Add received particles to local collection.
 """
 function add_received_particles!(tracker::ParticleTracker{T}) where T
@@ -1831,13 +1839,13 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
     @inbounds for i in 1:particles.np
         # Horizontal boundaries
         if config.periodic_x
-            particles.x[i] = tracker.x0 + mod(particles.x[i] - tracker.x0, tracker.Lx)
+            particles.x[i] = wrap_coordinate(particles.x[i], tracker.x0, tracker.Lx)
         else
             particles.x[i] = clamp(particles.x[i], tracker.x0, tracker.x0 + tracker.Lx)
         end
         
         if config.periodic_y
-            particles.y[i] = tracker.y0 + mod(particles.y[i] - tracker.y0, tracker.Ly)
+            particles.y[i] = wrap_coordinate(particles.y[i], tracker.y0, tracker.Ly)
         else
             particles.y[i] = clamp(particles.y[i], tracker.y0, tracker.y0 + tracker.Ly)
         end
