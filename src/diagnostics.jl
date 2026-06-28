@@ -140,13 +140,13 @@ function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing, workspace=nothi
     if need_transpose
         _omega_eqn_rhs_2d!(rhs, psi, G, plans, Lmask, workspace)
     else
-        _omega_eqn_rhs_direct!(rhs, psi, G, plans, Lmask, workspace)
+        _omega_eqn_rhs_direct!(rhs, psi, G, plans, Lmask)
     end
     return rhs
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
+function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -159,7 +159,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
     @assert nz_local == nz "Vertical dimension must be fully local for omega RHS"
 
     # ψ_z in spectral space (simple finite difference)
-    ψzₖ = workspace === nothing ? similar(psi) : workspace.spectral1
+    ψzₖ = similar(psi)
     ψzₖ_arr = parent(ψzₖ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         if k == nz
@@ -170,10 +170,8 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
     end
 
     # Build needed spectral derivatives
-    bxₖ = workspace === nothing ? similar(psi) : workspace.spectral2
-    byₖ = workspace === nothing ? similar(psi) : workspace.spectral3
-    xxₖ = workspace === nothing ? similar(psi) : workspace.spectral4
-    xyₖ = workspace === nothing ? similar(psi) : workspace.spectral5
+    bxₖ = similar(psi); byₖ = similar(psi)
+    xxₖ = similar(psi); xyₖ = similar(psi)
     bxₖ_arr = parent(bxₖ); byₖ_arr = parent(byₖ)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
@@ -194,10 +192,8 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
     end
 
     # To real space - use helper for correct pencil allocation
-    bxᵣ = workspace === nothing ? _allocate_fft_dst(bxₖ, plans) : workspace.physical1
-    byᵣ = workspace === nothing ? _allocate_fft_dst(byₖ, plans) : workspace.physical2
-    xxᵣ = workspace === nothing ? _allocate_fft_dst(xxₖ, plans) : workspace.physical3
-    xyᵣ = workspace === nothing ? _allocate_fft_dst(xyₖ, plans) : workspace.physical4
+    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
+    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
     fft_backward!(bxᵣ, bxₖ, plans)
     fft_backward!(byᵣ, byₖ, plans)
     fft_backward!(xxᵣ, xxₖ, plans)
@@ -207,7 +203,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask, workspace)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
     # Real-space RHS
-    rhsᵣ = workspace === nothing ? similar(bxᵣ) : workspace.physical5
+    rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
@@ -420,9 +416,20 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
     vk_arr = parent(vk)
     nz_local, nx_local, ny_local = size(uk_arr)
 
+    # Get density profile for weighting (ρₛ at staggered points)
+    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
+        PARENT.rho_st(par, G)
+    else
+        ones(Float64, nz)
+    end
+
     KE_total = 0.0
 
     @inbounds for k in 1:nz_local
+        # Use global z-index for correct profile lookup in 2D decomposition
+        k_global = local_to_global(k, 1, uk)
+        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
+
         ke_k = 0.0
 
         # Sum over horizontal wavenumbers with dealiasing
@@ -443,7 +450,8 @@ function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
             ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         end
 
-        KE_total += ke_k
+        # Weight by density and accumulate
+        KE_total += ρₛₖ * ke_k
     end
 
     # Normalize by nz (vertical integration)
@@ -494,12 +502,34 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
     bk_arr = parent(bk)
     nz_local, nx_local, ny_local = size(bk_arr)
 
+    # Get density profiles
+    ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
+        PARENT.rho_ut(par, G)
+    else
+        ones(Float64, nz)
+    end
+
+    ρ₂ = if isdefined(PARENT, :rho_st) && par !== nothing
+        PARENT.rho_st(par, G)
+    else
+        ones(Float64, nz)
+    end
+
+    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
+        PARENT.rho_st(par, G)
+    else
+        ones(Float64, nz)
+    end
+
     PE_total = 0.0
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
         k_global = local_to_global(k, 1, bk)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
+        ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
+        ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
+        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         pe_k = 0.0
 
@@ -508,17 +538,18 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
             j_global = local_to_global(j, 3, bk)
 
             if L[i_global, j_global]
-                # PE contribution: a_ell(z) × |b|² (Boussinesq: ρ = const)
-                pe_k += a_ell_k * abs2(bk_arr[k, i, j])
+                # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
+                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, i, j])
             end
         end
 
         # Dealiasing correction
         if local_to_global(1, 2, bk) == 1 && local_to_global(1, 3, bk) == 1
-            pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
+            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, 1, 1])
         end
 
-        PE_total += pe_k
+        # Weight by density and accumulate
+        PE_total += ρₛₖ * pe_k
     end
 
     # Normalize by nz
@@ -528,21 +559,18 @@ function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
 end
 
 """
-    wave_energy_vavg(L⁺A, A, G, plans) -> WE_ave::Array{Float64,2}
+    wave_energy_vavg(B, G, plans) -> WE_ave::Array{Float64,2}
 
-Compute vertically-averaged wave kinetic energy density in physical space.
+Compute vertically-averaged wave energy density in physical space.
 
 # Physical Background
-The wave kinetic energy density is based on LA (wave velocity amplitude):
+The wave energy density based on envelope B:
 
-    WKE(x,y,z) = (1/2) |LA|²
-
-where LA is computed using the YBJ L operator (NOT L⁺):
-    LA = L⁺A + (k_h²/4)A
+    WE(x,y,z) = (1/2) |B|²
 
 This function returns the vertical average:
 
-    WKE_avg(x,y) = (1/nz) Σₖ WKE(x,y,k)
+    WE_avg(x,y) = (1/nz) Σₖ WE(x,y,k)
 
 # Use Cases
 - Visualize horizontal wave energy distribution
@@ -550,61 +578,37 @@ This function returns the vertical average:
 - Monitor wave-mean flow interaction regions
 
 # Algorithm
-1. Compute LA = L⁺A + (k_h²/4)A in spectral space
-2. Transform LA to physical space
-3. Compute 0.5|LA|² at each point
-4. Average over vertical levels
-
-# Arguments
-- `L⁺A`: YBJ+ wave envelope (spectral)
-- `A`: Wave amplitude (spectral)
-- `G::Grid`: Grid structure
-- `plans`: FFT plans
+1. Transform B to physical space
+2. Compute 0.5|B|² at each point
+3. Average over vertical levels
 
 # Returns
-2D array (nx_local, ny_local) of vertically-averaged wave kinetic energy density.
+2D array (nx_local, ny_local) of vertically-averaged wave energy density.
 
 # Note
 In MPI mode with 2D decomposition, this returns LOCAL data only.
 For full domain visualization, gather data to root first.
 """
-function wave_energy_vavg(L⁺A, A, G::Grid, plans)
+function wave_energy_vavg(B, G::Grid, plans)
     nz = G.nz
 
     # Get local dimensions
-    L⁺A_arr = parent(L⁺A)
-    A_arr = parent(A)
-    nz_local, nx_local, ny_local = size(L⁺A_arr)
+    B_arr = parent(B)
+    nz_local, nx_local, ny_local = size(B_arr)
 
-    # Compute LA = L⁺A + (k_h²/4)A in spectral space
-    # This uses the YBJ L operator relation: LA = L⁺A + (k_h²/4)A
-    LA_k = similar(L⁺A)
-    LA_k_arr = parent(LA_k)
+    # Invert full complex field to physical space
+    Br = _allocate_fft_dst(B, plans)
+    fft_backward!(Br, B, plans)
+    Br_arr = parent(Br)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, L⁺A)
-        j_global = local_to_global(j_local, 3, L⁺A)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        # LA = L⁺A + (k_h²/4)A
-        LA_k_arr[k, i_local, j_local] = L⁺A_arr[k, i_local, j_local] + (kₕ² / 4) * A_arr[k, i_local, j_local]
-    end
-
-    # Transform LA to physical space
-    LAr = _allocate_fft_dst(LA_k, plans)
-    fft_backward!(LAr, LA_k, plans)
-    LAr_arr = parent(LAr)
-
-    # Accumulate 0.5|LA|^2 and average over nz
+    # Accumulate 0.5|B|^2 and average over nz
     # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
     # so no additional normalization is needed
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(LAr_arr)
+    nz_phys, nx_phys, ny_phys = size(Br_arr)
     WE = zeros(Float64, nx_phys, ny_phys)
     @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        WE[i,j] += 0.5 * abs2(LAr_arr[k, i, j])
+        WE[i,j] += 0.5 * abs2(Br_arr[k, i, j])
     end
     WE ./= nz
     return WE
@@ -716,15 +720,15 @@ function slice_vertical_xz(field, G::Grid, plans; j::Int)
 end
 
 """
-    wave_energy(L⁺A, A) -> (E_L⁺A, E_A)
+    wave_energy(B, A) -> (E_B, E_A)
 
-Compute domain-integrated wave energy from both L⁺A and A fields (simple version).
+Compute domain-integrated wave energy from both B and A fields (simple version).
 
 # Physical Background
 Two measures of wave energy in the model:
 
-1. **Envelope energy** E_L⁺A = Σ |L⁺A|²
-   - Based on the evolved YBJ+ wave envelope
+1. **Envelope energy** E_B = Σ |B|²
+   - Based on the evolved wave envelope
    - Directly available from prognostic variable
 
 2. **Amplitude energy** E_A = Σ |A|²
@@ -733,15 +737,15 @@ Two measures of wave energy in the model:
 
 # Use Cases
 - Monitor total wave energy conservation/dissipation
-- Compare E_L⁺A and E_A to verify L⁺A→A recovery
+- Compare E_B and E_A to verify B→A recovery
 - Track energy exchange with mean flow
 
 # Arguments
-- `L⁺A::Array{Complex,3}`: YBJ+ wave envelope (spectral or physical)
+- `B::Array{Complex,3}`: Wave envelope (spectral or physical)
 - `A::Array{Complex,3}`: Wave amplitude (spectral or physical)
 
 # Returns
-Tuple (E_L⁺A, E_A) of domain-summed squared magnitudes.
+Tuple (E_B, E_A) of domain-summed squared magnitudes.
 
 # Note
 - These are domain SUMS, not means. For energy density, divide by grid volume.
@@ -749,14 +753,14 @@ Tuple (E_L⁺A, E_A) of domain-summed squared magnitudes.
 - For physically accurate wave energies with dealiasing and density weighting,
   use `wave_energy_spectral` instead.
 """
-function wave_energy(L⁺A, A)
+function wave_energy(B, A)
     # Works with any array (regular or PencilArray)
-    L⁺A_arr = parent(L⁺A)
+    B_arr = parent(B)
     A_arr = parent(A)
-    EL⁺A = 0.0; EA = 0.0
-    @inbounds for x in L⁺A_arr; EL⁺A += abs2(x); end
+    EB = 0.0; EA = 0.0
+    @inbounds for x in B_arr; EB += abs2(x); end
     @inbounds for x in A_arr; EA += abs2(x); end
-    return EL⁺A, EA
+    return EB, EA
 end
 
 """
@@ -764,26 +768,17 @@ end
 
 Compute physically accurate wave energies in spectral space with dealiasing.
 
-# Operator Definitions (from PDF)
-    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
-    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
-
-Key relation: L = L⁺ + k_h²/4, so LA = B + (k_h²/4)A
-
 # Physical Background (matches YBJ+ paper)
 Three components of wave energy:
 
-1. **Wave Kinetic Energy (WKE)** - uses YBJ L operator (NOT L⁺):
+1. **Wave Kinetic Energy (WKE)** - per YBJ+ equation (4.7):
    WKE = (1/2) × Σₖ |LAₖ|²
 
-   where LA is computed using the YBJ L operator [eq. (4)]:
-   L = ∂/∂z(f²/N² × ∂/∂z)
+   where LA is computed directly using the L operator from equation (1.3):
+   L = ∂_z(f²/N² × ∂_z)
 
    So LA = ∂_z(a(z) × C) where a(z) = f²/N² and C = ∂A/∂z.
    This is discretized as: LA[k] = (a[k]×C[k] - a[k-1]×C[k-1]) / Δz
-
-   Note: This LA is the wave velocity amplitude, same as used in GLM particle
-   advection for computing wave displacement ξ.
 
 2. **Wave Potential Energy (WPE)**:
    WPE = Σₖ (0.5/(ρ₂×a_ell)) × kh² × (|CRₖ|² + |CIₖ|²)
@@ -793,7 +788,7 @@ Three components of wave energy:
 3. **Wave Correction Energy (WCE)**:
    WCE = Σₖ (1/8) × (1/a_ell²) × kh⁴ × (|ARₖ|² + |AIₖ|²)
 
-   Higher-order correction term from the YBJ+ formulation (related to L vs L⁺ difference).
+   Higher-order correction term from the YBJ+ formulation.
 
 # Algorithm
 1. Loop over all spectral modes with dealiasing mask L
@@ -841,6 +836,14 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
 
     nz_local, nx_local, ny_local = size(BR_arr)
 
+    # Get density profile if available (for variable stratification)
+    # r_2 corresponds to rho at staggered points for potential energy
+    ρ₂ = if isdefined(PARENT, :rho_st)
+        PARENT.rho_st(par, G)
+    else
+        ones(Float64, nz)
+    end
+
     # Grid spacing for vertical derivative
     Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
 
@@ -871,6 +874,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         for k in 1:nz_local
             k_global = local_to_global(k, 1, BR)
             a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
+            ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
             # Compute LA = ∂_z(a × C) using finite differences
             # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
@@ -901,8 +905,8 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
             # WKE per equation (4.7): (1/2)|LA|²
             WKE_local += 0.5 * (abs2(LA_r) + abs2(LA_i))
 
-            # WPE: (0.5/a_ell(z)) × kh² × (|CR|² + |CI|²) (Boussinesq: ρ = const)
-            WPE_local += (0.5 / a_ell_k) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
+            # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
+            WPE_local += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
 
             # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
             WCE_local += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
@@ -988,38 +992,38 @@ function flow_kinetic_energy_global(u, v, mpi_config=nothing)
 end
 
 """
-    wave_energy_global(L⁺A, A, mpi_config=nothing) -> (E_L⁺A, E_A)
+    wave_energy_global(B, A, mpi_config=nothing) -> (E_B, E_A)
 
 Compute GLOBAL wave energy across all MPI processes.
 
 # Arguments
-- `L⁺A, A`: YBJ+ wave envelope and amplitude arrays (local portion in MPI mode)
+- `B, A`: Wave envelope and amplitude arrays (local portion in MPI mode)
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
-Tuple (E_L⁺A, E_A) of global summed squared magnitudes.
+Tuple (E_B, E_A) of global summed squared magnitudes.
 
 # Example
 ```julia
 # Serial mode
-EL⁺A, EA = wave_energy_global(state.L⁺A, state.A)
+EB, EA = wave_energy_global(state.B, state.A)
 
 # MPI mode
-EL⁺A, EA = wave_energy_global(state.L⁺A, state.A, mpi_config)
+EB, EA = wave_energy_global(state.B, state.A, mpi_config)
 ```
 """
-function wave_energy_global(L⁺A, A, mpi_config=nothing)
+function wave_energy_global(B, A, mpi_config=nothing)
     # Compute local energy
-    EL⁺A_local, EA_local = wave_energy(L⁺A, A)
+    EB_local, EA_local = wave_energy(B, A)
 
     # Reduce across processes if MPI is active
     if mpi_config === nothing
-        return EL⁺A_local, EA_local
+        return EB_local, EA_local
     else
         # Use the MPI reduce function from the main module
-        EL⁺A_global = PARENT.mpi_reduce_sum(EL⁺A_local, mpi_config)
+        EB_global = PARENT.mpi_reduce_sum(EB_local, mpi_config)
         EA_global = PARENT.mpi_reduce_sum(EA_local, mpi_config)
-        return EL⁺A_global, EA_global
+        return EB_global, EA_global
     end
 end
 

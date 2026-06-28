@@ -27,100 +27,8 @@ const _allocate_fft_dst = allocate_fft_backward_dst
     return permutedims(arr, (2, 3, 1))
 end
 
-function _output_z_indices(G::Grid, z_levels)
-    if z_levels === nothing || isempty(z_levels)
-        return collect(1:G.nz)
-    end
-
-    indices = Vector{Int}(undef, length(z_levels))
-    @inbounds for n in eachindex(z_levels)
-        z = z_levels[n]
-        nearest = 1
-        nearest_distance = abs(G.z[1] - z)
-        for k in 2:G.nz
-            distance = abs(G.z[k] - z)
-            if distance < nearest_distance
-                nearest = k
-                nearest_distance = distance
-            end
-        end
-        indices[n] = nearest
-    end
-
-    return indices
-end
-
-@inline _output_z_coordinates(G::Grid, indices::AbstractVector{<:Integer}) = G.z[indices]
-
-function _is_native_z_selection(arr::AbstractArray, z_indices::AbstractVector{<:Integer})
-    length(z_indices) == size(arr, 1) || return false
-    @inbounds for (n, k) in enumerate(z_indices)
-        k == n || return false
-    end
-    return true
-end
-
-function _to_xyz_at_z_indices(arr::AbstractArray, z_indices::AbstractVector{<:Integer})
-    if _is_native_z_selection(arr, z_indices)
-        return _to_xyz(arr)
-    end
-
-    output = Array{Float64}(undef, size(arr, 2), size(arr, 3), length(z_indices))
-    @inbounds for ℓ in eachindex(z_indices)
-        k = z_indices[ℓ]
-        for j in axes(arr, 3), i in axes(arr, 2)
-            output[i, j, ℓ] = real(arr[k, i, j])
-        end
-    end
-    return output
-end
-
 @inline function _from_xyz(arr::AbstractArray)
     return permutedims(arr, (3, 1, 2))
-end
-
-@inline _horizontal_units(G::Grid) = G.Lx ≈ 2π && G.Ly ≈ 2π ? "radians" : "m"
-@inline _vertical_units(G::Grid) = G.Lz ≈ 2π ? "nondimensional" : "m"
-@inline _time_units() = "s"
-
-function _annotate_coordinates!(x_var, y_var, z_var, time_var, G::Grid)
-    x_var.attrib["units"] = _horizontal_units(G)
-    x_var.attrib["long_name"] = "x coordinate"
-    x_var.attrib["axis"] = "X"
-    y_var.attrib["units"] = _horizontal_units(G)
-    y_var.attrib["long_name"] = "y coordinate"
-    y_var.attrib["axis"] = "Y"
-    z_var.attrib["units"] = _vertical_units(G)
-    z_var.attrib["long_name"] = "vertical coordinate"
-    z_var.attrib["positive"] = "up"
-    z_var.attrib["description"] = "Cell-center z coordinate; z=0 is the surface and negative z is below the surface."
-    z_var.attrib["axis"] = "Z"
-    time_var.attrib["units"] = _time_units()
-    time_var.attrib["long_name"] = "simulation time"
-    time_var.attrib["description"] = "Elapsed seconds since the start of the simulation."
-    time_var.attrib["axis"] = "T"
-end
-
-function _annotate_state_file!(ds, title::String, G::Grid, time, params)
-    ds.attrib["title"] = title
-    ds.attrib["Conventions"] = "CF-1.8"
-    ds.attrib["source"] = "QGYBJplus.jl"
-    ds.attrib["equation_form"] = "dimensional"
-    ds.attrib["field_layout"] = "Variables are stored as (x, y, z); internal spectral arrays use (z, x, y)."
-    ds.attrib["vertical_coordinate"] = "z is cell-centered, with z=0 at the surface and negative values below the surface."
-    ds.attrib["created_at"] = string(now())
-    ds.attrib["model_time"] = time
-
-    if params !== nothing
-        ds.attrib["nx"] = params.nx
-        ds.attrib["ny"] = params.ny
-        ds.attrib["nz"] = params.nz
-        ds.attrib["Lx"] = params.Lx
-        ds.attrib["Ly"] = params.Ly
-        ds.attrib["Lz"] = params.Lz
-        ds.attrib["f0"] = params.f₀
-        ds.attrib["dt"] = params.dt
-    end
 end
 
 """
@@ -132,7 +40,7 @@ mutable struct OutputManager{T}
     output_dir::String
     state_file_pattern::String
     
-    # Output intervals (in seconds since simulation start)
+    # Output intervals (in model time units)
     psi_interval::T
     wave_interval::T
     diagnostics_interval::T
@@ -153,7 +61,6 @@ mutable struct OutputManager{T}
     save_vertical_velocity::Bool
     save_vorticity::Bool
     save_diagnostics::Bool
-    z_levels::Vector{T}
     
     # Parallel configuration (optional)
     parallel_config
@@ -198,7 +105,6 @@ function OutputManager(config, params::QGParams{T}, parallel_config=nothing) whe
         hasfield(typeof(config), :save_vertical_velocity) ? config.save_vertical_velocity : false,
         config.save_vorticity,
         config.save_diagnostics,
-        hasfield(typeof(config), :z_levels) ? collect(T, config.z_levels) : T[],
         parallel_config,
         run_info
     )
@@ -308,26 +214,15 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         fft_backward!(psir, S.psi, plans)
     end
 
-    # For wave field: compute LA = B + (k²/4)A in spectral space, then transform to physical
-    # LA is the wave velocity envelope: u₀ + iv₀ = e^{-ift}LA
-    # B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA = B + (k²/4)A (since Δ → -k²)
-    LAr = nothing
+    # For wave field B: transform full complex B to physical space as needed
+    # B = BR + i*BI where BR, BI are real fields in physical space
+    Br = nothing
+    Ar = nothing
     if write_waves
-        # Compute LA = B + (k²/4)A in spectral space
-        LA_hat = similar(S.L⁺A)
-        LA_hat_arr = parent(LA_hat)
-        L⁺A_arr = parent(S.L⁺A)
-        A_arr = parent(S.A)
-        kx = G.kx
-        ky = G.ky
-        @inbounds for j in 1:G.ny, i in 1:G.nx
-            kh2 = kx[i]^2 + ky[j]^2
-            for k in 1:G.nz
-                LA_hat_arr[k, i, j] = L⁺A_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
-            end
-        end
-        LAr = _allocate_fft_dst(LA_hat, plans)
-        fft_backward!(LAr, LA_hat, plans)  # Transform LA to physical space
+        Br = _allocate_fft_dst(S.B, plans)
+        fft_backward!(Br, S.B, plans)  # Full complex IFFT for B (wave envelope)
+        Ar = _allocate_fft_dst(S.A, plans)
+        fft_backward!(Ar, S.A, plans)  # Full complex IFFT for A (wave amplitude)
     end
 
     # Optional vorticity field (computed from spectral psi)
@@ -347,15 +242,12 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         zeta_r = _allocate_fft_dst(zeta_k, plans)
         fft_backward!(zeta_r, zeta_k, plans)
     end
-
-    z_indices = _output_z_indices(G, manager.z_levels)
-    z_coordinates = _output_z_coordinates(G, z_indices)
     
     NCDatasets.Dataset(filepath, "c") do ds
         # Define dimensions
         ds.dim["x"] = G.nx
         ds.dim["y"] = G.ny
-        ds.dim["z"] = length(z_coordinates)
+        ds.dim["z"] = G.nz
         ds.dim["time"] = 1
         
         # Create coordinate variables
@@ -368,45 +260,60 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
 
-        # Use domain origin from Grid.
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
-        z_var[:] = z_coordinates
+        z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
-        _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
-        if !isempty(manager.z_levels)
-            z_var.attrib["requested_z_levels"] = join(string.(manager.z_levels), ", ")
-            z_var.attrib["description"] = "Nearest native grid z coordinates saved for requested z_levels."
-        end
+        # Add coordinate attributes (units depend on whether dimensional or not)
+        x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
+        x_var.attrib["long_name"] = "x coordinate"
+        y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
+        y_var.attrib["long_name"] = "y coordinate"
+        z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
+        z_var.attrib["long_name"] = "z coordinate (vertical)"
+        time_var.attrib["units"] = "model time units"
+        time_var.attrib["long_name"] = "time"
 
         # Stream function
         # Note: psir is already normalized by fft_backward!, no additional division needed
         if write_psi
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
             psir_arr = parent(psir)
-            psi_var[:,:,:] = _to_xyz_at_z_indices(real.(psir_arr), z_indices)
+            psi_var[:,:,:] = _to_xyz(real.(psir_arr))
             psi_var.attrib["units"] = "m²/s"
-            psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
-            psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
+            psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
-        # LA = B + (k²/4)A computed in spectral space above
+        # Wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
+        # Extract real and imag parts of the PHYSICAL fields (already normalized)
         if write_waves
+            # B = L⁺A (wave envelope)
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_arr = parent(LAr)
-            LAr_var[:,:,:] = _to_xyz_at_z_indices(real.(LAr_arr), z_indices)  # Real part of LA
-            LAi_var[:,:,:] = _to_xyz_at_z_indices(imag.(LAr_arr), z_indices)  # Imaginary part of LA
+            Br_arr = parent(Br)
+            LAr_var[:,:,:] = _to_xyz(real.(Br_arr))  # Real part of B
+            LAi_var[:,:,:] = _to_xyz(imag.(Br_arr))  # Imaginary part of B
 
             LAr_var.attrib["units"] = "m/s"
-            LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
-            LAr_var.attrib["description"] = "Real part of LA, where u₀ + i v₀ = exp(-i f t) LA."
+            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
             LAi_var.attrib["units"] = "m/s"
-            LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
-            LAi_var.attrib["description"] = "Imaginary part of LA, where u₀ + i v₀ = exp(-i f t) LA."
+            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
+
+            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
+            Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
+            Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
+
+            Ar_arr = parent(Ar)
+            Ar_var[:,:,:] = _to_xyz(real.(Ar_arr))  # Real part of A
+            Ai_var[:,:,:] = _to_xyz(imag.(Ar_arr))  # Imaginary part of A
+
+            Ar_var.attrib["units"] = "m/s"
+            Ar_var.attrib["long_name"] = "wave amplitude A real part"
+            Ai_var.attrib["units"] = "m/s"
+            Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
         end
         
         # Horizontal velocities (if requested)
@@ -416,8 +323,8 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
             # u, v are already in physical space - write directly
-            u_var[:,:,:] = _to_xyz_at_z_indices(parent(S.u), z_indices)
-            v_var[:,:,:] = _to_xyz_at_z_indices(parent(S.v), z_indices)
+            u_var[:,:,:] = _to_xyz(parent(S.u))
+            v_var[:,:,:] = _to_xyz(parent(S.v))
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -428,7 +335,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Vertical velocity (if requested)
         if write_vertical_velocity && hasfield(typeof(S), :w)
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = _to_xyz_at_z_indices(parent(S.w), z_indices)  # w is already in real space
+            w_var[:,:,:] = _to_xyz(parent(S.w))  # w is already in real space
             
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
@@ -438,7 +345,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         # Relative vorticity (if requested)
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(zeta_r)), z_indices)
+            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -451,7 +358,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             f0_sq = params.f₀^2
             N2_val = params.N²
             if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, length(z_coordinates))  # Cell-centered values
+                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
                 a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
                 a_ell_var[:] = a_ell_arr
                 a_ell_var.attrib["units"] = "s²"
@@ -460,8 +367,20 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             end
         end
 
-        _annotate_state_file!(ds, "QG-YBJ Model State", G, time, params)
+        # Global attributes
+        ds.attrib["title"] = "QG-YBJ Model State"
+        ds.attrib["created_at"] = string(now())
+        ds.attrib["model_time"] = time
         ds.attrib["file_counter"] = manager.psi_counter
+
+        # Add parameter information if provided
+        if !isnothing(params)
+            ds.attrib["nx"] = params.nx
+            ds.attrib["ny"] = params.ny
+            ds.attrib["nz"] = params.nz
+            ds.attrib["f0"] = params.f₀
+            ds.attrib["dt"] = params.dt
+        end
         
         # Add run information
         for (key, value) in manager.run_info
@@ -511,8 +430,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
                                        write_waves=write_waves,
                                        write_velocities=write_velocities,
                                        write_vertical_velocity=write_vertical_velocity,
-                                       write_vorticity=write_vorticity,
-                                       z_levels=manager.z_levels)
+                                       write_vorticity=write_vorticity)
         else
             # Gather to rank 0 and write
             # IMPORTANT: gather_state_for_io calls gather_to_root which is a collective
@@ -533,8 +451,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
                                           write_waves=write_waves,
                                           write_velocities=write_velocities,
                                           write_vertical_velocity=write_vertical_velocity,
-                                          write_vorticity=write_vorticity,
-                                          z_levels=manager.z_levels)
+                                          write_vorticity=write_vorticity)
             end
             MPI.Barrier(parallel_config.comm)
         end
@@ -581,8 +498,7 @@ This is simpler and more reliable than parallel NetCDF.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
                                     params=nothing, write_psi=true, write_waves=true,
-                                    write_velocities=false, write_vertical_velocity=false,
-                                    write_vorticity=false, z_levels=nothing)
+                                    write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
     # MPI is imported at module level
 
     rank = MPI.Comm_rank(parallel_config.comm)
@@ -602,8 +518,7 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
                                   write_waves=write_waves,
                                   write_velocities=write_velocities,
                                   write_vertical_velocity=write_vertical_velocity,
-                                  write_vorticity=write_vorticity,
-                                  z_levels=z_levels)
+                                  write_vorticity=write_vorticity)
     end
 
     MPI.Barrier(parallel_config.comm)
@@ -623,7 +538,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     # Use QGYBJplus's gather function which handles 2D decomposition
     # Use GC.@preserve to prevent premature garbage collection during MPI communication
     gathered_psi = nothing
-    gathered_L⁺A = nothing
+    gathered_B = nothing
     gathered_A = nothing
     gathered_u = nothing
     gathered_v = nothing
@@ -631,7 +546,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
 
     GC.@preserve S begin
         gathered_psi = gather_psi ? QGYBJplus.gather_to_root(S.psi, G, parallel_config) : nothing
-        gathered_L⁺A = gather_waves ? QGYBJplus.gather_to_root(S.L⁺A, G, parallel_config) : nothing
+        gathered_B = gather_waves ? QGYBJplus.gather_to_root(S.B, G, parallel_config) : nothing
         gathered_A = gather_waves ? QGYBJplus.gather_to_root(S.A, G, parallel_config) : nothing
 
         gathered_u = gather_velocities ? QGYBJplus.gather_to_root(S.u, G, parallel_config) : nothing
@@ -640,7 +555,7 @@ function gather_state_for_io(S::State, G::Grid, parallel_config;
     end
 
     # Create tuple with gathered arrays (only meaningful on rank 0)
-    return (psi=gathered_psi, L⁺A=gathered_L⁺A, A=gathered_A, u=gathered_u, v=gathered_v, w=gathered_w)
+    return (psi=gathered_psi, B=gathered_B, A=gathered_A, u=gathered_u, v=gathered_v, w=gathered_w)
 end
 
 """
@@ -652,17 +567,17 @@ Write gathered state from rank 0.
 
 The gathered_state should be a named tuple with fields:
 - `psi`: Gathered streamfunction array (spectral, nz×nx×ny)
-- `L⁺A`: Gathered YBJ+ wave envelope array (spectral, nz×nx×ny)
+- `B`: Gathered wave envelope array (spectral, nz×nx×ny)
 - `A`: Gathered wave amplitude array (spectral, nz×nx×ny)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
                                    params=nothing, write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false,
-                                   write_vorticity=false, z_levels=nothing)
+                                   write_vorticity=false)
 
     # Extract gathered fields
     gathered_psi = gathered_state.psi
-    gathered_L⁺A = gathered_state.L⁺A
+    gathered_B = gathered_state.B
     gathered_A = hasproperty(gathered_state, :A) ? gathered_state.A : nothing
     gathered_u = hasproperty(gathered_state, :u) ? gathered_state.u : nothing
     gathered_v = hasproperty(gathered_state, :v) ? gathered_state.v : nothing
@@ -675,7 +590,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
     # Note: fft_backward! uses FFTW.ifft which is already normalized
 
     complex_type = gathered_psi !== nothing ? eltype(gathered_psi) :
-                   (gathered_L⁺A !== nothing ? eltype(gathered_L⁺A) : ComplexF64)
+                   (gathered_B !== nothing ? eltype(gathered_B) : ComplexF64)
 
     psir = nothing
     if write_psi && gathered_psi !== nothing
@@ -683,26 +598,15 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         fft_backward!(psir, gathered_psi, temp_plans)
     end
 
-    # Compute LA = B + (k²/4)A in spectral space, then transform to physical
-    # LA is the wave velocity envelope: u₀ + iv₀ = e^{-ift}LA
-    LAr = nothing
-    if write_waves && gathered_L⁺A !== nothing && gathered_A !== nothing
-        # Compute LA = B + (k²/4)A in spectral space
-        LA_hat = zeros(complex_type, G.nz, G.nx, G.ny)
-        kx = G.kx
-        ky = G.ky
-        @inbounds for j in 1:G.ny, i in 1:G.nx
-            kh2 = kx[i]^2 + ky[j]^2
-            for k in 1:G.nz
-                LA_hat[k, i, j] = gathered_L⁺A[k, i, j] + (kh2 / 4) * gathered_A[k, i, j]
-            end
+    Br = nothing
+    Ar = nothing
+    if write_waves && gathered_B !== nothing
+        Br = zeros(complex_type, G.nz, G.nx, G.ny)
+        fft_backward!(Br, gathered_B, temp_plans)  # Full complex IFFT for B (wave envelope)
+        if gathered_A !== nothing
+            Ar = zeros(complex_type, G.nz, G.nx, G.ny)
+            fft_backward!(Ar, gathered_A, temp_plans)  # Full complex IFFT for A (wave amplitude)
         end
-        LAr = zeros(complex_type, G.nz, G.nx, G.ny)
-        fft_backward!(LAr, LA_hat, temp_plans)  # Transform LA to physical space
-    elseif write_waves && gathered_L⁺A !== nothing
-        # Fallback if A not available: use B directly (less accurate)
-        LAr = zeros(complex_type, G.nz, G.nx, G.ny)
-        fft_backward!(LAr, gathered_L⁺A, temp_plans)
     end
 
     zeta_r = nothing
@@ -720,14 +624,11 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         fft_backward!(zeta_r, zeta_k, temp_plans)
     end
 
-    z_indices = _output_z_indices(G, z_levels)
-    z_coordinates = _output_z_coordinates(G, z_indices)
-
     NCDatasets.Dataset(filepath, "c") do ds
         # Define dimensions
         ds.dim["x"] = G.nx
         ds.dim["y"] = G.ny
-        ds.dim["z"] = length(z_coordinates)
+        ds.dim["z"] = G.nz
         ds.dim["time"] = 1
 
         # Create coordinate variables
@@ -740,50 +641,66 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
 
-        # Use domain origin from Grid.
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
-        z_var[:] = z_coordinates
+        z_var[:] = G.z  # Use actual grid z-values
         time_var[1] = time
 
-        _annotate_coordinates!(x_var, y_var, z_var, time_var, G)
-        if z_levels !== nothing && !isempty(z_levels)
-            z_var.attrib["requested_z_levels"] = join(string.(z_levels), ", ")
-            z_var.attrib["description"] = "Nearest native grid z coordinates saved for requested z_levels."
-        end
+        # Add coordinate attributes (units depend on whether dimensional or not)
+        x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
+        x_var.attrib["long_name"] = "x coordinate"
+        y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
+        y_var.attrib["long_name"] = "y coordinate"
+        z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
+        z_var.attrib["long_name"] = "z coordinate (vertical)"
+        time_var.attrib["units"] = "model time units"
+        time_var.attrib["long_name"] = "time"
 
         # Write streamfunction (already normalized by fft_backward!)
         if write_psi && gathered_psi !== nothing
             psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
-            psi_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(psir)), z_indices)
+            psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
             psi_var.attrib["units"] = "m²/s"
-            psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
-            psi_var.attrib["description"] = "Physical-space streamfunction recovered from spectral ψ."
+            psi_var.attrib["long_name"] = "stream function"
         end
 
-        # Write wave field: LA = wave velocity envelope (u₀ + iv₀ = e^{-ift}LA)
-        # LA = B + (k²/4)A computed in spectral space above
-        if write_waves && LAr !== nothing
+        # Write wave fields: B = L⁺A (wave envelope) and A (wave amplitude)
+        # Extract real and imag parts of the PHYSICAL fields (already normalized)
+        if write_waves && gathered_B !== nothing
+            # B = L⁺A (wave envelope)
             LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
             LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-            LAr_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(LAr)), z_indices)  # Real part of LA
-            LAi_var[:,:,:] = _to_xyz_at_z_indices(imag.(parent(LAr)), z_indices)  # Imaginary part of LA
+            LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of B
+            LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of B
 
             LAr_var.attrib["units"] = "m/s"
-            LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
-            LAr_var.attrib["description"] = "Real part of LA, where u₀ + i v₀ = exp(-i f t) LA."
+            LAr_var.attrib["long_name"] = "wave envelope B real part (L+A)"
             LAi_var.attrib["units"] = "m/s"
-            LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
-            LAi_var.attrib["description"] = "Imaginary part of LA, where u₀ + i v₀ = exp(-i f t) LA."
+            LAi_var.attrib["long_name"] = "wave envelope B imaginary part (L+A)"
+
+            # A (wave amplitude) - needed for proper WKE calculation per equation (4.7)
+            if Ar !== nothing
+                Ar_var = NCDatasets.defVar(ds, "Ar", Float64, ("x", "y", "z"))
+                Ai_var = NCDatasets.defVar(ds, "Ai", Float64, ("x", "y", "z"))
+
+                Ar_var[:,:,:] = _to_xyz(real.(parent(Ar)))  # Real part of A
+                Ai_var[:,:,:] = _to_xyz(imag.(parent(Ar)))  # Imaginary part of A
+
+                Ar_var.attrib["units"] = "m/s"
+                Ar_var.attrib["long_name"] = "wave amplitude A real part"
+                Ai_var.attrib["units"] = "m/s"
+                Ai_var.attrib["long_name"] = "wave amplitude A imaginary part"
+            end
         end
 
         if write_velocities && gathered_u !== nothing && gathered_v !== nothing
             u_var = NCDatasets.defVar(ds, "u", Float64, ("x", "y", "z"))
             v_var = NCDatasets.defVar(ds, "v", Float64, ("x", "y", "z"))
 
-            u_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_u), z_indices)
-            v_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_v), z_indices)
+            u_var[:,:,:] = _to_xyz(parent(gathered_u))
+            v_var[:,:,:] = _to_xyz(parent(gathered_v))
 
             u_var.attrib["units"] = "m/s"
             u_var.attrib["long_name"] = "zonal velocity"
@@ -793,7 +710,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vertical_velocity && gathered_w !== nothing
             w_var = NCDatasets.defVar(ds, "w", Float64, ("x", "y", "z"))
-            w_var[:,:,:] = _to_xyz_at_z_indices(parent(gathered_w), z_indices)
+            w_var[:,:,:] = _to_xyz(parent(gathered_w))
             w_var.attrib["units"] = "m/s"
             w_var.attrib["long_name"] = "vertical velocity (QG ageostrophic)"
             w_var.attrib["description"] = "Diagnostic vertical velocity from omega equation"
@@ -801,7 +718,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
 
         if write_vorticity && zeta_r !== nothing
             zeta_var = NCDatasets.defVar(ds, "vorticity", Float64, ("x", "y", "z"))
-            zeta_var[:,:,:] = _to_xyz_at_z_indices(real.(parent(zeta_r)), z_indices)
+            zeta_var[:,:,:] = _to_xyz(real.(parent(zeta_r)))
             zeta_var.attrib["units"] = "1/s"
             zeta_var.attrib["long_name"] = "relative vorticity"
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
@@ -814,7 +731,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             f0_sq = params.f₀^2
             N2_val = params.N²
             if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, length(z_coordinates))  # Cell-centered values
+                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
                 a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
                 a_ell_var[:] = a_ell_arr
                 a_ell_var.attrib["units"] = "s²"
@@ -823,7 +740,19 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             end
         end
 
-        _annotate_state_file!(ds, "QG-YBJ Model State (Gathered)", G, time, params)
+        # Global attributes
+        ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
+        ds.attrib["created_at"] = string(now())
+        ds.attrib["model_time"] = time
+
+        # Add parameter information if provided
+        if params !== nothing
+            ds.attrib["nx"] = params.nx
+            ds.attrib["ny"] = params.ny
+            ds.attrib["nz"] = params.nz
+            ds.attrib["f0"] = params.f₀
+            ds.attrib["dt"] = params.dt
+        end
     end
     # Note: Log message is handled by the calling function (write_parallel_state_file)
 end
@@ -842,7 +771,7 @@ function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time:
         
         time_var = NCDatasets.defVar(ds, "time", Float64, ("time",))
         time_var[1] = time
-        time_var.attrib["units"] = "s"
+        time_var.attrib["units"] = "model time units"
         
         # Write diagnostic quantities
         for (name, value) in diagnostics
@@ -857,9 +786,6 @@ function write_diagnostics_file(manager::OutputManager, diagnostics::Dict, time:
         end
         
         ds.attrib["title"] = "QG-YBJ Model Diagnostics"
-        ds.attrib["Conventions"] = "CF-1.8"
-        ds.attrib["source"] = "QGYBJplus.jl"
-        ds.attrib["equation_form"] = "dimensional"
         ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
     end
@@ -873,7 +799,7 @@ end
 """
     read_initial_psi(filename::String, G::Grid, plans; parallel_config=nothing)
 
-Read initial quasi-geostrophic streamfunction from NetCDF file.
+Read initial stream function from NetCDF file.
 Supports both serial and parallel (2D decomposition) modes.
 
 In parallel mode:
@@ -905,9 +831,9 @@ function _read_initial_psi_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"]
-            nz_file = ds.dim["z"]
+            nx_file = length(ds.dim["x"])
+            ny_file = length(ds.dim["y"])
+            nz_file = length(ds.dim["z"])
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -950,87 +876,6 @@ function _read_initial_psi_parallel(filename::String, G::Grid, plans, parallel_c
     MPI.Barrier(parallel_config.comm)
 
     # Scatter from rank 0 to all processes
-    psik_local = QGYBJplus.scatter_from_root(psik_global, G, parallel_config; plans=plans)
-
-    return psik_local
-end
-
-"""
-    read_initial_vorticity(filename::String, G::Grid, plans; parallel_config=nothing)
-
-Read an initial 3D relative-vorticity field ζ(x,y,z) from a NetCDF file and
-return the corresponding spectral streamfunction ψ̂ = -ζ̂/kₕ².
-
-The file must contain a 3D variable named `zeta`, `vorticity`, or `vort` with
-dimensions matching the model grid (same conventions as `read_initial_psi`).
-The horizontal-mean mode (kₕ² = 0) of ψ is set to zero; any horizontally
-uniform vorticity in the file carries no streamfunction information.
-
-Supports both serial and parallel (2D decomposition) modes; in parallel mode
-rank 0 reads and inverts, then the spectral field is scattered.
-"""
-function read_initial_vorticity(filename::String, G::Grid, plans; parallel_config=nothing)
-    is_parallel = parallel_config !== nothing && G.decomp !== nothing
-
-    if is_parallel
-        return _read_initial_vorticity_parallel(filename, G, plans, parallel_config)
-    else
-        return _read_initial_vorticity_serial(filename, G, plans)
-    end
-end
-
-const _VORTICITY_VAR_NAMES = ("zeta", "vorticity", "vort", "ζ")
-
-function _read_initial_vorticity_serial(filename::String, G::Grid, plans)
-    @info "Reading initial vorticity from: $filename (serial)"
-
-    ζr = zeros(Float64, G.nz, G.nx, G.ny)
-
-    NCDatasets.Dataset(filename, "r") do ds
-        if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"]
-            nz_file = ds.dim["z"]
-
-            if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
-                error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
-            end
-        end
-
-        varname = findfirst(name -> haskey(ds, name), _VORTICITY_VAR_NAMES)
-        varname === nothing &&
-            error("No vorticity variable found in $filename. Expected one of: " *
-                  join(_VORTICITY_VAR_NAMES, ", "))
-        ζr .= _from_xyz(ds[_VORTICITY_VAR_NAMES[varname]][:,:,:])
-    end
-
-    # ζ̂ → ψ̂ = -ζ̂/kₕ² (horizontal-mean mode has no streamfunction: set to 0)
-    ζk = similar(ζr, Complex{Float64})
-    fft_forward!(ζk, ζr, plans)
-
-    psik = similar(ζk)
-    for j in 1:G.ny, i in 1:G.nx
-        kₕ² = G.kx[i]^2 + G.ky[j]^2
-        for k in 1:G.nz
-            psik[k, i, j] = kₕ² > 0 ? -ζk[k, i, j] / kₕ² : 0
-        end
-    end
-
-    return psik
-end
-
-function _read_initial_vorticity_parallel(filename::String, G::Grid, plans, parallel_config)
-    rank = MPI.Comm_rank(parallel_config.comm)
-
-    psik_global = nothing
-    if rank == 0
-        @info "Reading initial vorticity from: $filename (parallel, rank 0)"
-        serial_plans = plan_transforms!(G)
-        psik_global = _read_initial_vorticity_serial(filename, G, serial_plans)
-    end
-
-    MPI.Barrier(parallel_config.comm)
-
     psik_local = QGYBJplus.scatter_from_root(psik_global, G, parallel_config; plans=plans)
 
     return psik_local
@@ -1081,9 +926,9 @@ function _read_initial_waves_serial(filename::String, G::Grid, plans)
     NCDatasets.Dataset(filename, "r") do ds
         # Check dimensions
         if haskey(ds.dim, "x") && haskey(ds.dim, "y") && haskey(ds.dim, "z")
-            nx_file = ds.dim["x"]
-            ny_file = ds.dim["y"]
-            nz_file = ds.dim["z"]
+            nx_file = length(ds.dim["x"])
+            ny_file = length(ds.dim["y"])
+            nz_file = length(ds.dim["z"])
 
             if nx_file != G.nx || ny_file != G.ny || nz_file != G.nz
                 error("Grid mismatch: file ($nx_file×$ny_file×$nz_file) vs model ($(G.nx)×$(G.ny)×$(G.nz))")
@@ -1159,7 +1004,7 @@ function read_stratification_raw(filename::String)
             z_data = Array(ds["z"][:])
         elseif haskey(ds.dim, "z")
             # If no z variable, create uniform grid
-            nz_file = ds.dim["z"]
+            nz_file = length(ds.dim["z"])
             z_data = collect(range(0.0, 1.0, length=nz_file))
             @warn "No 'z' variable found, using normalized coordinates [0, 1]"
         else
@@ -1200,7 +1045,7 @@ function read_stratification_profile(filename::String, nz::Int)
         z_file = nothing
 
         if haskey(ds.dim, "z")
-            nz_file = ds.dim["z"]
+            nz_file = length(ds.dim["z"])
             # Try to read z coordinates from file
             if haskey(ds, "z")
                 z_file = Array(ds["z"][:])
@@ -1336,14 +1181,14 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
         x_var.attrib["units"] = G.Lx ≈ 2π ? "radians" : "m"
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        time_var.attrib["units"] = "s"
+        time_var.attrib["units"] = "model time units"
 
         psi_var.attrib["units"] = "m²/s"
-        psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
-        LAr_var.attrib["units"] = "m/s"
-        LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
-        LAi_var.attrib["units"] = "m/s"
-        LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
+        psi_var.attrib["long_name"] = "stream function"
+        LAr_var.attrib["units"] = "wave amplitude"
+        LAr_var.attrib["long_name"] = "L+A real part"
+        LAi_var.attrib["units"] = "wave amplitude"
+        LAi_var.attrib["long_name"] = "L+A imaginary part"
         
         # Global attributes
         ds.attrib["title"] = "QG-YBJ Model State Time Series"
@@ -1363,7 +1208,7 @@ end
 """
     ncdump_psi(S, G, plans; path="psi.out.nc")
 
-Legacy compatibility wrapper for writing quasi-geostrophic streamfunction to NetCDF.
+Legacy compatibility wrapper for writing stream function to NetCDF.
 Directly writes psi field without using OutputManager.
 """
 function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
@@ -1387,7 +1232,7 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
-        # Use domain origin from Grid.
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z
@@ -1398,13 +1243,13 @@ function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         y_var.attrib["long_name"] = "y coordinate"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "vertical coordinate"
+        z_var.attrib["long_name"] = "z coordinate (vertical)"
 
         # Write psi (already normalized by fft_backward!)
         psi_var = NCDatasets.defVar(ds, "psi", Float64, ("x", "y", "z"))
         psi_var[:,:,:] = _to_xyz(real.(parent(psir)))
         psi_var.attrib["units"] = "m²/s"
-        psi_var.attrib["long_name"] = "quasi-geostrophic streamfunction"
+        psi_var.attrib["long_name"] = "stream function"
 
         ds.attrib["title"] = "QG-YBJ Stream Function"
         ds.attrib["created_at"] = string(now())
@@ -1416,29 +1261,15 @@ end
 """
     ncdump_la(S, G, plans; path="la.out.nc")
 
-Legacy compatibility wrapper for writing LA wave velocity envelope to NetCDF.
-Computes LA = B + (k²/4)A in spectral space, then transforms to physical space.
+Legacy compatibility wrapper for writing L+A wave field to NetCDF.
+Directly writes wave field without using OutputManager.
 """
 function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
-    @info "Writing LA to: $path"
+    @info "Writing L+A to: $path"
 
-    # Compute LA = B + (k²/4)A in spectral space
-    LA_hat = similar(S.L⁺A)
-    LA_hat_arr = parent(LA_hat)
-    L⁺A_arr = parent(S.L⁺A)
-    A_arr = parent(S.A)
-    kx = G.kx
-    ky = G.ky
-    @inbounds for j in 1:G.ny, i in 1:G.nx
-        kh2 = kx[i]^2 + ky[j]^2
-        for k in 1:G.nz
-            LA_hat_arr[k, i, j] = L⁺A_arr[k, i, j] + (kh2 / 4) * A_arr[k, i, j]
-        end
-    end
-
-    # Transform LA to physical space
-    Br = _allocate_fft_dst(LA_hat, plans)
-    fft_backward!(Br, LA_hat, plans)
+    # Convert spectral B to real space (full complex IFFT)
+    Br = _allocate_fft_dst(S.B, plans)
+    fft_backward!(Br, S.B, plans)
 
     NCDatasets.Dataset(path, "c") do ds
         # Define dimensions
@@ -1454,7 +1285,7 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         # Set coordinate values using actual domain size
         dx = G.Lx / G.nx
         dy = G.Ly / G.ny
-        # Use domain origin from Grid.
+        # Use domain origin from Grid (set via centered=true in default_params for centered domain)
         x_var[:] = collect(range(G.x0, G.x0 + G.Lx - dx, length=G.nx))
         y_var[:] = collect(range(G.y0, G.y0 + G.Ly - dy, length=G.ny))
         z_var[:] = G.z
@@ -1465,21 +1296,21 @@ function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
         y_var.attrib["units"] = G.Ly ≈ 2π ? "radians" : "m"
         y_var.attrib["long_name"] = "y coordinate"
         z_var.attrib["units"] = G.Lz ≈ 2π ? "nondimensional" : "m"
-        z_var.attrib["long_name"] = "vertical coordinate"
+        z_var.attrib["long_name"] = "z coordinate (vertical)"
 
-        # Write wave velocity envelope LA real and imaginary parts
+        # Write wave field real and imaginary parts (already normalized)
         LAr_var = NCDatasets.defVar(ds, "LAr", Float64, ("x", "y", "z"))
         LAi_var = NCDatasets.defVar(ds, "LAi", Float64, ("x", "y", "z"))
 
-        LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of LA
-        LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of LA
+        LAr_var[:,:,:] = _to_xyz(real.(parent(Br)))  # Real part of physical wave field
+        LAi_var[:,:,:] = _to_xyz(imag.(parent(Br)))  # Imaginary part of physical wave field
 
-        LAr_var.attrib["units"] = "m/s"
-        LAr_var.attrib["long_name"] = "wave velocity envelope LA real part"
-        LAi_var.attrib["units"] = "m/s"
-        LAi_var.attrib["long_name"] = "wave velocity envelope LA imaginary part"
+        LAr_var.attrib["units"] = "wave amplitude"
+        LAr_var.attrib["long_name"] = "L+A real part"
+        LAi_var.attrib["units"] = "wave amplitude"
+        LAi_var.attrib["long_name"] = "L+A imaginary part"
 
-        ds.attrib["title"] = "QG-YBJ Wave Velocity Envelope (LA)"
+        ds.attrib["title"] = "QG-YBJ Wave Field (L+A)"
         ds.attrib["created_at"] = string(now())
     end
 
@@ -1489,7 +1320,7 @@ end
 """
     ncread_psi!(S, G, plans; path="psi000.in.nc", parallel_config=nothing)
 
-Legacy compatibility wrapper for reading quasi-geostrophic streamfunction from NetCDF.
+Legacy compatibility wrapper for reading stream function from NetCDF.
 Uses the enhanced I/O system internally.
 Supports both serial and parallel (2D decomposition) modes.
 """
@@ -1519,7 +1350,7 @@ function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc", parallel_confi
     B_data = read_initial_waves(path, G, plans; parallel_config=parallel_config)
 
     # Copy to state (handles both Array and PencilArray)
-    parent(S.L⁺A) .= parent(B_data)
+    parent(S.B) .= parent(B_data)
 
     return S
 end

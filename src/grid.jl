@@ -11,8 +11,8 @@ This file defines the fundamental data structures for the QG-YBJ+ model:
 GRID STRUCTURE:
 ---------------
 The model uses a doubly-periodic horizontal domain with:
-- x ∈ [x0, x0+Lx) with nx points
-- y ∈ [y0, y0+Ly) with ny points
+- x ∈ [x0, x0+Lx) with nx points (default x0=0, use centered=true for x0=-Lx/2)
+- y ∈ [y0, y0+Ly) with ny points (default y0=0, use centered=true for y0=-Ly/2)
 - z ∈ [-Lz, 0] with nz staggered points (from -Lz+dz/2 to -dz/2)
 
 SPECTRAL REPRESENTATION:
@@ -84,7 +84,7 @@ Numerical grid and spectral metadata for the QG-YBJ+ model.
 ## Grid Dimensions
 - `nx, ny, nz::Int`: Number of grid points in x, y, z directions
 - `Lx, Ly, Lz::T`: Domain size in x, y, z in meters (REQUIRED - no default)
-- `x0, y0::T`: Domain origin in x and y
+- `x0, y0::T`: Domain origin in x, y (0 = standard [0,Lx), -Lx/2 = centered [-Lx/2,Lx/2))
 - `dx, dy::T`: Grid spacing in x, y (computed as Lx/nx, Ly/ny)
 
 ## Vertical Grid
@@ -125,8 +125,8 @@ Base.@kwdef mutable struct Grid{T, AT}
     Lx::T                  # Domain size in x [m] (REQUIRED)
     Ly::T                  # Domain size in y [m] (REQUIRED)
     Lz::T                  # Domain size in z [m] (REQUIRED)
-    x0::T                  # Domain origin in x [m]
-    y0::T                  # Domain origin in y [m]
+    x0::T                  # Domain origin in x [m] (0 = standard, -Lx/2 = centered)
+    y0::T                  # Domain origin in y [m] (0 = standard, -Ly/2 = centered)
     dx::T                  # Grid spacing in x: dx = Lx/nx
     dy::T                  # Grid spacing in y: dy = Ly/ny
 
@@ -216,7 +216,7 @@ function init_grid(par::QGParams)
     # No MPI decomposition by default (serial mode)
     decomp = nothing
 
-    # Domain origin
+    # Domain origin (use centered=true in default_params for x0=-Lx/2, y0=-Ly/2)
     x0 = par.x0
     y0 = par.y0
 
@@ -319,7 +319,7 @@ for k in local_range[1], i in local_range[2], j in local_range[3]
 end
 ```
 """
-function get_local_range(G::Grid)::NTuple{3, UnitRange{Int}}
+function get_local_range(G::Grid)
     if G.decomp === nothing
         return (1:G.nz, 1:G.nx, 1:G.ny)
     else
@@ -359,8 +359,7 @@ for j_local in axes(ψk, 3), i_local in axes(ψk, 2)
 end
 ```
 """
-# `G.decomp` is `::Any`; the return-type annotation keeps callers type-stable.
-function local_to_global(local_idx::Int, dim::Int, G::Grid)::Int
+function local_to_global(local_idx::Int, dim::Int, G::Grid)
     if G.decomp === nothing
         return local_idx
     else
@@ -451,11 +450,11 @@ Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
 
 # Prognostic Fields (evolved in time)
 - `q::CT`: QG potential vorticity in spectral space
-- `L⁺A::CT`: YBJ+ wave envelope in spectral space
+- `B::CT`: YBJ+ wave envelope B = L⁺A in spectral space
 
 # Diagnostic Fields (computed from prognostic)
 - `psi::CT`: Streamfunction ψ (from q via elliptic inversion)
-- `A::CT`: Wave amplitude (from L⁺A via YBJ+ inversion)
+- `A::CT`: Wave amplitude (from B via YBJ+ inversion)
 - `C::CT`: Vertical derivative C = ∂A/∂z (for wave velocities)
 
 # Velocity Fields (real space)
@@ -465,7 +464,7 @@ Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
 
 # Array Dimensions
 All arrays have shape (nz, nx, ny).
-- Spectral fields (q, psi, A, L⁺A, C): Complex arrays
+- Spectral fields (q, psi, A, B, C): Complex arrays
 - Real-space fields (u, v, w): Real arrays
 
 # Physical Interpretation
@@ -473,11 +472,9 @@ The prognostic variables are:
 1. q: Quasi-geostrophic potential vorticity
    - Related to ψ by: q = ∇²ψ + (f²/N²)∂²ψ/∂z²
 
-2. L⁺A: YBJ+ wave envelope
-   - Operator definitions (from PDF):
-     - L  (YBJ):  L  = ∂/∂z(f²/N² ∂/∂z)          [eq. (4)]
-     - L⁺ (YBJ+): L⁺ = L - k_h²/4                 [spectral space]
-   - Key relation: L = L⁺ + k_h²/4, so LA = L⁺A + (k_h²/4)A
+2. B: YBJ+ wave envelope
+   - Related to wave amplitude A by: B = L⁺A
+   - L⁺ is an elliptic operator involving ∂²/∂z² and kh²
 
 # Example
 ```julia
@@ -489,18 +486,18 @@ q_spectral = S.q          # Complex (nz, nx, ny)
 u_realspace = S.u         # Real (nz, nx, ny)
 ```
 
-See also: [`init_state`](@ref)
+See also: [`init_state`](@ref), [`Grid`](@ref)
 """
 Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Complex{T},3}}
     #= Prognostic fields (spectral space, complex)
     These are the variables that are time-stepped =#
     q::CT           # QG potential vorticity
-    L⁺A::CT         # YBJ+ wave envelope: L⁺A where L⁺ = L - k_h²/4
+    B::CT           # YBJ+ wave envelope (B = L⁺A)
 
     #= Diagnostic fields (spectral space, complex)
     These are computed from prognostic fields =#
     psi::CT         # Streamfunction (from q via inversion)
-    A::CT           # Wave amplitude (from L⁺A via YBJ+ inversion)
+    A::CT           # Wave amplitude (from B via YBJ+ inversion)
     C::CT           # Vertical derivative A_z
 
     #= Velocity fields (real space, real)
@@ -508,26 +505,6 @@ Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Co
     u::RT           # Zonal velocity: u = -∂ψ/∂y
     v::RT           # Meridional velocity: v = ∂ψ/∂x
     w::RT           # Vertical velocity (from omega equation)
-
-    #= Wave velocity amplitude LA (real space, for GLM particle advection)
-    The wave velocity uses the YBJ operator L (NOT L⁺):
-        u + iv = (LA) × e^{-ift}                        [eq. (3)]
-    Since L = L⁺ + k_h²/4:
-        LA = L⁺A + (k_h²/4)A                            [spectral space]
-    Used for computing wave displacement ξ = Re{(LA/(-if)) × e^{-ift}} [eq. (6)] =#
-    LA_real::RT     # Real part of wave velocity amplitude (YBJ L operator)
-    LA_imag::RT     # Imaginary part of wave velocity amplitude (YBJ L operator)
-
-    #= Vertical wave displacement coefficients (real space, for GLM particle advection)
-    From YBJ+ equation (2.10), the vertical velocity is:
-        w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c. = -2(f²/N²) Re{A_{zs} e^{-ift}}
-    The vertical displacement (integrating w₀) is:
-        ξz = (2f/N²) Im{A_{zs} e^{-ift}}
-           = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
-    where w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y), w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
-    We store the coefficients: ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft) =#
-    ξz_cos::RT      # Coefficient of cos(ft) in vertical wave displacement
-    ξz_sin::RT      # Coefficient of sin(ft) in vertical wave displacement
 end
 
 """
@@ -578,7 +555,7 @@ Allocate and initialize a State with all fields set to zero.
 # Returns
 State struct with:
 - Spectral fields (q, psi, A, B, C): Complex arrays, initialized to 0
-- Real fields (u, v, w, LA_real, LA_imag): Real arrays, initialized to 0
+- Real fields (u, v, w): Real arrays, initialized to 0
 
 # Example
 ```julia
@@ -596,7 +573,7 @@ function init_state(G::Grid; T=Float64)
     q   = allocate_field(T, G; complex=true);    fill!(q, 0)
     psi = allocate_field(T, G; complex=true);    fill!(psi, 0)
     A   = allocate_field(T, G; complex=true);    fill!(A, 0)
-    L⁺A = allocate_field(T, G; complex=true);    fill!(L⁺A, 0)
+    B   = allocate_field(T, G; complex=true);    fill!(B, 0)
     C   = allocate_field(T, G; complex=true);    fill!(C, 0)
 
     # Allocate real-space (real) fields
@@ -604,15 +581,7 @@ function init_state(G::Grid; T=Float64)
     v   = allocate_field(T, G; complex=false);   fill!(v, 0)
     w   = allocate_field(T, G; complex=false);   fill!(w, 0)
 
-    # Allocate wave velocity amplitude fields (for GLM particle advection)
-    LA_real = allocate_field(T, G; complex=false);  fill!(LA_real, 0)
-    LA_imag = allocate_field(T, G; complex=false);  fill!(LA_imag, 0)
-
-    # Allocate vertical wave displacement coefficient fields (for GLM particle advection)
-    ξz_cos = allocate_field(T, G; complex=false);  fill!(ξz_cos, 0)
-    ξz_sin = allocate_field(T, G; complex=false);  fill!(ξz_sin, 0)
-
-    return State{T, typeof(u), typeof(q)}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
+    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
 """
@@ -632,9 +601,9 @@ New State struct with copied data but compatible array structure.
 
 # Example
 ```julia
-Snp1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
+Snm1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
 # vs.
-Snp1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
+Snm1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
 ```
 
 See also: [`State`](@ref), [`init_state`](@ref)
@@ -643,18 +612,14 @@ function copy_state(src::State{T, RT, CT}) where {T, RT, CT}
     # Use similar to preserve array structure (including PencilArray topology)
     # For regular Arrays, similar creates a new array with same type/size
     # For PencilArrays, similar preserves the pencil decomposition
-    q   = similar(src.q);     q   .= src.q
-    L⁺A = similar(src.L⁺A);   L⁺A .= src.L⁺A
-    psi = similar(src.psi);   psi .= src.psi
-    A   = similar(src.A);     A   .= src.A
-    C   = similar(src.C);     C   .= src.C
-    u   = similar(src.u);     u   .= src.u
-    v   = similar(src.v);     v   .= src.v
-    w   = similar(src.w);     w   .= src.w
-    LA_real = similar(src.LA_real); LA_real .= src.LA_real
-    LA_imag = similar(src.LA_imag); LA_imag .= src.LA_imag
-    ξz_cos = similar(src.ξz_cos); ξz_cos .= src.ξz_cos
-    ξz_sin = similar(src.ξz_sin); ξz_sin .= src.ξz_sin
+    q   = similar(src.q);   q   .= src.q
+    B   = similar(src.B);   B   .= src.B
+    psi = similar(src.psi); psi .= src.psi
+    A   = similar(src.A);   A   .= src.A
+    C   = similar(src.C);   C   .= src.C
+    u   = similar(src.u);   u   .= src.u
+    v   = similar(src.v);   v   .= src.v
+    w   = similar(src.w);   w   .= src.w
 
-    return State{T, RT, CT}(q, L⁺A, psi, A, C, u, v, w, LA_real, LA_imag, ξz_cos, ξz_sin)
+    return State{T, RT, CT}(q, B, psi, A, C, u, v, w)
 end

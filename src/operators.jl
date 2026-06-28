@@ -68,43 +68,21 @@ where:
 This represents vertical motion induced by wave envelope modulation, oscillating
 at the inertial frequency f.
 
-WAVE VELOCITY AND STOKES DRIFT:
--------------------------------
-Near-inertial waves contribute to particle advection through two mechanisms:
+WAVE-INDUCED STOKES DRIFT:
+--------------------------
+Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
+from near-inertial waves is computed from the wave velocity LA (not amplitude A):
 
-1. WAVE VELOCITY (Asselin & Young 2019, eq. 1.2):
-   The backrotated wave velocity is LA, where L = ∂_z(f²/N²)∂_z:
-       u_wave = Re(LA)
-       v_wave = Im(LA)
+    u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
+    v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
+    w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
 
-   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
-   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
+where LA = |LA|e^{iφ} is the wave velocity amplitude and φ is the wave phase.
+This drift is in the direction of wave propagation (phase gradient).
+These wave corrections are important for Lagrangian particle advection.
 
-2. STOKES DRIFT (Wagner & Young 2016, eq. 3.16a-3.20):
-   The horizontal Stokes drift uses the full Jacobian form:
-
-       J₀ = (LA)* ∂_{s*}(LA) - (f₀²/N²)(∂_{s*} A_z*) ∂_z(LA)
-
-   where ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative.
-
-   From eq. (3.18): if₀ U^S = J₀, giving:
-       u_S = Im(J₀)/f₀
-       v_S = -Re(J₀)/f₀
-
-   The vertical Stokes drift (eq. 3.19-3.20) uses:
-       K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}   where M = (f₀²/N²)A_z
-       w_S = -2·Im(K₀)/f₀
-
-   with:
-       M*_z = a_z·A_z* + a·A_{zz}*     (a = f₀²/N², a_z = ∂_z(f₀²/N²))
-       M_{ss*} = (a/4)·Δ_H(A_z)
-       M*_{s*} = a·(A_{zs})*
-       M_{sz} = a_z·A_{zs} + a·A_{zzs}
-
-The total velocity for particle advection is:
-    u_total = u_QG + u_wave + u_S
-    v_total = v_QG + v_wave + v_S
-    w_total = w_QG + w_S
+The wave velocity LA is computed from the YBJ+ relation: LA = B + (k_h²/4)A
+where B is the evolved variable and A is the wave amplitude.
 
 SPECTRAL DIFFERENTIATION:
 -------------------------
@@ -123,7 +101,7 @@ using ..QGYBJplus: Grid, State, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
-using ..QGYBJplus: invert_L⁺A_to_A!
+using ..QGYBJplus: invert_B_to_A!
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -131,102 +109,31 @@ const PARENT = Base.parentmodule(@__MODULE__)
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
-# Access invert_L⁺A_to_A! through the Elliptic submodule via PARENT
-# (Direct import via `using ..QGYBJplus: invert_L⁺A_to_A!` can fail in some loading contexts)
-# @inline invert_L⁺A_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_L⁺A_to_A!(args...; kwargs...)
+# Access invert_B_to_A! through the Elliptic submodule via PARENT
+# (Direct import via `using ..QGYBJplus: invert_B_to_A!` can fail in some loading contexts)
+# @inline invert_B_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_B_to_A!(args...; kwargs...)
 
-function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid, scratch=nothing)
+function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid)
     N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
     N2_const_T = N2_type(N2_const)
-    scratch_profile = if scratch !== nothing && hasfield(typeof(scratch), :N2_profile)
-        resize!(scratch.N2_profile, nz)
-    else
-        nothing
-    end
 
     if N2_profile === nothing
-        if scratch_profile !== nothing
-            fill!(scratch_profile, N2_const_T)
-            return scratch_profile
-        else
-            return fill(N2_const_T, nz)
-        end
+        return fill(N2_const_T, nz)
     end
 
     if length(N2_profile) != nz
         @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=$(N2_const)"
-        if scratch_profile !== nothing
-            fill!(scratch_profile, N2_const_T)
-            return scratch_profile
-        else
-            return fill(N2_const_T, nz)
-        end
+        return fill(N2_const_T, nz)
     end
 
-    if scratch_profile !== nothing &&
-       (!(eltype(N2_profile) <: Real) || eltype(N2_profile) != N2_type)
-        @inbounds for k in 1:nz
-            scratch_profile[k] = N2_type(real(N2_profile[k]))
-        end
-        return scratch_profile
+    if !(eltype(N2_profile) <: Real)
+        N2_profile = real.(N2_profile)
+    end
+    if eltype(N2_profile) != N2_type
+        N2_profile = N2_type.(N2_profile)
     end
 
-    # Always return a freshly-typed Vector{N2_type} so the return type is concrete.
-    # Previously this returned `real.(...)`, `N2_type.(...)`, or the original array
-    # depending on eltype, making the inferred return a union that propagated
-    # instability into callers. This branch is only reached when no scratch is
-    # provided (the scratch path returns above), so the extra copy is off the hot path.
-    out = Vector{N2_type}(undef, nz)
-    @inbounds for k in 1:nz
-        out[k] = N2_type(real(N2_profile[k]))
-    end
-    return out
-end
-
-function _vertical_tridiagonal_workspace(workspace, n_interior::Int, ::Type{C}) where C
-    if workspace !== nothing && hasfield(typeof(workspace), :vertical_d)
-        n_offdiag = max(n_interior - 1, 0)
-        resize!(workspace.vertical_d, n_interior)
-        resize!(workspace.vertical_dₗ, n_offdiag)
-        resize!(workspace.vertical_dᵤ, n_offdiag)
-        resize!(workspace.vertical_rhs, n_interior)
-        resize!(workspace.vertical_dₗ_work, n_offdiag)
-        resize!(workspace.vertical_d_work, n_interior)
-        resize!(workspace.vertical_dᵤ_work, n_offdiag)
-        resize!(workspace.vertical_rhsᵣ, n_interior)
-        resize!(workspace.vertical_rhsᵢ, n_interior)
-        resize!(workspace.vertical_solᵣ, n_interior)
-        resize!(workspace.vertical_solᵢ, n_interior)
-        return (
-            workspace.vertical_d,
-            workspace.vertical_dₗ,
-            workspace.vertical_dᵤ,
-            workspace.vertical_rhs,
-            workspace.vertical_dₗ_work,
-            workspace.vertical_d_work,
-            workspace.vertical_dᵤ_work,
-            workspace.vertical_rhsᵣ,
-            workspace.vertical_rhsᵢ,
-            workspace.vertical_solᵣ,
-            workspace.vertical_solᵢ,
-        )
-    else
-        R = typeof(real(zero(C)))
-        n_offdiag = max(n_interior - 1, 0)
-        return (
-            zeros(R, n_interior),
-            zeros(R, n_offdiag),
-            zeros(R, n_offdiag),
-            zeros(C, n_interior),
-            zeros(R, n_offdiag),
-            zeros(R, n_interior),
-            zeros(R, n_offdiag),
-            zeros(R, n_interior),
-            zeros(R, n_interior),
-            zeros(R, n_interior),
-            zeros(R, n_interior),
-        )
-    end
+    return N2_profile
 end
 
 #=
@@ -238,9 +145,7 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true,
-                        use_ybj_w=false, N2_profile=nothing, workspace=nothing,
-                        dealias_mask=nothing, velocity_workspace=nothing)
+    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Compute geostrophic velocities from the spectral streamfunction ψ̂.
 
@@ -276,7 +181,6 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS (quadratic term).
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
-- `velocity_workspace`: Optional pre-allocated spectral and FFT scratch arrays.
 
 # Returns
 Modified State with updated u, v, w fields.
@@ -288,10 +192,7 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
-                             compute_w=true, use_ybj_w=false, N2_profile=nothing,
-                             workspace=nothing, dealias_mask=nothing,
-                             velocity_workspace=nothing)
+function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -302,8 +203,8 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
 
     # Spectral differentiation: û = -i ky ψ̂, v̂ = i kx ψ̂
     ψk = S.psi
-    uk = velocity_workspace === nothing ? similar(ψk) : velocity_workspace.uk
-    vk = velocity_workspace === nothing ? similar(ψk) : velocity_workspace.vk
+    uk = similar(ψk)
+    vk = similar(ψk)
     uk_arr = parent(uk)
     vk_arr = parent(vk)
 
@@ -323,9 +224,9 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
     end
 
     # Allocate destination arrays on correct pencil for fft_backward!
-    # For MPI: must be on input_pencil (physical space), not output_pencil.
-    tmpu = velocity_workspace === nothing ? _allocate_fft_dst(uk, plans) : velocity_workspace.tmpu
-    tmpv = velocity_workspace === nothing ? _allocate_fft_dst(vk, plans) : velocity_workspace.tmpv
+    # For MPI: must be on input_pencil (physical space), not output_pencil
+    tmpu = _allocate_fft_dst(uk, plans)
+    tmpv = _allocate_fft_dst(vk, plans)
     fft_backward!(tmpu, uk, plans)
     fft_backward!(tmpv, vk, plans)
 
@@ -351,7 +252,6 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
 
     # Compute vertical velocity if requested
     if compute_w
-        omega_workspace = velocity_workspace === nothing ? nothing : velocity_workspace.nonlinear
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
             compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace)
@@ -359,8 +259,7 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing,
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
             compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, 
-                                workspace=workspace, dealias_mask=dealias_mask,
-                                omega_workspace=omega_workspace)
+                                workspace=workspace, dealias_mask=dealias_mask)
         end
     else
         # Set w to zero (leading-order QG approximation)
@@ -439,8 +338,7 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 Matches omega equation solver in the Fortran implementation.
 """
 function compute_vertical_velocity!(S::State, G::Grid, plans, params; 
-                            N2_profile=nothing, workspace=nothing,
-                            dealias_mask=nothing, omega_workspace=nothing)
+                            N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     # Compute default dealiasing mask if not provided
     # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
     if dealias_mask === nothing
@@ -453,13 +351,13 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params;
     if need_transpose
         _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, dealias_mask)
     else
-        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask, omega_workspace)
+        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask, omega_workspace)
+function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -471,9 +369,8 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # Get RHS of omega equation with proper dealiasing
     # Previous code never passed dealias_mask, causing aliasing in the quadratic RHS term
-    rhsk = omega_workspace === nothing ? similar(S.psi) : omega_workspace.spectral6
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask,
-                                      workspace=omega_workspace)
+    rhsk = similar(S.psi)
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
     rhsk_arr = parent(rhsk)
 
     # Get stratification parameters
@@ -491,11 +388,11 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, omega_workspace)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     # Solve the full omega equation: ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
     # Note: The RHS from omega_eqn_rhs! is 2 J(ψ_z, ∇²ψ), so we multiply by f/N² below
-    wk = omega_workspace === nothing ? similar(S.psi) : omega_workspace.spectral5
+    wk = similar(S.psi)
     wk_arr = parent(wk)
     fill!(wk_arr, 0.0)
 
@@ -505,8 +402,17 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     # Pre-allocate work arrays outside loop to reduce GC pressure
     n_interior = nz - 2  # Interior points (constant for all wavenumbers)
     if n_interior > 0
-        d, dₗ, dᵤ, rhs, dₗ_work, d_work, dᵤ_work, rhsᵣ, rhsᵢ, solᵣ, solᵢ =
-            _vertical_tridiagonal_workspace(omega_workspace, n_interior, eltype(S.psi))
+        d = zeros(Float64, n_interior)
+        dₗ = zeros(Float64, n_interior-1)
+        dᵤ = zeros(Float64, n_interior-1)
+        rhs = zeros(eltype(S.psi), n_interior)
+        dₗ_work = zeros(Float64, n_interior-1)
+        d_work = zeros(Float64, n_interior)
+        dᵤ_work = zeros(Float64, n_interior-1)
+        rhsᵣ = zeros(Float64, n_interior)
+        rhsᵢ = zeros(Float64, n_interior)
+        solᵣ = zeros(Float64, n_interior)
+        solᵢ = zeros(Float64, n_interior)
     end
 
     # For each LOCAL horizontal wavenumber (kₓ, kᵧ), solve tridiagonal system
@@ -585,7 +491,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     end
 
     # Transform to real space
-    tmpw = omega_workspace === nothing ? _allocate_fft_dst(wk, plans) : omega_workspace.physical6
+    tmpw = _allocate_fft_dst(wk, plans)
     fft_backward!(tmpw, wk, plans)
     tmpw_arr = parent(tmpw)
 
@@ -790,7 +696,7 @@ This represents vertical motion induced by:
 - The velocity oscillates at inertial frequency f
 
 # Algorithm
-1. **A Recovery**: Solve L⁺A = B using invert_L⁺A_to_A!
+1. **A Recovery**: Solve L⁺A = B using invert_B_to_A!
    - L⁺ is the YBJ+ elliptic operator
    - Tridiagonal solver in z for each horizontal wavenumber
 
@@ -845,13 +751,13 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     if need_transpose
         _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
     else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
+        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
+function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -872,7 +778,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -894,10 +800,10 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
-        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
+        invert_B_to_A!(S, G, params, a_vec)
     end
     # Step 2: Compute vertical derivative A_z using finite differences
-    Aₖ_z = S.C  # C was set to A_z by invert_L⁺A_to_A!
+    Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
     Aₖ_z_arr = parent(Aₖ_z)
     nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
 
@@ -905,8 +811,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
 
     # Step 3: Compute horizontal derivatives of A_z
-    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
-    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -942,8 +848,8 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
     #     = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
-    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
@@ -1009,11 +915,11 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
+    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
-    # Step 1: Recover A from B = L⁺A (invert_L⁺A_to_A! handles 2D decomposition internally)
+    # Step 1: Recover A from B = L⁺A (invert_B_to_A! handles 2D decomposition internally)
     # a(z) = f²/N²(z) is the elliptic coefficient
     if skip_inversion
         # Use existing S.A and S.C computed by the timestep with correct stratification.
@@ -1031,11 +937,11 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
         # Pass workspace if available
-        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
+        invert_B_to_A!(S, G, params, a_vec; workspace=workspace)
     end
 
     # Now A and C (A_z) are in xy-pencil form.
-    # invert_L⁺A_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
+    # invert_B_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
     # Use S.C directly instead of recomputing - this ensures MPI and serial paths match,
     # and respects skip_inversion=true which promises to reuse precomputed A/C.
     Aₖ_z = S.C
@@ -1044,8 +950,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     # Compute horizontal derivatives of A_z in xy-pencil
     nz_local, nx_local, ny_local = size(Aₖ_z_arr)
     @assert nz_local == nz "Vertical dimension must be fully local for YBJ vertical velocity"
-    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
-    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
+    dAz_dxₖ = similar(Aₖ_z)
+    dAz_dyₖ = similar(Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
@@ -1075,8 +981,8 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
     #   w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 
     # Transform horizontal derivatives to physical space
-    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
+    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
+    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
@@ -1160,24 +1066,17 @@ For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA.
 In spectral space: LA = B + (k_h²/4)A
 
 # Wave-Induced Stokes Drift
-Following Wagner & Young (2016) equations (3.16a)-(3.20), the Stokes drift
-uses the full Jacobian formulation:
+Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
+is computed from the wave velocity LA (not amplitude A):
+```
+u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
+v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
+w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
+```
 
-Horizontal Stokes drift (eq. 3.16a, 3.18):
-```
-J₀ = (LA)* ∂_{s*}(LA) - (f₀²/N²)(∂_{s*} A_z*) ∂_z(LA)
-u_S = Im(J₀)/f₀
-v_S = -Re(J₀)/f₀
-```
-where ∂_{s*} = (1/2)(∂_x + i∂_y).
-
-Vertical Stokes drift (eq. 3.19-3.20):
-```
-K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}   where M = (f₀²/N²)A_z
-w_S = -2·Im(K₀)/f₀
-```
-with M*_z = a_z·A_z* + a·A_{zz}*, M_{ss*} = (a/4)·Δ_H(A_z),
-M*_{s*} = a·(A_{zs})*, M_{sz} = a_z·A_{zs} + a·A_{zzs}, and a = f₀²/N².
+where LA = |LA|e^{iφ} is the wave velocity and φ is the wave phase.
+Particles drift in the direction of wave propagation (phase gradient).
+The drift magnitude scales with wave velocity intensity |LA|².
 
 # Usage
 For Lagrangian particle advection, always use this function rather than
@@ -1204,9 +1103,7 @@ function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=noth
 
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
-    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w,
-                             include_wave_velocity=include_wave_velocity,
-                             N2_profile=N2_profile, workspace=workspace)
+    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, include_wave_velocity=include_wave_velocity, N2_profile=N2_profile)
 
     return S
 end
@@ -1225,25 +1122,19 @@ propagation. This is the Stokes drift correction.
 
 Compute wave velocities and Stokes drift, adding them to existing QG velocities.
 
-# Operator Definitions (from PDF)
-    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
-    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
-
-Key relation: L = L⁺ + k_h²/4
-
 # Physical Background
 Near-inertial waves contribute to particle advection through two mechanisms:
 
 1. **Wave velocity**: Following Asselin & Young (2019) YBJ+ equation (1.2):
-   u + iv = e^{-ift} (LA)                                    [eq. (3)]
-   where L is the YBJ operator (NOT L⁺).
+   u + iv = e^{-ift} L A
+   where L = ∂_z(f²/N²)∂_z is the vertical operator.
 
    The backrotated velocity (phase-averaged) is LA:
    - u_wave = Re(LA)
    - v_wave = Im(LA)
 
-   Since B = L⁺A and L = L⁺ + k_h²/4:
-   LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A                      [spectral space]
+   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
+   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
 
 2. **Stokes drift**: Following Wagner & Young (2016) equation (3.16a), the
    horizontal Stokes drift is computed from the full Jacobian:
@@ -1308,7 +1199,7 @@ Call after compute_velocities! to get total velocity.
 - Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
+function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1316,8 +1207,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     v_arr = parent(S.v)
     w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
-    L⁺Aₖ_arr = parent(S.L⁺A)
-    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_L⁺A_to_A!
+    Bₖ_arr = parent(S.B)
+    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_B_to_A!
     nz_local, nx_local, ny_local = size(Aₖ_arr)
 
     # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
@@ -1326,7 +1217,6 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     else
         1.0  # Default fallback
     end
-    f₀² = f₀^2
 
     # Get N² value from params (default to 1.0 if not available)
     N2_const = if params !== nothing && hasfield(typeof(params), :N²)
@@ -1336,7 +1226,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     end
 
     # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
+    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     # Set up plans if needed
     if plans === nothing
@@ -1351,9 +1241,9 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # ∂_{s*} → (1/2)(ikₓ + i·ikᵧ) = (i/2)(kₓ - kᵧ)... wait, let me recalculate
     # Actually: ∂_{s*}f → (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (i/2)(kₓ + i kᵧ) f̂ = (i/2) k* f̂
     # where k* = kₓ + i kᵧ is the complex wavenumber conjugate
-    LAₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(S.A)
-    dLA_ds_conjₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(S.A)  # ∂_{s*}(LA)
-    dAz_ds_conjₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral3)) ? workspace.spectral3 : similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
+    LAₖ = similar(S.A)
+    dLA_ds_conjₖ = similar(S.A)  # ∂_{s*}(LA)
+    dAz_ds_conjₖ = similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
     LAₖ_arr = parent(LAₖ)
     dLA_ds_conjₖ_arr = parent(dLA_ds_conjₖ)
     dAz_ds_conjₖ_arr = parent(dAz_ds_conjₖ)
@@ -1366,8 +1256,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
         kₕ² = kₓ^2 + kᵧ^2
 
         # Wave velocity from eq (1.2): u + iv = e^{-ift} LA
-        # LA = L⁺A + (k_h²/4)A in spectral space (YBJ+ relation)
-        LA_val = L⁺Aₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
+        # LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
+        LA_val = Bₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
         LAₖ_arr[k, i_local, j_local] = LA_val
 
         # Complex derivative: ∂_{s*} = (1/2)(∂_x + i∂_y)
@@ -1401,7 +1291,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
 
     # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z
-    Aₖ_zz = (workspace !== nothing && hasfield(typeof(workspace), :spectral4)) ? workspace.spectral4 : similar(S.A)
+    Aₖ_zz = similar(S.A)
     Aₖ_zz_arr = parent(Aₖ_zz)
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -1426,8 +1316,8 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Δ_H(A_z) = -k_h² · Â_z in spectral space
     # A_{zs} = ∂_s(A_z) = (1/2)(ikₓ + kᵧ) · Â_z  [already computed as dAz_ds_conjₖ]
     # A_{zzs} = ∂_s(A_{zz}) = (1/2)(ikₓ + kᵧ) · Â_{zz}
-    Δ_H_Azₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral5)) ? workspace.spectral5 : similar(S.A)
-    A_zzsₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral6)) ? workspace.spectral6 : similar(S.A)
+    Δ_H_Azₖ = similar(S.A)
+    A_zzsₖ = similar(S.A)
     Δ_H_Azₖ_arr = parent(Δ_H_Azₖ)
     A_zzsₖ_arr = parent(A_zzsₖ)
 
@@ -1491,9 +1381,9 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     # Transform all fields to physical space
     # The Jacobian J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA) is a product of fields
     # and MUST be computed in physical space, not spectral space
-    LAᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(LAₖ, plans)
-    dLA_ds_conjᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dLA_ds_conjₖ, plans)
-    dAz_ds_conjᵣ = (workspace !== nothing && hasfield(typeof(workspace), :physical3)) ? workspace.physical3 : _allocate_fft_dst(dAz_ds_conjₖ, plans)
+    LAᵣ = _allocate_fft_dst(LAₖ, plans)
+    dLA_ds_conjᵣ = _allocate_fft_dst(dLA_ds_conjₖ, plans)
+    dAz_ds_conjᵣ = _allocate_fft_dst(dAz_ds_conjₖ, plans)
     dLA_dzᵣ = _allocate_fft_dst(dLA_dzₖ, plans)
 
     fft_backward!(LAᵣ, LAₖ, plans)
@@ -1533,6 +1423,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
     #   This expands to: w^S = -2·Im(K₀)/f₀
     inv_f₀ = 1.0 / f₀
+    f₀² = f₀^2
 
     # Add wave velocity and Stokes drift to existing QG velocities in physical space
     nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)
@@ -1622,394 +1513,6 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     return S
 end
 
-#=
-================================================================================
-                    WAVE DISPLACEMENT FOR GLM PARTICLE ADVECTION
-================================================================================
-In the GLM (Generalized Lagrangian Mean) framework for particle advection,
-particles are advected by the QG (Lagrangian-mean) velocity, and the wave
-contribution appears as a displacement ξ rather than an additional velocity.
-
-OPERATOR DEFINITIONS (from PDF):
---------------------------------
-L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)           [equation (4)]
-L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4
-
-KEY RELATIONS:
---------------
-- YBJ+ envelope:     B = L⁺A
-- Wave velocity:     u + iv = (LA) × e^{-ift}         [equation (3)]
-
-Since L = L⁺ + k_h²/4, the wave velocity amplitude is:
-    LA = (L⁺ + k_h²/4)A = L⁺A + (k_h²/4)A = B + (k_h²/4)A
-
-The wave displacement is then:
-    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}           [equation (6)]
-
-This function computes LA in physical space and stores it in state.LA_real
-and state.LA_imag for interpolation to particle positions.
-================================================================================
-=#
-
-"""
-    compute_wave_displacement!(S, G; plans=nothing, params=nothing)
-
-Compute wave velocity amplitude LA for GLM particle advection.
-
-# Operator Definitions (from PDF)
-- L  (YBJ):  L  = ∂/∂z(f²/N² ∂/∂z)                    [equation (4)]
-- L⁺ (YBJ+): L⁺ = L - k_h²/4
-
-# Wave Velocity Amplitude
-The instantaneous wave velocity is (equation 3):
-    u + iv = (LA) × e^{-ift}
-
-where L is the YBJ operator (NOT L⁺). Since B = L⁺A and L = L⁺ + k_h²/4:
-    LA = (L⁺ + k_h²/4)A = B + (k_h²/4)A
-
-# Wave Displacement
-Particles compute wave displacement via (equation 6):
-    ξx + iξy = Re{(LA / (-if)) × e^{-ift}}
-
-# Arguments
-- `S::State`: State with B, A (input) and LA_real, LA_imag (output)
-- `G::Grid`: Grid structure
-- `plans`: FFT plans
-- `params`: Model parameters
-
-# Note
-This function should be called after invert_L⁺A_to_A! has computed A from B.
-The particle advection code then interpolates LA to particle positions and
-computes the time-dependent wave displacement ξ.
-"""
-function compute_wave_displacement!(S::State, G::Grid; plans=nothing, params=nothing, workspace=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get underlying arrays
-    Aₖ_arr = parent(S.A)
-    L⁺Aₖ_arr = parent(S.L⁺A)
-    LA_real_arr = parent(S.LA_real)
-    LA_imag_arr = parent(S.LA_imag)
-    nz_local, nx_local, ny_local = size(Aₖ_arr)
-
-    # Set up plans if needed
-    if plans === nothing
-        plans = plan_transforms!(G)
-    end
-
-    # Compute LA = B + (k_h²/4)A in spectral space
-    # YBJ+ relation: B = L⁺A = LA + (1/4)ΔA, so LA = B - (1/4)ΔA
-    # In spectral space: Δ → -k_h², so LA = B + (k_h²/4)A
-    LAₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(S.A)
-    LAₖ_arr = parent(LAₖ)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, S.A)
-        j_global = local_to_global(j_local, 3, S.A)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        # LA = L⁺A + (k_h²/4)A
-        LAₖ_arr[k, i_local, j_local] = L⁺Aₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
-    end
-
-    # Transform LA to physical space
-    LA_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : allocate_fft_backward_dst(LAₖ, plans)
-    fft_backward!(LA_phys, LAₖ, plans)
-    LA_phys_arr = parent(LA_phys)
-
-    # Store real and imaginary parts in state
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(LA_phys_arr)
-    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        LA_real_arr[k, i, j] = real(LA_phys_arr[k, i, j])
-        LA_imag_arr[k, i, j] = imag(LA_phys_arr[k, i, j])
-    end
-
-    return S
-end
-
-"""
-    compute_vertical_wave_displacement!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
-
-Compute vertical wave displacement coefficients from YBJ+ equation (2.10).
-
-# Physical Background
-From Asselin & Young (2019) equation (2.10), the wave-induced vertical velocity is:
-```
-w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
-```
-where A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) with s = x + iy.
-
-Integrating to get vertical displacement:
-```
-ξz = (2f/N²) Im{A_{zs} e^{-ift}}
-   = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
-```
-where:
-- w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y)
-- w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
-
-This function stores the coefficients:
-- S.ξz_cos = (f/N²) × w_sin
-- S.ξz_sin = -(f/N²) × w_cos
-
-So the vertical displacement at time t is:
-```
-ξz(t) = ξz_cos × cos(ft) + ξz_sin × sin(ft)
-```
-
-# Arguments
-- `S::State`: State with A, C (A_z) as input; ξz_cos, ξz_sin as output
-- `G::Grid`: Grid structure
-- `plans`: FFT plans
-- `params`: Model parameters (f₀, N²)
-- `N2_profile::Vector`: Optional N²(z) profile (default: constant from params.N²)
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
-- `skip_inversion::Bool`: If true, use existing S.A and S.C instead of re-inverting
-
-# Usage in GLM Particle Advection
-The vertical position of a Lagrangian particle is:
-```
-Z(t) = z_mean + ξz(t)
-     = z_mean + ξz_cos × cos(ft) + ξz_sin × sin(ft)
-```
-where z_mean is advected by the mean vertical velocity (e.g., from omega equation).
-
-# References
-- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
-"""
-function compute_vertical_wave_displacement!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false)
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
-
-    if need_transpose
-        _compute_vertical_wave_displacement_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion)
-    else
-        _compute_vertical_wave_displacement_direct!(S, G, plans, params, N2_profile, workspace, skip_inversion)
-    end
-    return S
-end
-
-# Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_wave_displacement_direct!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get underlying arrays for output
-    ξz_cos_arr = parent(S.ξz_cos)
-    ξz_sin_arr = parent(S.ξz_sin)
-
-    # Get parameters
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0
-    end
-
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
-
-    # Step 1: Recover A from L⁺A using YBJ+ inversion (if needed)
-    if skip_inversion
-        if all(iszero, parent(S.A))
-            @warn "skip_inversion=true but S.A is all zeros - vertical displacement will be zero" maxlog=1
-        end
-    else
-        a_vec = similar(G.z)
-        f_sq = f^2
-        @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_profile[k]
-        end
-        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
-    end
-
-    # Step 2: Get A_z from S.C (computed by invert_L⁺A_to_A!)
-    Aₖ_z = S.C
-    Aₖ_z_arr = parent(Aₖ_z)
-    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
-
-    @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
-
-    # Step 3: Compute horizontal derivatives of A_z in spectral space
-    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
-    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
-    dAz_dxₖ_arr = parent(dAz_dxₖ)
-    dAz_dyₖ_arr = parent(dAz_dyₖ)
-
-    # Compute derivatives for k = 1:(nz-1) where A_z is defined
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, dAz_dxₖ)
-        j_global = local_to_global(j_local, 3, dAz_dxₖ)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
-        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
-    end
-
-    # Zero the top slice (k=nz) to avoid garbage from similar()
-    @inbounds for j_local in 1:ny_spec, i_local in 1:nx_spec
-        dAz_dxₖ_arr[nz, i_local, j_local] = 0
-        dAz_dyₖ_arr[nz, i_local, j_local] = 0
-    end
-
-    # Step 4: Transform to physical space
-    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
-    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
-    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
-    dAz_dx_phys_arr = parent(dAz_dx_phys)
-    dAz_dy_phys_arr = parent(dAz_dy_phys)
-    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
-
-    @assert size(ξz_cos_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils must match"
-
-    # Step 5: Compute displacement coefficients
-    # ξz = (f/N²) × [w_sin × cos(ft) - w_cos × sin(ft)]
-    # So: ξz_cos = (f/N²) × w_sin, ξz_sin = -(f/N²) × w_cos
-    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
-        k_out = k + 1  # Shift to match output grid
-        N²ₗ = N2_profile[k_out]
-        disp_factor = f / N²ₗ
-
-        # Get derivatives in physical space
-        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
-        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
-
-        # w_cos = Re(∂A_z/∂x) + Im(∂A_z/∂y)
-        w_cos = real(dAz_dx) + imag(dAz_dy)
-        # w_sin = Im(∂A_z/∂x) - Re(∂A_z/∂y)
-        w_sin = imag(dAz_dx) - real(dAz_dy)
-
-        # Store coefficients: ξz = ξz_cos × cos(ft) + ξz_sin × sin(ft)
-        ξz_cos_arr[k_out, i_local, j_local] = disp_factor * w_sin
-        ξz_sin_arr[k_out, i_local, j_local] = -disp_factor * w_cos
-    end
-
-    # Apply boundary conditions: ξz = 0 at top and bottom
-    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
-        ξz_cos_arr[1, i_local, j_local] = 0.0
-        ξz_sin_arr[1, i_local, j_local] = 0.0
-        if nz > 1
-            ξz_cos_arr[nz, i_local, j_local] = 0.0
-            ξz_sin_arr[nz, i_local, j_local] = 0.0
-        end
-    end
-end
-
-# 2D decomposition version with transposes
-function _compute_vertical_wave_displacement_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get underlying arrays for output
-    ξz_cos_arr = parent(S.ξz_cos)
-    ξz_sin_arr = parent(S.ξz_sin)
-
-    # Get parameters
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0
-    end
-
-    # Get N² value from params
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G, workspace)
-
-    # Step 1: Recover A from L⁺A (handles 2D decomposition internally)
-    if skip_inversion
-        if all(iszero, parent(S.A))
-            @warn "skip_inversion=true but S.A is all zeros - vertical displacement will be zero" maxlog=1
-        end
-    else
-        a_vec = similar(G.z)
-        f_sq = f^2
-        @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_profile[k]
-        end
-        invert_L⁺A_to_A!(S, G, params, a_vec; workspace=workspace)
-    end
-
-    # Step 2: Get A_z from S.C (spectral pencil; z may be distributed)
-    Aₖ_z = S.C
-    Aₖ_z_arr = parent(Aₖ_z)
-    nz_local, nx_local, ny_local = size(Aₖ_z_arr)
-
-    # Step 3: Compute horizontal derivatives of A_z in spectral space.
-    # The derivative is pointwise in z, so no transpose is needed even when the
-    # spectral pencil distributes z — map local indices to global ones and zero
-    # the global top level (k = nz), matching the direct path.
-    dAz_dxₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral1)) ? workspace.spectral1 : similar(Aₖ_z)
-    dAz_dyₖ = (workspace !== nothing && hasfield(typeof(workspace), :spectral2)) ? workspace.spectral2 : similar(Aₖ_z)
-    dAz_dxₖ_arr = parent(dAz_dxₖ)
-    dAz_dyₖ_arr = parent(dAz_dyₖ)
-
-    @inbounds for k_local in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        k_global = local_to_global(k_local, 1, Aₖ_z)
-        if k_global < nz
-            i_global = local_to_global(i_local, 2, Aₖ_z)
-            j_global = local_to_global(j_local, 3, Aₖ_z)
-            ikₓ = im * G.kx[i_global]
-            ikᵧ = im * G.ky[j_global]
-            dAz_dxₖ_arr[k_local, i_local, j_local] = ikₓ * Aₖ_z_arr[k_local, i_local, j_local]
-            dAz_dyₖ_arr[k_local, i_local, j_local] = ikᵧ * Aₖ_z_arr[k_local, i_local, j_local]
-        else
-            dAz_dxₖ_arr[k_local, i_local, j_local] = 0
-            dAz_dyₖ_arr[k_local, i_local, j_local] = 0
-        end
-    end
-
-    # Step 4: Transform to physical space
-    dAz_dx_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical1)) ? workspace.physical1 : _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = (workspace !== nothing && hasfield(typeof(workspace), :physical2)) ? workspace.physical2 : _allocate_fft_dst(dAz_dyₖ, plans)
-    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
-    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
-    dAz_dx_phys_arr = parent(dAz_dx_phys)
-    dAz_dy_phys_arr = parent(dAz_dy_phys)
-    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
-
-    @assert size(ξz_cos_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils must match"
-
-    # Step 5: Compute displacement coefficients
-    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
-        k_out = k + 1
-        N²ₗ = N2_profile[k_out]
-        disp_factor = f / N²ₗ
-
-        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
-        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
-
-        w_cos = real(dAz_dx) + imag(dAz_dy)
-        w_sin = imag(dAz_dx) - real(dAz_dy)
-
-        ξz_cos_arr[k_out, i_local, j_local] = disp_factor * w_sin
-        ξz_sin_arr[k_out, i_local, j_local] = -disp_factor * w_cos
-    end
-
-    # Boundary conditions
-    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
-        ξz_cos_arr[1, i_local, j_local] = 0.0
-        ξz_sin_arr[1, i_local, j_local] = 0.0
-        if nz > 1
-            ξz_cos_arr[nz, i_local, j_local] = 0.0
-            ξz_sin_arr[nz, i_local, j_local] = 0.0
-        end
-    end
-end
-
 end # module
 
-using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!, compute_wave_displacement!, compute_vertical_wave_displacement!
+using .Operators: compute_velocities!, compute_vertical_velocity!, compute_ybj_vertical_velocity!, compute_total_velocities!, compute_wave_velocities!

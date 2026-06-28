@@ -1,17 +1,25 @@
-"""
-Display methods and formatting utilities for QGYBJplus objects.
-"""
+#=
+================================================================================
+                    pretty_printing.jl - Pretty Display Utilities
+================================================================================
 
-using Printf: @sprintf
+Custom show methods for QGYBJplus types, inspired by Oceananigans.jl style.
+Provides nicely formatted output with Unicode box characters.
 
+================================================================================
+=#
+
+using Printf
+
+# Import types from parent module
 using ..QGYBJplus: QGParams, Grid, State, OutputConfig, Plans, MPIConfig,
-                    DomainConfig, StratificationConfig, InitialConditionConfig, ModelConfig
+               DomainConfig, StratificationConfig, InitialConditionConfig, ModelConfig
 using ..QGYBJplus.UnifiedParticleAdvection: ParticleConfig, ParticleTracker
 using ..QGYBJplus.UnifiedParticleAdvection.EnhancedParticleConfig: ParticleConfig3D
 
-#####
-##### Formatting utilities
-#####
+# ============================================================================
+#                       FORMATTING UTILITIES
+# ============================================================================
 
 """
     format_number(x) -> String
@@ -50,18 +58,18 @@ Format grid dimensions as "nx × ny × nz".
 """
 format_size(dims...) = join(dims, " × ")
 
-#####
-##### Box drawing
-#####
+# ============================================================================
+#                       BOX DRAWING CHARACTERS
+# ============================================================================
 
-const BOX_TL = "┌"
-const BOX_TR = "┐"
-const BOX_BL = "└"
-const BOX_BR = "┘"
-const BOX_H = "─"
-const BOX_V = "│"
-const BOX_LT = "├"
-const BOX_RT = "┤"
+const BOX_TL = "┌"  # Top-left corner
+const BOX_TR = "┐"  # Top-right corner
+const BOX_BL = "└"  # Bottom-left corner
+const BOX_BR = "┘"  # Bottom-right corner
+const BOX_H  = "─"  # Horizontal line
+const BOX_V  = "│"  # Vertical line
+const BOX_LT = "├"  # Left tee
+const BOX_RT = "┤"  # Right tee
 
 """
     print_box_top(io, title, width)
@@ -117,9 +125,9 @@ function print_section_header(io::IO, title::String, width::Int)
     println(io, BOX_LT, repeat(BOX_H, left_pad), title_str, repeat(BOX_H, max(0, right_pad)), BOX_RT)
 end
 
-#####
-##### QGParams
-#####
+# ============================================================================
+#                       QGParams PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", par::QGParams{T}) where T
     width = 60
@@ -161,6 +169,7 @@ function Base.show(io::IO, ::MIME"text/plain", par::QGParams{T}) where T
     print_box_row(io, "νₕ₁ʷ (∇^$(2*par.ilap1w))", format_number(par.νₕ₁ʷ), width; key_width)
     print_box_row(io, "νₕ₂ʷ (∇^$(2*par.ilap2w))", format_number(par.νₕ₂ʷ), width; key_width)
     print_box_row(io, "νz (vertical)", format_number(par.νz), width; key_width)
+    print_box_row(io, "R-A filter (γ)", format_number(par.γ), width; key_width)
 
     # Physics switches
     print_section_header(io, "Physics Flags", width)
@@ -180,9 +189,9 @@ function Base.show(io::IO, par::QGParams{T}) where T
     print(io, "QGParams{$T}($(par.nx)×$(par.ny)×$(par.nz), dt=$(format_number(par.dt)), nt=$(par.nt))")
 end
 
-#####
-##### Grid
-#####
+# ============================================================================
+#                       Grid PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", G::Grid{T,AT}) where {T,AT}
     width = 55
@@ -222,9 +231,9 @@ function Base.show(io::IO, G::Grid{T,AT}) where {T,AT}
     print(io, "Grid{$T}($(G.nx)×$(G.ny)×$(G.nz))")
 end
 
-#####
-##### State
-#####
+# ============================================================================
+#                       State PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", S::State{T,RT,CT}) where {T,RT,CT}
     width = 50
@@ -251,9 +260,9 @@ function Base.show(io::IO, S::State{T,RT,CT}) where {T,RT,CT}
     print(io, "State{$T}($(format_size(sz...)))")
 end
 
-#####
-##### OutputConfig
-#####
+# ============================================================================
+#                       OutputConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::OutputConfig{T}) where T
     width = 55
@@ -285,9 +294,9 @@ function Base.show(io::IO, cfg::OutputConfig)
     print(io, "OutputConfig(\"$(cfg.output_dir)\")")
 end
 
-#####
-##### ParticleConfig
-#####
+# ============================================================================
+#                       ParticleConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::ParticleConfig{T}) where T
     width = 55
@@ -324,9 +333,9 @@ function Base.show(io::IO, cfg::ParticleConfig{T}) where T
     print(io, "ParticleConfig{$T}(n=$n_total, z=$(format_number(cfg.z_level)))")
 end
 
-#####
-##### ParticleConfig3D
-#####
+# ============================================================================
+#                       ParticleConfig3D PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::ParticleConfig3D{T}) where T
     width = 55
@@ -363,9 +372,9 @@ function Base.show(io::IO, cfg::ParticleConfig3D{T}) where T
     print(io, "ParticleConfig3D{$T}($(cfg.distribution_type), n=$n_total)")
 end
 
-#####
-##### ParticleTracker
-#####
+# ============================================================================
+#                       ParticleTracker PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", tracker::ParticleTracker{T}) where T
     width = 55
@@ -392,9 +401,9 @@ function Base.show(io::IO, tracker::ParticleTracker)
     print(io, "ParticleTracker(n_active=$(tracker.particles.np))")
 end
 
-#####
-##### MPIConfig
-#####
+# ============================================================================
+#                       MPIConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::MPIConfig)
     width = 50
@@ -416,9 +425,9 @@ function Base.show(io::IO, cfg::MPIConfig)
     print(io, "MPIConfig(rank=$(cfg.rank)/$(cfg.nprocs), topology=$(cfg.topology))")
 end
 
-#####
-##### Plans
-#####
+# ============================================================================
+#                       Plans PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", plans::Plans)
     width = 50
@@ -439,9 +448,9 @@ function Base.show(io::IO, plans::Plans)
     print(io, "Plans(FFTW)")
 end
 
-#####
-##### DomainConfig
-#####
+# ============================================================================
+#                       DomainConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::DomainConfig{T}) where T
     width = 50
@@ -474,9 +483,9 @@ function Base.show(io::IO, cfg::DomainConfig)
     print(io, "DomainConfig($(cfg.nx)×$(cfg.ny)×$(cfg.nz))")
 end
 
-#####
-##### StratificationConfig
-#####
+# ============================================================================
+#                       StratificationConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::StratificationConfig{T}) where T
     width = 50
@@ -519,9 +528,9 @@ function Base.show(io::IO, cfg::StratificationConfig)
     print(io, "StratificationConfig($(cfg.type))")
 end
 
-#####
-##### InitialConditionConfig
-#####
+# ============================================================================
+#                       InitialConditionConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::InitialConditionConfig{T}) where T
     width = 50
@@ -560,9 +569,9 @@ function Base.show(io::IO, cfg::InitialConditionConfig)
     print(io, "InitialConditionConfig(ψ=$(cfg.psi_type), waves=$(cfg.wave_type))")
 end
 
-#####
-##### ModelConfig
-#####
+# ============================================================================
+#                       ModelConfig PRETTY PRINTING
+# ============================================================================
 
 function Base.show(io::IO, ::MIME"text/plain", cfg::ModelConfig{T}) where T
     width = 55

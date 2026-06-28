@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes Lagrangian particle tracking in QGYBJ+.jl using the Generalized Lagrangian Mean (GLM) framework.
+This page describes Lagrangian particle tracking in QGYBJ+.jl, including the physics, numerical algorithms, and parallel implementation.
 
 ## Overview
 
@@ -15,119 +15,103 @@ Particle tracking allows you to:
 - Track **tracer concentrations** along trajectories
 - Study **mixing** and **transport** in QG-YBJ+ dynamics
 
-## Generalized Lagrangian Mean (GLM) Framework
+## Physics of Particle Advection
 
-QGYBJ+.jl implements particle advection using the **Generalized Lagrangian Mean (GLM)** framework, which cleanly separates the slowly-evolving mean trajectory from fast wave oscillations.
+### Total Velocity Field
 
-### Position Decomposition
+In QG-YBJ+ dynamics, particles are advected by the **total velocity field** consisting of:
 
-The physical particle position ``\mathbf{x}(t)`` is decomposed into:
-
-```math
-\mathbf{x}(t) = \mathbf{X}(t) + \boldsymbol{\xi}(\mathbf{X}(t), t)
-```
-
-where:
-- ``\mathbf{X}(t)`` is the **mean position** (Lagrangian-mean trajectory)
-- ``\boldsymbol{\xi}`` is the **wave displacement** (fast oscillatory component)
-
-In component form:
-```math
-x = X + \xi_x, \quad y = Y + \xi_y, \quad z = Z + \xi_z
-```
-
-### Mean Position Advection
-
-The mean position evolves according to the **QG velocity** (which is the Lagrangian-mean flow):
-
-```math
-\frac{d\mathbf{X}}{dt} = \mathbf{u}_{QG}(\mathbf{X}, t)
-```
-
-where the QG velocities are:
+**1. Geostrophic Flow** (from streamfunction ψ):
 ```math
 u_{QG} = -\frac{\partial \psi}{\partial y}, \quad v_{QG} = \frac{\partial \psi}{\partial x}
 ```
 
-The mean vertical position ``Z`` is advected by ``w_{QG}`` from the omega equation (or remains constant if `use_3d_advection=false`).
+**2. Wave-Induced Stokes Drift** (from wave amplitude A):
 
-This is time-stepped using **Euler method**:
+*Horizontal Stokes Drift* (Xie & Vanneste 2015):
 ```math
-\mathbf{X}^{n+1} = \mathbf{X}^n + \Delta t \cdot \mathbf{u}_{QG}(\mathbf{X}^n, t^n)
+u_S = \text{Im}\left[A^* \frac{\partial A}{\partial x}\right] = |A|^2 \frac{\partial \phi}{\partial x}
+```
+```math
+v_S = \text{Im}\left[A^* \frac{\partial A}{\partial y}\right] = |A|^2 \frac{\partial \phi}{\partial y}
 ```
 
-### Wave Displacement
-
-The wave displacement is **not** time-stepped—it is reconstructed diagnostically from the wave field at each output time.
-
-#### Horizontal Wave Displacement
-
-From the wave velocity amplitude ``LA``:
+*Vertical Stokes Drift* (Wagner & Young 2016, eq. 3.19-3.20):
 ```math
-\xi_x + i\xi_y = \text{Re}\left\{\frac{LA}{-if_0} e^{-if_0 t}\right\}
+if_0 w^S = K_0^* - K_0 = -2i \, \text{Im}(K_0)
+```
+where ``K_0`` is the Jacobian:
+```math
+K_0 = \frac{\partial(M^*, M_s)}{\partial(\tilde{z}, s^*)} = M^*_z \cdot M_{ss^*} - M^*_{s^*} \cdot M_{sz}
+```
+with ``M = (f_0^2/N^2) A_z``. The individual terms are:
+- ``M^*_z = a_z A_z^* + a A_{zz}^*`` where ``a = f_0^2/N^2``
+- ``M_{ss^*} = \frac{a}{4} \nabla_H^2 A_z``
+- ``M^*_{s^*} = a (A_{zs})^*``
+- ``M_{sz} = a_z A_{zs} + a A_{zzs}``
+
+giving ``w_S = -2 \, \text{Im}(K_0)/f_0``.
+
+The horizontal Stokes drifts use the simpler form ``u_S = \text{Im}[A^* \partial A/\partial x]``, ``v_S = \text{Im}[A^* \partial A/\partial y]``.
+
+**3. QG Vertical Velocity** (from omega equation):
+```math
+\nabla^2 w_{QG} + \frac{f^2}{N^2}\frac{\partial^2 w_{QG}}{\partial z^2} = \frac{2f}{N^2}\,J(\psi_z, \nabla^2\psi)
 ```
 
-where ``LA`` uses the YBJ operator:
-- ``L = \partial_z(f_0^2/N^2)\partial_z``
-- ``L^+ = L - k_h^2/4`` (YBJ+ operator)
-- Since ``L^+A`` is the evolved variable: ``LA = L^+A + (k_h^2/4)A``
-
-#### Vertical Wave Displacement (Equation 2.10)
-
-From Asselin & Young (2019) equation (2.10):
+**4. YBJ Vertical Velocity** (alternative wave-induced formulation):
 ```math
-\xi_z = \xi_{z,\cos} \cos(f_0 t) + \xi_{z,\sin} \sin(f_0 t)
+w_{YBJ} = -\frac{f^2}{N^2}\left[\left(\frac{\partial A}{\partial x}\right)_z - i\left(\frac{\partial A}{\partial y}\right)_z\right] + \text{c.c.}
 ```
+This is controlled by the `use_ybj_w` option. When `use_ybj_w=true`, this wave-induced vertical velocity is used instead of solving the QG omega equation.
 
-where:
+### Total Velocity
+
+The complete velocity used for particle advection is:
 ```math
-\xi_{z,\cos} = \frac{f_0}{N^2} w_{\sin}, \quad \xi_{z,\sin} = -\frac{f_0}{N^2} w_{\cos}
+\mathbf{u}_{total} = (u_{QG} + u_{wave},\; v_{QG} + v_{wave},\; w + w_{wave})
 ```
+where $w$ is either $w_{QG}$ (from omega equation) or $w_{YBJ}$ (wave-induced) depending on the `use_ybj_w` setting.
 
-with:
-```math
-w_{\cos} = \text{Re}(\partial_x A_z) + \text{Im}(\partial_y A_z), \quad
-w_{\sin} = \text{Im}(\partial_x A_z) - \text{Re}(\partial_y A_z)
-```
-
-### Why GLM?
-
-| Aspect | Benefit |
-|:-------|:--------|
-| **Numerical stability** | Mean trajectory uses larger ``\Delta t`` (not constrained by wave period) |
-| **Physical clarity** | Separates slow (QG) and fast (wave) dynamics |
-| **Efficiency** | Wave displacement is diagnostic, not prognostic |
-| **Accuracy** | No accumulation of phase errors in wave oscillations |
-
----
+This includes both horizontal and **vertical Stokes drift**, ensuring particles are correctly advected by the full wave-induced velocity field.
 
 ## Quick Start
 
 ### Co-Evolution with Fluid (Recommended)
 
-Particles can be passed to the timestep functions to co-evolve with the fluid:
+Particles can be passed directly to the timestep functions to co-evolve with the wave and mean flow equations. This ensures particles use the same `dt` as the fluid simulation:
 
 ```julia
 using QGYBJplus
 
-# Setup model
+# Setup model first
 par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
 G, S, plans, a = setup_model(par)
 
-# Create particle configuration (100 particles at depth 2000 m)
+# Create particle configuration (100 particles, default Euler integration)
+# NOTE: x_max, y_max are REQUIRED - use G.Lx, G.Ly from grid
 particle_config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
 # Create and initialize particle tracker
 tracker = ParticleTracker(particle_config, G)
 initialize_particles!(tracker, particle_config)
 
-# Particles co-evolve with the fluid through the exponential RK2 step
-Sn = S
-Snp1 = copy_state(Sn)
-for step in 1:par.nt
+# Particles co-evolve automatically with the fluid
+# Option 1: Leapfrog time stepping
+first_projection_step!(S, G, par, plans; a=a, particle_tracker=tracker, current_time=0.0)
+for step in 1:nsteps
     current_time = step * par.dt
-    exp_rk2_step!(Snp1, Sn, G, par, plans; a=a,
+    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a,
                    particle_tracker=tracker, current_time=current_time)
+    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+end
+
+# Option 2: IMEX time stepping
+first_imex_step!(S, G, par, plans, imex_ws; a=a, particle_tracker=tracker, current_time=0.0)
+for step in 1:nsteps
+    current_time = step * par.dt
+    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a,
+                  particle_tracker=tracker, current_time=current_time)
     Sn, Snp1 = Snp1, Sn
 end
 
@@ -135,141 +119,287 @@ end
 write_particle_trajectories("particles.nc", tracker)
 ```
 
-### Manual Advection
+### Manual Advection (Alternative)
 
-For more control:
+For more control, particles can be advected manually:
 
 ```julia
-# Create and initialize tracker
-tracker = ParticleTracker(particle_config, G)
+# Create particle configuration
+# NOTE: x_max, y_max are REQUIRED - use G.Lx, G.Ly from grid
+particle_config = particles_in_box(-2000.0;
+    x_max=G.Lx, y_max=G.Ly,  # REQUIRED
+    nx=10, ny=10,
+    save_interval=0.1
+)
+
+# Create particle tracker
+tracker = ParticleTracker(particle_config, sim.grid)
 initialize_particles!(tracker, particle_config)
 
-# Advect manually after each timestep
+# Advect particles manually after each timestep
 for step in 1:nsteps
     timestep!(sim)
-    advect_particles!(tracker, sim.state, sim.grid, par.dt, sim.current_time;
-                      params=par)
+    advect_particles!(tracker, sim.state, sim.grid, par.dt, sim.current_time)
 end
 
+# Save trajectories
 write_particle_trajectories("particles.nc", tracker)
 ```
 
----
+## Time Integration Methods
 
-## Configuration Options
+Three integration schemes are available:
 
-### 2D vs 3D Advection
-
-| Setting | Behavior |
-|:--------|:---------|
-| `use_3d_advection = true` (default) | Mean position Z is advected by ``w_{QG}`` |
-| `use_3d_advection = false` | Z remains at initial depth (only ``\xi_z`` varies) |
-
-When `use_3d_advection = false`, the physical vertical position is:
+### Euler Method (1st order)
 ```math
-z(t) = Z_0 + \xi_z(t)
+\mathbf{x}_{n+1} = \mathbf{x}_n + \Delta t \cdot \mathbf{u}(\mathbf{x}_n, t_n)
 ```
-where ``Z_0`` is the initial depth and ``\xi_z(t)`` is the oscillating wave displacement.
 
 ```julia
-# Particles stay at fixed mean depth, only wave displacement varies
-config = particles_in_box(-2000.0;
-    x_max=G.Lx, y_max=G.Ly,
-    use_3d_advection=false
-)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:euler)
 ```
 
-### Vertical Velocity Source
+### RK2 Midpoint Method (2nd order)
+```math
+\begin{aligned}
+\mathbf{k}_1 &= \mathbf{u}(\mathbf{x}_n, t_n) \\
+\mathbf{x}_{mid} &= \mathbf{x}_n + \frac{\Delta t}{2} \mathbf{k}_1 \\
+\mathbf{k}_2 &= \mathbf{u}(\mathbf{x}_{mid}, t_n + \frac{\Delta t}{2}) \\
+\mathbf{x}_{n+1} &= \mathbf{x}_n + \Delta t \cdot \mathbf{k}_2
+\end{aligned}
+```
 
-| Setting | Vertical velocity for mean advection |
-|:--------|:-------------------------------------|
-| `use_ybj_w = false` (default) | QG omega equation |
-| `use_ybj_w = true` | YBJ wave-induced ``w`` |
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk2)
+```
 
-Note: The vertical wave displacement ``\xi_z`` is always computed from equation (2.10), regardless of this setting.
+### RK4 Classical Method (4th order)
+```math
+\begin{aligned}
+\mathbf{k}_1 &= \mathbf{u}(\mathbf{x}_n, t_n) \\
+\mathbf{k}_2 &= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_1, t_n + \frac{\Delta t}{2}) \\
+\mathbf{k}_3 &= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_2, t_n + \frac{\Delta t}{2}) \\
+\mathbf{k}_4 &= \mathbf{u}(\mathbf{x}_n + \Delta t\,\mathbf{k}_3, t_n + \Delta t) \\
+\mathbf{x}_{n+1} &= \mathbf{x}_n + \frac{\Delta t}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
+\end{aligned}
+```
 
----
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, integration_method=:rk4)
+```
+
+| Method | Order | Velocity Evaluations/Step | Recommended Use |
+|:-------|:------|:--------------------------|:----------------|
+| `:euler` (default) | 1 | 1 | Co-evolution with fluid, large dt |
+| `:rk2` | 2 | 2 | Balance of speed/accuracy |
+| `:rk4` | 4 | 4 | High accuracy studies |
 
 ## Interpolation Methods
 
 Velocity must be interpolated from the grid to particle positions.
 
-| Method | Stencil | Order | Best For |
-|:-------|:--------|:------|:---------|
-| `TRILINEAR` (default) | 8 points | O(h²) | Speed, rough fields |
-| `TRICUBIC` | 64 points | O(h⁴) | Accuracy, smooth fields |
-| `QUINTIC` | 216 points | O(h⁶) | Highest accuracy |
-| `ADAPTIVE` | 8-64 | Variable | Mixed conditions |
+### Trilinear (Default)
+- **Stencil**: 2×2×2 = 8 points
+- **Order**: O(h²)
+- **Smoothness**: C⁰ continuous
 
 ```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly,
-                          interpolation_method=TRICUBIC)
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRILINEAR)
 ```
 
----
+### Tricubic
+- **Stencil**: 4×4×4 = 64 points (Catmull-Rom splines)
+- **Order**: O(h⁴)
+- **Smoothness**: C¹ continuous
+
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=TRICUBIC)
+```
+
+### Quintic
+- **Stencil**: 6×6×6 = 216 points (B-splines)
+- **Order**: O(h⁶)
+- **Smoothness**: C⁴ continuous
+
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=QUINTIC)
+```
+
+### Adaptive
+Automatically selects trilinear or tricubic based on local field smoothness.
+
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, interpolation_method=ADAPTIVE)
+```
+
+| Method | Points | Error | Best For |
+|:-------|:-------|:------|:---------|
+| `TRILINEAR` | 8 | O(h²) | Speed, rough fields |
+| `TRICUBIC` | 64 | O(h⁴) | Accuracy, smooth fields |
+| `QUINTIC` | 216 | O(h⁶) | Highest accuracy |
+| `ADAPTIVE` | 8-64 | Variable | Mixed conditions |
 
 ## Particle Initialization
 
-### Simple Constructors
+QGYBJ+.jl provides simple, intuitive constructors for initializing particles:
 
 | Constructor | Description |
 |:------------|:------------|
-| `particles_in_box(z; ...)` | Uniform grid at fixed z |
-| `particles_in_circle(z; ...)` | Circular disk at fixed z |
-| `particles_in_grid_3d(; ...)` | Uniform 3D grid |
-| `particles_in_layers(z_levels; ...)` | Multiple z-levels |
-| `particles_random_3d(n; ...)` | Random 3D distribution |
+| `particles_in_box(z; ...)` | Uniform grid in a 2D rectangular box at fixed z |
+| `particles_in_circle(z; ...)` | Circular disk at fixed z (sunflower/rings/random) |
+| `particles_in_grid_3d(; ...)` | Uniform 3D rectangular grid |
+| `particles_in_layers(z_levels; ...)` | Multiple 2D grids at different z-levels |
+| `particles_random_3d(n; ...)` | Random distribution in 3D volume |
 | `particles_custom(positions; ...)` | User-specified positions |
 
-Note: Vertical coordinate is `z ∈ [-Lz, 0]` with `z = 0` at the surface.
+Note: the vertical coordinate is `z ∈ [-Lz, 0]` with `z = 0` at the surface. Use negative `z` for a positive depth (e.g., depth 2000 m → `z = -2000.0`).
 
-### Examples
+### Particles in a Box (2D at fixed z)
 
 ```julia
-# 100 particles at depth 2000 m
+# 100 particles (10×10) in a box at z = -2000 m (depth 2000 m)
+# NOTE: x_max, y_max are REQUIRED
 config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
 
-# Circular patch
-config = particles_in_circle(-1000.0; center=(250e3, 250e3), radius=50e3, n=200)
-
-# 3D grid
-config = particles_in_grid_3d(; x_max=G.Lx, y_max=G.Ly, z_max=0.0,
-                               z_min=-G.Lz, nx=10, ny=10, nz=5)
-
-# Multiple layers
-config = particles_in_layers([-500.0, -1000.0, -2000.0];
-                              x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+# Custom subdomain
+config = particles_in_box(-2000.0;
+    x_min=100e3, x_max=400e3,  # subset of domain
+    y_min=100e3, y_max=400e3,
+    nx=20, ny=20               # 400 particles
+)
 ```
 
----
+### Particles in a Circle (2D at fixed z)
+
+```julia
+# 100 particles in a circle of radius 1.0 at z = -π/2
+config = particles_in_circle(-π/2; radius=1.0, n=100)
+
+# Custom center and pattern
+config = particles_in_circle(-1.0;
+    center=(2.0, 2.0),        # Circle center
+    radius=1.5,
+    n=200,
+    pattern=:sunflower        # :sunflower, :rings, or :random
+)
+```
+
+**Available patterns:**
+- `:sunflower` - Fibonacci spiral (very uniform, recommended)
+- `:rings` - Concentric rings
+- `:random` - Uniform random within disk
+
+Single-level distributions (like `particles_in_circle` and `particles_custom`) can use `z_min == z_max`.
+
+### Particles in a 3D Grid
+
+```julia
+# 500 particles in a 10×10×5 grid
+# NOTE: x_max, y_max, z_max are REQUIRED
+config = particles_in_grid_3d(; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, nx=10, ny=10, nz=5)
+
+# Custom subdomain
+config = particles_in_grid_3d(;
+    x_min=100e3, x_max=400e3,
+    y_min=100e3, y_max=400e3,
+    z_min=-2500.0, z_max=-500.0,
+    nx=8, ny=8, nz=4
+)
+```
+
+### Particles in Layers (multiple z-levels)
+
+```julia
+# 300 particles at 3 z-levels (10×10 per level)
+# NOTE: x_max, y_max are REQUIRED
+config = particles_in_layers([-1000.0, -2000.0, -3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
+
+# Custom horizontal subdomain
+config = particles_in_layers([-500.0, -1000.0, -1500.0, -2000.0];
+    x_min=100e3, x_max=400e3,
+    y_min=100e3, y_max=400e3,
+    nx=5, ny=5
+)
+```
+
+### Random 3D Distribution
+
+```julia
+# 500 random particles in full domain
+# NOTE: x_max, y_max, z_max are REQUIRED
+config = particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)
+
+# Custom subdomain with seed
+config = particles_random_3d(1000;
+    x_min=100e3, x_max=400e3,
+    y_min=100e3, y_max=400e3,
+    z_min=-2500.0, z_max=-500.0,
+    seed=42
+)
+```
+
+### Custom Positions
+
+```julia
+# Particles at specific (x, y, z) locations
+config = particles_custom([
+    (1.0, 1.0, -0.5),
+    (2.0, 2.0, -1.0),
+    (3.0, 1.5, -0.75),
+    (1.5, 3.0, -1.25)
+])
+```
 
 ## Boundary Conditions
 
 ### Horizontal (Periodic)
+Particles wrap around domain edges:
 ```julia
-x_new = mod(x - x0, Lx) + x0
-y_new = mod(y - y0, Ly) + y0
+x_new = mod(x, Lx)
+y_new = mod(y, Ly)
 ```
 
 ### Vertical (Reflective)
-Particles bounce off top (z=0) and bottom (z=-Lz):
+Particles bounce off top and bottom:
 ```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly,
+if z > 0
+    z = -z
+    w = -w  # Reverse vertical velocity
+elseif z < -Lz
+    z = -2*Lz - z
+    w = -w
+end
+```
+
+Configure via:
+```julia
+config = particles_in_box(-2000.0;
+    x_max=G.Lx, y_max=G.Ly,
     periodic_x=true,
     periodic_y=true,
-    reflect_z=true
+    reflect_z=true      # Reflective vertical BCs
 )
 ```
 
----
+## Delayed Particle Release
+
+Start advecting particles after the flow has developed:
+
+```julia
+config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, particle_advec_time=100.0)  # Start at t=100.0
+```
+
+Particles remain stationary until `current_time >= particle_advec_time`.
 
 ## Trajectory Output
 
 ### Save Interval
 
+Control how often positions are recorded:
 ```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly,
-    save_interval=10.0,       # Save every 10 time units
+config = particles_in_box(-2000.0;
+    x_max=G.Lx, y_max=G.Ly,
+    save_interval=10.0,       # Save every 10.0 time units
     max_save_points=1000      # Max points per file
 )
 ```
@@ -281,108 +411,147 @@ For long simulations:
 tracker = ParticleTracker(config, grid)
 enable_auto_file_splitting!(tracker, "long_run", max_points_per_file=500)
 
-# Files: long_run.nc, long_run_part1.nc, long_run_part2.nc, ...
+# Files created: long_run.nc, long_run_part1.nc, long_run_part2.nc, ...
 ```
 
-### Delayed Release
+### Writing Trajectories
 
-Start advecting after flow develops:
 ```julia
-config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly,
-    particle_advec_time=100.0  # Start at t=100
+# Standard output
+write_particle_trajectories("particles.nc", tracker)
+
+# With metadata
+write_particle_trajectories("particles.nc", tracker;
+    metadata = Dict("experiment" => "test1", "description" => "...")
 )
+
+# By z-level (for layered distributions)
+write_particle_trajectories_by_zlevel("particles", tracker)
+# Creates: particles_z0.nc, particles_z1.nc, ...
 ```
 
----
+## Parallel Algorithm
 
-## Output Variables
+When running with MPI, particle advection uses domain decomposition.
 
-The trajectory file contains:
+### Domain Decomposition
 
-| Variable | Description |
-|:---------|:------------|
-| `x, y, z` | Mean positions ``(X, Y, Z)`` |
-| `xi_x, xi_y, xi_z` | Wave displacements ``(\xi_x, \xi_y, \xi_z)`` |
-| `time` | Time stamps |
-| `id` | Particle IDs |
+The domain is split in both x and y according to the MPI process grid (px × py).
+Each rank owns a tile in the horizontal plane and the full z-range.
 
-To reconstruct physical positions:
-```julia
-x_physical = x + xi_x
-y_physical = y + xi_y
-z_physical = z + xi_z
+Example for a 2×2 topology:
+
+```
+┌─────────────────────────┬─────────────────────────┐
+│ Rank (0,1)               │ Rank (1,1)              │
+│ x∈[0, Lx/2), y∈[Ly/2, Ly) │ x∈[Lx/2, Lx), y∈[Ly/2, Ly) │
+├─────────────────────────┼─────────────────────────┤
+│ Rank (0,0)               │ Rank (1,0)              │
+│ x∈[0, Lx/2), y∈[0, Ly/2)  │ x∈[Lx/2, Lx), y∈[0, Ly/2)  │
+└─────────────────────────┴─────────────────────────┘
 ```
 
----
+Particles belong to the rank that owns their (x, y) position.
 
-## Parallel Execution
+### Halo Exchange
 
-When running with MPI, particle advection uses domain decomposition automatically.
+For interpolation near domain boundaries, velocity data is exchanged between neighbors:
 
-### Key Features
-- **Halo exchange**: Velocity data exchanged for boundary interpolation
-- **Particle migration**: Particles transferred when they cross domain boundaries
-- **Consistent topology**: Uses the same MPI decomposition as the fluid solver
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     HALO EXCHANGE                           │
+│                                                             │
+│   Rank 0                        Rank 1                      │
+│   ┌─────────────────┐          ┌─────────────────┐          │
+│   │ Local │  Right  │          │ Left  │ Local   │          │
+│   │ Data  │  Halo   │  ←────→  │ Halo  │ Data    │          │
+│   │       │ (ghost) │          │(ghost)│         │          │
+│   └───────┴─────────┘          └───────┴─────────┘          │
+│                                                             │
+│   • Rank 0 sends RIGHT edge → Rank 1's LEFT halo            │
+│   • Rank 1 sends LEFT edge  → Rank 0's RIGHT halo           │
+│                                                             │
+│   Halo width depends on interpolation: 1 (trilinear), 2     │
+│   (tricubic), 3 (quintic/adaptive)                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+For 2D topologies (py > 1), halos are exchanged in both x and y directions,
+including corner halos needed by wider stencils.
+
+### Particle Migration
+
+When particles cross domain boundaries, they are transferred:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   PARTICLE MIGRATION                        │
+│                                                             │
+│   1. After advection, check each particle's position        │
+│   2. If (x,y) outside local domain → pack into send buffer  │
+│   3. MPI.Alltoall to exchange particle counts               │
+│   4. MPI.Send/Recv to transfer particle data                │
+│   5. Unpack received particles into local collection        │
+│                                                             │
+│   Particle data transferred: [x, y, z, u, v, w]             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Parallel Timestep Workflow
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                  PARALLEL ADVECTION TIMESTEP                  │
+│                                                               │
+│  1. UPDATE VELOCITY FIELDS                                    │
+│     • Compute QG velocities (distributed FFT)                 │
+│     • Solve omega equation (tridiagonal in z)                 │
+│     • Add wave Stokes drift                                   │
+│     • Exchange velocity halos in x/y (and corners for 2D)     │
+│                              ↓                                │
+│  2. ADVECT PARTICLES (each rank processes local particles)    │
+│     • Interpolate velocity (use halo for boundary particles)  │
+│     • Time integration (Euler/RK2/RK4)                        │
+│                              ↓                                │
+│  3. MIGRATE PARTICLES                                         │
+│     • Identify particles that left local domain               │
+│     • Exchange particle data between ranks (MPI)              │
+│                              ↓                                │
+│  4. APPLY BOUNDARY CONDITIONS                                 │
+│     • Periodic wrap in x, y                                   │
+│     • Reflective bounce in z                                  │
+│                              ↓                                │
+│  5. SAVE TRAJECTORIES (if save_interval reached)              │
+│     • Each rank saves local particles, or                     │
+│     • Gather to rank 0 for unified output                     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### Using Parallel Particles
 
 ```julia
 using MPI
 using QGYBJplus
 
 MPI.Init()
+
+# Set up parallel configuration
 parallel_config = setup_mpi_environment()
 
-tracker = ParticleTracker(particle_config, grid, parallel_config)
+# Create particle tracker with parallel support
+tracker = ParticleTracker(particle_config, sim.grid, parallel_config)
 initialize_particles!(tracker, particle_config)
 
-# Advection handles halo exchange and migration automatically
+# Advection automatically handles:
+# - Halo exchange for boundary interpolation
+# - Particle migration between ranks
 for step in 1:nsteps
     timestep!(sim)
-    advect_particles!(tracker, sim.state, sim.grid, dt, current_time)
+    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
 end
 
 MPI.Finalize()
 ```
-
----
-
-## Visualization
-
-### Plot Positions
-
-```julia
-using Plots
-
-scatter(tracker.particles.x, tracker.particles.y,
-    markersize=2, xlabel="x", ylabel="y", title="Particle Distribution")
-```
-
-### Plot Trajectories
-
-```julia
-using NCDatasets
-
-ds = NCDataset("particles.nc")
-x_hist = ds["x"][:]  # (np, ntime)
-y_hist = ds["y"][:]
-
-# Plot first 50 tracks
-plot(legend=false)
-for i in 1:50
-    plot!(x_hist[i,:], y_hist[i,:], alpha=0.3)
-end
-```
-
-### Animation
-
-```julia
-anim = @animate for t in 1:10:size(x_hist, 2)
-    scatter(x_hist[:,t], y_hist[:,t], markersize=2,
-        xlim=(0, Lx), ylim=(0, Ly), title="t = $(t)")
-end
-gif(anim, "particles.gif", fps=20)
-```
-
----
 
 ## Key Data Structures
 
@@ -390,41 +559,137 @@ gif(anim, "particles.gif", fps=20)
 
 ```julia
 struct ParticleConfig{T}
-    x_min, x_max, y_min, y_max::T  # Horizontal domain
-    z_level::T                      # Initial depth
-    nx_particles, ny_particles::Int # Particle count
+    # Spatial domain
+    x_min, x_max, y_min, y_max::T
+    z_level::T
 
-    use_ybj_w::Bool                # Vertical velocity source
-    use_3d_advection::Bool         # Include vertical mean advection
-    particle_advec_time::T         # Delayed start time
-    interpolation_method           # TRILINEAR, TRICUBIC, etc.
+    # Particle count
+    nx_particles, ny_particles::Int
 
-    periodic_x, periodic_y::Bool   # Horizontal BCs
-    reflect_z::Bool                # Vertical BCs
+    # Physics
+    use_ybj_w::Bool           # YBJ vs QG vertical velocity
+    use_3d_advection::Bool    # Include vertical advection
 
-    save_interval::T               # Output frequency
-    max_save_points::Int           # Max points per file
+    # Timing
+    particle_advec_time::T    # Delayed start time
+
+    # Numerics
+    integration_method::Symbol        # :euler, :rk2, :rk4
+    interpolation_method::InterpolationMethod  # TRILINEAR, etc.
+
+    # Boundaries
+    periodic_x, periodic_y::Bool
+    reflect_z::Bool
+
+    # I/O
+    save_interval::T
+    max_save_points::Int
+    auto_split_files::Bool
 end
 ```
 
-### ParticleState
+### ParticleTracker
 
-Contains particle data:
-- Mean positions: `x, y, z`
-- Particle IDs: `id`
-- QG velocities: `u, v, w`
-- Horizontal wave displacement: `xi_x, xi_y`
-- Vertical wave displacement: `xi_z`
-- Wave amplitude: `LA_real, LA_imag`
-- Vertical displacement coefficients: `xi_z_cos, xi_z_sin`
+```julia
+mutable struct ParticleTracker{T}  # Simplified view (omits I/O bookkeeping)
+    config::ParticleConfig{T}
+    particles::ParticleState{T}   # x, y, z, id, u, v, w arrays
 
----
+    # Grid info
+    nx, ny, nz::Int
+    Lx, Ly, Lz, dx, dy, dz::T
 
-## References
+    # Velocity workspace
+    u_field, v_field, w_field::Array{T,3}
 
-- **Asselin, O. & Young, W. R.** (2019). Penetration of wind-generated near-inertial waves into a turbulent ocean. *J. Fluid Mech.*, 876, 428-448.
-- **Wagner, G. L. & Young, W. R.** (2016). A three-component model for the coupled evolution of near-inertial waves, quasi-geostrophic flow and the near-inertial second harmonic. *J. Fluid Mech.*, 802, 806-837.
+    # MPI info (for parallel)
+    comm, rank, nprocs, is_parallel
+    local_domain::NamedTuple  # x/y bounds, local sizes, topology info
+    halo_info::HaloInfo{T}
+    send_buffers, recv_buffers::Vector{Vector{T}}
+    is_io_rank::Bool
+    gather_for_io::Bool
+end
+```
+
+## Performance Considerations
+
+| Aspect | Serial | Parallel |
+|:-------|:-------|:---------|
+| Velocity computation | O(N) | O(N/P) per rank |
+| Interpolation | O(Np × stencil) | O(Np/P × stencil) |
+| Halo exchange | N/A | O((nx_local + ny_local) × nz × halo_width) |
+| Migration | N/A | O(Np_crossing) |
+
+**Tips:**
+- Use `TRILINEAR` for speed, `TRICUBIC` for accuracy
+- RK4 costs 4× more than Euler but is much more accurate
+- Halo exchange overhead is small for typical particle counts
+- Migration cost depends on flow strength near boundaries
+
+## Visualization
+
+### Plot Particle Positions
+
+```julia
+using Plots
+
+# 2D scatter plot
+scatter(tracker.particles.x, tracker.particles.y,
+    markersize=2, alpha=0.6,
+    xlabel="x", ylabel="y",
+    title="Particle Distribution"
+)
+```
+
+### Plot Trajectories
+
+```julia
+# Load saved trajectories
+using NCDatasets
+ds = NCDataset("particles.nc")
+x_hist = ds["x"][:]  # (np, ntime)
+y_hist = ds["y"][:]
+close(ds)
+
+# Plot first 50 particle tracks
+p = plot(legend=false)
+for i in 1:50
+    plot!(p, x_hist[i,:], y_hist[i,:], alpha=0.3)
+end
+display(p)
+```
+
+### Animation
+
+```julia
+anim = @animate for t in 1:10:size(x_hist, 2)
+    scatter(x_hist[:,t], y_hist[:,t],
+        markersize=2, xlim=(0,2π), ylim=(0,2π),
+        title="t = $(t)")
+end
+gif(anim, "particles.gif", fps=20)
+```
 
 ## API Reference
 
-See the [Particle API Reference](../api/particles.md) for complete documentation.
+See the [Particle API Reference](../api/particles.md) for complete documentation of:
+
+**Types:**
+- [`ParticleConfig`](@ref) - Configuration options
+- [`ParticleState`](@ref) - Particle positions, IDs, and velocities
+- [`ParticleTracker`](@ref) - Main tracking object
+
+**Initialization Constructors:**
+- [`particles_in_box`](@ref) - 2D box at fixed z-level
+- [`particles_in_circle`](@ref) - Circular disk at fixed z-level
+- [`particles_in_grid_3d`](@ref) - Uniform 3D grid
+- [`particles_in_layers`](@ref) - Multiple z-levels
+- [`particles_random_3d`](@ref) - Random 3D distribution
+- [`particles_custom`](@ref) - User-specified positions
+
+**Core Functions:**
+- [`initialize_particles!`](@ref) - Initialize particle positions
+- [`advect_particles!`](@ref) - Advect particles one timestep
+- [`interpolate_velocity_at_position`](@ref) - Velocity interpolation
+- [`write_particle_trajectories`](@ref) - Save to NetCDF

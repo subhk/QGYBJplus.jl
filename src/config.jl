@@ -93,11 +93,7 @@ Configuration for initial conditions.
 """
 Base.@kwdef struct InitialConditionConfig{T}
     # Stream function initialization
-    # :analytical, :random, :zero,
-    # :from_file            — read ψ(x,y,z) from `psi_filename` (NetCDF var "psi")
-    # :from_file_vorticity  — read ζ(x,y,z) from `psi_filename` (NetCDF var
-    #                         "zeta"/"vorticity"/"vort") and invert ψ̂ = -ζ̂/kₕ²
-    psi_type::Symbol = :analytical
+    psi_type::Symbol = :analytical  # :analytical, :from_file, :random
     psi_filename::Union{String,Nothing} = nothing
     psi_amplitude::T = 1.0
     
@@ -142,9 +138,6 @@ Base.@kwdef struct OutputConfig{T}
     save_vertical_velocity::Bool = false
     save_vorticity::Bool = false
     save_diagnostics::Bool = true
-
-    # Optional physical z levels for 3D output. Empty means save native grid levels.
-    z_levels::Vector{T} = T[]
 end
 
 """

@@ -9,38 +9,26 @@ that arise in the QG-YBJ+ model. These are critical for:
 1. STREAMFUNCTION INVERSION (q → ψ):
    Given the QG potential vorticity q, solve for the streamfunction ψ.
 
-2. WAVE AMPLITUDE RECOVERY (L⁺A → A):
-   Given the YBJ+ evolved field L⁺A, recover the true wave amplitude A.
+2. WAVE AMPLITUDE RECOVERY (B → A):
+   Given the YBJ+ evolved field B = L⁺A, recover the true wave amplitude A.
 
 3. GENERAL HELMHOLTZ PROBLEMS:
    For omega equation, buoyancy inversions, etc.
 
 MATHEMATICAL BACKGROUND:
 ------------------------
-The QG PV inversion relates q and ψ through (PDF Eq. A13):
+The QG PV inversion relates q and ψ through:
 
-    q = ∇²ψ + L(ψ)    where   L = ∂/∂z(a(z) ∂/∂z)
+    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
 
-with a(z) = f²/N²(z). Expanding via the product rule:
+Rearranging for the vertical operator (in spectral space):
 
-    L(ψ) = ∂/∂z(a ∂ψ/∂z) = a(z) ∂²ψ/∂z² + a'(z) ∂ψ/∂z
+    a(z) ∂²ψ/∂z² + b(z) ∂ψ/∂z - kₕ² ψ = q
 
-where a'(z) = ∂a/∂z arises from variable stratification N²(z).
-
-In spectral space (∇² → -kₕ²), the equation becomes:
-
-    ∂/∂z(a(z) ∂ψ/∂z) - kₕ² ψ = q
-
-IMPORTANT: The staggered finite-difference discretization (PDF Eq. 32):
-
-    [S_i(ψ_{i+1} - ψ_i) - S_{i-1}(ψ_i - ψ_{i-1})] / Δz² - kₕ² ψ_i = q_i
-
-where S_i = (f/(N(z_i)Δz))² at interface i, **automatically captures both**
-the a∂²ψ/∂z² and a'∂ψ/∂z terms through the use of different S values at
-different interfaces. No explicit first-derivative term is needed.
-
-For constant N²: S_i = S_{i-1}, and the a'∂ψ/∂z term vanishes.
-For variable N²: S_i ≠ S_{i-1}, and the product rule is implicitly handled.
+where:
+    a(z) = f²/N²(z) (elliptic coefficient)
+    b(z) = coefficient from variable N² (often zero for constant density)
+    kₕ² = kₓ² + kᵧ² (horizontal wavenumber squared)
 
 This is solved independently for each (kₓ, kᵧ) mode using a tridiagonal solver.
 
@@ -70,7 +58,7 @@ before the solve, then transposed back afterward.
 FORTRAN CORRESPONDENCE:
 ----------------------
 - invert_q_to_psi! ↔ psi_solver (elliptic.f90)
-- invert_L⁺A_to_A!   ↔ A_solver_ybj_plus (elliptic.f90)
+- invert_B_to_A!   ↔ A_solver_ybj_plus (elliptic.f90)
 - invert_helmholtz! ↔ helmholtzdouble (elliptic.f90)
 
 ================================================================================
@@ -99,8 +87,8 @@ For `invert_helmholtz!`:
   - `work_z`: z-pencil work array (ComplexF64)
   - `psi_z`: z-pencil array for solution (ComplexF64)
 
-For `invert_L⁺A_to_A!`:
-  - `L⁺A_z`: z-pencil array for L⁺A (ComplexF64)
+For `invert_B_to_A!`:
+  - `B_z`: z-pencil array for B (ComplexF64)
   - `A_z`: z-pencil array for A (ComplexF64)
   - `C_z`: z-pencil array for C (A_z derivative) (ComplexF64)
 
@@ -110,7 +98,7 @@ workspace = (
     q_z = allocate_z_pencil(G, ComplexF64),
     psi_z = allocate_z_pencil(G, ComplexF64),
     work_z = allocate_z_pencil(G, ComplexF64),
-    L⁺A_z = allocate_z_pencil(G, ComplexF64),
+    B_z = allocate_z_pencil(G, ComplexF64),
     A_z = allocate_z_pencil(G, ComplexF64),
     C_z = allocate_z_pencil(G, ComplexF64),
 )
@@ -119,65 +107,23 @@ workspace = (
 If workspace is `nothing`, temporary arrays are allocated internally.
 =#
 
-function _direct_tridiagonal_workspace(workspace, nz::Int, ::Type{R}) where R
-    has_vertical_scratch = workspace !== nothing &&
-        hasfield(typeof(workspace), :vertical_dₗ) &&
-        hasfield(typeof(workspace), :vertical_d) &&
-        hasfield(typeof(workspace), :vertical_dᵤ) &&
-        hasfield(typeof(workspace), :vertical_rhsᵣ) &&
-        hasfield(typeof(workspace), :vertical_rhsᵢ) &&
-        hasfield(typeof(workspace), :vertical_solᵣ) &&
-        hasfield(typeof(workspace), :vertical_solᵢ) &&
-        hasfield(typeof(workspace), :vertical_dₗ_work) &&
-        hasfield(typeof(workspace), :vertical_d_work) &&
-        eltype(workspace.vertical_d) === R
-
-    if has_vertical_scratch
-        dₗ = resize!(workspace.vertical_dₗ, nz)
-        d = resize!(workspace.vertical_d, nz)
-        dᵤ = resize!(workspace.vertical_dᵤ, nz)
-        rhsᵣ = resize!(workspace.vertical_rhsᵣ, nz)
-        rhsᵢ = resize!(workspace.vertical_rhsᵢ, nz)
-        solᵣ = resize!(workspace.vertical_solᵣ, nz)
-        solᵢ = resize!(workspace.vertical_solᵢ, nz)
-        c_work = resize!(workspace.vertical_dₗ_work, nz)
-        d_work = resize!(workspace.vertical_d_work, nz)
-    else
-        dₗ = zeros(R, nz)
-        d = zeros(R, nz)
-        dᵤ = zeros(R, nz)
-        rhsᵣ = zeros(R, nz)
-        rhsᵢ = zeros(R, nz)
-        solᵣ = zeros(R, nz)
-        solᵢ = zeros(R, nz)
-        c_work = zeros(R, nz)
-        d_work = zeros(R, nz)
-    end
-
-    return dₗ, d, dᵤ, rhsᵣ, rhsᵢ, solᵣ, solᵢ, c_work, d_work
-end
-
 #=
 ================================================================================
                     STREAMFUNCTION INVERSION: q → ψ
 ================================================================================
 This is the core elliptic inversion that relates QGPV to streamfunction.
 
-PHYSICS (PDF Eq. A13):
-    q = ∇²ψ + L(ψ)    where   L = ∂/∂z(a(z) ∂/∂z)
+PHYSICS:
+    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
+      = ∇²ψ + a_ell ∂²ψ/∂z²
 
-with a(z) = f²/N²(z). Expanding via the product rule:
+where a_ell = f²/N² is the "elliptic coefficient" that varies with
+stratification.
 
-    L(ψ) = a(z) ∂²ψ/∂z² + a'(z) ∂ψ/∂z
+The discrete equation for interior points is:
+    (a[k]/dz²)(ψ[k+1] - 2ψ[k] + ψ[k-1]) - kₕ² ψ[k] = q[k]
 
-The staggered discretization (PDF Eq. 32) for interior points:
-
-    [S_{k+1}(ψ[k+1] - ψ[k]) - S_k(ψ[k] - ψ[k-1])] / dz² - kₕ² ψ[k] = q[k]
-
-where S_k = (f/(N(z_k)Δz))² at interface k. Using different S values at
-different interfaces automatically captures the a'∂ψ/∂z term.
-
-Neumann BCs (ψ_z = 0) modify the boundary stencils.
+with Neumann BCs (ψ_z = 0) modifying the boundary stencils.
 ================================================================================
 =#
 
@@ -189,12 +135,9 @@ Invert spectral QGPV `q(kx,ky,z)` to obtain streamfunction `ψ(kx,ky,z)`.
 # Mathematical Problem
 For each horizontal wavenumber (kₓ, kᵧ), solve the vertical ODE:
 
-    ∂/∂z(a(z) ∂ψ/∂z) - kₕ² ψ = q
+    a(z) ∂²ψ/∂z² - kₕ² ψ = q
 
-which expands via the product rule to: a(z)∂²ψ/∂z² + a'(z)∂ψ/∂z - kₕ²ψ = q.
-The staggered discretization captures a'∂ψ/∂z automatically.
-
-Neumann boundary conditions ψ_z = 0 at top and bottom.
+with Neumann boundary conditions ψ_z = 0 at top and bottom.
 
 # Arguments
 - `S::State`: State struct containing `q` (input) and `psi` (output)
@@ -209,12 +152,12 @@ For 2D decomposition:
 2. Perform tridiagonal solve on z-pencil data
 3. Transpose ψ from z-pencil back to xy-pencil
 
-The discrete system is tridiagonal with structure (for interior row `k`):
-- Upper diagonal: `du[k] = a[k+1]` (interface above cell `k`)
-- Diagonal: `d[k] = -(a[k+1] + a[k]) - kₕ² dz²`
-- Lower diagonal: `dl[k] = a[k]` (interface below cell `k`)
+The discrete system is tridiagonal with structure:
+- Diagonal: d[k] = -(a[k] + a[k-1])/r_st[k] - kₕ² dz²
+- Upper diagonal: du[k] = a[k]/r_st[k]
+- Lower diagonal: dl[k] = a[k-1]/r_st[k]
 
-where `a[k] = f₀²/N²[k]` is evaluated at the interface below cell `k`.
+where r_ut, r_st are density weights (unity for Boussinesq).
 
 # Fortran Correspondence
 This matches `psi_solver` in elliptic.f90.
@@ -257,7 +200,7 @@ function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing, wor
         _invert_q_to_psi_2d!(S, G, a, par, workspace)
     else
         # Serial or 1D decomposition: direct solve (z already local)
-        _invert_q_to_psi_direct!(S, G, a, par, workspace)
+        _invert_q_to_psi_direct!(S, G, a, par)
     end
 
     return S
@@ -266,7 +209,7 @@ end
 """
 Direct solve for serial mode or 1D decomposition (z fully local).
 """
-function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par, workspace)
+function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
     nz = G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -279,13 +222,32 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par, wor
     # Verify z is fully local (required for vertical tridiagonal solve)
     @assert nz_local == nz "Vertical dimension must be fully local (nz_local=$nz_local, nz=$nz)"
 
-    # Tridiagonal matrix diagonals and work arrays (reused for each wavenumber)
-    dₗ, d, dᵤ, rhs, rhsᵢ, solᵣ, solᵢ, c_work, d_work =
-        _direct_tridiagonal_workspace(workspace, nz, eltype(a))
+    # Tridiagonal matrix diagonals (reused for each wavenumber)
+    dₗ = zeros(eltype(a), nz)   # Lower diagonal
+    d  = zeros(eltype(a), nz)   # Main diagonal
+    dᵤ = zeros(eltype(a), nz)   # Upper diagonal
 
     # Vertical grid spacing
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
+
+    # Density weights for variable-density formulation
+    ρᵤₜ = if par === nothing
+        ones(eltype(a), nz)
+    else
+        isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz)
+    end
+    ρₛₜ = if par === nothing
+        ones(eltype(a), nz)
+    else
+        isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz)
+    end
+
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhs  = zeros(eltype(a), nz)
+    rhsᵢ = zeros(eltype(a), nz)
+    solᵣ = zeros(eltype(a), nz)
+    solᵢ = zeros(eltype(a), nz)
 
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
@@ -331,30 +293,30 @@ function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par, wor
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
         # Bottom boundary (k=1): Neumann condition ψ_z = 0
-        d[1]  = -(a[1] + kₕ²*Δz²)
-        dᵤ[1] = a[1]
+        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + kₕ²*Δz² )
+        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
 
         # Interior points (k = 2, ..., nz-1)
         @inbounds for k in 2:nz-1
-            dₗ[k] = a[k]
-            d[k]  = -(a[k+1] + a[k] + kₕ²*Δz²)
-            dᵤ[k] = a[k+1]
+            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + kₕ²*Δz² )
+            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
         end
 
         # Top boundary (k=nz): Neumann condition ψ_z = 0
-        dₗ[nz] = a[nz]
-        d[nz]  = -(a[nz] + kₕ²*Δz²)
+        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
         # Solve for real and imaginary parts separately
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work, d_work)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         # Combine into complex solution
         @inbounds for k in 1:nz
@@ -392,13 +354,17 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
 
+    # Density weights
+    ρᵤₜ = par === nothing ? ones(eltype(a), nz) :
+           (isdefined(PARENT, :rho_ut) ? PARENT.rho_ut(par, G) : ones(eltype(a), nz))
+    ρₛₜ = par === nothing ? ones(eltype(a), nz) :
+           (isdefined(PARENT, :rho_st) ? PARENT.rho_st(par, G) : ones(eltype(a), nz))
+
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs  = zeros(eltype(a), nz)
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
-    c_work = similar(dᵤ)
-    d_work = similar(d)
 
     # Loop over LOCAL wavenumbers in z-pencil configuration
     for j_local in 1:ny_local, i_local in 1:nx_local
@@ -436,31 +402,28 @@ function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspa
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        # Bottom boundary (k=1): Neumann condition ψ_z = 0
-        d[1]  = -(a[1] + kₕ²*Δz²)
-        dᵤ[1] = a[1]
+        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + kₕ²*Δz² )
+        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
 
-        # Interior points (k = 2, ..., nz-1)
         @inbounds for k in 2:nz-1
-            dₗ[k] = a[k]
-            d[k]  = -(a[k+1] + a[k] + kₕ²*Δz²)
-            dᵤ[k] = a[k+1]
+            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + kₕ²*Δz² )
+            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
         end
 
-        # Top boundary (k=nz): Neumann condition ψ_z = 0
-        dₗ[nz] = a[nz]
-        d[nz]  = -(a[nz] + kₕ²*Δz²)
+        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
 
         # Solve for real and imaginary parts
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_z_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work, d_work)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_z_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
             ψ_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -623,8 +586,6 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
-    c_work = similar(dᵤ)
-    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 2, rhs)
@@ -682,8 +643,8 @@ function _invert_helmholtz_direct!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
             dst_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -771,8 +732,6 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
     rhsᵢ = zeros(eltype(a), nz)
     solᵣ = zeros(eltype(a), nz)
     solᵢ = zeros(eltype(a), nz)
-    c_work = similar(dᵤ)
-    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 2, G)
@@ -828,8 +787,8 @@ function _invert_helmholtz_2d!(dstk, rhs, G::Grid, par, a, b, scale_kh2, bot_bc,
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
             dst_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -842,80 +801,34 @@ end
 
 #=
 ================================================================================
-                    YBJ+ WAVE INVERSION: L⁺A → A
+                    YBJ+ WAVE INVERSION: B → A
 ================================================================================
-In the YBJ+ formulation, the prognostic variable is L⁺A, where L⁺ is the
-YBJ+ elliptic operator. After time stepping L⁺A, we need to recover A for
-computing wave-related quantities (including the wave velocity amplitude LA
-for GLM particle advection).
+In the YBJ+ formulation, the prognostic variable is B = L⁺A, where L⁺ is an
+elliptic operator. After time stepping B, we need to recover A for computing
+wave-related quantities.
 
-OPERATOR DEFINITIONS (from PDF):
---------------------------------
-    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
-    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
+The operator L⁺ is:
+    L⁺A = a(z) ∂²A/∂z² - (kₕ²/4) A
 
-Or equivalently in physical space:
-    L⁺ = L + (1/4)∇²     where ∇² → -k_h² in spectral space
-
-KEY RELATION: L = L⁺ + k_h²/4
-
-WAVE VELOCITY AMPLITUDE:
-------------------------
-The instantaneous wave velocity uses the YBJ operator L (NOT L⁺):
-    u + iv = (LA) × e^{-ift}                                 [eq. (3)]
-
-Since L = L⁺ + k_h²/4:
-    LA = (L⁺ + k_h²/4)A = L⁺A + (k_h²/4)A
-
-This LA is used for GLM particle advection wave displacement.
-
-ELLIPTIC EQUATION:
-------------------
-With a(z) = f²/N²(z), the L⁺ operator expands via the product rule:
-
-    L⁺A = ∂/∂z(a ∂A/∂z) - (kₕ²/4) A
-        = a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A
-
-where a'(z) = ∂a/∂z arises from variable stratification N²(z).
-
-IMPORTANT: The staggered finite-difference discretization (PDF Eq. 35):
-
-    [S_i(A_{i+1} - A_i) - S_{i-1}(A_i - A_{i-1})] / Δz² - (kₕ²/4) A_i = (L⁺A)_i
-
-where S_i = (f/(N(z_i)Δz))² at interface i, **automatically captures both**
-the a∂²A/∂z² and a'∂A/∂z terms. No explicit first-derivative term is needed.
-
-We also compute C = ∂A/∂z for use in wave feedback and vertical velocity.
+So inverting gives us A from B. We also compute C = A_z for use in wave
+feedback and vertical velocity calculations.
 ================================================================================
 =#
 
 """
-    invert_L⁺A_to_A!(S, G, par, a; workspace=nothing)
+    invert_B_to_A!(S, G, par, a; workspace=nothing)
 
-YBJ+ wave amplitude recovery: solve for A given L⁺A (the prognostic variable).
-
-# Operator Definitions (from PDF)
-    L  (YBJ):   L  = ∂/∂z(f²/N² ∂/∂z)                        [eq. (4)]
-    L⁺ (YBJ+):  L⁺ = L - k_h²/4                               [spectral space]
-
-Key relation: L = L⁺ + k_h²/4, so LA = L⁺A + (k_h²/4)A
+YBJ+ wave amplitude recovery: solve for A given B = L⁺A.
 
 # Mathematical Problem
-For each horizontal wavenumber (kₓ, kᵧ), solve the L⁺ elliptic equation:
+For each horizontal wavenumber (kₓ, kᵧ), solve:
 
-    L⁺A = ∂/∂z(a(z) ∂A/∂z) - (kₕ²/4) A = (L⁺A)_input
-
-which expands via the product rule to:
-
-    a(z) ∂²A/∂z² + a'(z) ∂A/∂z - (kₕ²/4) A = (L⁺A)_input
+    a(z) ∂²A/∂z² - (kₕ²/4) A = B
 
 with Neumann boundary conditions A_z = 0 at top and bottom.
 
-The staggered discretization using S_i = (f/(N(z_i)Δz))² at different interfaces
-automatically captures the a'(z)∂A/∂z term from variable stratification.
-
 # Arguments
-- `S::State`: State containing `L⁺A` (input), `A` and `C` (output)
+- `S::State`: State containing `B` (input), `A` and `C` (output)
 - `G::Grid`: Grid struct
 - `par`: QGParams (for f0, N2 parameters)
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
@@ -925,13 +838,9 @@ automatically captures the a'(z)∂A/∂z term from variable stratification.
 - `S.A`: Recovered wave amplitude A
 - `S.C`: Vertical derivative C = ∂A/∂z (for wave velocity computation)
 
-# Wave Velocity Amplitude
-After this function, LA can be computed as: LA = L⁺A + (k_h²/4)A
-This is used for GLM particle advection (see compute_wave_displacement!).
-
 # Mean Mode (kₕ=0) Handling
 For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
-    LA = ∂/∂z(a(z) ∂A/∂z) = L⁺A    (since L⁺ = L when k_h=0)
+    a(z) ∂²A/∂z² = B
 
 With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
 is **singular** - the constant function is in its null space. To select a unique
@@ -943,18 +852,18 @@ This yields a well-defined, mean-zero A for kₕ=0 while preserving the original
 equation.
 
 # Fortran Correspondence
-This matches `A_solver_ybj_plus` in elliptic.f90 (PDF Eq. 33-35).
+This matches `A_solver_ybj_plus` in elliptic.f90.
 """
-function invert_L⁺A_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
+function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.L⁺A, G)
+    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.B, G)
 
     if need_transpose
-        _invert_L⁺A_to_A_2d!(S, G, par, a, workspace)
+        _invert_B_to_A_2d!(S, G, par, a, workspace)
     else
-        _invert_L⁺A_to_A_direct!(S, G, par, a, workspace)
+        _invert_B_to_A_direct!(S, G, par, a)
     end
 
     return S
@@ -963,27 +872,45 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector, workspace)
+function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
     nz = G.nz
 
     A_arr = parent(S.A)
-    L⁺A_arr = parent(S.L⁺A)
+    B_arr = parent(S.B)
     C_arr = parent(S.C)
 
     nz_local, nx_local, ny_local = size(A_arr)
     @assert nz_local == nz "Vertical dimension must be fully local"
 
-    dₗ, d, dᵤ, rhsᵣ, rhsᵢ, solᵣ, solᵢ, c_work, d_work =
-        _direct_tridiagonal_workspace(workspace, nz, eltype(a))
+    dₗ = zeros(eltype(a), nz)
+    d  = zeros(eltype(a), nz)
+    dᵤ = zeros(eltype(a), nz)
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
     # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
     # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
 
+    ρᵤₜ = if par !== nothing && isdefined(PARENT, :rho_ut)
+        PARENT.rho_ut(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+    ρₛₜ = if par !== nothing && isdefined(PARENT, :rho_st)
+        PARENT.rho_st(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+
+    # Pre-allocate work arrays outside loop to reduce GC pressure
+    rhsᵣ = zeros(eltype(a), nz)
+    rhsᵢ = zeros(eltype(a), nz)
+    solᵣ = zeros(eltype(a), nz)
+    solᵢ = zeros(eltype(a), nz)
+
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, S.L⁺A)
-        j_global = local_to_global(j_local, 3, S.L⁺A)
+        i_global = local_to_global(i_local, 2, S.B)
+        j_global = local_to_global(j_local, 3, S.B)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -1004,24 +931,21 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector, w
 
             fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-            # Row 1 (bottom): Neumann BC at z=-Lz
-            d[1]  = -a[1]
-            dᵤ[1] = a[1]
+            d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] )
+            dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
 
-            # Interior rows
             @inbounds for k in 2:nz-1
-                dₗ[k] = a[k]
-                d[k]  = -(a[k+1] + a[k])
-                dᵤ[k] = a[k+1]
+                dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+                d[k]  = -((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k])
+                dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
             end
 
-            # Row nz (top): Neumann BC at z=0
-            dₗ[nz] = a[nz]
-            d[nz]  = -a[nz]
+            dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+            d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] )
 
             @inbounds for k in 1:nz
-                rhsᵣ[k] = Δz² * real(L⁺A_arr[k, i_local, j_local])
-                rhsᵢ[k] = Δz² * imag(L⁺A_arr[k, i_local, j_local])
+                rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
+                rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
             end
 
             # Fix gauge: A[1] = 0 for a nonsingular solve
@@ -1030,8 +954,8 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector, w
             rhsᵣ[1] = 0
             rhsᵢ[1] = 0
 
-            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
-            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
             # Remove vertical mean to select a unique null-space representative
             mean_val = zero(Complex{eltype(a)})
@@ -1056,37 +980,34 @@ function _invert_L⁺A_to_A_direct!(S::State, G::Grid, par, a::AbstractVector, w
         # The YBJ+ equation reduces to: -(kₕ²/4) A = B  →  A = -4B/kₕ²
         # C = ∂A/∂z = 0 (no vertical structure)
         if nz == 1
-            @inbounds A_arr[1, i_local, j_local] = -4 * L⁺A_arr[1, i_local, j_local] / kₕ²
+            @inbounds A_arr[1, i_local, j_local] = -4 * B_arr[1, i_local, j_local] / kₕ²
             @inbounds C_arr[1, i_local, j_local] = 0
             continue
         end
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        # Row 1 (bottom): Neumann BC at z=-Lz
-        d[1]  = -(a[1] + (kₕ²*Δz²)/4)
-        dᵤ[1] = a[1]
+        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + (kₕ²*Δz²)/4 )
+        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
 
-        # Interior rows
         @inbounds for k in 2:nz-1
-            dₗ[k] = a[k]
-            d[k]  = -(a[k+1] + a[k] + (kₕ²*Δz²)/4)
-            dᵤ[k] = a[k+1]
+            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
+            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + (kₕ²*Δz²)/4 )
+            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
         end
 
-        # Row nz (top): Neumann BC at z=0
-        dₗ[nz] = a[nz]
-        d[nz]  = -(a[nz] + (kₕ²*Δz²)/4)
+        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
+        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + (kₕ²*Δz²)/4 )
 
         # Build RHS
         @inbounds for k in 1:nz
             # RHS is just Δz² * B (no a_ell_coeff - that was incorrect)
-            rhsᵣ[k] = Δz² * real(L⁺A_arr[k, i_local, j_local])
-            rhsᵢ[k] = Δz² * imag(L⁺A_arr[k, i_local, j_local])
+            rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
+            rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
         end
 
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work, d_work)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work, d_work)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
 
         @inbounds for k in 1:nz
             A_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -1102,22 +1023,22 @@ end
 """
 2D decomposition B→A solve with transposes.
 """
-function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace)
+function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace
-    L⁺A_z = workspace !== nothing ? workspace.L⁺A_z : allocate_z_pencil(G, ComplexF64)
+    B_z = workspace !== nothing ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
     A_z = workspace !== nothing ? workspace.A_z : allocate_z_pencil(G, ComplexF64)
     C_z = workspace !== nothing ? workspace.C_z : allocate_z_pencil(G, ComplexF64)
 
     # Transpose B to z-pencil
-    transpose_to_z_pencil!(L⁺A_z, S.L⁺A, G)
+    transpose_to_z_pencil!(B_z, S.B, G)
 
-    L⁺A_z_arr = parent(L⁺A_z)
+    B_z_arr = parent(B_z)
     A_z_arr = parent(A_z)
     C_z_arr = parent(C_z)
 
-    nz_local, nx_local, ny_local = size(L⁺A_z_arr)
+    nz_local, nx_local, ny_local = size(B_z_arr)
     @assert nz_local == nz "After transpose, z must be fully local"
 
     dl = zeros(eltype(a), nz)
@@ -1127,13 +1048,22 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
 
+    r_ut = if par !== nothing && isdefined(PARENT, :rho_ut)
+        PARENT.rho_ut(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+    r_st = if par !== nothing && isdefined(PARENT, :rho_st)
+        PARENT.rho_st(par, G)
+    else
+        ones(eltype(a), nz)
+    end
+
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs_r = zeros(eltype(a), nz)
     rhs_i = zeros(eltype(a), nz)
     solr  = zeros(eltype(a), nz)
     soli  = zeros(eltype(a), nz)
-    c_work = similar(du)
-    d_work = similar(d)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global_z(i_local, 2, G)
@@ -1155,24 +1085,21 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
 
             fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-            # Row 1 (bottom): Neumann BC at z=-Lz
-            d[1]  = -a[1]
-            du[1] = a[1]
+            d[1]  = -( (r_ut[1]*a[1]) / r_st[1] )
+            du[1] =   (r_ut[1]*a[1]) / r_st[1]
 
-            # Interior rows
             @inbounds for k in 2:nz-1
-                dl[k] = a[k]
-                d[k]  = -(a[k+1] + a[k])
-                du[k] = a[k+1]
+                dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
+                d[k]  = -((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k])
+                du[k] = (r_ut[k]*a[k]) / r_st[k]
             end
 
-            # Row nz (top): Neumann BC at z=0
-            dl[nz] = a[nz]
-            d[nz]  = -a[nz]
+            dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
+            d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] )
 
             @inbounds for k in 1:nz
-                rhs_r[k] = Δ2 * real(L⁺A_z_arr[k, i_local, j_local])
-                rhs_i[k] = Δ2 * imag(L⁺A_z_arr[k, i_local, j_local])
+                rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
+                rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
             end
 
             # Fix gauge: A[1] = 0 for a nonsingular solve
@@ -1181,8 +1108,8 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
             rhs_r[1] = 0
             rhs_i[1] = 0
 
-            thomas_solve!(solr, dl, d, du, rhs_r, c_work, d_work)
-            thomas_solve!(soli, dl, d, du, rhs_i, c_work, d_work)
+            thomas_solve!(solr, dl, d, du, rhs_r)
+            thomas_solve!(soli, dl, d, du, rhs_i)
 
             mean_val = zero(Complex{eltype(a)})
             @inbounds for k in 1:nz
@@ -1203,38 +1130,35 @@ function _invert_L⁺A_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, works
 
         # Special case: nz == 1 (single-layer / 2D mode)
         if nz == 1
-            @inbounds A_z_arr[1, i_local, j_local] = -4 * L⁺A_z_arr[1, i_local, j_local] / kh2
+            @inbounds A_z_arr[1, i_local, j_local] = -4 * B_z_arr[1, i_local, j_local] / kh2
             @inbounds C_z_arr[1, i_local, j_local] = 0
             continue
         end
 
         fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-        # Row 1 (bottom): Neumann BC at z=-Lz
-        d[1]  = -(a[1] + (kh2*Δ2)/4)
-        du[1] = a[1]
+        d[1]  = -( (r_ut[1]*a[1]) / r_st[1] + (kh2*Δ2)/4 )
+        du[1] =   (r_ut[1]*a[1]) / r_st[1]
 
-        # Interior rows
         @inbounds for k in 2:nz-1
-            dl[k] = a[k]
-            d[k]  = -(a[k+1] + a[k] + (kh2*Δ2)/4)
-            du[k] = a[k+1]
+            dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
+            d[k]  = -( ((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k]) + (kh2*Δ2)/4 )
+            du[k] = (r_ut[k]*a[k]) / r_st[k]
         end
 
-        # Row nz (top): Neumann BC at z=0
-        dl[nz] = a[nz]
-        d[nz]  = -(a[nz] + (kh2*Δ2)/4)
+        dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
+        d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
 
         # Build RHS
         # RHS is just Δ² * B (no a_coeff - that was incorrect)
         # The a(z) profile is already in the LHS operator matrix
         @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * real(L⁺A_z_arr[k, i_local, j_local])
-            rhs_i[k] = Δ2 * imag(L⁺A_z_arr[k, i_local, j_local])
+            rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
+            rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
         end
 
-        thomas_solve!(solr, dl, d, du, rhs_r, c_work, d_work)
-        thomas_solve!(soli, dl, d, du, rhs_i, c_work, d_work)
+        thomas_solve!(solr, dl, d, du, rhs_r)
+        thomas_solve!(soli, dl, d, du, rhs_i)
 
         @inbounds for k in 1:nz
             A_z_arr[k, i_local, j_local] = solr[k] + im*soli[k]
@@ -1269,7 +1193,6 @@ Steps:
 
 """
     thomas_solve!(x, dl, d, du, b)
-    thomas_solve!(x, dl, d, du, b, c, d_work)
 
 In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 
@@ -1279,21 +1202,16 @@ In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 - `d`: Main diagonal (length n)
 - `du`: Upper diagonal (length n, du[n] unused)
 - `b`: Right-hand side (length n)
-- `c`, `d_work`: Optional scratch vectors. Passing these avoids allocating
-  diagonal copies for every vertical column solve.
 
 # Complexity
 O(n) operations (vs O(n³) for general LU decomposition)
 """
 function thomas_solve!(x, dₗ, d, dᵤ, b)
-    return thomas_solve!(x, dₗ, d, dᵤ, b, similar(dᵤ), similar(d))
-end
-
-function thomas_solve!(x, dₗ, d, dᵤ, b, c, d̃)
     n = length(d)
 
-    copyto!(c, dᵤ)
-    copyto!(d̃, d)
+    # Make working copies
+    c = copy(dᵤ)
+    d̃ = copy(d)
     x .= b
 
     # Singularity tolerance
@@ -1327,4 +1245,4 @@ end
 end # module
 
 # Export elliptic solvers to main QGYBJplus module
-using .Elliptic: invert_q_to_psi!, invert_helmholtz!, invert_L⁺A_to_A!
+using .Elliptic: invert_q_to_psi!, invert_helmholtz!, invert_B_to_A!

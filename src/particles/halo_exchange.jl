@@ -32,7 +32,7 @@ module HaloExchange
 # Import interpolation types for halo width calculation
 using ..InterpolationSchemes: InterpolationMethod, TRILINEAR, TRICUBIC, QUINTIC, ADAPTIVE, required_halo_width
 
-export HaloInfo, setup_halo_exchange!, exchange_velocity_halos!, wrap_coordinate,
+export HaloInfo, setup_halo_exchange!, exchange_velocity_halos!,
        interpolate_velocity_with_halos,
        compute_process_grid, compute_local_size, compute_start_index, compute_neighbors_2d
 
@@ -159,11 +159,10 @@ mutable struct HaloInfo{T<:AbstractFloat}
 
         @assert px * py == nprocs "Process grid ($px × $py) must equal nprocs ($nprocs)"
 
-        # Compute this rank's position in the process grid. MUST match the
-        # PencilArrays MPITopology layout (C order: first topology dim varies
-        # slowest): rank = rank_x * py + rank_y
-        rank_x = rank ÷ py
-        rank_y = rank % py
+        # Compute this rank's position in the process grid
+        # Layout: rank = rank_y * px + rank_x (row-major)
+        rank_x = rank % px
+        rank_y = rank ÷ px
 
         # Determine if this is 1D or 2D decomposition
         is_2d_decomposition = py > 1
@@ -294,9 +293,9 @@ function compute_neighbors_2d(rank_x::Int, rank_y::Int, px::Int, py::Int,
                               periodic_x::Bool, periodic_y::Bool)
     neighbors = fill(-1, 8)
 
-    # Helper to convert (rx, ry) to rank — PencilArrays C-order layout
+    # Helper to convert (rx, ry) to rank
     function to_rank(rx, ry)
-        return rx * py + ry
+        return ry * px + rx
     end
 
     # West neighbor (left, -x)
@@ -760,23 +759,12 @@ Uses trilinear interpolation with:
 - Y-direction: halo data handles cross-boundary interpolation for 2D; periodic wrapping for 1D
 - Z-direction: clamping to [1, nz] (vertical boundaries are not periodic)
 """
-# wrap_coordinate(v, origin, L): wrap `v` into the periodic interval
-# [origin, origin + L). Plain `mod(v - origin, L)` can ROUND UP TO `L` itself
-# for tiny negative inputs (e.g. mod(-1e-13, 5e5) == 5e5 in Float64), which
-# puts a particle exactly on the excluded right endpoint and breaks
-# owner-rank/interpolation consistency. This helper folds that case to 0.
-@inline function wrap_coordinate(v::T, origin::T, L::T) where T
-    r = mod(v - origin, L)
-    r = r >= L ? zero(T) : r
-    return origin + r
-end
-
 function interpolate_velocity_with_halos(x::T, y::T, z::T,
                                        tracker, halo_info::HaloInfo{T}) where T
 
     # Handle periodic boundaries using GLOBAL domain lengths
-    x_periodic = halo_info.periodic_x ? wrap_coordinate(x, tracker.x0, tracker.Lx) : x
-    y_periodic = halo_info.periodic_y ? wrap_coordinate(y, tracker.y0, tracker.Ly) : y
+    x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
+    y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)

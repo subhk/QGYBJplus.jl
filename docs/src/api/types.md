@@ -24,6 +24,7 @@ QGParams
 | `nt` | Int | Number of time steps |
 | `f₀` | Float64 | Coriolis parameter |
 | `N²` | Float64 | Buoyancy frequency squared |
+| `γ` | Float64 | Robert-Asselin filter coefficient |
 | `ybj_plus` | Bool | Use YBJ+ formulation |
 | `no_feedback` | Bool | Master switch: disable all wave-mean coupling |
 | `no_wave_feedback` | Bool | Disable wave feedback on mean flow |
@@ -122,14 +123,14 @@ State
 | Field | Type | Description |
 |:------|:-----|:------------|
 | `q` | Array{ComplexF64,3} | QG potential vorticity (spectral) |
-| `L⁺A` | Array{ComplexF64,3} | YBJ+ wave envelope L⁺A where L⁺ = L - k_h²/4 (spectral) |
+| `B` | Array{ComplexF64,3} | YBJ+ wave envelope B = L⁺A (spectral) |
 
 **Diagnostic Fields (computed from prognostic):**
 
 | Field | Type | Description |
 |:------|:-----|:------------|
 | `psi` | Array{ComplexF64,3} | Streamfunction ψ (spectral) |
-| `A` | Array{ComplexF64,3} | Wave amplitude (spectral, from L⁺A via inversion) |
+| `A` | Array{ComplexF64,3} | Wave amplitude (spectral) |
 | `C` | Array{ComplexF64,3} | Vertical derivative ∂A/∂z (spectral) |
 
 **Velocity Fields (real space):**
@@ -139,13 +140,11 @@ State
 | `u` | Array{Float64,3} | Zonal velocity u = -∂ψ/∂y |
 | `v` | Array{Float64,3} | Meridional velocity v = ∂ψ/∂x |
 | `w` | Array{Float64,3} | Vertical velocity (from omega equation) |
-| `LA_real` | Array{Float64,3} | Real part of wave velocity amplitude LA |
-| `LA_imag` | Array{Float64,3} | Imaginary part of wave velocity amplitude LA |
 
-!!! note "Exponential RK2 time-stepping"
-    The exponential RK2 scheme uses separate source and destination `State`
-    objects (`Sn`, `Snp1`) rather than updating a single `State` in place. This
-    design allows proper handling of MPI parallel arrays (PencilArrays).
+!!! note "Leapfrog Time-Stepping"
+    The leapfrog scheme uses separate State objects (Snm1, Sn, Snp1) rather than
+    storing previous time levels within a single State struct. This design allows
+    proper handling of MPI parallel arrays (PencilArrays).
 
 ### Constructors
 
@@ -163,27 +162,21 @@ For MPI parallel runs, always use `copy_state` instead of `deepcopy`:
 
 ```julia
 # CORRECT: preserves pencil topology
-Snp1 = copy_state(S)
+Snm1 = copy_state(S)
 
 # WRONG: breaks PencilArray transpose operations
-Snp1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
+Snm1 = deepcopy(S)  # Causes "pencil topologies must be the same" error
 ```
 
 ### Accessing Fields
 
 ```julia
-# Prognostic field (complex, spectral)
-L⁺A = state.L⁺A    # size (nz, nx, ny), uses Unicode identifier
-
-# Diagnostic fields (complex, spectral)
+# Spectral fields (complex)
 psi_k = state.psi  # size (nz, nx, ny)
-A = state.A        # size (nz, nx, ny)
 
 # Physical fields (real)
 u = state.u        # size (nz, nx, ny)
 v = state.v        # size (nz, nx, ny)
-LA_real = state.LA_real  # Real part of wave velocity amplitude
-LA_imag = state.LA_imag  # Imaginary part of wave velocity amplitude
 ```
 
 ## FFT Plans
@@ -253,7 +246,7 @@ All core types are fully type-stable:
 ```julia
 using Test
 @inferred init_state(grid)
-@inferred exp_rk2_step!(state_np1, state, grid, params, plans; a=a_ell)
+@inferred leapfrog_step!(state, grid, params, plans, a_ell)
 ```
 
 ## Serialization

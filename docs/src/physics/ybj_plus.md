@@ -30,61 +30,59 @@ where ``A`` is the **slowly-varying complex wave amplitude**.
 
 ### Evolution Equation
 
-The wave envelope ``L^+A`` evolves according to:
+The wave envelope ``B = L^+ A`` evolves according to:
 
 ```math
-\frac{\partial (L^+A)}{\partial t} + J(\psi, L^+A) = i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}(L^+A) \times \zeta + \mathcal{D}_{L^+A}
+\frac{\partial B}{\partial t} + J(\psi, B) = i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}B \times \zeta + \mathcal{D}_B
 ```
 
 !!! note "Sign convention"
     The sign in the dispersion term depends on the phase convention for the carrier wave (e.g., ``e^{-i f_0 t}`` vs ``e^{+i f_0 t}``). QGYBJ+.jl follows the ``e^{-i f_0 t}`` convention, yielding the ``+i`` sign shown here.
 
 where:
-- ``L^+A``: Evolved wave envelope (prognostic variable in code: `state.L⁺A`)
+- ``B = L^+ A``: Evolved wave envelope
 - ``\zeta = \nabla^2\psi``: Relative vorticity
-- ``J(\psi, L^+A)``: Advection by geostrophic flow
-- ``(1/2)(L^+A) \times \zeta``: Refraction term (wave focusing by vorticity)
+- ``J(\psi, B)``: Advection by geostrophic flow
+- ``(1/2)B \times \zeta``: Refraction term (wave focusing by vorticity)
 - ``i k_h^2/(2 \cdot Bu \cdot Ro) A``: Dispersion (nondimensional form of ``i N^2 k_h^2/(2f_0) A``)
 
 ### Real/Imaginary Decomposition
 
-Writing ``L^+A = (L^+A)_R + i (L^+A)_I`` and ``A = A_R + i A_I``, the equations become:
+Writing ``B = B_R + i B_I`` and ``A = A_R + i A_I``, the equations become:
 
 ```math
-\frac{\partial (L^+A)_R}{\partial t} = -J(\psi, (L^+A)_R) - \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I + \frac{1}{2} (L^+A)_I \times \zeta - \mathcal{D}_{(L^+A)_R}
+\frac{\partial B_R}{\partial t} = -J(\psi, B_R) - \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_I + \frac{1}{2} B_I \times \zeta - \mathcal{D}_{BR}
 ```
 
 ```math
-\frac{\partial (L^+A)_I}{\partial t} = -J(\psi, (L^+A)_I) + \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R - \frac{1}{2} (L^+A)_R \times \zeta - \mathcal{D}_{(L^+A)_I}
+\frac{\partial B_I}{\partial t} = -J(\psi, B_I) + \frac{k_h^2}{2 \cdot Bu \cdot Ro} A_R - \frac{1}{2} B_R \times \zeta - \mathcal{D}_{BI}
 ```
 
 ### Physical Terms
 
 | Term | Physics | Effect |
 |:-----|:--------|:-------|
-| ``J(\psi, L^+A)`` | Advection | Waves carried by eddies |
-| ``(1/2)(L^+A) \times \zeta`` | Refraction | Focusing in anticyclones |
+| ``J(\psi, B)`` | Advection | Waves carried by eddies |
+| ``(1/2)B \times \zeta`` | Refraction | Focusing in anticyclones |
 | ``k_h^2 A/(2 \cdot Bu \cdot Ro)`` | Dispersion | Horizontal spreading |
-| ``\mathcal{D}_{L^+A}`` | Dissipation | Energy loss (hyperdiffusion) |
+| ``\mathcal{D}_B`` | Dissipation | Energy loss (hyperdiffusion) |
 
 ## The L⁺ Operator
 
 ### Definition
 
-The YBJ+ operator ``L^+`` relates the evolved envelope ``L^+A`` and the wave amplitude ``A``:
+The YBJ+ operator relates ``B`` and ``A``:
 
 ```math
-L^+ A = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A
+B = L^+ A = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A
 ```
 
-Note: The code uses the Unicode variable name `L⁺A` (Julia supports Unicode identifiers) for clarity.
+### Inversion: B → A
 
-### Inversion: L⁺A → A
-
-To recover ``A`` from ``L^+A``, we solve:
+To recover ``A`` from ``B``, we solve:
 
 ```math
-\frac{\partial}{\partial z}\left(a(z)\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = L^+A
+\frac{\partial}{\partial z}\left(a(z)\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = B
 ```
 
 where ``a(z) = f_0^2/N^2(z)``.
@@ -94,7 +92,7 @@ where ``a(z) = f_0^2/N^2(z)``.
 In discretized form for each ``(k_x, k_y)``:
 
 ```math
-a_k A_{k-1} + b_k A_k + c_k A_{k+1} = (L^+A)_k
+a_k A_{k-1} + b_k A_k + c_k A_{k+1} = B_k
 ```
 
 with:
@@ -120,41 +118,37 @@ Anticyclones (negative vorticity) **trap** waves:
 The refraction term in the YBJ+ model:
 
 ```math
-\text{Refraction} = \frac{1}{2} (L^+A) \times \zeta = \frac{1}{2} (L^+A) \times \nabla^2\psi
+\text{Refraction} = \frac{1}{2} B \times \zeta = \frac{1}{2} B \times \nabla^2\psi
 ```
 
 In terms of real/imaginary parts:
-- ``r_{(L^+A)_R} = \frac{1}{2} (L^+A)_I \times \zeta`` contributes to ``\partial (L^+A)_R/\partial t``
-- ``r_{(L^+A)_I} = -\frac{1}{2} (L^+A)_R \times \zeta`` contributes to ``\partial (L^+A)_I/\partial t``
+- ``r_{BR} = \frac{1}{2} B_I \times \zeta`` contributes to ``\partial B_R/\partial t``
+- ``r_{BI} = -\frac{1}{2} B_R \times \zeta`` contributes to ``\partial B_I/\partial t``
 
 This term represents focusing of wave energy by the background vorticity field.
 
 ### Code Implementation
 
 ```julia
-# Compute refraction term: (1/2) * L⁺A × ζ where ζ = -kh²ψ (complex L⁺A form)
-refraction_waqg_L⁺A!(rL⁺Ak, L⁺Ak, psik, grid, plans; Lmask=L)
+# Compute refraction term: (1/2) * B × ζ where ζ = -kh²ψ (complex B form)
+refraction_waqg_B!(rBk, Bk, psik, grid, plans; Lmask=L)
 ```
 
 ## YBJ vs YBJ+
 
 ### Original YBJ (1997)
 
-The original YBJ uses the ``L`` operator:
-
 ```math
-LA = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right)
+B = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right)
 ```
 
-- Simpler relation between ``LA`` and ``A``
+- Simpler relation between B and A
 - Recovery via vertical integration
 
 ### YBJ+ (Asselin & Young 2019)
 
-The YBJ+ uses the ``L^+`` operator:
-
 ```math
-L^+A = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A = LA - \frac{k_h^2}{4}A
+B = \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right) - \frac{k_h^2}{4}A
 ```
 
 - Includes horizontal wavenumber dependence
@@ -204,19 +198,19 @@ The wave kinetic energy (WKE) is defined per YBJ+ equation (4.7):
 \text{WKE} = \frac{1}{2} \int |LA|^2 \, dV
 ```
 
-where ``L`` is the **original YBJ vertical operator** from equation (1.3):
+where ``L`` is the vertical operator from equation (1.3):
 
 ```math
 L = \partial_z \left( \frac{f_0^2}{N^2} \partial_z \right)
 ```
 
-Note that ``LA`` (using ``L``) is different from ``L^+A`` (using ``L^+``). The relationship is:
+``LA`` is computed directly by applying the L operator to A:
 
 ```math
-LA = L^+A + \frac{k_h^2}{4}A
+LA = \partial_z \left( a(z) \times C \right)
 ```
 
-In spectral space, this allows computing ``LA`` from the prognostic ``L^+A`` and diagnostic ``A``.
+where ``a(z) = f_0^2/N^2`` and ``C = \partial A/\partial z``.
 
 ### Computation
 
@@ -224,31 +218,31 @@ In spectral space, this allows computing ``LA`` from the prognostic ``L^+A`` and
 # Detailed wave energy components (WKE, WPE, WCE)
 WKE, WPE, WCE = compute_detailed_wave_energy(state, grid, params)
 
-# Vertically-averaged wave energy using LA = L⁺A + (k_h²/4)A
-WE = wave_energy_vavg(state.L⁺A, state.A, grid, plans)
+# Simple wave energy (returns WKE)
+WE = compute_wave_energy(state, grid, plans; params=params)
 ```
 
 !!! note "Physical interpretation"
-    WKE represents the kinetic energy of the near-inertial wave field, computed using
-    the original YBJ ``L`` operator (not ``L^+``). The code computes ``LA = L^+A + (k_h^2/4)A``
-    in spectral space to get the wave velocity amplitude ``LA``.
+    WKE represents the kinetic energy of the near-inertial wave field, computed by
+    applying the L operator directly to the wave amplitude A. This matches the
+    YBJ+ paper's definition in equation (4.7).
 
 ## Implementation Details
 
 ### Key Functions
 
 The YBJ+ implementation uses these core functions:
-- `invert_L⁺A_to_A!` - Solve L⁺ operator for wave amplitude A from envelope L⁺A
-- `refraction_waqg_L⁺A!` - Compute wave refraction by vorticity (complex L⁺A)
-- `convol_waqg_L⁺A!` - Compute wave advection by geostrophic flow (complex L⁺A)
+- `invert_B_to_A!` - Solve L⁺ operator for wave amplitude A from envelope B
+- `refraction_waqg_B!` - Compute wave refraction by vorticity (complex B)
+- `convol_waqg_B!` - Compute wave advection by geostrophic flow (complex B)
 
 See the [Physics API Reference](../api/physics.md) for detailed documentation.
 
 ### Code Locations
 
-- `elliptic.jl`: L⁺A → A inversion (`invert_L⁺A_to_A!`)
-- `nonlinear.jl`: Refraction (`refraction_waqg_L⁺A!`), Advection (`convol_waqg_L⁺A!`)
-- `ybj_normal.jl`: Normal YBJ (non-plus) operators (`sumL⁺A!`, `compute_A!`)
+- `elliptic.jl`: B → A inversion (`invert_B_to_A!`)
+- `nonlinear.jl`: Refraction (`refraction_waqg_B!`), Advection (`convol_waqg_B!`)
+- `ybj_normal.jl`: Normal YBJ (non-plus) operators
 
 ## References
 

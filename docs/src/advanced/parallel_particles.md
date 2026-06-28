@@ -340,27 +340,24 @@ end
 │  │   • Solve omega equation for w (tridiagonal in z):                     │  │
 │  │       ∇²w + (f²/N²)∂²w/∂z² = (2f/N²)·J(ψ_z, ∇²ψ)                       │  │
 │  │                                                                        │  │
-│  │   • Add wave velocity + Stokes drift (full Jacobian):                  │  │
-│  │       u += Re(LA) + Im(J₀)/f₀,  v += Im(LA) - Re(J₀)/f₀               │  │
-│  │       w += -2·Im(K₀)/f₀  (Wagner & Young 2016, eq. 3.16a-3.20)        │  │
+│  │   • Add wave Stokes drift (horizontal + vertical):                     │  │
+│  │       u += Im[A*·∂A/∂x],  v += Im[A*·∂A/∂y],  w += Im[A*·∂A/∂z]        │  │
 │  │                                                                        │  │
 │  │   • Exchange velocity halos (MPI non-blocking)                         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │ 
 │                                ↓                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐         │
-│  │ STEP 2: ADVECT MEAN POSITIONS (GLM framework)                   │         │
+│  │ STEP 2: ADVECT PARTICLES (each rank independently)              │         │
 │  │                                                                 │         │
 │  │   For each local particle:                                      │         │
-│  │     1. Interpolate QG velocity at mean position (X, Y, Z)       │         │
+│  │     1. Interpolate velocity at (x, y, z)                        │         │
 │  │        • Use extended arrays (halos) if near boundary           │         │
 │  │        • Trilinear/Tricubic/Quintic interpolation               │         │
 │  │                                                                 │         │
-│  │     2. Time integration (Euler):                                │         │
-│  │        • X_{n+1} = X_n + dt·u_QG                                │         │
-│  │                                                                 │         │
-│  │     3. Reconstruct wave displacement (diagnostic):              │         │
-│  │        • ξ = Re{(LA/(-if)) × e^{-ift}}                          │         │
-│  │        • Physical position: x = X + ξ                           │         │
+│  │     2. Time integration:                                        │         │
+│  │        • Euler:  x_{n+1} = x_n + dt·u                           │         │
+│  │        • RK2:    Midpoint method                                │         │
+│  │        • RK4:    Classical 4th order                            │         │
 │  └─────────────────────────────────────────────────────────────────┘         │
 │                                ↓                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐         │
@@ -400,15 +397,14 @@ This section explains how particles obtain the combined QG flow and wave Stokes 
 
 Particles are advected by the **total velocity field**:
 ```
-u_total = u_QG + u_wave + u_Stokes
-v_total = v_QG + v_wave + v_Stokes
+u_total = u_QG + u_Stokes
+v_total = v_QG + v_Stokes
 w_total = w_QG + w_Stokes
 ```
 
 where:
 - **QG velocities**: Geostrophic flow from streamfunction ψ, vertical from omega equation
-- **Wave velocity**: Backrotated wave orbital velocity Re(LA), Im(LA) from YBJ+ equation
-- **Stokes drift**: Wave-induced drift from full Jacobian (Wagner & Young 2016)
+- **Stokes drift**: Wave-induced drift from near-inertial wave amplitude A
 
 ### Data Flow Diagram
 
@@ -440,22 +436,20 @@ where:
 │  │   └───────────────────────────────────────────────────────────────────────┘ │ │
 │  │                               ↓                                             │ │
 │  │   ┌───────────────────────────────────────────────────────────────────────┐ │ │
-│  │   │ compute_wave_velocities!(S, G) → Wave velocity + Stokes drift         │ │ │
+│  │   │ compute_wave_velocities!(S, G) → Wave Stokes drift (ADDS to QG)       │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   WAVE VELOCITY (Asselin & Young 2019, eq 1.2):                       │ │ │
-│  │   │     LA = B + (k_h²/4)·A  in spectral space (YBJ+ relation)           │ │ │
-│  │   │     u_wave = Re(LA), v_wave = Im(LA)                                  │ │ │
+│  │   │   From wave amplitude A = |A|·e^{iφ}:                                 │ │ │
+│  │   │     ∂A/∂x, ∂A/∂y in spectral: i·kₓ·Â, i·kᵧ·Â                         │ │ │
+│  │   │     ∂A/∂z from S.C (computed by invert_B_to_A!)                       │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   HORIZONTAL STOKES DRIFT (Wagner & Young 2016, eq 3.16a, 3.18):     │ │ │
-│  │   │     J₀ = (LA)*·∂_{s*}(LA) - (f₀²/N²)·(∂_{s*}A_z*)·∂_z(LA)           │ │ │
-│  │   │     u_S = Im(J₀)/f₀,  v_S = -Re(J₀)/f₀                               │ │ │
+│  │   │   Transform to physical space, then:                                  │ │ │
+│  │   │     u_S = Im[A*·∂A/∂x] = |A|²·∂φ/∂x  (phase gradient × intensity)    │ │ │
+│  │   │     v_S = Im[A*·∂A/∂y] = |A|²·∂φ/∂y                                   │ │ │
+│  │   │     w_S = -2·Im(K₀)/f₀  (Wagner & Young 2016, eq 3.19-3.20)          │ │ │
 │  │   │                                                                       │ │ │
-│  │   │   VERTICAL STOKES DRIFT (Wagner & Young 2016, eq 3.19-3.20):         │ │ │
-│  │   │     w_S = -2·Im(K₀)/f₀  where K₀ = M*_z·M_{ss*} - M*_{s*}·M_{sz}    │ │ │
-│  │   │                                                                       │ │ │
-│  │   │   State.u += u_wave + u_S  →  u_QG + u_wave + u_S (TOTAL)            │ │ │
-│  │   │   State.v += v_wave + v_S  →  v_QG + v_wave + v_S (TOTAL)            │ │ │
-│  │   │   State.w += w_S           →  w_QG + w_S (TOTAL)                      │ │ │
+│  │   │   State.u += u_S  →  State.u = u_QG + u_S (TOTAL)                     │ │ │
+│  │   │   State.v += v_S  →  State.v = v_QG + v_S (TOTAL)                     │ │ │
+│  │   │   State.w += w_S  →  State.w = w_QG + w_S (TOTAL)                     │ │ │
 │  │   └───────────────────────────────────────────────────────────────────────┘ │ │
 │  └─────────────────────────────────────────────────────────────────────────────┘ │
 │                                ↓                                                 │
@@ -533,17 +527,13 @@ The wave amplitude `A` and its derivatives come from the simulation state:
 | Field | Location | Description |
 |:------|:---------|:------------|
 | `State.A` | Spectral | Wave amplitude Â(kₓ, kᵧ, z) |
-| `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_L⁺A_to_A!`) |
+| `State.C` | Spectral | A_z = ∂A/∂z (set by `invert_B_to_A!`) |
 
-The wave velocity and Stokes drift computation (Wagner & Young 2016, eq. 3.16a-3.20):
-1. Computes LA = L⁺A + (k_h²/4)A in spectral space (wave velocity amplitude)
-2. Computes ∂_{s*}(LA), ∂_{s*}(A_z*), ∂_z(LA) in spectral space
-3. For vertical Stokes: computes A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}
-4. Transforms all fields to physical space
-5. Computes wave velocity: u_wave = Re(LA), v_wave = Im(LA)
-6. Computes horizontal Stokes via full Jacobian J₀: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
-7. Computes vertical Stokes via K₀: w_S = -2·Im(K₀)/f₀
-8. Adds all contributions to existing QG velocities
+The Stokes drift computation:
+1. Computes ∂A/∂x, ∂A/∂y in spectral space: `i·kₓ·Â`, `i·kᵧ·Â`
+2. Transforms A, ∂A/∂x, ∂A/∂y, ∂A/∂z to physical space
+3. Computes `Im[A* · ∂A/∂(x,y,z)]` pointwise in physical space
+4. Adds result to existing QG velocities
 
 #### 4. Halo Exchange Enables Cross-Boundary Interpolation
 
@@ -563,19 +553,18 @@ advect_particles!(tracker, state, grid, dt)
   └─→ update_velocity_fields!(tracker, state, grid)
         ├─→ compute_total_velocities!(state, grid)
         │     ├─→ compute_velocities!()      # QG: u,v from ψ; w from omega eqn
-        │     └─→ compute_wave_velocities!() # Wave velocity LA = L⁺A + (k_h²/4)A
-        ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL QG velocity
+        │     └─→ compute_wave_velocities!() # Stokes: Im[A*·∇A] added to u,v,w
+        ├─→ tracker.u_field .= parent(state.u)  # Copy LOCAL total velocity
         └─→ exchange_velocity_halos!()          # Fill halos from neighbors
-  └─→ advect_euler!()                           # GLM mean position advection
-        ├─→ interpolate_velocity_at_position()  # Uses extended arrays
-        └─→ reconstruct_wave_displacement()     # ξ = Re{(LA/(-if)) × e^{-ift}}
+  └─→ advect_euler!/advect_rk2!/advect_rk4!()
+        └─→ interpolate_velocity_at_position()  # Uses extended arrays
 ```
 
 ## CFL Stability for Particle Advection
 
 ### Halo Constraint
 
-For Euler time integration with the GLM framework, particles should not move beyond the halo region in a single timestep. If a particle moves beyond the halo region, velocity interpolation becomes inaccurate (values are clamped to boundary).
+For multi-stage integration methods (RK2, RK4), intermediate particle positions are evaluated during a single timestep. If a particle moves beyond the halo region, velocity interpolation becomes inaccurate (values are clamped to boundary).
 
 **Stability requirement:**
 ```
@@ -764,6 +753,7 @@ particle_config = create_particle_config(
     z_level = π,
     nx_particles = 100,
     ny_particles = 100,
+    integration_method = :rk4,
     interpolation_method = TRILINEAR
 )
 

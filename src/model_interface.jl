@@ -7,13 +7,14 @@ with the configuration system, including time stepping with output management.
 
 using Printf
 using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
-using ..QGYBJplus: Plans, plan_transforms!, init_grid, init_state, fft_backward!
-using ..QGYBJplus: exp_rk2_step!, ExpRK2Workspace
-using ..QGYBJplus: invert_q_to_psi!, invert_L⁺A_to_A!, compute_velocities!
+using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
+using ..QGYBJplus: first_projection_step!, leapfrog_step!
+using ..QGYBJplus: IMEXWorkspace, init_imex_workspace, imex_cn_step!
+using ..QGYBJplus: invert_q_to_psi!, invert_B_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
 using ..QGYBJplus: a_ell_ut, dealias_mask
-using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig, MPIPlans
+using ..QGYBJplus: OutputManager, write_state_file, OutputConfig, MPIConfig
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
 
@@ -33,27 +34,27 @@ using ..QGYBJplus.Diagnostics: flow_kinetic_energy_global, wave_energy_global
 
 Main simulation object containing all model components.
 """
-mutable struct QGYBJSimulation{T,G<:Grid,S<:State,P<:Union{Plans,MPIPlans},SP}
+mutable struct QGYBJSimulation{T}
     # Configuration
     config::ModelConfig{T}
     
     # Model components
     params::QGParams{T}
-    grid::G
-    state::S
-    state_old::S  # Reserved workspace state
+    grid::Grid
+    state::State
+    state_old::State  # For leapfrog
     
     # Transform plans
-    plans::P
+    plans
     
     # Output management
-    output_manager::OutputManager{T}
+    output_manager
     
     # MPI configuration
     parallel_config::MPIConfig
     
     # Stratification
-    stratification_profile::SP
+    stratification_profile
     N2_profile::Vector{T}
     
     # Time stepping
@@ -137,9 +138,8 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
 
         W2F = T(1e-6),  # Default wave-to-flow energy ratio
         N² = N²_value,  # From config.stratification.N0 for constant_N
-
+        γ = T(1e-3),    # Robert-Asselin filter
         νₕ₁ = T(config.nu_h1), νₕ₂ = T(config.nu_h2), 
-        
         ilap1 = config.ilap1, ilap2 = config.ilap2,
         νₕ₁ʷ = T(config.nu_h1_wave), νₕ₂ʷ = T(config.nu_h2_wave), 
         ilap1w = config.ilap1_wave, ilap2w = config.ilap2_wave,
@@ -187,6 +187,15 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         @warn "Stratification warnings:\n" * join(strat_warnings, "\n")
     end
     
+    # Derive density-like vertical profiles from N² and populate params
+    rho_ut_prof, rho_st_prof = derive_density_profiles(params, grid; N2_profile=N2_profile)
+    params = QGParams{T}(;
+        (name => getfield(params, name) for name in fieldnames(typeof(params)) if !(name in (:ρ_ut_profile, :ρ_st_profile, :b_ell_profile)))...,
+        ρ_ut_profile = rho_ut_prof,
+        ρ_st_profile = rho_st_prof,
+        b_ell_profile = nothing,
+    )
+
     # Initialize fields
     if should_print
         @info "Initializing model fields"
@@ -222,7 +231,7 @@ function setup_simulation(config::ModelConfig{T}; topology=nothing) where T
         "initial_conditions" => ic_diagnostics
     )
 
-    simulation = QGYBJSimulation(
+    simulation = QGYBJSimulation{T}(
         config,
         params,
         grid,
@@ -248,7 +257,9 @@ end
 
 Run the complete simulation with output management.
 
-Uses the model's second-order exponential Runge-Kutta time stepper.
+Uses leapfrog time stepping with Robert-Asselin filter, which requires
+three time levels (n-1, n, n+1). The simulation struct only stores two
+states, so a third is allocated internally for the integration.
 """
 function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) where T
     @info "Starting QG-YBJ simulation"
@@ -276,24 +287,47 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
                         write_psi=write_psi, write_waves=write_waves)
     end
 
-    # ETDRK2 uses two time levels: current and next.
+    # Leapfrog requires 3 time levels: Snm1 (n-1), Sn (n), Snp1 (n+1)
+    # sim.state will be used as the "current" state for output
+    # We allocate working states for the time integration
+
+    # Save initial state as Snm1 (time 0)
+    # Use copy_state instead of deepcopy to preserve PencilArray topology
+    Snm1 = copy_state(sim.state)
+
+    # First projection step (Forward Euler to initialize leapfrog)
+    # Advances sim.state from time 0 to time dt
+    @info "Performing first projection step"
+    first_projection_step!(sim.state, sim.grid, sim.params, sim.plans;
+                          a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile)
+
+    sim.time_step = 1
+    sim.current_time = sim.params.dt
+
+    # Sn = state at time dt (after first projection step)
     Sn = copy_state(sim.state)
+    # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
     Snp1 = copy_state(sim.state)
-    timestep_workspace = ExpRK2Workspace(sim.state, sim.plans; G=sim.grid)
+
+    # Output after first step if needed
+    check_and_output!(sim)
 
     # Main time stepping loop
     @info "Starting main time integration loop"
 
-    for step in 1:sim.params.nt
-        exp_rk2_step!(Snp1, Sn, sim.grid, sim.params, sim.plans;
-                      a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile,
-                      timestep_workspace=timestep_workspace)
+    for step in 2:sim.params.nt
+        # Leapfrog time step: compute Snp1 from Sn and Snm1
+        leapfrog_step!(Snp1, Sn, Snm1, sim.grid, sim.params, sim.plans;
+                      a=a_ell, dealias_mask=L_mask, N2_profile=sim.N2_profile)
 
-        Sn, Snp1 = Snp1, Sn
+        # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
+        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
 
+        # Update sim.state to point to current state (for output/diagnostics)
+        # Copy the current state (Sn after rotation) to sim.state
         sim.state.q .= Sn.q
         sim.state.psi .= Sn.psi
-        sim.state.L⁺A .= Sn.L⁺A
+        sim.state.B .= Sn.B
         sim.state.A .= Sn.A
         sim.state.C .= Sn.C
         sim.state.u .= Sn.u
@@ -354,7 +388,7 @@ function check_and_output!(sim::QGYBJSimulation)
     end
 end
 
-# MPI reduction functions are now defined in mpi.jl
+# MPI reduction functions are now defined in parallel_mpi.jl
 # Re-export for backward compatibility
 const reduce_if_mpi = reduce_sum_if_mpi
 
@@ -447,9 +481,9 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
 
     # Wave field extrema (with MPI reduction)
     # Transform full complex B to physical space, then extract real part
-    L⁺Ar_complex = _allocate_fft_dst(sim.state.L⁺A, sim.plans)
-    fft_backward!(L⁺Ar_complex, sim.state.L⁺A, sim.plans)
-    Br = real.(parent(L⁺Ar_complex))
+    Br_complex = _allocate_fft_dst(sim.state.B, sim.plans)
+    fft_backward!(Br_complex, sim.state.B, sim.plans)
+    Br = real.(parent(Br_complex))
     diagnostics["wave_min"] = reduce_min_if_mpi(minimum(Br), sim.parallel_config)
     diagnostics["wave_max"] = reduce_max_if_mpi(maximum(Br), sim.parallel_config)
 
@@ -502,11 +536,11 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     end
 
     # Get arrays
-    L⁺A_arr = parent(state.L⁺A)
+    B_arr = parent(state.B)
     A_arr = parent(state.A)
     C_arr = parent(state.C)
 
-    nz_local, nx_local, ny_local = size(L⁺A_arr)
+    nz_local, nx_local, ny_local = size(B_arr)
 
     # Grid spacing for vertical derivative
     Δz = nz > 1 ? abs(grid.z[2] - grid.z[1]) : T(1)
@@ -518,15 +552,15 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     # For WKE, compute LA = ∂_z(a × C) using the L operator from equation (1.3)
     # Loop over (i,j) modes first, then compute LA across z levels
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, state.L⁺A)
-        j_global = local_to_global(j_local, 3, state.L⁺A)
+        i_global = local_to_global(i_local, 2, state.B)
+        j_global = local_to_global(j_local, 3, state.B)
 
         kx_val = grid.kx[min(i_global, length(grid.kx))]
         ky_val = grid.ky[min(j_global, length(grid.ky))]
         kh2 = kx_val^2 + ky_val^2
 
         for k in 1:nz_local
-            k_global = local_to_global(k, 1, state.L⁺A)
+            k_global = local_to_global(k, 1, state.B)
             a_ell = a_ell_arr[min(k_global, nz)]
 
             C_k = C_arr[k, i_local, j_local]
@@ -537,32 +571,28 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             AI = imag(A_k)
 
             # Compute LA = ∂_z(a × C) using finite differences
-            # C[k] is at interface z = k*Δz, a[k] is at z = (k-1)*Δz
-            # So (a×C) at interface k uses a[k+1] (both at z = k*Δz)
-            # LA[k] = (a[k+1] × C[k] - a[k] × C[k-1]) / Δz
+            # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
             if nz == 1
                 LA_r = T(0)
                 LA_i = T(0)
             elseif k_global == 1
-                # Bottom boundary: C[0] = 0 (Neumann BC), so only upper flux
-                # Interface above cell 1 is at z = Δz, uses a[2]
-                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
-                LA_r = a_ell_kp1 * CR / Δz
-                LA_i = a_ell_kp1 * CI / Δz
+                # Bottom boundary
+                LA_r = a_ell * CR / Δz
+                LA_i = a_ell * CI / Δz
             elseif k_global == nz
-                # Top boundary: C[nz] = 0 (Neumann BC), so only lower flux
-                # Interface below cell nz is at z = (nz-1)*Δz, uses a[nz]
+                # Top boundary
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = -a_ell * CR_km1 / Δz
-                LA_i = -a_ell * CI_km1 / Δz
+                LA_r = -a_ell_km1 * CR_km1 / Δz
+                LA_i = -a_ell_km1 * CI_km1 / Δz
             else
-                # Interior: LA[k] = (a[k+1]*C[k] - a[k]*C[k-1]) / Δz
-                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+                # Interior
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
-                LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
+                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
             end
 
             # WKE contribution (factor of 0.5 in norm_factor)
@@ -577,10 +607,9 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     end
 
     # Dealiasing correction for WKE at kh=0 mode
-    # Uses same corrected indexing as main WKE loop
     wke_zero = T(0)
     for k in 1:nz_local
-        k_global = local_to_global(k, 1, state.L⁺A)
+        k_global = local_to_global(k, 1, state.B)
         a_ell = a_ell_arr[min(k_global, nz)]
         CR = real(C_arr[k, 1, 1])
         CI = imag(C_arr[k, 1, 1])
@@ -589,20 +618,20 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
             LA_r = T(0)
             LA_i = T(0)
         elseif k_global == 1
-            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
-            LA_r = a_ell_kp1 * CR / Δz
-            LA_i = a_ell_kp1 * CI / Δz
+            LA_r = a_ell * CR / Δz
+            LA_i = a_ell * CI / Δz
         elseif k_global == nz
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = -a_ell * CR_km1 / Δz
-            LA_i = -a_ell * CI_km1 / Δz
+            LA_r = -a_ell_km1 * CR_km1 / Δz
+            LA_i = -a_ell_km1 * CI_km1 / Δz
         else
-            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
-            LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
+            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
         end
         wke_zero += LA_r^2 + LA_i^2
     end
@@ -817,7 +846,7 @@ with a(z) = f²/N² and C = ∂A/∂z.
 Domain-integrated wave kinetic energy (scalar).
 """
 function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
-    T = eltype(real(state.L⁺A[1]))
+    T = eltype(real(state.B[1]))
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
@@ -839,9 +868,6 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
     WE = T(0)
 
     # Compute LA = ∂_z(a × C) for each mode
-    # Compute LA = ∂_z(a × C) for each mode
-    # C[k] is at interface z = k*Δz, a[k] is at z = (k-1)*Δz
-    # So (a×C) at interface k uses a[k+1] (both at z = k*Δz)
     for j_local in 1:ny_local, i_local in 1:nx_local
         for k in 1:nz_local
             k_global = local_to_global(k, 1, state.C)
@@ -850,35 +876,31 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
             CI = imag(C_arr[k, i_local, j_local])
 
             # Compute LA = ∂_z(a × C) using finite differences
-            # LA[k] = (a[k+1] × C[k] - a[k] × C[k-1]) / Δz
             if nz == 1
                 LA_r = T(0)
                 LA_i = T(0)
             elseif k_global == 1
-                # Bottom: C[0] = 0 (Neumann BC), interface above uses a[2]
-                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
-                LA_r = a_ell_kp1 * CR / Δz
-                LA_i = a_ell_kp1 * CI / Δz
+                LA_r = a_ell * CR / Δz
+                LA_i = a_ell * CI / Δz
             elseif k_global == nz
-                # Top: C[nz] = 0 (Neumann BC), interface below uses a[nz]
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = -a_ell * CR_km1 / Δz
-                LA_i = -a_ell * CI_km1 / Δz
+                LA_r = -a_ell_km1 * CR_km1 / Δz
+                LA_i = -a_ell_km1 * CI_km1 / Δz
             else
-                # Interior: LA[k] = (a[k+1]*C[k] - a[k]*C[k-1]) / Δz
-                a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+                a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
                 CR_km1 = real(C_arr[k-1, i_local, j_local])
                 CI_km1 = imag(C_arr[k-1, i_local, j_local])
-                LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
-                LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
+                LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+                LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
             end
 
             WE += LA_r^2 + LA_i^2
         end
     end
 
-    # Dealiasing correction for kh=0 mode (same corrected indexing)
+    # Dealiasing correction for kh=0 mode
     wke_zero = T(0)
     for k in 1:nz_local
         k_global = local_to_global(k, 1, state.C)
@@ -890,20 +912,20 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
             LA_r = T(0)
             LA_i = T(0)
         elseif k_global == 1
-            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
-            LA_r = a_ell_kp1 * CR / Δz
-            LA_i = a_ell_kp1 * CI / Δz
+            LA_r = a_ell * CR / Δz
+            LA_i = a_ell * CI / Δz
         elseif k_global == nz
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = -a_ell * CR_km1 / Δz
-            LA_i = -a_ell * CI_km1 / Δz
+            LA_r = -a_ell_km1 * CR_km1 / Δz
+            LA_i = -a_ell_km1 * CI_km1 / Δz
         else
-            a_ell_kp1 = a_ell_arr[min(k_global + 1, nz)]
+            a_ell_km1 = a_ell_arr[max(k_global - 1, 1)]
             CR_km1 = real(C_arr[k-1, 1, 1])
             CI_km1 = imag(C_arr[k-1, 1, 1])
-            LA_r = (a_ell_kp1 * CR - a_ell * CR_km1) / Δz
-            LA_i = (a_ell_kp1 * CI - a_ell * CI_km1) / Δz
+            LA_r = (a_ell * CR - a_ell_km1 * CR_km1) / Δz
+            LA_i = (a_ell * CI - a_ell_km1 * CI_km1) / Δz
         end
         wke_zero += LA_r^2 + LA_i^2
     end
@@ -989,7 +1011,7 @@ end
 Run a complete QG-YBJ+ simulation with automatic time-stepping, output, and diagnostics.
 
 This is the recommended high-level interface that handles all the details of:
-- Exponential RK2 time integration
+- Leapfrog time integration with Robert-Asselin filter
 - State array rotation (no manual management needed)
 - Periodic output to NetCDF files
 - Progress reporting and diagnostics
@@ -1012,6 +1034,10 @@ This is the recommended high-level interface that handles all the details of:
   When `nothing`, uses constant N² from `par.N²`.
 - `print_progress::Bool=true`: Print progress to stdout
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
+- `timestepper::Symbol=:leapfrog`: Time-stepping method. Options:
+  - `:leapfrog`: Leapfrog with Robert-Asselin filter (default, explicit, CFL-limited)
+  - `:imex_cn`: IMEX Crank-Nicolson (implicit dispersion, allows larger dt)
+
 # Returns
 - Final `State` at the end of the simulation
 
@@ -1032,26 +1058,27 @@ output_config = OutputConfig(
     wave_interval = 2π / par.f₀
 )
 
-# Run simulation - time-stepping handled automatically
+# Run simulation - all time-stepping handled automatically
 S_final = run_simulation!(S, G, par, plans; output_config=output_config)
+
+# Or use IMEX for larger timesteps
+S_final = run_simulation!(S, G, par, plans;
+                          output_config=output_config,
+                          timestepper=:imex_cn)
 ```
 
-See also: `OutputConfig`, `exp_rk2_step!`
+See also: `OutputConfig`, `leapfrog_step!`, `imex_cn_step!`
 """
-_normalize_output_configs(::Nothing) = OutputConfig[]
-_normalize_output_configs(config::OutputConfig) = [config]
-_normalize_output_configs(configs::Tuple) = collect(configs)
-_normalize_output_configs(configs::AbstractVector) = configs
-
 function run_simulation!(S::State, G::Grid, par::QGParams, plans;
-                         output_config=nothing,
+                         output_config::Union{OutputConfig,Nothing}=nothing,
                          mpi_config=nothing,
                          parallel_config=nothing,
                          workspace=nothing,
                          N2_profile=nothing,
                          print_progress::Bool=true,
                          progress_interval::Int=0,
-                         diagnostics_interval::Int=0)
+                         diagnostics_interval::Int=0,
+                         timestepper::Symbol=:leapfrog)
 
     # Setup parallel config if not provided (for I/O)
     # MPI is required, so use the mpi_config directly
@@ -1095,30 +1122,28 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
     L_mask = dealias_mask(G)
 
-    # Initial diagnostics for progress reporting and output.
-    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile)
+    # Initial velocity computation
+    # Skip omega equation for IMEX-CN (not needed and expensive)
+    skip_w = timestepper == :imex_cn
+    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace, N2_profile=N2_profile, compute_w=!skip_w)
 
     # Initialize A from B via elliptic inversion: A = (L⁺)⁻¹·B
     # This is needed before the first diagnostics printout (step 0)
     # For YBJ+, A is the wave amplitude and B = L⁺·A
     if par.ybj_plus
-        invert_L⁺A_to_A!(S, G, par, a_ell; workspace=workspace)
+        invert_B_to_A!(S, G, par, a_ell; workspace=workspace)
     end
 
-    # Create output managers if config provided. A collection of OutputConfig
-    # objects allows one run to write multiple products, such as full-domain
-    # state files and nearest-level z slices.
-    output_configs = _normalize_output_configs(output_config)
-    output_managers = [OutputManager(config, par, parallel_config) for config in output_configs]
-    if !isempty(output_managers)
+    # Create output manager if config provided
+    output_manager = nothing
+    if output_config !== nothing
+        output_manager = OutputManager(output_config, par, parallel_config)
 
         # Save initial state
         if is_root && print_progress
             println("Saving initial state...")
         end
-        for output_manager in output_managers
-            write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
-        end
+        write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
     end
 
     # Determine progress interval
@@ -1134,23 +1159,23 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     end
 
     # Compute save intervals in steps
-    psi_save_steps = [config.save_psi && config.psi_interval > 0 ?
-                      max(1, round(Int, config.psi_interval / dt)) : 0 for config in output_configs]
-    wave_save_steps = [config.save_waves && config.wave_interval > 0 ?
-                       max(1, round(Int, config.wave_interval / dt)) : 0 for config in output_configs]
+    psi_save_steps = output_config !== nothing && output_config.save_psi && output_config.psi_interval > 0 ?
+                     max(1, round(Int, output_config.psi_interval / dt)) : 0
+    wave_save_steps = output_config !== nothing && output_config.save_waves && output_config.wave_interval > 0 ?
+                      max(1, round(Int, output_config.wave_interval / dt)) : 0
+    # Print header
+    timestepper_name = timestepper == :imex_cn ? "IMEX Crank-Nicolson" : "Leapfrog"
     if is_root && print_progress
         println("\n" * "="^60)
-        println("Starting time integration (exponential RK2)...")
+        println("Starting time integration ($timestepper_name)...")
         println("  Steps: $nt, dt: $dt")
-        for (config, psi_steps, wave_steps) in zip(output_configs, psi_save_steps, wave_save_steps)
-            if psi_steps > 0 || wave_steps > 0
-                if psi_steps > 0 && wave_steps > 0
-                    println("  Saving $(config.output_dir): ψ every $psi_steps steps, waves every $wave_steps steps")
-                elseif psi_steps > 0
-                    println("  Saving $(config.output_dir): ψ every $psi_steps steps")
-                else
-                    println("  Saving $(config.output_dir): waves every $wave_steps steps")
-                end
+        if psi_save_steps > 0 || wave_save_steps > 0
+            if psi_save_steps > 0 && wave_save_steps > 0
+                println("  Saving ψ every $psi_save_steps steps, waves every $wave_save_steps steps")
+            elseif psi_save_steps > 0
+                println("  Saving ψ every $psi_save_steps steps")
+            else
+                println("  Saving waves every $wave_save_steps steps")
             end
         end
         println("  Diagnostics every $diagnostics_interval steps")
@@ -1163,7 +1188,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     # Allocate temporary arrays for physical space diagnostics
     # These are used to transform B and A from spectral to physical space
     # Must use _allocate_fft_dst for correct pencil allocation in MPI case
-    L⁺A_phys = _allocate_fft_dst(S.L⁺A, plans)
+    B_phys = _allocate_fft_dst(S.B, plans)
     A_phys = _allocate_fft_dst(S.A, plans)
 
     report_step = function(state::State, step::Int, current_time)
@@ -1172,9 +1197,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
             max_v = reduce_max_if_mpi(maximum(abs, parent(state.v)), mpi_config)
             max_vel = max(max_u, max_v)
 
-            fft_backward!(L⁺A_phys, state.L⁺A, plans)
+            fft_backward!(B_phys, state.B, plans)
             fft_backward!(A_phys, state.A, plans)
-            max_B = reduce_max_if_mpi(maximum(abs, parent(L⁺A_phys)), mpi_config)
+            max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
             max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
 
             if is_root && print_progress
@@ -1183,9 +1208,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
             end
         end
 
-        for (output_manager, psi_steps, wave_steps) in zip(output_managers, psi_save_steps, wave_save_steps)
-            write_psi = psi_steps > 0 && step % psi_steps == 0
-            write_waves = wave_steps > 0 && step % wave_steps == 0
+        if output_manager !== nothing
+            write_psi = psi_save_steps > 0 && step % psi_save_steps == 0
+            write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
             if write_psi || write_waves
                 write_state_file(output_manager, state, G, plans, current_time, parallel_config;
                                  params=par, write_psi=write_psi, write_waves=write_waves)
@@ -1202,9 +1227,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         max_vel = max(max_u, max_v)
 
         # Transform B and A to physical space for meaningful diagnostics
-        fft_backward!(L⁺A_phys, S.L⁺A, plans)
+        fft_backward!(B_phys, S.B, plans)
         fft_backward!(A_phys, S.A, plans)
-        max_B = reduce_max_if_mpi(maximum(abs, parent(L⁺A_phys)), mpi_config)
+        max_B = reduce_max_if_mpi(maximum(abs, parent(B_phys)), mpi_config)
         max_A = reduce_max_if_mpi(maximum(abs, parent(A_phys)), mpi_config)
 
         if is_root && print_progress
@@ -1213,36 +1238,89 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         end
     end
 
-    Sn = copy_state(S)
-    Snp1 = copy_state(S)
-    timestep_workspace = ExpRK2Workspace(S, plans; G=G)
+    # Branch based on timestepper
+    if timestepper == :leapfrog
+        # ==================== LEAPFROG TIME STEPPING ====================
+        # Setup leapfrog states - save initial state BEFORE advancing
+        # Snm1 = state at time 0 (initial condition)
+        # Use copy_state instead of deepcopy to preserve PencilArray topology
+        Snm1 = copy_state(S)
 
-    for step in 1:nt
-        exp_rk2_step!(Snp1, Sn, G, par, plans;
-                      a=a_ell, dealias_mask=L_mask, workspace=workspace,
-                      N2_profile=N2_profile, timestep_workspace=timestep_workspace)
+        # First projection step (Forward Euler to initialize leapfrog)
+        # Advances S from time 0 to time dt
+        first_projection_step!(S, G, par, plans; a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
 
-        Sn, Snp1 = Snp1, Sn
+        # Sn = state at time dt (after first projection step)
+        Sn = copy_state(S)
+        # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
+        Snp1 = copy_state(S)
 
-        current_time = step * dt
-        report_step(Sn, step, current_time)
+        # Time integration loop
+        for step in 1:nt
+            # Leapfrog step
+            leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
+                           a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+
+            # Rotate states: (n-1) ← (n) ← (n+1) ← (n-1)
+            Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+
+            current_time = step * dt
+
+            report_step(Sn, step, current_time)
+        end
+
+        # Copy final state back to S
+        copyto!(parent(S.psi), parent(Sn.psi))
+        copyto!(parent(S.q), parent(Sn.q))
+        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.A), parent(Sn.A))
+        copyto!(parent(S.C), parent(Sn.C))
+        copyto!(parent(S.u), parent(Sn.u))
+        copyto!(parent(S.v), parent(Sn.v))
+        copyto!(parent(S.w), parent(Sn.w))
+
+    elseif timestepper == :imex_cn
+        # ==================== IMEX CRANK-NICOLSON ====================
+        # IMEX only needs two time levels: Sn (current) and Snp1 (next)
+        # Dispersion is treated implicitly for unconditional stability
+
+        # Initialize IMEX workspace
+        imex_ws = init_imex_workspace(S, G)
+
+        # Setup states
+        Sn = copy_state(S)
+        Snp1 = copy_state(S)
+
+        for step in 1:nt
+            imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws;
+                          a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)
+
+            Sn, Snp1 = Snp1, Sn
+
+            current_time = step * dt
+            report_step(Sn, step, current_time)
+        end
+
+        # Copy final state back to S
+        copyto!(parent(S.psi), parent(Sn.psi))
+        copyto!(parent(S.q), parent(Sn.q))
+        copyto!(parent(S.B), parent(Sn.B))
+        copyto!(parent(S.A), parent(Sn.A))
+        copyto!(parent(S.C), parent(Sn.C))
+        copyto!(parent(S.u), parent(Sn.u))
+        copyto!(parent(S.v), parent(Sn.v))
+        copyto!(parent(S.w), parent(Sn.w))
+
+    else
+        error("Unknown timestepper: $timestepper. Valid options: :leapfrog, :imex_cn")
     end
-
-    copyto!(parent(S.psi), parent(Sn.psi))
-    copyto!(parent(S.q), parent(Sn.q))
-    copyto!(parent(S.L⁺A), parent(Sn.L⁺A))
-    copyto!(parent(S.A), parent(Sn.A))
-    copyto!(parent(S.C), parent(Sn.C))
-    copyto!(parent(S.u), parent(Sn.u))
-    copyto!(parent(S.v), parent(Sn.v))
-    copyto!(parent(S.w), parent(Sn.w))
 
     # Print completion message
     if is_root && print_progress
         println("\n" * "="^60)
         println("Simulation complete!")
-        if !isempty(output_configs)
-            println("Output saved to: " * join((config.output_dir * "/" for config in output_configs), ", "))
+        if output_manager !== nothing
+            println("Output saved to: $(output_config.output_dir)/")
         end
         println("="^60)
     end
@@ -1258,8 +1336,8 @@ Check for early termination conditions (blow-up, etc.).
 function check_termination_conditions(sim::QGYBJSimulation{T}) where T
     # Check for NaNs or Infs
     psi_arr = parent(sim.state.psi)
-    L⁺A_arr = parent(sim.state.L⁺A)
-    local_bad = any(x -> !isfinite(x), psi_arr) || any(x -> !isfinite(x), L⁺A_arr)
+    B_arr = parent(sim.state.B)
+    local_bad = any(x -> !isfinite(x), psi_arr) || any(x -> !isfinite(x), B_arr)
     bad_count = reduce_sum_if_mpi(local_bad ? 1 : 0, sim.parallel_config)
     if bad_count > 0
         if sim.parallel_config === nothing || sim.parallel_config.is_root
@@ -1418,6 +1496,7 @@ function setup_model_with_config(config::ModelConfig{T}) where T
         f₀ = config.f0,
         N² = N2_value,
         W2F = T(0.01),  # Default (deprecated parameter)
+        γ = T(1e-3),    # Robert-Asselin filter coefficient
 
         # Legacy viscosity (use hyperdiffusion instead)
         νₕ = config.nu_h,

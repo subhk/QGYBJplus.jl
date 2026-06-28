@@ -1,91 +1,182 @@
-# [Quick Start](@id quickstart)
+# [Quick Start Tutorial](@id quickstart)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-This page shows the recommended high-level workflow. It follows the same style
-as Oceananigans: build a grid, build a model, set initial conditions, create a
-simulation, then call `run!`.
+Run your first QGYBJ+.jl simulation in 5 minutes.
 
-## Minimal Script
+---
+
+## Minimal Example
+
+```@raw html
+<div class="quickstart-card">
+```
 
 ```julia
 using QGYBJplus
 
-grid = RectilinearGrid(size = (64, 64, 32),
-                       x = (-250e3, 250e3),
-                       y = (-250e3, 250e3),
-                       z = (-4000.0, 0.0))
+# Configure (Lx, Ly, Lz are REQUIRED)
+config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size [m]
+    nx=64, ny=64, nz=32,             # Grid points
+    dt=0.001, total_time=1.0,        # Time stepping
+    output_interval=100
+)
 
-model = QGYBJModel(grid = grid,
-                   coriolis = FPlane(f = 1e-4),
-                   stratification = ConstantStratification(N² = 1e-5),
-                   closure = HorizontalHyperdiffusivity(waves = 1e5),
-                   flow = :fixed,
-                   feedback = :none,
-                   Δt = 300.0,
-                   stop_iteration = 10)
+# Run
+result = run_simple_simulation(config)
 
-ψᵢ = (x, y, z) -> 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3)
-
-set!(model;
-     ψ = ψᵢ,
-     pv_method = :barotropic,
-     waves = SurfaceWave(amplitude = 0.05, scale = 500.0))
-
-output = NetCDFOutput(path = "output",
-                      schedule = TimeInterval(inertial_period(model)),
-                      fields = (:ψ, :waves))
-
-simulation = Simulation(model;
-                        stop_time = 2inertial_period(model),
-                        output = output,
-                        diagnostics = IterationInterval(10))
-
-run!(simulation)
-finalize_simulation!(simulation)
+# Check results
+println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
 ```
 
-## What the Script Does
+```@raw html
+</div>
+```
 
-- `RectilinearGrid` defines the physical domain in meters.
-- `QGYBJModel` defines the Coriolis frequency, stratification, closure, and
-  coupling choices.
-- `set!` initializes the balanced flow and the near-inertial wave field.
-- `NetCDFOutput` controls what is written and how often.
-- `Simulation` controls the run clock.
+---
 
-The prognostic equations are dimensional. Use physical values for lengths,
-times, Coriolis frequency, stratification, and diffusivities.
+## Step-by-Step Breakdown
 
-## Saving Surface Output
-
-To save only the level nearest the surface:
+### Step 1: Create Configuration
 
 ```julia
-surface_output = NetCDFOutput(path = "output/surface",
-                              schedule = TimeInterval(inertial_period(model)),
-                              fields = (:ψ, :waves),
-                              z = 0.0)
+config = create_simple_config(
+    Lx = 500e3,        # Domain length x [m] (REQUIRED)
+    Ly = 500e3,        # Domain length y [m] (REQUIRED)
+    Lz = 4000.0,       # Domain depth [m] (REQUIRED)
+    nx = 64, ny = 64, nz = 32,  # Grid dimensions
+    dt = 0.001,        # Time step
+    total_time = 1.0,  # Total simulation time
+)
 ```
 
-To save both the full domain and the surface level:
+!!! warning "Domain size is required"
+    There are no default values for `Lx`, `Ly`, `Lz`. Omitting them causes a `MethodError`.
+
+### Step 2: Run Simulation
 
 ```julia
-full_output = NetCDFOutput(path = "output/full",
-                           schedule = TimeInterval(inertial_period(model)),
-                           fields = (:ψ, :waves))
-
-simulation = Simulation(model;
-                        output = (full_output, surface_output),
-                        stop_time = 2inertial_period(model))
+result = run_simple_simulation(config)
 ```
 
-## Next Steps
+This returns a `Simulation` object containing:
+- `result.state` — Final state with all fields
+- `result.grid` — Grid information
+- `result.params` — Simulation parameters
 
-- [Running Simulations](@ref running) explains runtime options.
-- [I/O and Output](@ref io-output) explains NetCDF files.
-- [Stratification](@ref stratification) explains constant, analytic, and
-  file-backed profiles.
-- [MPI Parallelization](@ref parallel) explains distributed runs.
+### Step 3: Access Results
+
+```julia
+state = result.state
+
+# Spectral fields (complex, in Fourier space)
+state.psi    # Streamfunction
+state.B      # Wave envelope
+state.A      # Wave amplitude (diagnosed from B)
+state.C      # Vertical derivative of A
+
+# Physical fields (real, in physical space)
+state.u      # Zonal velocity
+state.v      # Meridional velocity
+state.w      # Vertical velocity
+```
+
+### Step 4: Compute Diagnostics
+
+```julia
+# Mean flow kinetic energy
+KE = flow_kinetic_energy(state.u, state.v)
+
+# Wave energy components per YBJ+ equation (4.7)
+WKE, WPE, WCE = compute_detailed_wave_energy(state, result.grid, result.params)
+
+# Simple wave energy
+WE_B, WE_A = wave_energy(state.B, state.A)
+```
+
+---
+
+## Common Configuration Options
+
+```@raw html
+<div class="feature-grid">
+<div class="feature-card">
+    <h3>Physics Options</h3>
+    <p>Control the physical model behavior</p>
+</div>
+<div class="feature-card">
+    <h3>Stratification</h3>
+    <p>Choose ocean density profile</p>
+</div>
+</div>
+```
+
+```julia
+config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,
+    nx=64, ny=64, nz=32,
+
+    # Physics options
+    ybj_plus = true,          # YBJ+ formulation (default)
+    linear = false,           # Set true to disable nonlinear terms
+    inviscid = true,          # Set true for no dissipation
+    no_wave_feedback = true,  # Set true for one-way coupling (eddies → waves only)
+
+    # Stratification
+    stratification_type = :constant_N,  # or :skewed_gaussian
+)
+```
+
+| Option | Default | Description |
+|:-------|:--------|:------------|
+| `ybj_plus` | `true` | Use YBJ+ formulation (recommended) |
+| `linear` | `false` | Disable nonlinear advection terms |
+| `inviscid` | `false` | Disable all dissipation |
+| `no_wave_feedback` | `false` | Disable wave feedback on mean flow |
+| `stratification_type` | `:constant_N` | Ocean density profile type |
+
+---
+
+## Output Files
+
+By default, simulations save to `./output_simple/`:
+
+```
+output_simple/
+├── state0001.nc          # Field snapshots
+├── state0002.nc
+└── diagnostic/           # Energy time series
+    ├── wave_KE.nc
+    ├── mean_flow_KE.nc
+    └── total_energy.nc
+```
+
+---
+
+## What's Next?
+
+```@raw html
+<div class="learning-path">
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../worked_example/">Worked Example</a></strong> — Detailed step-by-step walkthrough
+    </div>
+</div>
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../guide/configuration/">Configuration Guide</a></strong> — All available parameters
+    </div>
+</div>
+<div class="path-step">
+    <div class="step-number">→</div>
+    <div class="step-content">
+        <strong><a href="../advanced/parallel/">MPI Parallelization</a></strong> — Run large-scale simulations
+    </div>
+</div>
+</div>
+```

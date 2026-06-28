@@ -23,15 +23,6 @@ N² controls:
 2. The vertical propagation of near-inertial waves
 3. The YBJ+ elliptic operator structure
 
-OPERATOR DEFINITIONS (from PDF):
---------------------------------
-    L  (YBJ operator):   L  = ∂/∂z(f²/N² ∂/∂z)              [eq. (4)]
-    L⁺ (YBJ+ operator):  L⁺ = L - k_h²/4                     [spectral space]
-
-Key relation: L = L⁺ + k_h²/4
-
-The coefficient a(z) = f²/N² appears in both L and L⁺ operators.
-
 STRATIFICATION PROFILES:
 ------------------------
 Two analytic profiles are implemented (matching Fortran):
@@ -62,6 +53,9 @@ From N²(z), we derive:
   Used in: ∂/∂z(a_ell ∂ψ/∂z) for streamfunction inversion
   When f₀=1 (nondimensional): a_ell = 1/N²
 
+- rho_ut, rho_st: Density weights on unstaggered/staggered grids
+  Used in: Mass-weighted vertical operators (currently unity for Boussinesq)
+
 DEALIASING:
 -----------
 The dealias_mask implements the 2/3 rule for spectral dealiasing:
@@ -82,16 +76,8 @@ FORTRAN CORRESPONDENCE:
 ================================================================================
                         ELLIPTIC OPERATOR COEFFICIENTS
 ================================================================================
-These coefficients appear in the vertical elliptic operators used to:
-1. Invert PV to streamfunction: q → ψ
-2. Invert wave envelope to amplitude: B → A (where B = L⁺A)
-
-The key coefficient is a(z) = f²/N²(z), which appears in both:
-    L  (YBJ):   L  = ∂/∂z(a(z) ∂/∂z)                        [eq. (4)]
-    L⁺ (YBJ+):  L⁺ = L - k_h²/4                              [spectral space]
-
-The wave velocity amplitude LA (used in GLM particle advection) is related to
-the YBJ+ quantities by: LA = B + (k_h²/4)A
+These coefficients appear in the vertical elliptic operators used to invert
+PV to streamfunction and wave envelope B to amplitude A.
 ================================================================================
 =#
 
@@ -102,17 +88,14 @@ Compute the vertical elliptic coefficient a(z) = f₀²/N²(z) on unstaggered le
 (z shifted by -dz/2 relative to the cell-centered grid).
 
 # Physical Meaning
-This coefficient appears in both QG and YBJ/YBJ+ elliptic operators:
+This coefficient appears in the stretching term of the QG elliptic operator:
 
-1. QG stretching term: ∂/∂z(a(z) ∂ψ/∂z) in the PV inversion
+    L_ψ[ψ] = ∇²ψ + ∂/∂z(a(z) ∂ψ/∂z)
 
-2. YBJ/YBJ+ operators (from PDF):
-    L  (YBJ):   L  = ∂/∂z(a(z) ∂/∂z)                        [eq. (4)]
-    L⁺ (YBJ+):  L⁺ = L - k_h²/4                              [spectral space]
+where a(z) = f²/(N²(z)) in dimensional form, normalized to 1/N² in nondimensional.
 
-   where a(z) = f²/N²(z).
-
-   Key relation: L = L⁺ + k_h²/4, so LA = B + (k_h²/4)A
+For the YBJ+ wave operator, a(z) also appears in the L⁺ operator that relates
+the wave envelope B to wave amplitude A.
 
 # Stratification Options
 - `:constant_N`: Returns a(z) = f₀²/N² everywhere (uniform stratification with user-specified N²)
@@ -264,6 +247,86 @@ approximation (ρ = const), so these return unity weights.
 =#
 
 """
+    rho_ut(par, G) -> Vector
+
+Background density weight on unstaggered vertical levels.
+
+# Physical Context
+In the general (non-Boussinesq) formulation, the vertical elliptic operators
+include density weights:
+
+    L[ψ] = ∇²ψ + (1/ρ) ∂/∂z(ρ a(z) ∂ψ/∂z)
+
+For the Boussinesq approximation used in QG-YBJ+, ρ is constant and these
+weights reduce to unity.
+
+# Current Implementation
+- Returns user-provided profile if `par.ρ_ut_profile` is set
+- Otherwise returns ones(nz) for Boussinesq dynamics
+
+# Arguments
+- `par::QGParams`: May contain custom ρ_ut_profile
+- `G::Grid`: Grid with vertical levels
+
+# Returns
+Vector of length nz with density weights ρ(z_k).
+
+# Fortran Correspondence
+Matches `rho_ut(k)` in the Fortran implementation.
+"""
+function rho_ut(par::QGParams, G::Grid)
+    # Check for user-provided custom profile
+    if par.ρ_ut_profile !== nothing
+        @assert length(par.ρ_ut_profile) == G.nz
+        return copy(par.ρ_ut_profile)
+    end
+    # Default: unity weights (Boussinesq approximation)
+    w = similar(G.z)
+    @inbounds fill!(w, 1.0)
+    return w
+end
+
+"""
+    rho_st(par, G) -> Vector
+
+Background density weight on staggered vertical levels (cell centers).
+
+# Physical Context
+Staggered density values are used in finite-difference approximations of
+vertical derivatives. In the vertical discretization:
+- Unstaggered: function values at z[k] - dz/2 (cell faces)
+- Staggered: derivatives at z[k] (cell centers)
+
+The staggered density is typically interpolated from unstaggered values
+or defined at half-levels.
+
+# Current Implementation
+- Returns user-provided profile if `par.ρ_st_profile` is set
+- Otherwise returns ones(nz) for Boussinesq dynamics
+
+# Arguments
+- `par::QGParams`: May contain custom ρ_st_profile
+- `G::Grid`: Grid with vertical levels
+
+# Returns
+Vector of length nz with staggered density weights.
+
+# Fortran Correspondence
+Matches `rho_st(k)` in the Fortran implementation.
+"""
+function rho_st(par::QGParams, G::Grid)
+    # Check for user-provided custom profile
+    if par.ρ_st_profile !== nothing
+        @assert length(par.ρ_st_profile) == G.nz
+        return copy(par.ρ_st_profile)
+    end
+    # Default: unity weights (Boussinesq approximation)
+    w = similar(G.z)
+    @inbounds fill!(w, 1.0)
+    return w
+end
+
+"""
     b_ell_ut(par, G) -> Vector
 
 First-derivative coefficient b(z) for generalized vertical elliptic operators.
@@ -398,6 +461,69 @@ function N2_ut(par::QGParams, G::Grid)
         error("Unsupported stratification: $(par.stratification)")
     end
     return N2
+end
+
+"""
+    derive_density_profiles(par, G; N2_profile=nothing) -> (rho_ut, rho_st)
+
+Derive background density profiles from stratification N²(z).
+
+# Physical Background
+In the ocean, density ρ(z) and stratification N²(z) are related by:
+
+    N² = -(g/ρ₀) ∂ρ/∂z
+
+Integrating: ρ(z) = ρ₀ - (ρ₀/g) ∫ N²(z') dz'
+
+This function could derive ρ(z) from N²(z) for non-Boussinesq dynamics.
+
+# Algorithm (if implemented)
+1. Get N²(z) from `N2_ut(par, G)` or provided profile
+2. Integrate: dρ/dz = -N² (nondimensional with g = ρ₀ = 1)
+3. Normalize to unit mean for numerical stability
+4. Interpolate to staggered grid for rho_st
+
+# Current Implementation
+Returns unity profiles (Boussinesq approximation). The QG-YBJ+ model
+assumes constant background density, with stratification effects entering
+only through a_ell = 1/N² in the elliptic operators.
+
+# Arguments
+- `par::QGParams`: Model parameters
+- `G::Grid`: Grid structure
+- `N2_profile`: Optional custom N² profile (currently ignored, reserved for future use)
+
+# Returns
+- `rho_ut`: Density weights on unstaggered levels (length nz)
+- `rho_st`: Density weights for staggered derivative operations (length nz)
+
+# Note
+Both return arrays have length nz for indexing convenience, even though true
+staggered values would have length nz-1. With Boussinesq (unity weights),
+this distinction doesn't matter.
+
+# Fortran Correspondence
+The Fortran test1 case also uses unity weights (Boussinesq).
+"""
+function derive_density_profiles(par::QGParams, G::Grid; N2_profile=nothing)
+    #= For the QG-YBJ+ model with Boussinesq approximation:
+    - Background density ρ = const = 1 (nondimensional)
+    - Stratification enters through a_ell = 1/N² in elliptic operators
+    - No density weighting in vertical derivatives
+
+    This matches the Fortran reference implementation (test1). =#
+
+    # Warn if N2_profile is provided since we currently use Boussinesq approximation
+    if N2_profile !== nothing
+        @warn "derive_density_profiles: N2_profile argument is currently ignored. " *
+              "Returning unity profiles (Boussinesq approximation). " *
+              "For variable-density effects, modify this function." maxlog=1
+    end
+
+    nz = G.nz
+    rho_ut = ones(eltype(G.z), nz)
+    rho_st = ones(eltype(G.z), nz)
+    return rho_ut, rho_st
 end
 
 #=

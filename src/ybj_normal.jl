@@ -10,7 +10,7 @@ YBJ vs YBJ+ COMPARISON:
 -----------------------
 1. YBJ+ (Plus formulation):
    - B = L⁺A where L⁺ is an elliptic operator
-   - Recover A from B via tridiagonal solve (invert_L⁺A_to_A!)
+   - Recover A from B via tridiagonal solve (invert_B_to_A!)
    - More accurate for high vertical wavenumber modes
 
 2. Normal YBJ (this file):
@@ -49,7 +49,7 @@ integration problem.
 
 FORTRAN CORRESPONDENCE:
 -----------------------
-- sumL⁺A! → sumB in derivatives.f90
+- sumB! → sumB in derivatives.f90
 - compute_sigma → compute_sigma in derivatives.f90
 - compute_A! → compute_A in derivatives.f90
 
@@ -73,7 +73,7 @@ For normal YBJ, we need to remove the vertical mean of B before integration.
 =#
 
 """
-    sumL⁺A!(B, G; Lmask=nothing, workspace=nothing)
+    sumB!(B, G; Lmask=nothing, workspace=nothing)
 
 Remove the vertical mean from the wave envelope B at each horizontal wavenumber.
 
@@ -104,20 +104,20 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 # Fortran Correspondence
 Matches `sumB` in derivatives.f90.
 """
-function sumL⁺A!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
+function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(B, G)
 
     if need_transpose
-        _sumL⁺A_2d!(B, G, Lmask, workspace)
+        _sumB_2d!(B, G, Lmask, workspace)
     else
-        _sumL⁺A_direct!(B, G, Lmask)
+        _sumB_direct!(B, G, Lmask)
     end
     return B
 end
 
 # Direct computation when z is fully local
-function _sumL⁺A_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
+function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -150,12 +150,12 @@ function _sumL⁺A_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
 end
 
 # 2D decomposition version with transposes
-function _sumL⁺A_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
+function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     # Transpose to z-pencil for vertical operations
-    B_z = workspace !== nothing && hasfield(typeof(workspace), :L⁺A_z) ? workspace.L⁺A_z : allocate_z_pencil(G, ComplexF64)
+    B_z = workspace !== nothing && hasfield(typeof(workspace), :B_z) ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
     transpose_to_z_pencil!(B_z, B, G)
 
     B_z_arr = parent(B_z)
@@ -413,7 +413,7 @@ Tuple (A, C) with recovered amplitude and its vertical derivative.
 Matches `compute_A` in derivatives.f90.
 
 # Note
-This is the NORMAL YBJ recovery method. For YBJ+, use `invert_L⁺A_to_A!` instead,
+This is the NORMAL YBJ recovery method. For YBJ+, use `invert_B_to_A!` instead,
 which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 """
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
@@ -554,4 +554,4 @@ end
 
 end # module
 
-using .YBJNormal: sumL⁺A!, compute_sigma, compute_A!
+using .YBJNormal: sumB!, compute_sigma, compute_A!
