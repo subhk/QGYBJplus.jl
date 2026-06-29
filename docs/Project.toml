@@ -6,3 +6,4 @@ QGYBJplus = "9782897d-e654-4714-b43b-fe3f3f944194"
 
 [compat]
 Documenter = "1"
+FFTW = "1.10.0"
