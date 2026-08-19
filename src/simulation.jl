@@ -191,6 +191,9 @@ function initialize_simulation(;
         f₀ = T(f₀), N² = T(N²),
         ybj_plus = ybj_plus,
         fixed_flow = fixed_flow,
+        # The simplified API exposes a single feedback switch. Keep the legacy
+        # master switch in sync so `no_wave_feedback=false` really enables qʷ.
+        no_feedback = no_wave_feedback,
         no_wave_feedback = no_wave_feedback,
         νₕ₁ʷ = T(νₕ₁ʷ),
         ilap1w = ilap1w,
@@ -431,12 +434,16 @@ function set_wave_packet!(sim::Simulation;
     z_c = z_center === nothing ? G.Lz / 2 : z_center
     z_w = z_width === nothing ? G.Lz / 4 : z_width
 
+    0 <= z_c <= G.Lz || throw(ArgumentError("z_center must lie between 0 and Lz=$(G.Lz)"))
+    z_w > 0 || throw(ArgumentError("z_width must be positive"))
+
     if sim.mpi_config.is_root
         println("Setting wave packet: kx=$kx, ky=$ky, σ_k=$sigma_k")
     end
 
     # Use the existing create_wave_packet function
-    packet = create_wave_packet(G, kx, ky, sigma_k, amplitude)
+    packet = create_wave_packet(G, kx, ky, sigma_k, amplitude;
+                                z_center=z_c, z_width=z_w)
 
     # Copy to state (handling MPI distribution)
     S.B .= scatter_from_root(packet, G, sim.mpi_config; plans=sim.plans)

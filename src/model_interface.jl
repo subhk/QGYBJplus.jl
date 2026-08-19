@@ -284,6 +284,7 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     if write_psi || write_waves
         write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
                         sim.current_time; params=sim.params,
+                        N2_profile=sim.N2_profile,
                         write_psi=write_psi, write_waves=write_waves)
     end
 
@@ -384,6 +385,7 @@ function check_and_output!(sim::QGYBJSimulation)
     if write_psi || write_waves
         write_state_file(sim.output_manager, sim.state, sim.grid, sim.plans,
                         sim.current_time, sim.parallel_config; params=sim.params,
+                        N2_profile=sim.N2_profile,
                         write_psi=write_psi, write_waves=write_waves)
     end
 end
@@ -637,8 +639,10 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
     end
     WKE -= T(0.5) * wke_zero
 
-    # Normalize by grid size
-    norm_factor = T(0.5) / (nx * ny * nz)
+    # FFTW's forward transform is unnormalized. Parseval's identity therefore
+    # contributes one factor of (nx*ny)^2 for these 2D horizontal spectra.
+    horizontal_points = T(nx) * T(ny)
+    norm_factor = T(0.5) / (horizontal_points^2 * T(nz))
     WKE *= norm_factor
     WPE *= norm_factor
     WCE *= norm_factor
@@ -712,8 +716,9 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
         KE += KE_level
     end
 
-    # Normalize by grid size
-    KE *= T(0.5) / (nx * ny * nz)
+    # FFTW's forward transform is unnormalized in both horizontal dimensions.
+    horizontal_points = T(nx) * T(ny)
+    KE *= T(0.5) / (horizontal_points^2 * T(nz))
     return KE
 end
 
@@ -821,7 +826,8 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
         PE += PE_level
     end
 
-    PE *= T(0.5) / (nx * ny * nz)
+    horizontal_points = T(nx) * T(ny)
+    PE *= T(0.5) / (horizontal_points^2 * T(nz))
     return PE
 end
 
@@ -931,7 +937,8 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
     end
     WE -= T(0.5) * wke_zero
 
-    WE *= T(0.5) / (nx * ny * nz)
+    horizontal_points = T(nx) * T(ny)
+    WE *= T(0.5) / (horizontal_points^2 * T(nz))
     return WE
 end
 
@@ -997,7 +1004,8 @@ function compute_enstrophy(state::State, grid::Grid, plans)
         Z += Z_level
     end
 
-    Z *= T(0.5) / (nx * ny * nz)
+    horizontal_points = T(nx) * T(ny)
+    Z *= T(0.5) / (horizontal_points^2 * T(nz))
     return Z
 end
 
@@ -1143,7 +1151,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         if is_root && print_progress
             println("Saving initial state...")
         end
-        write_state_file(output_manager, S, G, plans, 0.0, parallel_config; params=par)
+        write_state_file(output_manager, S, G, plans, 0.0, parallel_config;
+                         params=par, N2_profile=N2_profile)
     end
 
     # Determine progress interval
@@ -1213,7 +1222,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
             write_waves = wave_save_steps > 0 && step % wave_save_steps == 0
             if write_psi || write_waves
                 write_state_file(output_manager, state, G, plans, current_time, parallel_config;
-                                 params=par, write_psi=write_psi, write_waves=write_waves)
+                                 params=par, N2_profile=N2_profile,
+                                 write_psi=write_psi, write_waves=write_waves)
             end
         end
     end
@@ -1255,8 +1265,11 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         # Snp1 will hold state at time 2*dt (computed by first leapfrog step)
         Snp1 = copy_state(S)
 
-        # Time integration loop
-        for step in 1:nt
+        # The bootstrap is the first requested timestep.
+        report_step(Sn, 1, dt)
+
+        # Time integration loop for the remaining requested timesteps.
+        for step in 2:nt
             # Leapfrog step
             leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
                            a=a_ell, dealias_mask=L_mask, workspace=workspace, N2_profile=N2_profile)

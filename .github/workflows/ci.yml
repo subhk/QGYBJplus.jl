@@ -51,3 +51,31 @@ jobs:
           file: lcov.info
           flags: unittests
           fail_ci_if_error: false
+
+  mpi-test:
+    name: MPI regression - Julia 1.10 - Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10'
+
+      - name: Cache artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.julia/artifacts
+          key: ${{ runner.os }}-julia-mpi-artifacts-${{ hashFiles('**/Project.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-mpi-artifacts-
+
+      - name: Instantiate
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run four-rank MPI stepping regression
+        run: >-
+          julia --project=. -e
+          'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'

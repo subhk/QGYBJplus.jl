@@ -591,18 +591,28 @@ function normalize_field_energy!(field, G::Grid, target_energy::Real, plans)
 end
 
 """
-    create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real)
+    create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
+                       z_center=G.Lz/2, z_width=G.Lz/4)
 
-Create a localized wave packet in spectral space.
+Create a horizontally localized wave packet in spectral space with a Gaussian
+vertical envelope. `z_center` and `z_width` are depths measured positively
+downward from the surface.
 """
-function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real)
+function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
+                            z_center::Real=G.Lz / 2,
+                            z_width::Real=G.Lz / 4)
+    sigma_k > 0 || throw(ArgumentError("sigma_k must be positive"))
+    0 <= z_center <= G.Lz || throw(ArgumentError("z_center must lie between 0 and Lz=$(G.Lz)"))
+    z_width > 0 || throw(ArgumentError("z_width must be positive"))
+
     field = zeros(ComplexF64, G.nz, G.nx, G.ny)
     
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
     
     for k in 1:G.nz
-        z_envelope = exp(-((k - G.nz/2)^2) / (2 * (G.nz/4)^2))
+        depth = -G.z[k]
+        z_envelope = exp(-((depth - z_center)^2) / (2 * z_width^2))
         
         for j in 1:G.ny
             ky = j <= ky_max ? j-1 : j-1-G.ny

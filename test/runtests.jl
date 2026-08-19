@@ -1,5 +1,6 @@
 using Test
 using QGYBJplus
+using NCDatasets
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -523,4 +524,111 @@ end
     fft_backward!(qw_phys, qwk, plans)
 
     @test maximum(abs.(real.(qw_phys) .- qw_expected)) < 5e-10
+end
+
+@testset "Spectral diagnostic normalization" begin
+    nx, ny, nz = 8, 8, 2
+    par = default_params(nx=nx, ny=ny, nz=nz, Lx=2pi, Ly=2pi, Lz=2.0,
+                         f₀=1.0, N²=1.0)
+    G, S, plans, _ = setup_model(par)
+
+    psi_phys = zeros(Float64, nz, nx, ny)
+    C_phys = zeros(ComplexF64, nz, nx, ny)
+    for j in 1:ny, i in 1:nx
+        wave = sin(2pi * (i - 1) / nx)
+        psi_phys[:, i, j] .= wave
+        C_phys[:, i, j] .= wave
+    end
+    fft_forward!(S.psi, psi_phys, plans)
+    fft_forward!(S.C, C_phys, plans)
+
+    # Mean KE and enstrophy of sin(x) are both 1/4. The chosen C profile
+    # gives LA=±sin(x), so its wave kinetic energy is also 1/4.
+    @test isapprox(QGYBJplus.compute_kinetic_energy(S, G, plans), 0.25; atol=1e-12)
+    @test isapprox(QGYBJplus.compute_enstrophy(S, G, plans), 0.25; atol=1e-12)
+
+    # With a zero top level, the vertical mean PE is 1/8.
+    psi_phys[2, :, :] .= 0
+    fft_forward!(S.psi, psi_phys, plans)
+    @test isapprox(QGYBJplus.compute_potential_energy(S, G, plans, ones(nz)), 0.125; atol=1e-12)
+    @test isapprox(QGYBJplus.compute_wave_energy(S, G, plans; params=par), 0.25; atol=1e-12)
+    detailed_WKE, _, _ = QGYBJplus.compute_detailed_wave_energy(S, G, par)
+    @test isapprox(detailed_WKE, 0.25; atol=1e-12)
+end
+
+@testset "Generic leapfrog driver honors nt" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=2pi, Ly=2pi, Lz=1.0,
+                         dt=1e-3, nt=1)
+    G, initial, plans, a = setup_model(par)
+    initial.q[2, 2, 2] = 1e-2 + 0im
+    initial.B[2, 2, 2] = 2e-2 + 1e-2im
+
+    expected = copy_state(initial)
+    first_projection_step!(expected, G, par, plans;
+                           a=a, dealias_mask=dealias_mask(G))
+
+    actual = copy_state(initial)
+    run_simulation!(actual, G, par, plans;
+                    print_progress=false, diagnostics_interval=typemax(Int))
+
+    @test actual.q ≈ expected.q
+    @test actual.B ≈ expected.B
+end
+
+@testset "State output preserves variable stratification" begin
+    par = default_params(nx=4, ny=4, nz=4, Lx=2pi, Ly=2pi, Lz=1.0,
+                         f₀=2.0, N²=1.0)
+    G, S, plans, _ = setup_model(par)
+    N2_profile = [1.0, 2.0, 4.0, 8.0]
+
+    mktempdir() do output_dir
+        config = OutputConfig{Float64}(;
+            output_dir=output_dir,
+            save_psi=true,
+            save_waves=false,
+            save_velocities=false,
+            save_diagnostics=false,
+        )
+        manager = OutputManager(config, par)
+        filepath = write_state_file(manager, S, G, plans, 0.0;
+                                    params=par, N2_profile=N2_profile,
+                                    write_psi=true, write_waves=false)
+
+        NCDataset(filepath, "r") do ds
+            @test ds["a_ell"][:] ≈ par.f₀^2 ./ N2_profile
+        end
+    end
+end
+
+@testset "Wave packet vertical controls" begin
+    par = default_params(nx=8, ny=8, nz=16, Lx=2pi, Ly=2pi, Lz=1600.0)
+    G = init_grid(par)
+
+    shallow_center = 200.0
+    deep_center = 1200.0
+    width = 80.0
+    shallow = QGYBJplus.create_wave_packet(G, 1, 0, 1.0, 1.0;
+                                           z_center=shallow_center, z_width=width)
+    deep = QGYBJplus.create_wave_packet(G, 1, 0, 1.0, 1.0;
+                                        z_center=deep_center, z_width=width)
+
+    shallow_peak = argmax(abs.(shallow[:, 2, 1]))
+    deep_peak = argmax(abs.(deep[:, 2, 1]))
+    @test isapprox(-G.z[shallow_peak], shallow_center; atol=G.Lz / G.nz)
+    @test isapprox(-G.z[deep_peak], deep_center; atol=G.Lz / G.nz)
+    @test shallow_peak > deep_peak
+    @test_throws ArgumentError QGYBJplus.create_wave_packet(G, 1, 0, 1.0, 1.0;
+                                                            z_width=0.0)
+end
+
+@testset "Simplified API enables requested wave feedback" begin
+    sim = initialize_simulation(
+        nx=4, ny=4, nz=2,
+        Lx=2pi, Ly=2pi, Lz=1.0,
+        f₀=1.0, N²=1.0,
+        nt=1, no_wave_feedback=false,
+        verbose=false,
+    )
+    @test !sim.params.no_feedback
+    @test !sim.params.no_wave_feedback
 end

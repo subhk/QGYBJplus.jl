@@ -31,6 +31,23 @@ end
     return permutedims(arr, (3, 1, 2))
 end
 
+function _a_ell_output_profile(params, G::Grid, N2_profile)
+    params === nothing && return nothing
+    G.nz > 1 || return nothing
+
+    N2_values = if N2_profile === nothing
+        fill(params.N², G.nz)
+    else
+        length(N2_profile) == G.nz ||
+            throw(ArgumentError("N2_profile must have length $(G.nz), got $(length(N2_profile))"))
+        N2_profile
+    end
+
+    all(N2 -> isfinite(N2) && N2 > 0, N2_values) ||
+        throw(ArgumentError("N2_profile values must be finite and positive"))
+    return params.f₀^2 ./ N2_values
+end
+
 """
     OutputManager
 
@@ -138,17 +155,20 @@ function should_output_diagnostics(manager::OutputManager, time::Real)
 end
 
 """
-    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing, write_psi=nothing, write_waves=nothing)
+    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing, N2_profile=nothing, write_psi=nothing, write_waves=nothing)
 
 Write complete state to NetCDF file with standardized naming.
 Unified interface for both serial and parallel I/O.
 
 # Keyword Arguments
+- `N2_profile`: N² values used by the simulation. When provided, the saved
+  `a_ell` profile is computed from these values rather than `params.N²`.
 - `write_psi`: Override whether to write ψ for this call (defaults to config save flag).
 - `write_waves`: Override whether to write L+A for this call (defaults to config save flag).
 """
 function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing;
-                          params=nothing, write_psi=nothing, write_waves=nothing)
+                          params=nothing, N2_profile=nothing,
+                          write_psi=nothing, write_waves=nothing)
     if !HAS_NCDS
         error("NCDatasets not available. Install NCDatasets.jl or skip NetCDF I/O.")
     end
@@ -173,6 +193,7 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
     if parallel_config !== nothing && parallel_config.use_mpi && G.decomp !== nothing
         return write_parallel_state_file(manager, S, G, plans, time, parallel_config;
                                          params=params,
+                                         N2_profile=N2_profile,
                                          write_psi=write_psi,
                                          write_waves=write_waves,
                                          write_velocities=write_velocities,
@@ -181,6 +202,7 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
     else
         return write_serial_state_file(manager, S, G, plans, time;
                                        params=params,
+                                       N2_profile=N2_profile,
                                        write_psi=write_psi,
                                        write_waves=write_waves,
                                        write_velocities=write_velocities,
@@ -197,7 +219,8 @@ end
 Write state file in serial mode.
 """
 function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real;
-                                 params=nothing, write_psi=true, write_waves=true,
+                                 params=nothing, N2_profile=nothing,
+                                 write_psi=true, write_waves=true,
                                  write_velocities=false, write_vertical_velocity=false,
                                  write_vorticity=false)
     # Generate filename (printf-style pattern supported)
@@ -351,20 +374,14 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
         end
         
-        # Write a_ell (f²/N² profile) - needed for proper WKE calculation using L operator
-        # For constant N², compute a_ell = f₀²/N² at cell centers (length nz)
-        # This matches the convention in physics.jl:a_ell_ut
-        if !isnothing(params) && G.nz > 1
-            f0_sq = params.f₀^2
-            N2_val = params.N²
-            if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
-                a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
-                a_ell_var[:] = a_ell_arr
-                a_ell_var.attrib["units"] = "s²"
-                a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
-                a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
-            end
+        # Write the same f²/N² profile used by the model's elliptic operators.
+        a_ell_arr = _a_ell_output_profile(params, G, N2_profile)
+        if a_ell_arr !== nothing
+            a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
+            a_ell_var[:] = a_ell_arr
+            a_ell_var.attrib["units"] = "s²"
+            a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
+            a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
         end
 
         # Global attributes
@@ -409,7 +426,8 @@ end
 Write state file using parallel NetCDF I/O.
 """
 function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config;
-                                   params=nothing, write_psi=true, write_waves=true,
+                                   params=nothing, N2_profile=nothing,
+                                   write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
     # MPI is imported at module level
 
@@ -426,6 +444,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
             # Use parallel NetCDF I/O (gather-to-root in current implementation)
             write_parallel_netcdf_file(filepath, S, G, plans, time, parallel_config;
                                        params=params,
+                                       N2_profile=N2_profile,
                                        write_psi=write_psi,
                                        write_waves=write_waves,
                                        write_velocities=write_velocities,
@@ -447,6 +466,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
             if rank == 0
                 write_gathered_state_file(filepath, gathered_state, G, plans, time;
                                           params=params,
+                                          N2_profile=N2_profile,
                                           write_psi=write_psi,
                                           write_waves=write_waves,
                                           write_velocities=write_velocities,
@@ -459,6 +479,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
         # Fallback to serial
         return write_serial_state_file(manager, S, G, plans, time;
                                        params=params,
+                                       N2_profile=N2_profile,
                                        write_psi=write_psi,
                                        write_waves=write_waves,
                                        write_velocities=write_velocities,
@@ -497,7 +518,8 @@ Uses gather-to-root approach: all data is gathered to rank 0, which writes the f
 This is simpler and more reliable than parallel NetCDF.
 """
 function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
-                                    params=nothing, write_psi=true, write_waves=true,
+                                    params=nothing, N2_profile=nothing,
+                                    write_psi=true, write_waves=true,
                                     write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
     # MPI is imported at module level
 
@@ -514,6 +536,7 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
     if rank == 0
         write_gathered_state_file(filepath, gathered_state, G, plans, time;
                                   params=params,
+                                  N2_profile=N2_profile,
                                   write_psi=write_psi,
                                   write_waves=write_waves,
                                   write_velocities=write_velocities,
@@ -571,7 +594,8 @@ The gathered_state should be a named tuple with fields:
 - `A`: Gathered wave amplitude array (spectral, nz×nx×ny)
 """
 function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, time;
-                                   params=nothing, write_psi=true, write_waves=true,
+                                   params=nothing, N2_profile=nothing,
+                                   write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false,
                                    write_vorticity=false)
 
@@ -724,20 +748,14 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
             zeta_var.attrib["description"] = "ζ = ∇²ψ computed in spectral space"
         end
 
-        # Write a_ell (f²/N² profile) - needed for proper WKE calculation using L operator
-        # For constant N², compute a_ell = f₀²/N² at cell centers (length nz)
-        # This matches the convention in physics.jl:a_ell_ut
-        if params !== nothing && G.nz > 1
-            f0_sq = params.f₀^2
-            N2_val = params.N²
-            if N2_val > 0
-                a_ell_arr = fill(f0_sq / N2_val, G.nz)  # Cell-centered values
-                a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
-                a_ell_var[:] = a_ell_arr
-                a_ell_var.attrib["units"] = "s²"
-                a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
-                a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
-            end
+        # Write the same f²/N² profile used by the model's elliptic operators.
+        a_ell_arr = _a_ell_output_profile(params, G, N2_profile)
+        if a_ell_arr !== nothing
+            a_ell_var = NCDatasets.defVar(ds, "a_ell", Float64, ("z",))
+            a_ell_var[:] = a_ell_arr
+            a_ell_var.attrib["units"] = "s²"
+            a_ell_var.attrib["long_name"] = "elliptic coefficient f²/N² at cell centers"
+            a_ell_var.attrib["description"] = "Used for L operator: L = ∂_z(a_ell × ∂_z). a_ell[k] is used for interface k."
         end
 
         # Global attributes
