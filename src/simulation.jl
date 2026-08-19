@@ -124,10 +124,10 @@ struct RectilinearGridSpec{T}
 end
 
 function RectilinearGrid(; size::NTuple{3, Int},
-    extent::Union{Nothing, NTuple{3, <:Real}}=nothing,
-    x::Union{Nothing, NTuple{2, <:Real}}=nothing,
-    y::Union{Nothing, NTuple{2, <:Real}}=nothing,
-    z::Union{Nothing, NTuple{2, <:Real}}=nothing,
+    extent::Union{Nothing, Tuple{<:Real, <:Real, <:Real}}=nothing,
+    x::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
+    y::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
+    z::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
     centered::Bool=false)
 
     all(>(0), size) || throw(ArgumentError("all grid dimensions must be positive"))
@@ -339,7 +339,7 @@ function initialize_simulation(;
     # Model options
     ybj_plus::Bool = true,
     fixed_flow::Bool = false,
-    no_feedback::Bool = true,
+    no_feedback::Union{Bool, Nothing} = nothing,
     no_wave_feedback::Bool = false,
     # Diffusion
     νₕ₁::Real = 0.01,
@@ -384,7 +384,9 @@ function initialize_simulation(;
         f₀ = T(f₀), N² = T(N²),
         ybj_plus = ybj_plus,
         fixed_flow = fixed_flow,
-        no_feedback = no_feedback,
+        # Preserve the original simplified API: its wave-feedback switch also
+        # controls the master coupling switch unless explicitly overridden.
+        no_feedback = no_feedback === nothing ? no_wave_feedback : no_feedback,
         no_wave_feedback = no_wave_feedback,
         νₕ₁ = T(νₕ₁),
         νₕ₂ = T(νₕ₂),
