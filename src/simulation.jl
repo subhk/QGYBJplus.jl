@@ -3,6 +3,9 @@ High-level Simulation API for QG-YBJ model.
 
 Provides a simplified interface that hides MPI complexity from users:
 - `Simulation` struct wraps all components (grid, state, plans, etc.)
+- `QGYBJModel()` constructs a model from small, composable user objects
+- `set!()` initializes model fields
+- `Simulation(model; Δt, stop_time, output, diagnostics)` configures a run
 - `initialize_simulation()` handles all MPI setup automatically
 - `set_mean_flow!()`, `set_surface_waves!()` for common initial conditions
 - `set_exponential_surface_waves!()` for exponential vertical decay
@@ -12,13 +15,12 @@ Provides a simplified interface that hides MPI complexity from users:
 ```julia
 using QGYBJplus
 
-# Initialize simulation (handles all MPI setup internally)
-sim = initialize_simulation(
-    nx=256, ny=256, nz=128,
-    Lx=70e3, Ly=70e3, Lz=2000.0,
-    f₀=1.24e-4, N²=1e-5,
-    dt=20.0, nt=10000
-)
+grid = RectilinearGrid(size=(256, 256, 128),
+                       x=(-35e3, 35e3), y=(-35e3, 35e3), z=(-2e3, 0))
+
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1.24e-4),
+                   stratification=ConstantStratification(N²=1e-5))
 
 # Set initial conditions
 κ = sqrt(2) * π / 70e3
@@ -28,14 +30,15 @@ dipole = (x, y, z) -> begin
     y_rot = (x + y) / sqrt(2)
     (U / κ) * sin(κ * x_rot) * cos(κ * y_rot)
 end
-set_mean_flow!(sim; psi_func=dipole)
-set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)
+set!(model; ψ=dipole, waves=SurfaceWave(amplitude=0.10, scale=30.0))
 
-# Run simulation with ETD-RK2
-run!(sim; output_dir="output")
+simulation = Simulation(model; Δt=20.0, stop_iteration=10_000,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(inertial_period(model))))
+run!(simulation) # ETD-RK2
 
 # Cleanup
-finalize_simulation!(sim)
+finalize_simulation!(simulation)
 ```
 """
 
@@ -44,12 +47,192 @@ using Printf
 
 #=
 ================================================================================
+                     DECLARATIVE USER INTERFACE
+================================================================================
+=#
+
+"""Schedule output or diagnostics at a time interval measured in seconds."""
+struct TimeInterval{T}
+    interval::T
+end
+
+function TimeInterval(interval::Real)
+    interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
+    value = float(interval)
+    return TimeInterval{typeof(value)}(value)
+end
+
+"""Schedule output or diagnostics every `interval` model iterations."""
+struct IterationInterval
+    interval::Int
+end
+
+function IterationInterval(interval::Integer)
+    interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
+    return IterationInterval(Int(interval))
+end
+
+"""
+    NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves), velocities=false)
+
+Declarative NetCDF output settings for [`Simulation`](@ref). `schedule` may be
+a [`TimeInterval`](@ref) or [`IterationInterval`](@ref).
+"""
+struct NetCDFOutput{S}
+    path::String
+    schedule::S
+    fields::Tuple
+    velocities::Bool
+end
+
+function NetCDFOutput(; path::AbstractString="output", schedule=nothing,
+    fields=(:ψ, :waves), velocities::Bool=false)
+
+    schedule === nothing || schedule isa TimeInterval || schedule isa IterationInterval ||
+        throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
+    isempty(path) && throw(ArgumentError("output path cannot be empty"))
+    output_fields = fields isa Symbol ? (fields,) : Tuple(fields)
+    return NetCDFOutput(String(path), schedule, output_fields, velocities)
+end
+
+mutable struct SimulationRunOptions{T}
+    output_dir::String
+    save_interval::Union{Nothing, T}
+    diagnostics_interval::Int
+    verbose::Bool
+    save_psi::Bool
+    save_waves::Bool
+    save_velocities::Bool
+    output
+end
+
+default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
+    "output", nothing, 10, true, true, true, false, nothing)
+
+"""
+    RectilinearGrid(; size, extent=nothing, x=nothing, y=nothing, z=nothing,
+                      centered=false)
+
+Describe a regular periodic-horizontal grid. `size` is `(nx, ny, nz)` and
+`extent` is `(Lx, Ly, Lz)`. Alternatively, pass coordinate ranges such as
+`x=(-35e3, 35e3)`, `y=(-35e3, 35e3)`, and `z=(-3e3, 0)`.
+"""
+struct RectilinearGridSpec{T}
+    size::NTuple{3, Int}
+    extent::NTuple{3, T}
+    origin::NTuple{2, T}
+end
+
+function RectilinearGrid(; size::NTuple{3, Int},
+    extent::Union{Nothing, NTuple{3, <:Real}}=nothing,
+    x::Union{Nothing, NTuple{2, <:Real}}=nothing,
+    y::Union{Nothing, NTuple{2, <:Real}}=nothing,
+    z::Union{Nothing, NTuple{2, <:Real}}=nothing,
+    centered::Bool=false)
+
+    all(>(0), size) || throw(ArgumentError("all grid dimensions must be positive"))
+    if extent === nothing
+        x === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or x=(x₁, x₂)"))
+        y === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or y=(y₁, y₂)"))
+        z === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or z=(z₁, z₂)"))
+        extent = (x[2] - x[1], y[2] - y[1], abs(z[2] - z[1]))
+    end
+
+    extent_values = float.(extent)
+    T = promote_type(map(typeof, extent_values)...)
+    Lx, Ly, Lz = T.(extent_values)
+    all(>(zero(T)), (Lx, Ly, Lz)) || throw(ArgumentError("all grid extents must be positive"))
+
+    _check_extent(range, length, name) = begin
+        range === nothing && return
+        actual = T(abs(range[2] - range[1]))
+        isapprox(actual, length; rtol=10eps(T), atol=10eps(T) * max(length, one(T))) ||
+            throw(ArgumentError("$name range length $actual does not match extent $length"))
+    end
+    _check_extent(x, Lx, "x")
+    _check_extent(y, Ly, "y")
+    _check_extent(z, Lz, "z")
+
+    if centered && (x !== nothing || y !== nothing)
+        throw(ArgumentError("centered=true cannot be combined with explicit x or y ranges"))
+    end
+    x0 = x === nothing ? (centered ? -Lx / 2 : zero(T)) : T(x[1])
+    y0 = y === nothing ? (centered ? -Ly / 2 : zero(T)) : T(y[1])
+    return RectilinearGridSpec{T}(size, (Lx, Ly, Lz), (x0, y0))
+end
+
+"""Constant Coriolis parameter for an f-plane model."""
+struct FPlane{T}
+    f::T
+end
+
+FPlane(; f::Real) = FPlane(f)
+FPlane(f::Real) = FPlane{typeof(float(f))}(float(f))
+
+"""Constant buoyancy frequency squared `N²` in s⁻²."""
+struct ConstantStratification{T}
+    N²::T
+end
+
+ConstantStratification(; N²::Real) = ConstantStratification(N²)
+function ConstantStratification(N²::Real)
+    N² > 0 || throw(ArgumentError("N² must be positive (got $N²)"))
+    return ConstantStratification{typeof(float(N²))}(float(N²))
+end
+
+"""Horizontal hyperdiffusion coefficients for the balanced flow and waves."""
+struct HorizontalHyperdiffusivity{T}
+    flow::T
+    flow2::T
+    flow_laplacian_order::Int
+    flow_laplacian_order2::Int
+    waves::T
+    waves2::T
+    wave_laplacian_order::Int
+    wave_laplacian_order2::Int
+end
+
+function HorizontalHyperdiffusivity(; flow::Real=0.01, flow2::Real=10.0,
+    flow_laplacian_order::Int=2, flow_laplacian_order2::Int=6,
+    waves::Real=0.0, waves2::Real=10.0,
+    wave_laplacian_order::Int=2, wave_laplacian_order2::Int=6)
+
+    coefficients = (flow, flow2, waves, waves2)
+    all(>=(0), coefficients) || throw(ArgumentError("hyperdiffusion coefficients must be non-negative"))
+    orders = (flow_laplacian_order, flow_laplacian_order2,
+              wave_laplacian_order, wave_laplacian_order2)
+    all(>(0), orders) || throw(ArgumentError("Laplacian orders must be positive"))
+    values = float.(coefficients)
+    T = promote_type(map(typeof, values)...)
+    return HorizontalHyperdiffusivity{T}(
+        T(flow), T(flow2), flow_laplacian_order, flow_laplacian_order2,
+        T(waves), T(waves2), wave_laplacian_order, wave_laplacian_order2)
+end
+
+"""Horizontally uniform, surface-confined wave initial condition."""
+struct SurfaceWave{T}
+    amplitude::T
+    scale::T
+    profile::Symbol
+end
+
+function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
+    scale > 0 || throw(ArgumentError("wave scale must be positive (got $scale)"))
+    profile in (:gaussian, :exponential) ||
+        throw(ArgumentError("profile must be :gaussian or :exponential"))
+    values = float.((amplitude, scale))
+    T = promote_type(map(typeof, values)...)
+    return SurfaceWave{T}(T(amplitude), T(scale), profile)
+end
+
+#=
+================================================================================
                         SIMULATION STRUCT
 ================================================================================
 =#
 
 """
-    Simulation{T, G, S, P, M, W}
+    Simulation{T, G, S, P, M, W, R}
 
 High-level container for all simulation components.
 
@@ -62,7 +245,7 @@ High-level container for all simulation components.
 - `workspace`: Pre-allocated workspace arrays
 - `N2_profile`: Stratification profile N²(z) on unstaggered (face) levels
 """
-struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W}
+mutable struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W, R}
     grid::G
     state::S
     params::QGParams{T}
@@ -70,7 +253,10 @@ struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W}
     mpi_config::M
     workspace::W
     N2_profile::Vector{T}
+    run_options::R
 end
+
+const QGYBJModel = Simulation
 
 # Convenience accessors
 is_root(sim::Simulation) = sim.mpi_config.is_root
@@ -141,19 +327,29 @@ function initialize_simulation(;
     nx::Int, ny::Int, nz::Int,
     Lx::Real, Ly::Real, Lz::Real,
     centered::Bool = false,  # Center domain at origin: x,y ∈ [-Lx/2, Lx/2)
+    x0::Union{Real, Nothing} = nothing,
+    y0::Union{Real, Nothing} = nothing,
     # Physical parameters
     f₀::Real = 1e-4,
     N²::Real = 1e-5,
+    stratification_profile = nothing,
     # Time stepping
     dt::Real = 1.0,
     nt::Int = 1000,
     # Model options
     ybj_plus::Bool = true,
     fixed_flow::Bool = false,
+    no_feedback::Bool = true,
     no_wave_feedback::Bool = false,
     # Diffusion
+    νₕ₁::Real = 0.01,
+    νₕ₂::Real = 10.0,
+    ilap1::Int = 2,
+    ilap2::Int = 6,
     νₕ₁ʷ::Real = 0.0,
+    νₕ₂ʷ::Real = 10.0,
     ilap1w::Int = 2,
+    ilap2w::Int = 6,
     # MPI options
     topology = nothing,
     parallel_io::Bool = false,
@@ -182,16 +378,22 @@ function initialize_simulation(;
         nx = nx, ny = ny, nz = nz,
         Lx = T(Lx), Ly = T(Ly), Lz = T(Lz),
         centered = centered,  # Center domain at origin if true
+        x0 = x0,
+        y0 = y0,
         dt = T(dt), nt = nt,
         f₀ = T(f₀), N² = T(N²),
         ybj_plus = ybj_plus,
         fixed_flow = fixed_flow,
-        # The simplified API exposes a single feedback switch. Keep the legacy
-        # master switch in sync so `no_wave_feedback=false` really enables qʷ.
-        no_feedback = no_wave_feedback,
+        no_feedback = no_feedback,
         no_wave_feedback = no_wave_feedback,
+        νₕ₁ = T(νₕ₁),
+        νₕ₂ = T(νₕ₂),
+        ilap1 = ilap1,
+        ilap2 = ilap2,
         νₕ₁ʷ = T(νₕ₁ʷ),
-        ilap1w = ilap1w
+        νₕ₂ʷ = T(νₕ₂ʷ),
+        ilap1w = ilap1w,
+        ilap2w = ilap2w
     )
 
     # Initialize grid, plans, state, workspace
@@ -201,7 +403,9 @@ function initialize_simulation(;
     workspace = init_mpi_workspace(grid, mpi_config)
 
     # Compute stratification profile
-    N2_profile = compute_stratification_profile(ConstantN{T}(sqrt(N²)), grid)
+    profile = stratification_profile === nothing ? ConstantN{T}(sqrt(T(N²))) : stratification_profile
+    N2_profile = T.(compute_stratification_profile(profile, grid))
+    params.N² = sum(N2_profile) / length(N2_profile)
 
     if mpi_config.is_root && verbose
         println("Initialization complete.")
@@ -210,10 +414,80 @@ function initialize_simulation(;
 
     MPI.Barrier(mpi_config.comm)
 
+    run_options = default_run_options(T)
     return Simulation{T, typeof(grid), typeof(state), typeof(plans),
-                      typeof(mpi_config), typeof(workspace)}(
-        grid, state, params, plans, mpi_config, workspace, N2_profile
+                      typeof(mpi_config), typeof(workspace), typeof(run_options)}(
+        grid, state, params, plans, mpi_config, workspace, N2_profile, run_options
     )
+end
+
+_coriolis_frequency(f::Real) = f
+_coriolis_frequency(coriolis::FPlane) = coriolis.f
+_stratification_N²(N²::Real) = N²
+_stratification_N²(stratification::ConstantStratification) = stratification.N²
+_stratification_N²(stratification::StratificationProfile) = evaluate_N2(stratification, 0.0)
+_stratification_profile(::Real) = nothing
+_stratification_profile(::ConstantStratification) = nothing
+_stratification_profile(stratification::StratificationProfile) = stratification
+
+function _feedback_flags(feedback)
+    if feedback === false || feedback in (:none, :off)
+        return true, true
+    elseif feedback === true || feedback in (:wave_mean, :on)
+        return false, false
+    elseif feedback == :no_wave_feedback
+        return false, true
+    end
+    throw(ArgumentError("feedback must be :none, :wave_mean, or :no_wave_feedback"))
+end
+
+function _fixed_flow(flow)
+    (flow === true || flow == :fixed) && return true
+    (flow === false || flow == :evolving) && return false
+    throw(ArgumentError("flow must be :fixed or :evolving"))
+end
+
+"""
+    QGYBJModel(; grid, coriolis=FPlane(f=1e-4),
+                 stratification=ConstantStratification(N²=1e-5), kwargs...)
+
+Construct a complete QG-YBJ+ model while hiding MPI decomposition, FFT plans,
+workspaces, and parameter bookkeeping. Time integration is always ETD-RK2.
+"""
+function QGYBJModel(; grid::RectilinearGridSpec,
+    coriolis=FPlane(f=1e-4),
+    stratification=ConstantStratification(N²=1e-5),
+    closure::HorizontalHyperdiffusivity=HorizontalHyperdiffusivity(),
+    flow=:evolving,
+    feedback=:none,
+    ybj_plus::Bool=true,
+    Δt::Real=1.0,
+    stop_iteration::Int=1000,
+    topology=nothing,
+    parallel_io::Bool=false,
+    verbose::Bool=true)
+
+    no_feedback, no_wave_feedback = _feedback_flags(feedback)
+    nx, ny, nz = grid.size
+    Lx, Ly, Lz = grid.extent
+    x0, y0 = grid.origin
+    return initialize_simulation(
+        nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz, x0=x0, y0=y0,
+        f₀=_coriolis_frequency(coriolis),
+        N²=_stratification_N²(stratification),
+        stratification_profile=_stratification_profile(stratification),
+        dt=Δt, nt=stop_iteration,
+        ybj_plus=ybj_plus, fixed_flow=_fixed_flow(flow),
+        no_feedback=no_feedback, no_wave_feedback=no_wave_feedback,
+        νₕ₁=closure.flow, νₕ₂=closure.flow2,
+        ilap1=closure.flow_laplacian_order, ilap2=closure.flow_laplacian_order2,
+        νₕ₁ʷ=closure.waves, νₕ₂ʷ=closure.waves2,
+        ilap1w=closure.wave_laplacian_order, ilap2w=closure.wave_laplacian_order2,
+        topology=topology, parallel_io=parallel_io, verbose=verbose)
+end
+
+function Base.show(io::IO, grid::RectilinearGridSpec)
+    print(io, "RectilinearGrid(size=$(grid.size), extent=$(grid.extent))")
 end
 
 #=
@@ -259,9 +533,11 @@ set_mean_flow!(sim; method=:random, amplitude=0.1, spectral_slope=-3.0, seed=42)
 function set_mean_flow!(sim::Simulation;
     psi_func = nothing,
     method::Symbol = :function,
+    pv_method::Symbol = :qg,
     amplitude::Real = 1.0,
     spectral_slope::Real = -3.0,
-    seed::Int = 0)
+    seed::Int = 0,
+    verbose::Bool = true)
 
     G = sim.grid
     S = sim.state
@@ -270,7 +546,7 @@ function set_mean_flow!(sim::Simulation;
     if method == :function || method == :analytical
         psi_func === nothing && throw(ArgumentError("psi_func must be provided when method=:function"))
 
-        if sim.mpi_config.is_root
+        if sim.mpi_config.is_root && verbose
             println("Setting mean flow from analytical ψ(x, y, z)")
         end
 
@@ -295,7 +571,7 @@ function set_mean_flow!(sim::Simulation;
 
         fft_forward!(S.psi, psi_phys, plans)
     elseif method == :random
-        if sim.mpi_config.is_root
+        if sim.mpi_config.is_root && verbose
             println("Setting random mean flow: amplitude = $(amplitude), slope = $(spectral_slope), seed = $(seed)")
         end
         init_mpi_random_psi!(S.psi, G, amplitude; slope=spectral_slope, seed=seed, seed_offset=0)
@@ -303,7 +579,13 @@ function set_mean_flow!(sim::Simulation;
         throw(ArgumentError("Unknown method=$method. Use :function or :random."))
     end
 
-    add_balanced_component!(S, G, sim.params, sim.plans; N2_profile=sim.N2_profile)
+    if pv_method in (:qg, :balanced)
+        add_balanced_component!(S, G, sim.params, sim.plans; N2_profile=sim.N2_profile)
+    elseif pv_method in (:barotropic, :asselin)
+        compute_barotropic_q_from_psi!(S.q, S.psi, G)
+    elseif pv_method != :none
+        throw(ArgumentError("pv_method must be :qg, :barotropic, or :none"))
+    end
 
     return sim
 end
@@ -336,13 +618,14 @@ function set_surface_waves!(sim::Simulation;
     amplitude::Real,
     surface_depth::Real,
     uniform::Bool = true,
-    profile::Symbol = :gaussian)
+    profile::Symbol = :gaussian,
+    verbose::Bool = true)
 
     G = sim.grid
     S = sim.state
     plans = sim.plans
 
-    if sim.mpi_config.is_root
+    if sim.mpi_config.is_root && verbose
         println("Setting surface waves: u₀ = $(amplitude) m/s, s = $(surface_depth) m, profile=$(profile)")
     end
     surface_depth > 0 || throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
@@ -353,7 +636,7 @@ function set_surface_waves!(sim::Simulation;
     # Allocate physical-space array
     B_phys = allocate_fft_backward_dst(S.B, plans)
     B_arr = parent(B_phys)
-    T = eltype(B_arr)
+    T = typeof(real(zero(eltype(B_arr))))
 
     dz = G.Lz / G.nz
     for k_local in axes(B_arr, 1)
@@ -393,12 +676,48 @@ Uses `profile=:exponential` in `set_surface_waves!`.
 function set_exponential_surface_waves!(sim::Simulation;
     amplitude::Real,
     efold_depth::Real,
-    uniform::Bool = true)
+    uniform::Bool = true,
+    verbose::Bool = true)
     return set_surface_waves!(sim;
         amplitude=amplitude,
         surface_depth=efold_depth,
         uniform=uniform,
-        profile=:exponential)
+        profile=:exponential,
+        verbose=verbose)
+end
+
+_first_notnothing(values...) = begin
+    for value in values
+        value !== nothing && return value
+    end
+    return nothing
+end
+
+"""
+    set!(model; ψ=nothing, waves=nothing, pv_method=:qg)
+
+Set model initial conditions. The mean flow is a streamfunction function
+`ψ(x, y, z)`; `waves` may be a [`SurfaceWave`](@ref).
+"""
+function set!(model::Simulation;
+    ψ=nothing, psi=nothing, mean_flow=nothing,
+    pv_method::Symbol=:qg,
+    waves=nothing, B=nothing,
+    verbose::Bool=false)
+
+    flow = _first_notnothing(mean_flow, ψ, psi)
+    wave = _first_notnothing(waves, B)
+
+    if flow !== nothing
+        flow isa Function || throw(ArgumentError("mean_flow/ψ must be a function of (x, y, z)"))
+        set_mean_flow!(model; psi_func=flow, pv_method=pv_method, verbose=verbose)
+    end
+    if wave !== nothing
+        wave isa SurfaceWave || throw(ArgumentError("waves/B must be a SurfaceWave"))
+        set_surface_waves!(model; amplitude=wave.amplitude, surface_depth=wave.scale,
+                           profile=wave.profile, verbose=verbose)
+    end
+    return model
 end
 
 """
@@ -451,6 +770,81 @@ end
 ================================================================================
 =#
 
+function _configure_time_stepping!(sim::Simulation;
+    Δt=nothing, stop_time=nothing, stop_iteration=nothing)
+
+    if Δt !== nothing
+        Δt > 0 || throw(ArgumentError("Δt must be positive (got $Δt)"))
+        sim.params.dt = typeof(sim.params.dt)(Δt)
+    end
+    if stop_iteration !== nothing
+        stop_iteration > 0 || throw(ArgumentError("stop_iteration must be positive"))
+        sim.params.nt = Int(stop_iteration)
+    elseif stop_time !== nothing
+        stop_time > 0 || throw(ArgumentError("stop_time must be positive"))
+        sim.params.nt = max(1, round(Int, stop_time / sim.params.dt))
+    end
+    return sim
+end
+
+_saves_psi(fields) = any(field -> field in (:ψ, :psi, :q, :flow), fields)
+_saves_waves(fields) = any(field -> field in (:waves, :wave, :B, :A), fields)
+
+function _schedule_in_seconds(schedule, dt)
+    schedule === nothing && return nothing
+    schedule isa TimeInterval && return schedule.interval
+    schedule isa IterationInterval && return schedule.interval * dt
+    throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
+end
+
+function _configure_output!(sim::Simulation; output=nothing, diagnostics=nothing,
+    verbose=nothing)
+
+    options = sim.run_options
+    verbose !== nothing && (options.verbose = verbose)
+
+    if output === false
+        options.output = false
+    elseif output !== nothing
+        output isa NetCDFOutput || throw(ArgumentError("output must be a NetCDFOutput or false"))
+        options.output = output
+        options.output_dir = output.path
+        interval = _schedule_in_seconds(output.schedule, sim.params.dt)
+        options.save_interval = interval === nothing ? options.save_interval : interval
+        options.save_psi = _saves_psi(output.fields)
+        options.save_waves = _saves_waves(output.fields)
+        options.save_velocities = output.velocities || :velocities in output.fields
+    end
+
+    if diagnostics isa IterationInterval
+        options.diagnostics_interval = diagnostics.interval
+    elseif diagnostics isa TimeInterval
+        options.diagnostics_interval = max(1, round(Int, diagnostics.interval / sim.params.dt))
+    elseif diagnostics isa Integer
+        diagnostics > 0 || throw(ArgumentError("diagnostics interval must be positive"))
+        options.diagnostics_interval = Int(diagnostics)
+    elseif diagnostics !== nothing
+        throw(ArgumentError("diagnostics must be an IterationInterval, TimeInterval, or integer"))
+    end
+    return sim
+end
+
+"""
+    Simulation(model::QGYBJModel; Δt=nothing, stop_time=nothing,
+               stop_iteration=nothing, output=nothing, diagnostics=nothing)
+
+Configure the model clock, output, and diagnostics in an Oceananigans-style
+workflow. The returned object shares the model state and uses ETD-RK2.
+"""
+function Simulation(model::Simulation; Δt=nothing, stop_time=nothing,
+    stop_iteration=nothing, output=nothing, diagnostics=nothing, verbose=nothing)
+
+    _configure_time_stepping!(model; Δt=Δt, stop_time=stop_time,
+                              stop_iteration=stop_iteration)
+    return _configure_output!(model; output=output, diagnostics=diagnostics,
+                              verbose=verbose)
+end
+
 """
     run!(sim::Simulation; kwargs...)
 
@@ -470,13 +864,34 @@ run!(sim; output_dir="output")
 ```
 """
 function run!(sim::Simulation;
-    output_dir::String = "output",
-    save_interval::Union{Real, Nothing} = nothing,
-    diagnostics_interval::Int = 10,
-    verbose::Bool = true,
-    save_psi::Bool = true,
-    save_waves::Bool = true,
-    save_velocities::Bool = false)
+    output_dir::Union{String, Nothing}=nothing,
+    Δt=nothing,
+    stop_time=nothing,
+    stop_iteration=nothing,
+    output=nothing,
+    diagnostics=nothing,
+    save_interval::Union{Real, Nothing}=nothing,
+    diagnostics_interval::Union{Int, Nothing}=nothing,
+    verbose::Union{Bool, Nothing}=nothing,
+    progress::Union{Bool, Nothing}=nothing,
+    save_psi::Union{Bool, Nothing}=nothing,
+    save_waves::Union{Bool, Nothing}=nothing,
+    save_velocities::Union{Bool, Nothing}=nothing)
+
+    _configure_time_stepping!(sim; Δt=Δt, stop_time=stop_time,
+                              stop_iteration=stop_iteration)
+    _configure_output!(sim; output=output, diagnostics=diagnostics, verbose=verbose)
+    options = sim.run_options
+    progress !== nothing && (options.verbose = progress)
+    output_dir !== nothing && (options.output_dir = output_dir)
+    save_interval !== nothing && (options.save_interval = typeof(sim.params.dt)(save_interval))
+    diagnostics_interval !== nothing && (options.diagnostics_interval = diagnostics_interval)
+    save_psi !== nothing && (options.save_psi = save_psi)
+    save_waves !== nothing && (options.save_waves = save_waves)
+    save_velocities !== nothing && (options.save_velocities = save_velocities)
+
+    options.diagnostics_interval > 0 ||
+        throw(ArgumentError("diagnostics_interval must be positive"))
 
     G = sim.grid
     S = sim.state
@@ -486,29 +901,29 @@ function run!(sim::Simulation;
     workspace = sim.workspace
     N2_profile = sim.N2_profile
 
-    # Create output directory
-    if mpi_config.is_root
-        mkpath(output_dir)
+    write_output = options.output !== false
+    if write_output && mpi_config.is_root
+        mkpath(options.output_dir)
     end
     MPI.Barrier(mpi_config.comm)
 
     # Compute default save interval (1 inertial period)
     T_inertial = 2π / params.f₀
-    interval = save_interval === nothing ? T_inertial : save_interval
+    interval = options.save_interval === nothing ? T_inertial : options.save_interval
+    interval > 0 || throw(ArgumentError("save_interval must be positive"))
 
-    # Configure output
-    output_config = OutputConfig(
-        output_dir = output_dir,
+    output_config = write_output ? OutputConfig(
+        output_dir = options.output_dir,
         state_file_pattern = "state%04d.nc",
         psi_interval = interval,
         wave_interval = interval,
         diagnostics_interval = interval,
-        save_psi = save_psi,
-        save_waves = save_waves,
-        save_velocities = save_velocities,
+        save_psi = options.save_psi,
+        save_waves = options.save_waves,
+        save_velocities = options.save_velocities,
         save_vorticity = false,
         save_diagnostics = false
-    )
+    ) : nothing
 
     # Run simulation
     run_simulation!(S, G, params, plans;
@@ -516,12 +931,16 @@ function run!(sim::Simulation;
         mpi_config = mpi_config,
         workspace = workspace,
         N2_profile = N2_profile,
-        print_progress = mpi_config.is_root && verbose,
-        diagnostics_interval = diagnostics_interval
+        print_progress = mpi_config.is_root && options.verbose,
+        diagnostics_interval = options.diagnostics_interval
     )
 
-    if mpi_config.is_root && verbose
-        println("\nSimulation complete. Output saved to: $output_dir/")
+    if mpi_config.is_root && options.verbose
+        if write_output
+            println("\nSimulation complete. Output saved to: $(options.output_dir)/")
+        else
+            println("\nSimulation complete.")
+        end
     end
 
     return sim
@@ -570,6 +989,7 @@ get_time(sim::Simulation, step::Int) = step * sim.params.dt
 Get the inertial period T = 2π/f₀.
 """
 get_inertial_period(sim::Simulation) = 2π / sim.params.f₀
+inertial_period(sim::Simulation) = get_inertial_period(sim)
 
 """
     get_duration(sim::Simulation)
