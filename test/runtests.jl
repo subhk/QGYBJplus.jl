@@ -630,6 +630,56 @@ end
     @test actual.B ≈ expected_next.B
 end
 
+@testset "Oceananigans-style model and simulation API" begin
+    grid = RectilinearGrid(size=(8, 8, 4),
+                           x=(-π, π), y=(-π, π), z=(-1.0, 0.0))
+    model = QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0),
+        closure=HorizontalHyperdiffusivity(flow=0.0, flow2=0.0,
+                                            waves=0.0, waves2=0.0),
+        flow=:fixed,
+        feedback=:none,
+        Δt=1e-3,
+        stop_iteration=2,
+        topology=(1, 1),
+        verbose=false,
+    )
+
+    set!(model;
+         ψ=(x, y, z) -> sin(x) * cos(y),
+         pv_method=:barotropic,
+         waves=SurfaceWave(amplitude=0.05, scale=0.2),
+         verbose=false)
+
+    output = NetCDFOutput(path="unused",
+                          schedule=IterationInterval(2),
+                          fields=(:B,))
+    simulation = Simulation(model;
+                            Δt=2e-3,
+                            stop_iteration=1,
+                            output=output,
+                            diagnostics=IterationInterval(1),
+                            verbose=false)
+
+    @test simulation === model
+    @test simulation.params.dt == 2e-3
+    @test simulation.params.nt == 1
+    @test simulation.params.fixed_flow
+    @test simulation.params.no_feedback
+    @test simulation.run_options.save_interval == 4e-3
+    @test !simulation.run_options.save_psi
+    @test simulation.run_options.save_waves
+    @test inertial_period(simulation) == 2π
+    @test maximum(abs, parent(simulation.state.q)) > 0
+    @test maximum(abs, parent(simulation.state.B)) > 0
+
+    run!(simulation; output=false, progress=false)
+    @test all(isfinite, parent(simulation.state.q))
+    @test all(isfinite, parent(simulation.state.B))
+end
+
 @testset "Configured simulation uses ETD-RK2" begin
     mktempdir() do output_dir
         config = create_simple_config(

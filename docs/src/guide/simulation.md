@@ -12,27 +12,40 @@ There is no runtime timestepper selector.
 ```julia
 using QGYBJplus
 
-par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0,
-                     nx=64, ny=64, nz=32,
-                     dt=100.0, nt=1000)
-G, S, plans, a = setup_model(par)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5),
+                   flow=:evolving,
+                   feedback=:wave_mean)
 
-init_random_psi!(S, G; amplitude=0.1)
-compute_q_from_psi!(S, G, plans, a)
+set!(model;
+     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
+     waves=SurfaceWave(amplitude=0.1, scale=30.0))
 
-run_simulation!(S, G, par, plans; print_progress=true)
+simulation = Simulation(model;
+                        Δt=20.0,
+                        stop_time=86400.0,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(3600.0),
+                                            fields=(:ψ, :waves)),
+                        diagnostics=IterationInterval(100))
+run!(simulation)
 ```
 
-The driver advances exactly `par.nt` steps, updates all diagnostic fields, and
-uses reusable ETD stage storage. Pass an [`OutputConfig`](@ref) to write NetCDF
-snapshots:
+`QGYBJModel` owns the model state and numerical machinery. `Simulation` adds
+the run clock, output, and diagnostics schedule. MPI decomposition is automatic;
+launch the same script with `mpiexecjl -n N` for a distributed run.
+
+The lower-level driver remains available for custom integration loops:
 
 ```julia
-output = OutputConfig(output_dir="output",
-                      psi_interval=3600.0,
-                      wave_interval=3600.0)
+par = default_params(Lx=500e3, Ly=500e3, Lz=4000.0,
+                     nx=64, ny=64, nz=32, dt=20.0, nt=1000)
+G, S, plans, a = setup_model(par)
 
-run_simulation!(S, G, par, plans; output_config=output)
+run_simulation!(S, G, par, plans; print_progress=true)
 ```
 
 ## Manual ETD-RK2 loop

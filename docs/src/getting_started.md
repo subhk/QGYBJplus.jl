@@ -31,14 +31,20 @@ To run MPI simulations, you need a system MPI library:
 ```julia
 using QGYBJplus
 
-config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain (REQUIRED)
-    nx=64, ny=64, nz=32,
-    dt=0.001, total_time=1.0
-)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5))
 
-result = run_simple_simulation(config)
-println("KE: ", flow_kinetic_energy(result.state.u, result.state.v))
+set!(model;
+     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
+     waves=SurfaceWave(amplitude=0.1, scale=30.0))
+
+simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(3600.0)))
+run!(simulation)
 ```
 
 ## Core Types

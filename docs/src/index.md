@@ -109,18 +109,20 @@ These two types of motion **interact strongly**: eddies refract and focus waves,
 ```julia
 using QGYBJplus
 
-# Create configuration (domain size is REQUIRED)
-config = create_simple_config(
-    Lx = 500e3, Ly = 500e3, Lz = 4000.0,  # 500km × 500km × 4km
-    nx = 64, ny = 64, nz = 32,
-    dt = 0.001, total_time = 1.0
-)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5))
 
-# Run simulation
-result = run_simple_simulation(config)
+set!(model;
+     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
+     waves=SurfaceWave(amplitude=0.1, scale=30.0))
 
-# Check energy
-println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
+simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(3600.0)))
+run!(simulation)
 ```
 
 ```@raw html
