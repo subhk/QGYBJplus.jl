@@ -6,6 +6,24 @@ CurrentModule = QGYBJplus
 
 This page documents the core data types in QGYBJ+.jl.
 
+## High-level construction
+
+The recommended user-facing workflow composes a model from small configuration
+objects:
+
+```julia
+grid = RectilinearGrid(size=(128, 128, 64),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5),
+                   closure=HorizontalHyperdiffusivity())
+```
+
+Use `SurfaceWave` with `set!`, then configure the clock and output with
+`Simulation`, `NetCDFOutput`, `TimeInterval`, and `IterationInterval`. These
+objects map onto the `QGParams`, `Grid`, and `State` types documented below.
+
 ## QGParams
 
 The main parameter structure containing all simulation settings.

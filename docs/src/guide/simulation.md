@@ -36,7 +36,8 @@ run!(simulation)
 
 `QGYBJModel` owns the model state and numerical machinery. `Simulation` adds
 the run clock, output, and diagnostics schedule. MPI decomposition is automatic;
-launch the same script with `mpiexecjl -n N` for a distributed run.
+launch the same script with `mpiexecjl -n N julia --project=. script.jl` for a
+distributed run.
 
 The lower-level driver remains available for custom integration loops:
 

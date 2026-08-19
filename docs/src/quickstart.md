@@ -17,19 +17,20 @@ Run your first QGYBJ+.jl simulation in 5 minutes.
 ```julia
 using QGYBJplus
 
-# Configure (Lx, Ly, Lz are REQUIRED)
-config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size [m]
-    nx=64, ny=64, nz=32,             # Grid points
-    dt=0.001, total_time=1.0,        # Time stepping
-    output_interval=100
-)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5))
 
-# Run
-result = run_simple_simulation(config)
+set!(model;
+     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
+     waves=SurfaceWave(amplitude=0.1, scale=30.0))
 
-# Check results
-println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
+simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(3600.0)))
+run!(simulation)
 ```
 
 ```@raw html
@@ -40,37 +41,50 @@ println("Kinetic Energy: ", flow_kinetic_energy(result.state.u, result.state.v))
 
 ## Step-by-Step Breakdown
 
-### Step 1: Create Configuration
+### Step 1: Create the Grid and Model
 
 ```julia
-config = create_simple_config(
-    Lx = 500e3,        # Domain length x [m] (REQUIRED)
-    Ly = 500e3,        # Domain length y [m] (REQUIRED)
-    Lz = 4000.0,       # Domain depth [m] (REQUIRED)
-    nx = 64, ny = 64, nz = 32,  # Grid dimensions
-    dt = 0.001,        # Time step
-    total_time = 1.0,  # Total simulation time
-)
+grid = RectilinearGrid(size=(64, 64, 32),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+model = QGYBJModel(grid=grid,
+                   coriolis=FPlane(f=1e-4),
+                   stratification=ConstantStratification(N²=1e-5),
+                   flow=:evolving,
+                   feedback=:wave_mean)
 ```
 
-!!! warning "Domain size is required"
-    There are no default values for `Lx`, `Ly`, `Lz`. Omitting them causes a `MethodError`.
+The model allocates its MPI decomposition, FFT plans, state, and workspaces.
+The same code works on one process or under `mpiexecjl`.
 
-### Step 2: Run Simulation
+### Step 2: Set Initial Conditions
 
 ```julia
-result = run_simple_simulation(config)
+set!(model;
+     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
+     waves=SurfaceWave(amplitude=0.1, scale=30.0))
 ```
 
-This returns a `Simulation` object containing:
-- `result.state` — Final state with all fields
-- `result.grid` — Grid information
-- `result.params` — Simulation parameters
+Use `pv_method=:barotropic` in `set!` when the supplied streamfunction is a
+vertically uniform imposed flow.
 
-### Step 3: Access Results
+### Step 3: Configure and Run
 
 ```julia
-state = result.state
+simulation = Simulation(model;
+                        Δt=20.0,
+                        stop_time=86400.0,
+                        output=NetCDFOutput(path="output",
+                                            schedule=TimeInterval(3600.0)),
+                        diagnostics=IterationInterval(100))
+run!(simulation)
+```
+
+ETD-RK2 is the only timestepper, so there is no method selector to configure.
+
+### Step 4: Access Results
+
+```julia
+state = simulation.state
 
 # Spectral fields (complex, in Fourier space)
 state.psi    # Streamfunction
@@ -84,14 +98,14 @@ state.v      # Meridional velocity
 state.w      # Vertical velocity
 ```
 
-### Step 4: Compute Diagnostics
+### Step 5: Compute Diagnostics
 
 ```julia
 # Mean flow kinetic energy
 KE = flow_kinetic_energy(state.u, state.v)
 
 # Wave energy components per YBJ+ equation (4.7)
-WKE, WPE, WCE = compute_detailed_wave_energy(state, result.grid, result.params)
+WKE, WPE, WCE = compute_detailed_wave_energy(state, simulation.grid, simulation.params)
 
 # Simple wave energy
 WE_B, WE_A = wave_energy(state.B, state.A)
@@ -115,37 +129,33 @@ WE_B, WE_A = wave_energy(state.B, state.A)
 ```
 
 ```julia
-config = create_simple_config(
-    Lx=500e3, Ly=500e3, Lz=4000.0,
-    nx=64, ny=64, nz=32,
-
-    # Physics options
-    ybj_plus = true,          # YBJ+ formulation (default)
-    linear = false,           # Set true to disable nonlinear terms
-    inviscid = true,          # Set true for no dissipation
-    no_wave_feedback = true,  # Set true for one-way coupling (eddies → waves only)
-
-    # Stratification
-    stratification_type = :constant_N,  # or :skewed_gaussian
+model = QGYBJModel(
+    grid=grid,
+    coriolis=FPlane(f=1e-4),
+    stratification=ConstantStratification(N²=1e-5),
+    closure=HorizontalHyperdiffusivity(flow=0.01, waves=1e5),
+    flow=:evolving,       # or :fixed
+    feedback=:wave_mean,  # or :none / :no_wave_feedback
+    ybj_plus=true,
 )
 ```
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
 | `ybj_plus` | `true` | Use YBJ+ formulation (recommended) |
-| `linear` | `false` | Disable nonlinear advection terms |
-| `inviscid` | `false` | Disable all dissipation |
-| `no_wave_feedback` | `false` | Disable wave feedback on mean flow |
-| `stratification_type` | `:constant_N` | Ocean density profile type |
+| `flow` | `:evolving` | Evolve the balanced flow or hold it fixed |
+| `feedback` | `:none` | Select no, one-way, or two-way wave–mean coupling |
+| `closure` | `HorizontalHyperdiffusivity()` | Flow and wave dissipation |
+| `stratification` | `ConstantStratification(N²=1e-5)` | Vertical stratification |
 
 ---
 
 ## Output Files
 
-By default, simulations save to `./output_simple/`:
+The `NetCDFOutput(path="output", ...)` above creates:
 
 ```
-output_simple/
+output/
 ├── state0001.nc          # Field snapshots
 ├── state0002.nc
 └── diagnostic/           # Energy time series
