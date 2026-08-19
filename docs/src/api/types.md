@@ -24,7 +24,6 @@ QGParams
 | `nt` | Int | Number of time steps |
 | `f₀` | Float64 | Coriolis parameter |
 | `N²` | Float64 | Buoyancy frequency squared |
-| `γ` | Float64 | Robert-Asselin filter coefficient |
 | `ybj_plus` | Bool | Use YBJ+ formulation |
 | `no_feedback` | Bool | Master switch: disable all wave-mean coupling |
 | `no_wave_feedback` | Bool | Disable wave feedback on mean flow |
@@ -141,10 +140,10 @@ State
 | `v` | Array{Float64,3} | Meridional velocity v = ∂ψ/∂x |
 | `w` | Array{Float64,3} | Vertical velocity (from omega equation) |
 
-!!! note "Leapfrog Time-Stepping"
-    The leapfrog scheme uses separate State objects (Snm1, Sn, Snp1) rather than
-    storing previous time levels within a single State struct. This design allows
-    proper handling of MPI parallel arrays (PencilArrays).
+!!! note "ETD-RK2 Time-Stepping"
+    ETD-RK2 uses a current state and a destination state. Rotate the two buffers
+    after each call to `exp_rk2_step!`; use `ExpRK2Workspace` for reusable stage
+    and tendency storage.
 
 ### Constructors
 
@@ -246,7 +245,7 @@ All core types are fully type-stable:
 ```julia
 using Test
 @inferred init_state(grid)
-@inferred leapfrog_step!(state, grid, params, plans, a_ell)
+@inferred ExpRK2Workspace(state, plans; G=grid)
 ```
 
 ## Serialization

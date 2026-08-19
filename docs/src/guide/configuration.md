@@ -50,14 +50,17 @@ G, S, plans, a_ell = setup_model(par)
 init_random_psi!(S, G; amplitude=0.1)
 compute_q_from_psi!(S, G, plans, a_ell)
 
-first_projection_step!(S, G, par, plans, a_ell)
-for step = 2:par.nt
-    leapfrog_step!(S, G, par, plans, a_ell)
+Sn = copy_state(S)
+Snp1 = copy_state(S)
+mask = dealias_mask(G)
+rk_workspace = ExpRK2Workspace(Sn, plans; G=G)
+for step = 1:par.nt
+    exp_rk2_step!(Snp1, Sn, G, par, plans;
+                  a=a_ell, dealias_mask=mask,
+                  timestep_workspace=rk_workspace)
+    Sn, Snp1 = Snp1, Sn
 end
 ```
-
-!!! tip "IMEX"
-    Use `imex_cn_step!()` instead of `leapfrog_step!()` for ~10× faster wave-dominated problems.
 
 ## Parameter Reference
 
@@ -75,7 +78,6 @@ end
 |:----------|:--------|:------------|
 | `f₀` | 1.0 | Coriolis parameter |
 | `N²` | 1.0 | Buoyancy frequency squared |
-| `γ` | 1e-3 | Robert-Asselin filter |
 
 Unicode: type `f\_0<tab>` → `f₀`, `\nu<tab>` → `ν`
 

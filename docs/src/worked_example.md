@@ -53,7 +53,7 @@ const N² = 1e-5     # Buoyancy frequency squared [s⁻²]
 
 # Time stepping
 const T_inertial = 2π / f₀           # Inertial period ≈ 17.5 hours
-const dt = 10.0                       # Time step [s] - use IMEX for larger dt
+const dt = 10.0                       # Time step [s]
 const n_inertial_periods = 5          # Simulation duration
 const nt = round(Int, n_inertial_periods * T_inertial / dt)
 
@@ -258,15 +258,10 @@ This mimics wind-generated near-inertial waves that are strongest near the surfa
 #                       TIME INTEGRATION
 # ============================================================================
 
-# Create state arrays for leapfrog (need 3 time levels)
-Snm1 = copy_state(S)  # n-1
-Sn = copy_state(S)    # n
-Snp1 = copy_state(S)  # n+1
-
-# Initialize with projection step (Forward Euler)
-println("\nRunning projection step...")
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
-copy_state!(Snm1, Sn)
+# Current and destination state buffers, plus reusable ETD-RK2 storage
+Sn = copy_state(S)
+Snp1 = copy_state(S)
+rk_workspace = ExpRK2Workspace(Sn, plans; G=G)
 
 # Storage for diagnostics
 times = Float64[]
@@ -280,12 +275,12 @@ println("Starting main time loop...")
 println("="^60)
 
 for step in 1:nt
-    # Leapfrog step with Robert-Asselin filter
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                   a=a_ell, dealias_mask=L)
+    exp_rk2_step!(Snp1, Sn, G, par, plans;
+                  a=a_ell, dealias_mask=L,
+                  timestep_workspace=rk_workspace)
 
-    # Rotate time levels (efficient pointer swap)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+    # Rotate state buffers (efficient pointer swap)
+    Sn, Snp1 = Snp1, Sn
 
     # Periodic diagnostics
     if step % diag_interval == 0
@@ -447,13 +442,14 @@ L = dealias_mask(G)
 # (Add dipole and wave initialization here - see sections above)
 
 # === Time stepping ===
-Snm1, Sn, Snp1 = copy_state(S), copy_state(S), copy_state(S)
-first_projection_step!(Sn, G, par, plans; a=a_ell, dealias_mask=L)
-copy_state!(Snm1, Sn)
+Sn, Snp1 = copy_state(S), copy_state(S)
+rk_workspace = ExpRK2Workspace(Sn, plans; G=G)
 
 for step in 1:nt
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a_ell, dealias_mask=L)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+    exp_rk2_step!(Snp1, Sn, G, par, plans;
+                  a=a_ell, dealias_mask=L,
+                  timestep_workspace=rk_workspace)
+    Sn, Snp1 = Snp1, Sn
 end
 
 println("Done! Final KE = ", flow_kinetic_energy(Sn.u, Sn.v))
@@ -474,20 +470,6 @@ Now that you've built a complete simulation:
 ---
 
 ## Common Modifications
-
-### Use IMEX Time Stepping (10x faster)
-
-```julia
-# Replace leapfrog with IMEX-CN
-imex_ws = init_imex_workspace(Sn, G)
-first_imex_step!(Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-
-for step in 1:nt
-    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a_ell, dealias_mask=L)
-    parent(Sn.B) .= parent(Snp1.B)
-    parent(Sn.q) .= parent(Snp1.q)
-end
-```
 
 ### Add Particle Tracking
 

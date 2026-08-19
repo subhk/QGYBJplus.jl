@@ -955,7 +955,7 @@ Boundary points (Neumann):
 
 # Arguments
 - `dqk`: Output array for diffusion term
-- `qok`: Input q field at time n-1 (for leapfrog)
+- `qok`: Input q field at the current Runge-Kutta stage
 - `par`: QGParams (for nuz coefficient)
 - `G::Grid`: Grid struct
 - `workspace`: Optional pre-allocated workspace for 2D decomposition

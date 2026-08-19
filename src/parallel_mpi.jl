@@ -1121,16 +1121,16 @@ const _U53 = 0x1.0p-53
     return x ⊻ (x >> 31)
 end
 
-@inline function _hash_u01(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+@inline function _hash_u01(seed::UInt64, vals::Vararg{Int}; tag::Integer=0)
     x = seed
     @inbounds for v in vals
         x = _mix64(x ⊻ UInt64(v))
     end
-    x = _mix64(x ⊻ tag)
+    x = _mix64(x ⊻ UInt64(tag))
     return Float64((x >> 11) + 1) * _U53
 end
 
-@inline function _hash_randn(seed::UInt64, vals::Vararg{Int}; tag::UInt64=0)
+@inline function _hash_randn(seed::UInt64, vals::Vararg{Int}; tag::Integer=0)
     u1 = _hash_u01(seed, vals...; tag=tag)
     u2 = _hash_u01(seed, vals...; tag=tag + 1)
     return sqrt(-2 * log(u1)) * cos(2 * pi * u2)

@@ -47,7 +47,7 @@ NUMERICAL METHODS:
 ------------------
 - Pseudo-spectral in horizontal (FFT-based)
 - Second-order finite differences in vertical
-- Leapfrog time stepping with Robert-Asselin filter
+- Second-order exponential Runge-Kutta time stepping
 - Tridiagonal solvers for elliptic inversions
 - 2/3 dealiasing rule for nonlinear terms
 
@@ -67,7 +67,7 @@ CODE STRUCTURE:
 - operators.jl        : Velocity computation from ψ
 - runtime.jl          : Setup helpers and utilities
 - nonlinear.jl        : Jacobians, refraction, wave feedback qʷ
-- timestep.jl         : Time integration (Euler, Leapfrog)
+- timestep.jl         : Exponential Runge-Kutta time integration
 - initconds.jl        : Random and analytic initial conditions
 - ybj_normal.jl       : Normal YBJ (non-plus) operators
 - diagnostics.jl      : Energy diagnostics, omega equation
@@ -125,8 +125,8 @@ The exports are organized by functionality:
    - Velocity operators: compute_velocities!, compute_vertical_velocity!
 
 3. TIME STEPPING:
-   - first_projection_step!: Forward Euler for initialization
-   - leapfrog_step!: Main time integration with Robert-Asselin filter
+   - exp_rk2_step!: Second-order exponential Runge-Kutta integration
+   - ExpRK2Workspace: Reusable Runge-Kutta stage storage
 
 4. HIGH-LEVEL INTERFACE:
    - QGYBJSimulation, setup_simulation, run_simulation!
@@ -154,9 +154,7 @@ export QGParams, Grid, State,
        jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
        init_random_psi!, init_analytical_psi!, init_analytical_waves!, init_surface_waves!,
        add_balanced_component!, compute_q_from_psi!, initialize_from_config,
-        first_projection_step!, leapfrog_step!,
-        # IMEX time stepping (unconditionally stable for dispersion)
-        IMEXWorkspace, init_imex_workspace, imex_cn_step!, first_imex_step!,
+        exp_rk2_step!, ExpRK2Workspace,
         sumB!, compute_sigma, compute_A!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz,
         # Global energy diagnostics (MPI-aware)
@@ -228,6 +226,7 @@ include("transforms.jl")    # FFTW planning, fft_forward!, fft_backward!
 # MPI parallel interface (must be after transforms.jl, before physics.jl)
 # This provides transpose_to_z_pencil!, allocate_z_pencil, etc. needed by elliptic/operators
 include("parallel_mpi.jl")       # MPI parallel interface (required)
+include("loop_macros.jl")        # Shared local/dealiased spectral loop macros
 
 # Physics and numerical operators
 include("physics.jl")       # Stratification N², a_ell coefficient
@@ -241,8 +240,7 @@ include("runtime.jl")       # Setup helpers
 include("nonlinear.jl")     # Jacobians, refraction, wave feedback qʷ
 
 # Time integration
-include("timestep.jl")      # Forward Euler, Leapfrog with Robert-Asselin
-include("timestep_imex.jl") # IMEX Crank-Nicolson (implicit dispersion)
+include("timestep.jl")      # Second-order exponential Runge-Kutta
 
 # Initial conditions
 include("initconds.jl")     # Random and analytic initial conditions

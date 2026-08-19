@@ -76,8 +76,8 @@ These two types of motion **interact strongly**: eddies refract and focus waves,
     <p>Pseudo-spectral horizontal derivatives using FFTW for accuracy and speed</p>
 </div>
 <div class="feature-card">
-    <h3>Flexible Time Stepping</h3>
-    <p>Choose Leapfrog (explicit) or IMEX-CN for 10x larger timesteps with waves</p>
+    <h3>ETD-RK2 Time Stepping</h3>
+    <p>Second-order exponential Runge–Kutta with exact horizontal hyperdiffusion</p>
 </div>
 <div class="feature-card">
     <h3>MPI Parallel</h3>

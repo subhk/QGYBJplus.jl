@@ -96,22 +96,17 @@ particle_config = particles_in_box(-2000.0; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10
 tracker = ParticleTracker(particle_config, G)
 initialize_particles!(tracker, particle_config)
 
-# Particles co-evolve automatically with the fluid
-# Option 1: Leapfrog time stepping
-first_projection_step!(S, G, par, plans; a=a, particle_tracker=tracker, current_time=0.0)
+# Particles co-evolve automatically with the ETD-RK2 fluid step
+Sn = copy_state(S)
+Snp1 = copy_state(S)
+mask = dealias_mask(G)
+rk_workspace = ExpRK2Workspace(Sn, plans; G=G)
 for step in 1:nsteps
-    current_time = step * par.dt
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a,
-                   particle_tracker=tracker, current_time=current_time)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-end
-
-# Option 2: IMEX time stepping
-first_imex_step!(S, G, par, plans, imex_ws; a=a, particle_tracker=tracker, current_time=0.0)
-for step in 1:nsteps
-    current_time = step * par.dt
-    imex_cn_step!(Snp1, Sn, G, par, plans, imex_ws; a=a,
-                  particle_tracker=tracker, current_time=current_time)
+    current_time = (step - 1) * par.dt
+    exp_rk2_step!(Snp1, Sn, G, par, plans;
+                  a=a, dealias_mask=mask,
+                  particle_tracker=tracker, current_time=current_time,
+                  timestep_workspace=rk_workspace)
     Sn, Snp1 = Snp1, Sn
 end
 

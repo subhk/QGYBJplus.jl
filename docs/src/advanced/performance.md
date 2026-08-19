@@ -65,8 +65,11 @@ All arrays are pre-allocated to avoid GC:
 # All arrays are pre-allocated in setup_model()
 G, S, plans, a_ell = setup_model(params)
 
-# Reused every time step
-leapfrog_step!(S, G, params, plans, a_ell)
+# Reuse ETD-RK2 stage and tendency storage every time step
+Snp1 = copy_state(S)
+rk_workspace = ExpRK2Workspace(S, plans; G=G)
+exp_rk2_step!(Snp1, S, G, params, plans;
+              a=a_ell, timestep_workspace=rk_workspace)
 ```
 
 ### Memory Usage Estimate
@@ -140,7 +143,8 @@ using BenchmarkTools
 @btime invert_q_to_psi!($state, $grid, $params, $a_ell)
 
 # Time full step
-@btime leapfrog_step!($S, $G, $params, $plans, $a_ell)
+@btime exp_rk2_step!($Snp1, $S, $G, $params, $plans;
+                     a=$a_ell, timestep_workspace=$rk_workspace)
 ```
 
 ## Numerical Efficiency
@@ -262,8 +266,8 @@ G_gpu = cu(G)
 # GPU FFT plans
 plans_gpu = plan_gpu_transforms!(G_gpu)
 
-# Run on GPU
-leapfrog_step!(S_gpu, G_gpu, params, plans_gpu, a_ell_gpu)
+# Run ETD-RK2 on GPU-compatible state and plans
+exp_rk2_step!(Snp1_gpu, S_gpu, G_gpu, params, plans_gpu; a=a_ell_gpu)
 ```
 
 ### When to Use GPU
@@ -359,16 +363,25 @@ function benchmark_simulation(nx, ny, nz; nsteps=100, Lx=500e3, Ly=500e3, Lz=400
     init_random_psi!(S, G; amplitude=0.1)
     compute_q_from_psi!(S, G, plans, a_ell)
 
+    Snp1 = copy_state(S)
+    mask = dealias_mask(G)
+    rk_workspace = ExpRK2Workspace(S, plans; G=G)
+
     # Warm-up
-    first_projection_step!(S, G, params, plans, a_ell)
-    for _ in 1:9
-        leapfrog_step!(S, G, params, plans, a_ell)
+    for _ in 1:10
+        exp_rk2_step!(Snp1, S, G, params, plans;
+                      a=a_ell, dealias_mask=mask,
+                      timestep_workspace=rk_workspace)
+        S, Snp1 = Snp1, S
     end
 
     # Timed run
     t_start = time()
     for _ in 1:nsteps
-        leapfrog_step!(S, G, params, plans, a_ell)
+        exp_rk2_step!(Snp1, S, G, params, plans;
+                      a=a_ell, dealias_mask=mask,
+                      timestep_workspace=rk_workspace)
+        S, Snp1 = Snp1, S
     end
     t_end = time()
 

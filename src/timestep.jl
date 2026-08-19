@@ -1,860 +1,410 @@
 #=
 ================================================================================
-                    timestep.jl - Time Integration
+                    timestep.jl - ETD-RK2 Time Integration
 ================================================================================
 
-This file implements the time stepping schemes for the QG-YBJ+ model:
+The production time stepper is a second-order exponential Runge-Kutta method
+(ETD-RK2). Horizontal hyperdiffusion is integrated exactly; advection,
+refraction, dispersion, and vertical diffusion are evaluated explicitly at two
+Runge-Kutta stages.
 
-1. FORWARD EULER (Projection Step):
-   Used for the first time step to initialize the leapfrog scheme.
-   Simple but only first-order accurate.
+For a semilinear equation u_t = L*u + N(u), one step is
 
-2. LEAPFROG with ROBERT-ASSELIN FILTER:
-   The main time integration scheme. Second-order accurate in time.
-   The Robert-Asselin filter damps the computational mode that can
-   grow with leapfrog schemes.
+    a       = exp(hL)u_n + h*phi_1(hL)N(u_n)
+    u_{n+1} = a + h*phi_2(hL)(N(a) - N(u_n))
 
-TIME INTEGRATION ALGORITHM:
----------------------------
-For each time step from n to n+1:
-
-1. Compute tendencies at time n:
-   - Advection: J(ψ, q), J(ψ, B)
-   - Refraction: B × ζ
-   - Vertical diffusion: νz ∂²q/∂z²
-
-2. Apply physics switches:
-   - linear: zero nonlinear terms
-   - inviscid: zero dissipation
-   - passive_scalar: zero dispersion and refraction
-   - fixed_flow: zero q tendency
-
-3. Time step with hyperdiffusion integrating factors:
-   - Leapfrog: φ^(n+1) = φ^(n-1) × e^(-2λdt) + 2dt × tendency^n × e^(-λdt)
-   - Forward Euler: φ^(n+1) = (φ^n + dt × tendency) × e^(-λdt)
-   where tendency = -advection + diffusion (evaluated at time n)
-
-4. Robert-Asselin filter (leapfrog only):
-   φ̃^n = φ^n + γ(φ^(n-1) - 2φ^n + φ^(n+1))
-   where γ ~ 10⁻³ is small to minimize damping
-
-5. Wave feedback on mean flow:
-   q* = q - qʷ (if wave feedback is enabled)
-
-6. Diagnostic updates:
-   - Invert q → ψ
-   - Invert B → A (YBJ+) or compute A directly (normal YBJ)
-   - Compute velocities from ψ
-
-FORTRAN CORRESPONDENCE:
-----------------------
-The time stepping matches main_waqg.f90 in the Fortran QG_YBJp code.
-The integrating factor approach for hyperdiffusion is from the Fortran.
-
-STABILITY:
-----------
-- Leapfrog CFL condition: dt < min(dx/|u|, dy/|v|)
-- Hyperdiffusion CFL: dt × ν × k^(2n) < 1 for largest k
-- Robert-Asselin γ too large → excessive damping
-- Robert-Asselin γ too small → computational mode growth
-
-PENCILARRAY COMPATIBILITY:
---------------------------
-All loops use local indexing with local_to_global() for wavenumber access
-based on the array pencil (important for MPI input/output pencil mismatch).
-The vertical dimension (z) must be fully local for proper operation.
-
+where L is the diagonal horizontal hyperdiffusion operator. The phi functions
+are evaluated with cancellation-safe series near zero.
 ================================================================================
 =#
 
-#=
-================================================================================
-                    HELPER FUNCTIONS
-================================================================================
-=#
-
-"""
-    split_B_to_real_imag!(BRk, BIk, B)
-
-Split complex wave field B into real and imaginary parts stored as complex arrays.
-
-This is a common operation in the time stepping code. The outputs BRk and BIk
-are complex arrays where only the real part is used (imaginary part is zero).
-This format is required for compatibility with the spectral derivative operations.
-
-# Arguments
-- `BRk`: Output array for real part of B (stored as Complex with imag=0)
-- `BIk`: Output array for imaginary part of B (stored as Complex with imag=0)
-- `B`: Input complex wave field
-"""
+"""Split the complex wave envelope into real-valued spectral components."""
 function split_B_to_real_imag!(BRk, BIk, B)
     B_arr = parent(B)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
-    nz_local, nx_local, ny_local = size(B_arr)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    @local_spectral_loop B begin
         BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
         BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
     end
     return BRk, BIk
 end
 
-"""
-    combine_real_imag_to_B!(B, BRk, BIk)
-
-Combine real and imaginary parts back into complex wave field B.
-
-The inverse of `split_B_to_real_imag!`. Takes BRk and BIk (complex arrays
-with only real parts used) and combines them into B = BR + i*BI.
-
-# Arguments
-- `B`: Output complex wave field
-- `BRk`: Real part of B (stored as Complex with imag=0)
-- `BIk`: Imaginary part of B (stored as Complex with imag=0)
-"""
+"""Combine real-valued spectral components into the complex wave envelope."""
 function combine_real_imag_to_B!(B, BRk, BIk)
     B_arr = parent(B)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
-    nz_local, nx_local, ny_local = size(B_arr)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        B_arr[k, i, j] = Complex(real(BRk_arr[k, i, j]), 0) + im*Complex(real(BIk_arr[k, i, j]), 0)
+    @local_spectral_loop B begin
+        B_arr[k, i, j] = complex(real(BRk_arr[k, i, j]), real(BIk_arr[k, i, j]))
     end
     return B
 end
 
-#=
-================================================================================
-                    FORWARD EULER (Projection Step)
-================================================================================
-The projection step initializes the leapfrog scheme by providing values
-at times n and n-1 from a single initial condition.
-
-After this step:
-- S contains fields at time n+1 (after one Euler step)
-- The original S becomes the n-1 state for leapfrog
-================================================================================
-=#
-
 """
-    first_projection_step!(S, G, par, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
+    replace_q_with_wave_feedback_rhs!(S, G, par, plans, L; kwargs...)
 
-Forward Euler initialization step for the leapfrog time stepper.
-
-# Purpose
-The leapfrog scheme requires values at two time levels (n and n-1).
-This function takes the initial state and advances it by one Forward Euler
-step, providing the needed second time level.
-
-# Algorithm
-1. **Compute tendencies at time n:**
-   - Advection of q and B by geostrophic flow
-   - Wave refraction by vorticity
-   - Vertical diffusion
-
-2. **Apply physics switches:**
-   - `linear`: Zero nonlinear advection
-   - `inviscid`: Zero dissipation
-   - `passive_scalar`: Zero dispersion and refraction
-   - `fixed_flow`: Mean flow doesn't evolve
-
-3. **Forward Euler update:**
-   For each spectral mode:
-   ```
-   q^(n+1) = [q^n - dt × tendency_q + dt × diffusion] × exp(-λ_q × dt)
-   B^(n+1) = [B^n - dt × tendency_B] × exp(-λ_B × dt)
-   ```
-   where λ is the hyperdiffusion factor.
-
-4. **Wave feedback (optional):**
-   ```
-   q* = q - qʷ
-   ```
-
-5. **Diagnostic inversions:**
-   - q → ψ (elliptic inversion)
-   - B → A, C (YBJ+ inversion)
-   - ψ → u, v (velocity computation)
-
-# Arguments
-- `S::State`: State to advance (modified in place)
-- `G::Grid`: Grid struct
-- `par::QGParams`: Model parameters
-- `plans`: FFT plans
-- `a`: Elliptic coefficient array a_ell(z) = f²/N²
-- `dealias_mask`: Optional 2/3 dealiasing mask (nx × ny)
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
-- `N2_profile`: Optional N²(z) profile for vertical velocity computation
-
-# Returns
-Modified state S at time n+1.
-
-# Fortran Correspondence
-This matches the projection step in main_waqg.f90.
-
-# Example
-```julia
-# Initialize and run projection step
-state = init_state(grid)
-init_random_psi!(state, grid)
-a = a_ell_ut(params, grid)
-L = dealias_mask(grid)
-first_projection_step!(state, grid, params, plans; a=a, dealias_mask=L)
-```
+Temporarily replace prognostic PV by the inversion right-hand side
+`q_effective = q - q_wave`. The returned copy must be restored after the
+streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
-function first_projection_step!(S::State, G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
-                                particle_tracker=nothing, current_time=nothing)
-    #= Setup - get local dimensions for PencilArray compatibility =#
-    q_arr = parent(S.q)
-    B_arr = parent(S.B)
-    psi_arr = parent(S.psi)
-    A_arr = parent(S.A)
-    C_arr = parent(S.C)
+function replace_q_with_wave_feedback_rhs!(S::State, G::Grid, par::QGParams, plans, L;
+                                           BRk=nothing, BIk=nothing,
+                                           q_base=nothing, qwk=nothing)
+    q_base = q_base === nothing ? copy(S.q) : q_base
+    parent(q_base) .= parent(S.q)
 
-    nz_local, nx_local, ny_local = size(q_arr)
-    nz = G.nz
-
-    # Note: In xy-pencil format, z is fully local (nz_local = nz).
-    # In z-pencil format (after transpose), xy are distributed.
-    # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
-    # handle transposes internally when using 2D decomposition.
-
-    # Dealias mask - use global indices for lookup
-    L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
-
-    # Allocate tendency arrays (same size as local arrays)
-    nqk = similar(S.q)   # J(ψ, q) advection of PV
-    dqk = similar(S.B)   # Vertical diffusion of q
+    qwk = qwk === nothing ? similar(S.q) : qwk
     if par.ybj_plus
-        nBk = similar(S.B)   # J(ψ, B) advection (complex)
-        rBk = similar(S.B)   # ζ × B refraction (complex)
+        compute_qw_complex!(qwk, S.B, par, G, plans; Lmask=L)
     else
-        nBRk = similar(S.B)  # J(ψ, BR) advection of wave real part
-        nBIk = similar(S.B)  # J(ψ, BI) advection of wave imaginary part
-        rBRk = similar(S.B)  # BR × ζ refraction real part
-        rBIk = similar(S.B)  # BI × ζ refraction imaginary part
-    end
-
-    # For normal YBJ, remove vertical mean of B before any diagnostics/tendencies.
-    if !par.ybj_plus
-        sumB!(S.B, G; Lmask=L)
-
-        # Split B into real and imaginary parts for computation
-        BRk = similar(S.B); BIk = similar(S.B)
-        BRk_arr = parent(BRk); BIk_arr = parent(BIk)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-            BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
-        end
-    end
-
-    #= Step 1: Compute diagnostic fields ψ, velocities, and A =#
-    invert_q_to_psi!(S, G; a, par=par, workspace=workspace)           # q → ψ
-    compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L) # ψ → u, v
-
-    # Compute A from B for dispersion term
-    # Must use the same approach as the main integrator to avoid startup transients
-    if par.ybj_plus
-        # YBJ+: Solve elliptic problem B → A, C
-        invert_B_to_A!(S, G, par, a; workspace=workspace)
-    else
-        # Normal YBJ: Use sumB!/compute_sigma/compute_A! path
-        # For initial step, use zero tendencies for sigma computation
-        nBRk_zero = similar(S.B); fill!(nBRk_zero, 0)
-        nBIk_zero = similar(S.B); fill!(nBIk_zero, 0)
-        rBRk_zero = similar(S.B); fill!(rBRk_zero, 0)
-        rBIk_zero = similar(S.B); fill!(rBIk_zero, 0)
-        sigma_init = compute_sigma(par, G, nBRk_zero, nBIk_zero, rBRk_zero, rBIk_zero; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma_init, par, G; Lmask=L, N2_profile=N2_profile)
-    end
-
-    #= Step 2: Compute nonlinear tendencies =#
-
-    if par.ybj_plus
-        # Advection: J(ψ, q), J(ψ, B)
-        convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
-        convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L)
-
-        # Wave refraction: B × ζ where ζ = ∇²ψ
-        refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L)
-    else
-        # Advection: J(ψ, q), J(ψ, BR), J(ψ, BI)
-        convol_waqg!(nqk, nBRk, nBIk, S.u, S.v, S.q, BRk, BIk, G, plans; Lmask=L)
-
-        # Wave refraction: B × ζ where ζ = ∇²ψ
-        refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
-    end
-
-    # Vertical diffusion: νz ∂²q/∂z² (handles 2D decomposition transposes internally)
-    dissipation_q_nv!(dqk, S.q, par, G; workspace=workspace)
-
-    #= Step 3: Apply physics switches =#
-
-    # inviscid: No dissipation
-    if par.inviscid; dqk .= 0; end
-
-    # linear: No nonlinear advection
-    if par.linear
-        nqk .= 0
-        if par.ybj_plus
-            nBk .= 0
-        else
-            nBRk .= 0; nBIk .= 0
-        end
-    end
-
-    # no_dispersion: Waves don't disperse (A = 0)
-    if par.no_dispersion
-        S.A .= 0; S.C .= 0
-    end
-
-    # passive_scalar: Waves are passive tracers (no dispersion, no refraction)
-    if par.passive_scalar
-        S.A .= 0; S.C .= 0
-        if par.ybj_plus
-            rBk .= 0
-        else
-            rBRk .= 0; rBIk .= 0
-        end
-    end
-
-    # fixed_flow: Mean flow doesn't evolve
-    if par.fixed_flow; nqk .= 0; end
-
-    #= Store old fields for time stepping =#
-    qok  = copy(S.q)
-    qok_arr = parent(qok)
-    if par.ybj_plus
-        Bok = copy(S.B)
-        Bok_arr = parent(Bok)
-    else
-        BRok = similar(S.B); BIok = similar(S.B)
-        BRok_arr = parent(BRok); BIok_arr = parent(BIok)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRok_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-            BIok_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
-        end
-    end
-
-    #= Step 4: Forward Euler with integrating factors =#
-    # The integrating factor handles hyperdiffusion exactly:
-    # φ^(n+1) = [φ^n - dt × F] × exp(-λ×dt)
-
-    # Get parent arrays for tendency terms
-    nqk_arr = parent(nqk)
-    if par.ybj_plus
-        nBk_arr = parent(nBk)
-        rBk_arr = parent(rBk)
-    else
-        nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-        rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-    end
-    dqk_arr = parent(dqk)
-
-    # Precompute dispersion coefficient: αdisp = f₀/2
-    # From YBJ+ equation (1.4): dispersion term is +i(f/2)kₕ²A
-    # This is CONSTANT (independent of N²) per Asselin & Young (2019)
-    αdisp_profile = Vector{Float64}(undef, nz)
-    αdisp_const = par.f₀ / 2.0
-    fill!(αdisp_profile, αdisp_const)
-
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, S.q)
-        j_global = local_to_global(j, 3, S.q)
-
-        if L[i_global, j_global]
-            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-            # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-            kₕ² = kₓ^2 + kᵧ^2
-
-            # Integrating factors for hyperdiffusion
-            λₑ = int_factor(kₓ, kᵧ, par; waves=false)   # For mean flow
-            λʷ = int_factor(kₓ, kᵧ, par; waves=true)    # For waves
-
-            #= Update q (QGPV) =#
-            if par.fixed_flow
-                # Keep q unchanged when mean flow is fixed
-                q_arr[k, i, j] = qok_arr[k, i, j]
-            else
-                # q^(n+1) = [q^n - dt×J(ψ,q) + dt×diffusion] × exp(-λ×dt)
-                q_arr[k, i, j] = ( qok_arr[k, i, j] - par.dt*nqk_arr[k, i, j] + par.dt*dqk_arr[k, i, j] ) * exp(-λₑ)
-            end
-
-            if par.ybj_plus
-                #= Update B (wave envelope) - YBJ+ equation (1.4) from Asselin & Young (2019)
-                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
-                k_global = local_to_global(k, 1, S.q)
-                αdisp = αdisp_profile[k_global]
-                B_arr[k, i, j] = ( Bok_arr[k, i, j] - par.dt*nBk_arr[k, i, j]
-                                   + par.dt*(im*αdisp*kₕ²*A_arr[k, i, j] - 0.5im*rBk_arr[k, i, j]) ) * exp(-λʷ)
-            else
-                #= Update B (wave envelope) - Normal YBJ
-                In terms of real/imaginary parts (with αdisp = f/2):
-                    ∂BR/∂t = -J(ψ,BR) - αdisp·kₕ²·AI - (1/2)ζ·BI
-                    ∂BI/∂t = -J(ψ,BI) + αdisp·kₕ²·AR + (1/2)ζ·BR =#
-                k_global = local_to_global(k, 1, S.q)
-                αdisp = αdisp_profile[k_global]
-                BRnew = ( BRok_arr[k, i, j] - par.dt*nBRk_arr[k, i, j]
-                          - par.dt*αdisp*kₕ²*Complex(imag(A_arr[k, i, j]),0)
-                          - par.dt*0.5*rBIk_arr[k, i, j] ) * exp(-λʷ)
-                BInew = ( BIok_arr[k, i, j] - par.dt*nBIk_arr[k, i, j]
-                          + par.dt*αdisp*kₕ²*Complex(real(A_arr[k, i, j]),0)
-                          + par.dt*0.5*rBRk_arr[k, i, j] ) * exp(-λʷ)
-
-                # Recombine into complex B
-                B_arr[k, i, j] = Complex(real(BRnew), 0) + im*Complex(real(BInew), 0)
-            end
-        else
-            # Zero out dealiased modes
-            q_arr[k, i, j] = 0
-            B_arr[k, i, j] = 0
-        end
-    end
-
-    #= Step 5: Wave feedback on mean flow =#
-    # q* = q - qʷ where qʷ is the wave feedback term
-    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
-    if wave_feedback_enabled
-        qwk = similar(S.q)
-        qwk_arr = parent(qwk)
-
-        if par.ybj_plus
-            compute_qw_complex!(qwk, S.B, par, G, plans; Lmask=L)
-        else
-            # Rebuild BR/BI from updated B
-            @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-                BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
-            end
-
-            # Compute qʷ from B
-            compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
-        end
-
-        # Subtract from q
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, S.q)
-            j_global = local_to_global(j, 3, S.q)
-            if L[i_global, j_global]
-                q_arr[k, i, j] -= qwk_arr[k, i, j]
-            else
-                q_arr[k, i, j] = 0
-            end
-        end
-    end
-
-    #= Step 6: Update diagnostic fields =#
-
-    # Invert q → ψ (only if mean flow evolves)
-    if !par.fixed_flow
-        invert_q_to_psi!(S, G; a, par=par, workspace=workspace)
-    end
-
-    # Recover A from B
-    if par.passive_scalar
-        fill!(A_arr, zero(eltype(A_arr)))
-        fill!(C_arr, zero(eltype(C_arr)))
-    elseif par.ybj_plus
-        # YBJ+: Solve elliptic problem B → A, C (handles 2D decomposition internally)
-        invert_B_to_A!(S, G, par, a; workspace=workspace)
-    else
-        # Normal YBJ: Different procedure
-        sumB!(S.B, G; Lmask=L)  # Remove vertical mean
+        BRk = BRk === nothing ? similar(S.B) : BRk
+        BIk = BIk === nothing ? similar(S.B) : BIk
         split_B_to_real_imag!(BRk, BIk, S.B)
-        sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, BRk, BIk, sigma, par, G; Lmask=L, N2_profile=N2_profile)
+        compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
     end
 
-    # Compute velocities from ψ (with dealiasing for omega equation RHS)
-    compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
+    q_arr = parent(S.q)
+    q_base_arr = parent(q_base)
+    qwk_arr = parent(qwk)
+    @dealiased_spectral_loop S.q L begin
+        q_arr[k, i, j] = q_base_arr[k, i, j] - qwk_arr[k, i, j]
+    end begin
+        q_arr[k, i, j] = 0
+    end
+    return q_base
+end
 
-    #= Step 7: Advect particles (if tracker provided) =#
-    # Particles co-evolve with the wave and mean flow equations using the same dt
-    if particle_tracker !== nothing
-        advect_particles!(particle_tracker, S, G, par.dt, current_time;
-                          params=par, N2_profile=N2_profile)
+restore_prognostic_q!(S::State, q_base) = (parent(S.q) .= parent(q_base); S)
+
+_wave_feedback_enabled(par::QGParams) =
+    !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
+
+"""
+    ExpRK2Workspace(state)
+
+Reusable stage and tendency storage for [`exp_rk2_step!`](@ref). Allocate once
+per simulation to avoid recreating the Runge-Kutta state and spectral tendency
+arrays on every step.
+"""
+struct ExpRK2Workspace{S,A}
+    stage::S
+    rhsq0::A
+    rhsB0::A
+    rhsq1::A
+    rhsB1::A
+    nqk::A
+    dqk::A
+    nBk::A
+    rBk::A
+    nBRk::A
+    nBIk::A
+    rBRk::A
+    rBIk::A
+    BRk::A
+    BIk::A
+    q_base::A
+    qwk::A
+end
+
+function ExpRK2Workspace(S::State, plans=nothing; G=nothing)
+    return ExpRK2Workspace(
+        copy_state(S),
+        similar(S.q), similar(S.B), similar(S.q), similar(S.B),
+        similar(S.q), similar(S.q), similar(S.B), similar(S.B),
+        similar(S.B), similar(S.B), similar(S.B), similar(S.B),
+        similar(S.B), similar(S.B), similar(S.q), similar(S.q),
+    )
+end
+
+"""Return `exp(-x)`, `h*phi_1(-x)`, and `h*phi_2(-x)` accurately."""
+function _etd_coefficients(x, h)
+    E = exp(-x)
+    if abs(x) < 1e-6
+        x2 = x * x
+        hphi1 = h * (1 - x / 2 + x2 / 6 - x2 * x / 24 + x2 * x2 / 120)
+        hphi2 = h * (1 / 2 - x / 6 + x2 / 24 - x2 * x / 120 + x2 * x2 / 720)
+        return E, hphi1, hphi2
     end
 
+    expm1_neg = expm1(-x)
+    hphi1 = h * (-expm1_neg) / x
+    hphi2 = h * (expm1_neg + x) / x^2
+    return E, hphi1, hphi2
+end
+
+function _diagnose_flow!(S::State, G::Grid, par::QGParams, plans, a, L;
+                         workspace=nothing, N2_profile=nothing,
+                         timestep_workspace=nothing, compute_w=false,
+                         use_wave_feedback=true)
+    if !par.fixed_flow
+        q_base = nothing
+        if use_wave_feedback && _wave_feedback_enabled(par)
+            q_base = replace_q_with_wave_feedback_rhs!(
+                S, G, par, plans, L;
+                BRk=timestep_workspace === nothing ? nothing : timestep_workspace.BRk,
+                BIk=timestep_workspace === nothing ? nothing : timestep_workspace.BIk,
+                q_base=timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
+                qwk=timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
+            )
+        end
+
+        invert_q_to_psi!(S, G; a=a, par=par, workspace=workspace)
+        q_base === nothing || restore_prognostic_q!(S, q_base)
+    end
+
+    compute_velocities!(S, G; plans=plans, params=par, compute_w=compute_w,
+                        N2_profile=N2_profile, workspace=workspace,
+                        dealias_mask=L)
     return S
 end
 
-#=
-================================================================================
-                    LEAPFROG with ROBERT-ASSELIN FILTER
-================================================================================
-The leapfrog scheme is:
-    φ^(n+1) = φ^(n-1) + 2dt × F^n
-
-This is second-order accurate but has a computational mode that can grow.
-The Robert-Asselin filter damps this mode:
-    φ̃^n = φ^n + γ(φ^(n-1) - 2φ^n + φ^(n+1))
-
-With the integrating factor for hyperdiffusion:
-    φ^(n+1) = φ^(n-1) × e^(-2λdt) + 2dt × F^n × e^(-λdt)
-
-This ensures exact treatment of the linear diffusion terms.
-================================================================================
-=#
-
-"""
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing)
-
-Advance the solution by one leapfrog time step with Robert-Asselin filtering.
-
-# Algorithm
-
-**1. Compute tendencies at time n:**
-```
-F_q^n = J(ψ^n, q^n) - νz∂²q^(n-1)/∂z²
-F_B^n = J(ψ^n, B^n) + dispersion + refraction
-```
-
-**2. Leapfrog update with integrating factors:**
-For each spectral mode (k):
-```
-q^(n+1) = q^(n-1) × e^(-2λdt) + 2dt × [-J(ψ,q)^n + diff^n] × e^(-λdt)
-B^(n+1) = B^(n-1) × e^(-2λdt) + 2dt × [-J(ψ,B)^n + dispersion + refraction] × e^(-λdt)
-```
-Note: All tendencies are evaluated at time n and scaled by e^(-λdt) for second-order accuracy.
-
-**3. Robert-Asselin filter:**
-```
-q̃^n = q^n + γ(q^(n-1) - 2q^n + q^(n+1))
-B̃^n = B^n + γ(B^(n-1) - 2B^n + B^(n+1))
-```
-The filtered values are stored in Sn (which becomes Snm1 after rotation).
-
-**4. Wave feedback (if enabled):**
-```
-q*^(n+1) = q^(n+1) - qʷ^(n+1)
-```
-
-**5. Diagnostic inversions:**
-- q^(n+1) → ψ^(n+1)
-- B^(n+1) → A^(n+1), C^(n+1)
-- ψ^(n+1) → u^(n+1), v^(n+1)
-
-# Arguments
-- `Snp1::State`: State at time n+1 (output)
-- `Sn::State`: State at time n (input, filter applied to Snm1)
-- `Snm1::State`: State at time n-1 (input, receives filtered values)
-- `G::Grid`: Grid struct
-- `par::QGParams`: Model parameters
-- `plans`: FFT plans
-- `a`: Elliptic coefficient array
-- `dealias_mask`: Optional dealiasing mask
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
-- `N2_profile`: Optional N²(z) profile for vertical velocity computation
-
-# Returns
-Modified Snp1 with solution at time n+1.
-
-# Time Level Management
-After this call:
-- Snp1 contains fields at n+1
-- Sn contains **filtered** fields at n (becomes new n-1 after rotation)
-- Snm1 is unchanged (will be overwritten after rotation)
-
-Typical loop structure:
-```julia
-for iter in 1:nsteps
-    leapfrog_step!(Snp1, Sn, Snm1, G, par, plans; a=a)
-    # Rotate: Snm1 ← Sn, Sn ← Snp1
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+function _etdrk2_arrays(S::State, timestep_workspace)
+    if timestep_workspace === nothing
+        return (
+            nqk=similar(S.q), dqk=similar(S.q),
+            nBk=similar(S.B), rBk=similar(S.B),
+            nBRk=similar(S.B), nBIk=similar(S.B),
+            rBRk=similar(S.B), rBIk=similar(S.B),
+            BRk=similar(S.B), BIk=similar(S.B),
+        )
+    end
+    return (
+        nqk=timestep_workspace.nqk, dqk=timestep_workspace.dqk,
+        nBk=timestep_workspace.nBk, rBk=timestep_workspace.rBk,
+        nBRk=timestep_workspace.nBRk, nBIk=timestep_workspace.nBIk,
+        rBRk=timestep_workspace.rBRk, rBIk=timestep_workspace.rBIk,
+        BRk=timestep_workspace.BRk, BIk=timestep_workspace.BIk,
+    )
 end
-```
 
-# Fortran Correspondence
-This matches the main leapfrog loop in main_waqg.f90.
-
-# Example
-```julia
-# After projection step, run leapfrog
-for iter in 1:1000
-    leapfrog_step!(Snp1, Sn, Snm1, grid, params, plans; a=a, dealias_mask=L)
-    Snm1, Sn, Snp1 = Sn, Snp1, Snm1
-end
-```
-"""
-function leapfrog_step!(Snp1::State, Sn::State, Snm1::State,
-                        G::Grid, par::QGParams, plans; a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
-                        particle_tracker=nothing, current_time=nothing)
-    #= Setup - get local dimensions for PencilArray compatibility =#
-    qn_arr = parent(Sn.q)
-    Bn_arr = parent(Sn.B)
-    An_arr = parent(Sn.A)
-    qnm1_arr = parent(Snm1.q)
-    Bnm1_arr = parent(Snm1.B)
-    qnp1_arr = parent(Snp1.q)
-    Bnp1_arr = parent(Snp1.B)
-
-    nz_local, nx_local, ny_local = size(qn_arr)
-    nz = G.nz
-
-    # Note: In xy-pencil format, z is fully local (nz_local = nz).
-    # In z-pencil format (after transpose), xy are distributed.
-    # Functions that need z local (invert_q_to_psi!, dissipation_q_nv!, etc.)
-    # handle transposes internally when using 2D decomposition.
-
-    # Dealias mask - use global indices for lookup
+function _compute_etdrk2_rhs!(rhsq, rhsB, S::State, G::Grid,
+                              par::QGParams, plans;
+                              a, dealias_mask=nothing, workspace=nothing,
+                              N2_profile=nothing, timestep_workspace=nothing)
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
+    par.ybj_plus || sumB!(S.B, G; Lmask=L, workspace=workspace)
+    _diagnose_flow!(S, G, par, plans, a, L;
+                    workspace=workspace, N2_profile=N2_profile,
+                    timestep_workspace=timestep_workspace,
+                    compute_w=false, use_wave_feedback=true)
 
-    #= Step 1: Update diagnostics for current state =#
-    if !par.fixed_flow
-        invert_q_to_psi!(Sn, G; a, par=par, workspace=workspace)
-    end
-    compute_velocities!(Sn, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
+    arrays = _etdrk2_arrays(S, timestep_workspace)
+    nqk, dqk = arrays.nqk, arrays.dqk
+    nBk, rBk = arrays.nBk, arrays.rBk
+    nBRk, nBIk = arrays.nBRk, arrays.nBIk
+    rBRk, rBIk = arrays.rBRk, arrays.rBIk
+    BRk, BIk = arrays.BRk, arrays.BIk
 
-    #= Step 2: Allocate and compute tendencies =#
-    nqk = similar(Sn.q)   # Advection of q
-    dqk = similar(Sn.B)   # Vertical diffusion
     if par.ybj_plus
-        nBk = similar(Sn.B)  # Advection of B
-        rBk = similar(Sn.B)  # Refraction of B
-
-        # Compute tendencies
-        convol_waqg_q!(nqk, Sn.u, Sn.v, Sn.q, G, plans; Lmask=L)
-        convol_waqg_B!(nBk, Sn.u, Sn.v, Sn.B, G, plans; Lmask=L)
-        refraction_waqg_B!(rBk, Sn.B, Sn.psi, G, plans; Lmask=L)
-    else
-        nBRk = similar(Sn.B)  # Advection of BR
-        nBIk = similar(Sn.B)  # Advection of BI
-        rBRk = similar(Sn.B)  # Refraction of BR
-        rBIk = similar(Sn.B)  # Refraction of BI
-
-        # Split B into real/imaginary
-        BRk = similar(Sn.B); BIk = similar(Sn.B)
-        BRk_arr = parent(BRk); BIk_arr = parent(BIk)
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            BRk_arr[k, i, j] = Complex(real(Bn_arr[k, i, j]), 0)
-            BIk_arr[k, i, j] = Complex(imag(Bn_arr[k, i, j]), 0)
+        if par.passive_scalar || par.no_dispersion
+            fill!(parent(S.A), zero(eltype(parent(S.A))))
+            fill!(parent(S.C), zero(eltype(parent(S.C))))
+        else
+            invert_B_to_A!(S, G, par, a; workspace=workspace)
         end
 
-        # Compute tendencies
-        convol_waqg!(nqk, nBRk, nBIk, Sn.u, Sn.v, Sn.q, BRk, BIk, G, plans; Lmask=L)
-        refraction_waqg!(rBRk, rBIk, BRk, BIk, Sn.psi, G, plans; Lmask=L)
+        convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
+        convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L)
+        refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L)
+    else
+        split_B_to_real_imag!(BRk, BIk, S.B)
+        convol_waqg!(nqk, nBRk, nBIk, S.u, S.v, S.q, BRk, BIk,
+                     G, plans; Lmask=L)
+        refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
+
+        if par.passive_scalar || par.no_dispersion
+            fill!(parent(S.A), zero(eltype(parent(S.A))))
+            fill!(parent(S.C), zero(eltype(parent(S.C))))
+        else
+            sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk;
+                                  Lmask=L, N2_profile=N2_profile)
+            compute_A!(S.A, S.C, BRk, BIk, sigma, par, G;
+                       Lmask=L, N2_profile=N2_profile)
+        end
     end
 
-    # Vertical diffusion at time n (NOT n-1!)
-    # Previous code used Snm1.q which lagged the operator and broke second-order accuracy.
-    # All tendencies should be evaluated at time n and multiplied by exp(-λdt).
-    dissipation_q_nv!(dqk, Sn.q, par, G; workspace=workspace)
+    dissipation_q_nv!(dqk, S.q, par, G; workspace=workspace)
 
-    #= Step 3: Apply physics switches =#
-    if par.inviscid; dqk .= 0; end
+    par.inviscid && fill!(parent(dqk), zero(eltype(parent(dqk))))
     if par.linear
-        nqk .= 0
+        fill!(parent(nqk), zero(eltype(parent(nqk))))
         if par.ybj_plus
-            nBk .= 0
+            fill!(parent(nBk), zero(eltype(parent(nBk))))
         else
-            nBRk .= 0; nBIk .= 0
+            fill!(parent(nBRk), zero(eltype(parent(nBRk))))
+            fill!(parent(nBIk), zero(eltype(parent(nBIk))))
         end
     end
-    if par.no_dispersion; Sn.A .= 0; Sn.C .= 0; end
     if par.passive_scalar
-        Sn.A .= 0; Sn.C .= 0
         if par.ybj_plus
-            rBk .= 0
+            fill!(parent(rBk), zero(eltype(parent(rBk))))
         else
-            rBRk .= 0; rBIk .= 0
+            fill!(parent(rBRk), zero(eltype(parent(rBRk))))
+            fill!(parent(rBIk), zero(eltype(parent(rBIk))))
         end
     end
-    if par.fixed_flow; nqk .= 0; end
 
-    #= Step 4: Leapfrog update with integrating factors =#
-    qtemp = similar(Sn.q)
-    qtemp_arr = parent(qtemp)
-    if par.ybj_plus
-        Btemp = similar(Sn.B)
-        Btemp_arr = parent(Btemp)
-    else
-        BRtemp = similar(Sn.B); BItemp = similar(Sn.B)
-        BRtemp_arr = parent(BRtemp); BItemp_arr = parent(BItemp)
-    end
-
-    # Get parent arrays for tendency terms
+    rhsq_arr = parent(rhsq)
+    rhsB_arr = parent(rhsB)
     nqk_arr = parent(nqk)
+    dqk_arr = parent(dqk)
+    A_arr = parent(S.A)
+    alpha_disp = par.f₀ / 2
+
     if par.ybj_plus
         nBk_arr = parent(nBk)
         rBk_arr = parent(rBk)
+        @dealiased_wavenumber_loop S.q G L begin
+            rhsq_arr[k, i, j] = par.fixed_flow ? zero(eltype(rhsq_arr)) :
+                                    -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+            rhsB_arr[k, i, j] = -nBk_arr[k, i, j] +
+                                 im * alpha_disp * kₕ² * A_arr[k, i, j] -
+                                 0.5im * rBk_arr[k, i, j]
+        end begin
+            rhsq_arr[k, i, j] = 0
+            rhsB_arr[k, i, j] = 0
+        end
     else
-        nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-        rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-    end
-    dqk_arr = parent(dqk)
-
-    # Precompute dispersion coefficient: αdisp = f₀/2
-    # From YBJ+ equation (1.4): dispersion term is +i(f/2)kₕ²A
-    # This is CONSTANT (independent of N²) per Asselin & Young (2019)
-    αdisp_profile = Vector{Float64}(undef, nz)
-    αdisp_const = par.f₀ / 2.0
-    fill!(αdisp_profile, αdisp_const)
-
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for wavenumber lookup
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
-
-        if L[i_global, j_global]
-            kₓ = G.kx[i_global]; kᵧ = G.ky[j_global]
-            # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-            kₕ² = kₓ^2 + kᵧ^2
-            λₑ  = int_factor(kₓ, kᵧ, par; waves=false)
-            λʷ = int_factor(kₓ, kᵧ, par; waves=true)
-
-            #= Update q
-            q^(n+1) = q^(n-1)×e^(-2λdt) + 2dt×[-J(ψ,q)^n + diff^n]×e^(-λdt)
-            All tendencies (advection, diffusion) evaluated at time n, scaled by e^(-λdt).
-            Previous code incorrectly used diff at n-1 with e^(-2λdt), breaking second-order accuracy. =#
-            if par.fixed_flow
-                qtemp_arr[k, i, j] = qn_arr[k, i, j]  # Keep unchanged
-            else
-                qtemp_arr[k, i, j] = qnm1_arr[k, i, j]*exp(-2λₑ) +
-                               2*par.dt*(-nqk_arr[k, i, j] + dqk_arr[k, i, j])*exp(-λₑ)
-            end
-
-            if par.ybj_plus
-                #= Update B (complex) - YBJ+ equation (1.4) from Asselin & Young (2019)
-                ∂B/∂t = -J(ψ,B) - (i/2)ζ·B + i(f/2)kₕ²·A =#
-                k_global = local_to_global(k, 1, Sn.q)
-                αdisp = αdisp_profile[k_global]
-                Btemp_arr[k, i, j] = Bnm1_arr[k, i, j]*exp(-2λʷ) +
-                               2*par.dt*( -nBk_arr[k, i, j] +
-                                          im*αdisp*kₕ²*An_arr[k, i, j] -
-                                          0.5im*rBk_arr[k, i, j] )*exp(-λʷ)
-            else
-                #= Update B (real and imaginary parts)
-                BR^(n+1) = BR^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BR) + αdisp·kₕ²·AI + (1/2)ζ·BI]×e^(-λdt)
-                BI^(n+1) = BI^(n-1)×e^(-2λdt) - 2dt×[J(ψ,BI) - αdisp·kₕ²·AR - (1/2)ζ·BR]×e^(-λdt) =#
-                k_global = local_to_global(k, 1, Sn.q)
-                αdisp = αdisp_profile[k_global]
-                BRtemp_arr[k, i, j] = Complex(real(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBRk_arr[k, i, j] +
-                                          αdisp*kₕ²*Complex(imag(An_arr[k, i, j]),0) +
-                                          0.5*rBIk_arr[k, i, j] )*exp(-λʷ)
-                BItemp_arr[k, i, j] = Complex(imag(Bnm1_arr[k, i, j]),0)*exp(-2λʷ) -
-                               2*par.dt*( nBIk_arr[k, i, j] -
-                                          αdisp*kₕ²*Complex(real(An_arr[k, i, j]),0) -
-                                          0.5*rBRk_arr[k, i, j] )*exp(-λʷ)
-            end
-        else
-            qtemp_arr[k, i, j] = 0
-            if par.ybj_plus
-                Btemp_arr[k, i, j] = 0
-            else
-                BRtemp_arr[k, i, j] = 0; BItemp_arr[k, i, j] = 0
-            end
+        nBRk_arr, nBIk_arr = parent(nBRk), parent(nBIk)
+        rBRk_arr, rBIk_arr = parent(rBRk), parent(rBIk)
+        @dealiased_wavenumber_loop S.q G L begin
+            rhsq_arr[k, i, j] = par.fixed_flow ? zero(eltype(rhsq_arr)) :
+                                    -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+            rhsBR = -real(nBRk_arr[k, i, j]) -
+                    alpha_disp * kₕ² * imag(A_arr[k, i, j]) -
+                    0.5 * real(rBIk_arr[k, i, j])
+            rhsBI = -real(nBIk_arr[k, i, j]) +
+                    alpha_disp * kₕ² * real(A_arr[k, i, j]) +
+                    0.5 * real(rBRk_arr[k, i, j])
+            rhsB_arr[k, i, j] = complex(rhsBR, rhsBI)
+        end begin
+            rhsq_arr[k, i, j] = 0
+            rhsB_arr[k, i, j] = 0
         end
     end
 
-    #= Step 5: Robert-Asselin filter
-    Damps the computational mode: φ̃^n = φ^n + γ(φ^(n-1) - 2φ^n + φ^(n+1))
+    return rhsq, rhsB
+end
 
-    IMPORTANT: Store filtered values in Sn (not Snm1!), so that after the rotation
-    (Snm1, Sn, Snp1) = (Sn, Snp1, Snm1), the filtered n state becomes the new n-1 state.
-    Previous code stored in Snm1, but after rotation the old unfiltered Sn became the
-    new Snm1, effectively leaving leapfrog unfiltered. =#
-    γ = par.γ
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        # Get global indices for dealias mask lookup
-        i_global = local_to_global(i, 2, Sn.q)
-        j_global = local_to_global(j, 3, Sn.q)
+function _finalize_etdrk2_state!(S::State, G::Grid, par::QGParams, plans, a, L;
+                                 workspace=nothing, N2_profile=nothing,
+                                 timestep_workspace=nothing)
+    par.ybj_plus || sumB!(S.B, G; Lmask=L, workspace=workspace)
+    _diagnose_flow!(S, G, par, plans, a, L;
+                    workspace=workspace, N2_profile=N2_profile,
+                    timestep_workspace=timestep_workspace,
+                    compute_w=true, use_wave_feedback=true)
 
-        if L[i_global, j_global]
-            # Filter q - store in Sn so it becomes new Snm1 after rotation
-            qn_arr[k, i, j] = qn_arr[k, i, j] + γ*( qnm1_arr[k, i, j] - 2qn_arr[k, i, j] + qtemp_arr[k, i, j] )
-
-            # Filter B - store in Sn so it becomes new Snm1 after rotation
-            if par.ybj_plus
-                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Btemp_arr[k, i, j] )
-            else
-                Bnp1 = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
-                Bn_arr[k, i, j] = Bn_arr[k, i, j] + γ*( Bnm1_arr[k, i, j] - 2Bn_arr[k, i, j] + Bnp1 )
-            end
-        else
-            qn_arr[k, i, j] = 0; Bn_arr[k, i, j] = 0
-        end
-    end
-
-    #= Step 6: Accept the new solution =#
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        qnp1_arr[k, i, j] = qtemp_arr[k, i, j]
-        if par.ybj_plus
-            Bnp1_arr[k, i, j] = Btemp_arr[k, i, j]
-        else
-            Bnp1_arr[k, i, j] = Complex(real(BRtemp_arr[k, i, j]),0) + im*Complex(real(BItemp_arr[k, i, j]),0)
-        end
-    end
-
-    #= Step 7: Wave feedback on mean flow =#
-    wave_feedback_enabled = !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
-    if wave_feedback_enabled
-        qwk = similar(Snp1.q)
-        qwk_arr = parent(qwk)
-
-        if par.ybj_plus
-            compute_qw_complex!(qwk, Snp1.B, par, G, plans; Lmask=L)
-        else
-            # Rebuild BR/BI from updated B
-            BRk2 = similar(Snp1.B); BIk2 = similar(Snp1.B)
-            BRk2_arr = parent(BRk2); BIk2_arr = parent(BIk2)
-            @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-                BRk2_arr[k, i, j] = Complex(real(Bnp1_arr[k, i, j]),0)
-                BIk2_arr[k, i, j] = Complex(imag(Bnp1_arr[k, i, j]),0)
-            end
-
-            compute_qw!(qwk, BRk2, BIk2, par, G, plans; Lmask=L)
-        end
-
-        @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, Snp1.q)
-            j_global = local_to_global(j, 3, Snp1.q)
-            if L[i_global, j_global]
-                qnp1_arr[k, i, j] -= qwk_arr[k, i, j]
-            else
-                qnp1_arr[k, i, j] = 0
-            end
-        end
-    end
-
-    #= Step 8: Update diagnostics for new state =#
-
-    # Invert q → ψ (handles 2D decomposition transposes internally)
-    if !par.fixed_flow
-        invert_q_to_psi!(Snp1, G; a, par=par, workspace=workspace)
-    end
-
-    # Recover A from B
-    if par.passive_scalar
-        fill!(parent(Snp1.A), zero(eltype(parent(Snp1.A))))
-        fill!(parent(Snp1.C), zero(eltype(parent(Snp1.C))))
+    if par.passive_scalar || par.no_dispersion
+        fill!(parent(S.A), zero(eltype(parent(S.A))))
+        fill!(parent(S.C), zero(eltype(parent(S.C))))
     elseif par.ybj_plus
-        # YBJ+: handles 2D decomposition transposes internally
-        invert_B_to_A!(Snp1, G, par, a; workspace=workspace)
+        invert_B_to_A!(S, G, par, a; workspace=workspace)
     else
-        # Normal YBJ path
-        sumB!(Snp1.B, G; Lmask=L)
-        BRk3 = similar(Snp1.B); BIk3 = similar(Snp1.B)
-        split_B_to_real_imag!(BRk3, BIk3, Snp1.B)
-        sigma2 = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=L, N2_profile=N2_profile)
-        compute_A!(Snp1.A, Snp1.C, BRk3, BIk3, sigma2, par, G; Lmask=L, N2_profile=N2_profile)
+        arrays = _etdrk2_arrays(S, timestep_workspace)
+        split_B_to_real_imag!(arrays.BRk, arrays.BIk, S.B)
+        if par.linear
+            fill!(parent(arrays.nBRk), zero(eltype(parent(arrays.nBRk))))
+            fill!(parent(arrays.nBIk), zero(eltype(parent(arrays.nBIk))))
+        else
+            convol_waqg!(arrays.nqk, arrays.nBRk, arrays.nBIk,
+                         S.u, S.v, S.q, arrays.BRk, arrays.BIk,
+                         G, plans; Lmask=L)
+        end
+        refraction_waqg!(arrays.rBRk, arrays.rBIk,
+                         arrays.BRk, arrays.BIk, S.psi,
+                         G, plans; Lmask=L)
+        sigma = compute_sigma(par, G, arrays.nBRk, arrays.nBIk,
+                              arrays.rBRk, arrays.rBIk;
+                              Lmask=L, N2_profile=N2_profile)
+        compute_A!(S.A, S.C, arrays.BRk, arrays.BIk, sigma, par, G;
+                   Lmask=L, N2_profile=N2_profile)
+    end
+    return S
+end
+
+"""
+    exp_rk2_step!(Snp1, Sn, G, par, plans; a, kwargs...)
+
+Advance `Sn` by one second-order exponential Runge-Kutta step and write the
+result into `Snp1`. Horizontal hyperdiffusion is handled exactly through ETD
+phi functions. The method supports both YBJ+ and normal-YBJ formulations.
+"""
+function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
+                       a, dealias_mask=nothing, workspace=nothing,
+                       N2_profile=nothing, particle_tracker=nothing,
+                       current_time=nothing, timestep_workspace=nothing)
+    L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
+
+    if timestep_workspace === nothing
+        rhsq0, rhsB0 = similar(Sn.q), similar(Sn.B)
+        rhsq1, rhsB1 = similar(Sn.q), similar(Sn.B)
+        Sstage = copy_state(Sn)
+    else
+        rhsq0, rhsB0 = timestep_workspace.rhsq0, timestep_workspace.rhsB0
+        rhsq1, rhsB1 = timestep_workspace.rhsq1, timestep_workspace.rhsB1
+        Sstage = timestep_workspace.stage
     end
 
-    # Compute velocities
-    compute_velocities!(Snp1, G; plans, params=par, N2_profile=N2_profile, workspace=workspace, dealias_mask=L)
+    _compute_etdrk2_rhs!(rhsq0, rhsB0, Sn, G, par, plans;
+                         a=a, dealias_mask=L, workspace=workspace,
+                         N2_profile=N2_profile,
+                         timestep_workspace=timestep_workspace)
 
-    #= Step 9: Advect particles (if tracker provided) =#
-    # Particles co-evolve with the wave and mean flow equations using the same dt
+    qn_arr, Bn_arr = parent(Sn.q), parent(Sn.B)
+    qstage_arr, Bstage_arr = parent(Sstage.q), parent(Sstage.B)
+    rhsq0_arr, rhsB0_arr = parent(rhsq0), parent(rhsB0)
+
+    @dealiased_wavenumber_loop Sn.q G L begin
+        lambda_q = int_factor(kₓ, kᵧ, par; waves=false)
+        lambda_B = int_factor(kₓ, kᵧ, par; waves=true)
+        Eq, hphi1q, _ = _etd_coefficients(lambda_q, par.dt)
+        EB, hphi1B, _ = _etd_coefficients(lambda_B, par.dt)
+
+        qstage_arr[k, i, j] = par.fixed_flow ? qn_arr[k, i, j] :
+                                  Eq * qn_arr[k, i, j] + hphi1q * rhsq0_arr[k, i, j]
+        Bstage_arr[k, i, j] = EB * Bn_arr[k, i, j] + hphi1B * rhsB0_arr[k, i, j]
+    end begin
+        qstage_arr[k, i, j] = 0
+        Bstage_arr[k, i, j] = 0
+    end
+
+    _compute_etdrk2_rhs!(rhsq1, rhsB1, Sstage, G, par, plans;
+                         a=a, dealias_mask=L, workspace=workspace,
+                         N2_profile=N2_profile,
+                         timestep_workspace=timestep_workspace)
+
+    qnp1_arr, Bnp1_arr = parent(Snp1.q), parent(Snp1.B)
+    rhsq1_arr, rhsB1_arr = parent(rhsq1), parent(rhsB1)
+
+    @dealiased_wavenumber_loop Sn.q G L begin
+        lambda_q = int_factor(kₓ, kᵧ, par; waves=false)
+        lambda_B = int_factor(kₓ, kᵧ, par; waves=true)
+        Eq, hphi1q, hphi2q = _etd_coefficients(lambda_q, par.dt)
+        EB, hphi1B, hphi2B = _etd_coefficients(lambda_B, par.dt)
+
+        qnp1_arr[k, i, j] = par.fixed_flow ? qn_arr[k, i, j] :
+                                Eq * qn_arr[k, i, j] +
+                                hphi1q * rhsq0_arr[k, i, j] +
+                                hphi2q * (rhsq1_arr[k, i, j] - rhsq0_arr[k, i, j])
+        Bnp1_arr[k, i, j] = EB * Bn_arr[k, i, j] +
+                            hphi1B * rhsB0_arr[k, i, j] +
+                            hphi2B * (rhsB1_arr[k, i, j] - rhsB0_arr[k, i, j])
+    end begin
+        qnp1_arr[k, i, j] = 0
+        Bnp1_arr[k, i, j] = 0
+    end
+
+    _finalize_etdrk2_state!(Snp1, G, par, plans, a, L;
+                            workspace=workspace, N2_profile=N2_profile,
+                            timestep_workspace=timestep_workspace)
+
     if particle_tracker !== nothing
         advect_particles!(particle_tracker, Snp1, G, par.dt, current_time;
                           params=par, N2_profile=N2_profile)
     end
-
     return Snp1
 end

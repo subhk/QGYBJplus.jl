@@ -31,8 +31,8 @@ end
 set_mean_flow!(sim; psi_func=dipole)
 set_surface_waves!(sim; amplitude=0.10, surface_depth=30.0)
 
-# Run simulation
-run!(sim; output_dir="output", timestepper=:imex_cn)
+# Run simulation with ETD-RK2
+run!(sim; output_dir="output")
 
 # Cleanup
 finalize_simulation!(sim)
@@ -118,9 +118,6 @@ This is the main entry point for the high-level API. It handles:
 - `νₕ₁ʷ`: Horizontal hyperdiffusion for waves [m⁴/s] (default: 0)
 - `ilap1w`: Hyperdiffusion order (default: 2 for ∇⁴)
 
-## Robert-Asselin filter
-- `γ`: Filter coefficient (default: 1e-3)
-
 ## MPI options
 - `topology`: Process grid (px, py), auto-computed if not specified
 - `parallel_io`: Enable parallel I/O (default: false)
@@ -157,8 +154,6 @@ function initialize_simulation(;
     # Diffusion
     νₕ₁ʷ::Real = 0.0,
     ilap1w::Int = 2,
-    # Robert-Asselin filter
-    γ::Real = 1e-3,
     # MPI options
     topology = nothing,
     parallel_io::Bool = false,
@@ -196,8 +191,7 @@ function initialize_simulation(;
         no_feedback = no_wave_feedback,
         no_wave_feedback = no_wave_feedback,
         νₕ₁ʷ = T(νₕ₁ʷ),
-        ilap1w = ilap1w,
-        γ = T(γ)
+        ilap1w = ilap1w
     )
 
     # Initialize grid, plans, state, workspace
@@ -466,19 +460,17 @@ This wraps `run_simulation!` with a simpler interface.
 
 # Keyword Arguments
 - `output_dir`: Output directory (default: "output")
-- `timestepper`: Time-stepping method, `:leapfrog` or `:imex_cn` (default: `:imex_cn`)
 - `save_interval`: Save interval in simulation time units
 - `diagnostics_interval`: Diagnostics interval in time steps (default: 10)
 - `verbose`: Print progress (default: true on root)
 
 # Example
 ```julia
-run!(sim; output_dir="output", timestepper=:imex_cn)
+run!(sim; output_dir="output")
 ```
 """
 function run!(sim::Simulation;
     output_dir::String = "output",
-    timestepper::Symbol = :imex_cn,
     save_interval::Union{Real, Nothing} = nothing,
     diagnostics_interval::Int = 10,
     verbose::Bool = true,
@@ -525,8 +517,7 @@ function run!(sim::Simulation;
         workspace = workspace,
         N2_profile = N2_profile,
         print_progress = mpi_config.is_root && verbose,
-        diagnostics_interval = diagnostics_interval,
-        timestepper = timestepper
+        diagnostics_interval = diagnostics_interval
     )
 
     if mpi_config.is_root && verbose

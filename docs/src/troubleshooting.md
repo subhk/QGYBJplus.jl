@@ -11,7 +11,7 @@ CurrentModule = QGYBJplus
 | Won't run | Are `Lx`, `Ly`, `Lz` provided? (required) |
 | Blows up (NaN) | Is `dt` small enough? Try `dt/2` |
 | Wrong results | Check `ybj_plus=true` vs `false` |
-| Too slow | Use IMEX-CN instead of leapfrog |
+| Too slow | Reuse `ExpRK2Workspace` and reduce output frequency |
 | Out of memory | Reduce grid size or use MPI |
 
 ## Installation
@@ -43,7 +43,7 @@ par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
 
 1. **Reduce time step**: `dt = dt / 2`
 2. **Increase dissipation**: `νₕ₁ = 1e8, ilap1 = 2`
-3. **Use IMEX** for wave-dominated problems: `imex_cn_step!()` instead of `leapfrog_step!()`
+3. **Check the explicit wave-dispersion limit** used by ETD-RK2
 4. **Debug with linear mode**: `par = default_params(..., linear=true)`
 
 !!! tip "Wave CFL"
@@ -87,7 +87,7 @@ Type LaTeX + Tab in Julia REPL:
 
 ## Performance
 
-1. Use IMEX time stepping (10× faster for waves)
+1. Reuse `ExpRK2Workspace` in the time loop
 2. Run with threads: `julia -t auto script.jl`
 3. Use MPI for large grids
 4. Reduce output frequency
@@ -97,8 +97,7 @@ Type LaTeX + Tab in Julia REPL:
 ```julia
 par = default_params(
     ...,
-    νₕ₁ʷ = 1e7, ilap1w = 2,  # Biharmonic (recommended)
-    γ = 0.01                  # Stronger Robert-Asselin filter
+    νₕ₁ʷ = 1e7, ilap1w = 2   # Biharmonic wave damping
 )
 ```
 

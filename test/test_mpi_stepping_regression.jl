@@ -19,7 +19,7 @@ using FFTW
 using MPI
 using QGYBJplus
 using QGYBJplus: setup_model, copy_state, dealias_mask,
-                 first_projection_step!, leapfrog_step!,
+                 exp_rk2_step!, ExpRK2Workspace,
                  setup_mpi_environment, init_mpi_grid, plan_mpi_transforms,
                  init_mpi_state, init_mpi_workspace, a_ell_ut, scatter_from_root
 
@@ -30,20 +30,18 @@ const NSTEPS = 3
 
 gnorm2(field, comm) = MPI.Allreduce(sum(abs2, parent(field)), MPI.SUM, comm)
 
-function step_n!(initial, G, par, plans, a, L, nsteps; workspace=nothing)
+function step_n!(initial, G, par, plans, a, L, nsteps;
+                 workspace=nothing, reuse_timestep_workspace=false)
     nsteps > 0 || return copy_state(initial)
 
-    Snm1 = copy_state(initial)
     Sn = copy_state(initial)
-    first_projection_step!(Sn, G, par, plans;
-                           a=a, dealias_mask=L, workspace=workspace)
-    nsteps == 1 && return Sn
-
     Snp1 = copy_state(Sn)
-    for _ in 2:nsteps
-        leapfrog_step!(Snp1, Sn, Snm1, G, par, plans;
-                       a=a, dealias_mask=L, workspace=workspace)
-        Snm1, Sn, Snp1 = Sn, Snp1, Snm1
+    timestep_workspace = reuse_timestep_workspace ? ExpRK2Workspace(Sn, plans; G=G) : nothing
+    for _ in 1:nsteps
+        exp_rk2_step!(Snp1, Sn, G, par, plans;
+                      a=a, dealias_mask=L, workspace=workspace,
+                      timestep_workspace=timestep_workspace)
+        Sn, Snp1 = Snp1, Sn
     end
     return Sn
 end
@@ -94,7 +92,7 @@ try
     fresh = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS)
     workspace = init_mpi_workspace(gridp, mpi_config)
     reused = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS;
-                     workspace=workspace)
+                     workspace=workspace, reuse_timestep_workspace=true)
 
     dq = MPI.Allreduce(maximum(abs.(parent(fresh.q) .- parent(reused.q))), MPI.MAX, comm)
     dB = MPI.Allreduce(maximum(abs.(parent(fresh.B) .- parent(reused.B))), MPI.MAX, comm)

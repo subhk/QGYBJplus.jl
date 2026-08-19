@@ -25,10 +25,16 @@ state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
 workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
 
 a_vec = a_ell_ut(params, grid)
+mask = dealias_mask(grid)
+next_state = copy_state(state)
+rk_workspace = ExpRK2Workspace(state, plans; G=grid)
 
 for step in 1:1000
-    invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
-    leapfrog_step!(state, state, state, grid, params, plans; a=a_vec, workspace=workspace)
+    exp_rk2_step!(next_state, state, grid, params, plans;
+                  a=a_vec, dealias_mask=mask,
+                  workspace=workspace,
+                  timestep_workspace=rk_workspace)
+    state, next_state = next_state, state
 end
 
 MPI.Finalize()

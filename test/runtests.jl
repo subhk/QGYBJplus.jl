@@ -34,10 +34,6 @@ const TEST_Lz = 4000.0 # 4 km
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, N²=-1.0)
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, f₀=0.0)
 
-    # Robert-Asselin filter coefficient
-    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=-0.1)
-    @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, γ=1.5)
-
     # Hyperviscosity must be non-negative
     @test_throws ArgumentError default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz, νₕ₁=-0.1)
 
@@ -212,19 +208,23 @@ end
     invert_B_to_A!(S, G, par, a)
     @test all(isfinite, real.(S.A))
 
-    # One projection step should run without error
+    # One ETD-RK2 step should run without error
     L = dealias_mask(G)
-    first_projection_step!(S, G, par, plans; a, dealias_mask=L)
-    @test all(isfinite, real.(S.q))
-
-    # Leapfrog step should also update fields
-    Snp1 = deepcopy(S); Snm1 = deepcopy(S)
-    leapfrog_step!(Snp1, S, Snm1, G, par, plans; a, dealias_mask=L)
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans; a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
 end
 
-@testset "IMEX-CN step (wave feedback enabled)" begin
+@testset "Legacy time steppers removed" begin
+    @test !isdefined(QGYBJplus, :first_projection_step!)
+    @test !isdefined(QGYBJplus, :leapfrog_step!)
+    @test !isdefined(QGYBJplus, :imex_cn_step!)
+    @test !isdefined(QGYBJplus, :IMEXWorkspace)
+    @test !hasfield(QGParams, :γ)
+end
+
+@testset "ETD-RK2 step (wave feedback enabled)" begin
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
                          dt=0.01, no_feedback=false, no_wave_feedback=false)
     G, S, plans, a = setup_model(par)
@@ -233,17 +233,74 @@ end
     # Seed a nontrivial wave mode
     S.B[3, 2, 2] = 1.0 + 0.2im
 
-    imex_ws = init_imex_workspace(S, G)
-    first_imex_step!(S, G, par, plans, imex_ws; a=a, dealias_mask=L)
-
     Snp1 = copy_state(S)
-    imex_cn_step!(Snp1, S, G, par, plans, imex_ws; a=a, dealias_mask=L)
+    timestep_workspace = ExpRK2Workspace(S, plans; G=G)
+    exp_rk2_step!(Snp1, S, G, par, plans;
+                  a=a, dealias_mask=L,
+                  timestep_workspace=timestep_workspace)
 
     @test all(isfinite, real.(Snp1.q))
     @test all(isfinite, imag.(Snp1.q))
     @test all(isfinite, real.(Snp1.B))
     @test all(isfinite, imag.(Snp1.B))
     @test all(isfinite, real.(Snp1.psi))
+end
+
+@testset "ETD-RK2 coefficients are stable near zero" begin
+    dt = 3.0
+    for λdt in (0.0, 1e-8, 1e-10)
+        E, hφ1, hφ2 = QGYBJplus._etd_coefficients(λdt, dt)
+        if λdt == 0
+            @test E == 1
+            @test hφ1 == dt
+            @test hφ2 == dt / 2
+        else
+            x = BigFloat(λdt)
+            h = BigFloat(dt)
+            E_expected = exp(-x)
+            @test E ≈ Float64(E_expected) rtol=1e-14
+            @test hφ1 ≈ Float64(h * (1 - E_expected) / x) rtol=1e-13
+            @test hφ2 ≈ Float64(h * (E_expected - 1 + x) / x^2) rtol=1e-13
+        end
+    end
+end
+
+@testset "ETD-RK2 integrates horizontal hyperdiffusion exactly" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=2π, Ly=2π, Lz=1.0,
+                         dt=0.1, fixed_flow=true, linear=true,
+                         no_dispersion=true, passive_scalar=true,
+                         νₕ₁ʷ=0.3, νₕ₂ʷ=0.0, ilap1w=1)
+    G, S, plans, a = setup_model(par)
+    S.B[2, 2, 1] = 1.2 - 0.7im
+    initial_mode = S.B[2, 2, 1]
+    damping = exp(-int_factor(G.kx[2], G.ky[1], par; waves=true))
+
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans;
+                  a=a, dealias_mask=dealias_mask(G))
+
+    @test Snp1.B[2, 2, 1] ≈ damping * initial_mode rtol=1e-14
+end
+
+@testset "ETD-RK2 wave feedback preserves prognostic q" begin
+    par = default_params(nx=8, ny=8, nz=4, Lx=2π, Ly=2π, Lz=2π,
+                         dt=1e-3, inviscid=true,
+                         νₕ₁=0.0, νₕ₂=0.0, νₕ₁ʷ=0.0, νₕ₂ʷ=0.0,
+                         no_feedback=false, no_wave_feedback=false)
+    G, S, plans, a = setup_model(par)
+    L = dealias_mask(G)
+    S.q[1, 2, 1] = 1.0 + 0im
+    S.q[2, 1, 2] = -0.4 + 0im
+    S.B[1, 2, 1] = 1.0 + 0.3im
+    S.B[2, 3, 2] = -0.6 + 1.1im
+
+    q_original = copy(parent(S.q))
+    rhsq, rhsB = similar(S.q), similar(S.B)
+    QGYBJplus._compute_etdrk2_rhs!(rhsq, rhsB, S, G, par, plans;
+                                   a=a, dealias_mask=L)
+
+    @test parent(S.q) ≈ q_original
+    @test all(isfinite, parent(S.psi))
 end
 
 @testset "Normal YBJ branch + dealias + kh=0" begin
@@ -273,10 +330,8 @@ end
 
     # Run one normal-branch step to ensure it executes
     S.B[4, 3, 3] = 0.5 + 0.2im
-    first_projection_step!(S, G, par, plans; a, dealias_mask=L)
-    Snp1 = deepcopy(S); Snm1 = deepcopy(S)
-
-    leapfrog_step!(Snp1, S, Snm1, G, par, plans; a, dealias_mask=L)
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans; a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
 end
@@ -404,9 +459,8 @@ end
     @test all(isfinite, S.w)
 end
 
-@testset "First projection step with A initialization" begin
-    # Test that first_projection_step! properly initializes A before using it
-    # (Previously A was zero when first used for dispersion)
+@testset "ETD-RK2 step with A initialization" begin
+    # Test that ETD-RK2 initializes A before using it for dispersion.
     par = default_params(nx=8, ny=8, nz=8, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
     G, S, plans, a = setup_model(par)
     L = dealias_mask(G)
@@ -417,13 +471,13 @@ end
     # A should initially be zero
     @test all(iszero, S.A)
 
-    # Run first projection step
-    first_projection_step!(S, G, par, plans; a=a, dealias_mask=L)
+    Snp1 = copy_state(S)
+    exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
 
-    # After projection step, A should be computed (not zero if B was non-zero)
+    # After the step, A should be computed (not zero if B was non-zero)
     # Due to physics switches and filtering, A might still be small but the
     # computation should have happened
-    @test all(isfinite, S.A)
+    @test all(isfinite, Snp1.A)
 end
 
 @testset "Nonlinear operator normalization and balance" begin
@@ -556,7 +610,7 @@ end
     @test isapprox(detailed_WKE, 0.25; atol=1e-12)
 end
 
-@testset "Generic leapfrog driver honors nt" begin
+@testset "Generic ETD-RK2 driver honors nt" begin
     par = default_params(nx=8, ny=8, nz=4, Lx=2pi, Ly=2pi, Lz=1.0,
                          dt=1e-3, nt=1)
     G, initial, plans, a = setup_model(par)
@@ -564,15 +618,36 @@ end
     initial.B[2, 2, 2] = 2e-2 + 1e-2im
 
     expected = copy_state(initial)
-    first_projection_step!(expected, G, par, plans;
-                           a=a, dealias_mask=dealias_mask(G))
+    expected_next = copy_state(initial)
+    exp_rk2_step!(expected_next, expected, G, par, plans;
+                  a=a, dealias_mask=dealias_mask(G))
 
     actual = copy_state(initial)
     run_simulation!(actual, G, par, plans;
                     print_progress=false, diagnostics_interval=typemax(Int))
 
-    @test actual.q ≈ expected.q
-    @test actual.B ≈ expected.B
+    @test actual.q ≈ expected_next.q
+    @test actual.B ≈ expected_next.B
+end
+
+@testset "Configured simulation uses ETD-RK2" begin
+    mktempdir() do output_dir
+        config = create_simple_config(
+            nx=8, ny=8, nz=8,
+            Lx=2π, Ly=2π, Lz=1.0,
+            dt=1e-3, total_time=1e-3,
+            output_interval=1.0,
+            output_dir=output_dir,
+            inviscid=true,
+        )
+        sim = setup_simulation(config; topology=(1, 1))
+        run_simulation!(sim)
+
+        @test sim.time_step == 1
+        @test sim.current_time ≈ sim.params.dt
+        @test all(isfinite, parent(sim.state.q))
+        @test all(isfinite, parent(sim.state.B))
+    end
 end
 
 @testset "State output preserves variable stratification" begin

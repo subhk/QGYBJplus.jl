@@ -98,15 +98,11 @@ B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}
 
 ---
 
-## Time Stepping Options
+## Time Stepping
 
-| Method | Speed | Best For | How It Works |
-|:-------|:------|:---------|:-------------|
-| **Leapfrog** | Standard | General use | Explicit, simple, stable |
-| **IMEX-CN** | 10× faster | Wave-dominated | Treats fast dispersion implicitly |
-
-!!! note "Choosing a Method"
-    Use IMEX-CN when wave dispersion limits your timestep. Leapfrog is simpler and sufficient when eddies dominate.
+The model uses second-order ETD-RK2. Horizontal hyperdiffusion is integrated
+exactly, while advection, refraction, dispersion, and vertical diffusion use
+two explicit Runge–Kutta stages.
 
 ---
 
