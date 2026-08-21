@@ -1,6 +1,7 @@
 using Test
 using NCDatasets
 using QGYBJplus
+using Random
 
 @testset "Simulation-owned NetCDF output and restart" begin
     mktempdir() do output_dir
@@ -271,6 +272,57 @@ using QGYBJplus
                 finally
                     finalize_model!(ybj_model)
                 end
+            end
+
+            feedback_model = QGYBJModel(
+                grid=grid,
+                coriolis=FPlane(f=2.0),
+                stratification=stratification,
+                closure=HorizontalHyperdiffusivity(
+                    flow=0, flow2=0, waves=0, waves2=0),
+                flow=EvolvingFlow(),
+                feedback=WaveMeanFeedback(),
+                formulation=YBJ(),
+                linear=NonlinearDynamics(),
+                no_dispersion=Dispersive(),
+                topology=(1, 1),
+                verbose=false,
+            )
+            try
+                rng = MersenneTwister(41)
+                parent(feedback_model.fields.q) .=
+                    1e-2 .* randn(rng, ComplexF64,
+                                   size(parent(feedback_model.fields.q)))
+                parent(feedback_model.fields.q)[:, 1, 1] .= 0
+                parent(feedback_model.fields.B) .=
+                    1e-2 .* randn(rng, ComplexF64,
+                                   size(parent(feedback_model.fields.B)))
+                invert_q_to_psi!(feedback_model)
+                baseline_psi = copy(parent(feedback_model.fields.psi))
+                prognostic_q = copy(parent(feedback_model.fields.q))
+
+                expected = QGYBJplus.copy_fields(feedback_model.fields)
+                context = QGYBJplus._operator_context(feedback_model)
+                options = QGYBJplus.ETDModelOptions(
+                    feedback_model.physics, feedback_model.numerics)
+                QGYBJplus._finalize_etdrk2_state!(
+                    expected, context.grid, options, context.plans,
+                    context.a, context.mask;
+                    workspace=context.workspace,
+                    N2_profile=context.N2,
+                    rho_u=context.rho_u,
+                    rho_s=context.rho_s,
+                )
+                @test maximum(abs,
+                    parent(expected.psi) .- baseline_psi) > 1e-10
+
+                QGYBJplus._refresh_wave_diagnostics!(feedback_model)
+                @test parent(feedback_model.fields.psi) ≈ parent(expected.psi)
+                @test parent(feedback_model.fields.A) ≈ parent(expected.A)
+                @test parent(feedback_model.fields.C) ≈ parent(expected.C)
+                @test parent(feedback_model.fields.q) == prognostic_q
+            finally
+                finalize_model!(feedback_model)
             end
 
             failure_path = joinpath(output_dir, "forced_failure")

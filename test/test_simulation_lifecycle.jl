@@ -78,6 +78,19 @@ using QGYBJplus
 
     nonfinite_model = lifecycle_model()
     try
+        initialize_particles!(nonfinite_model, ParticleConfig{Float64}(
+            x_max=2π,
+            y_max=2π,
+            z_level=-0.5,
+            nx_particles=2,
+            ny_particles=2,
+            use_3d_advection=false,
+        ))
+        particles = nonfinite_model.particles.particles
+        initial_x = copy(particles.x)
+        initial_y = copy(particles.y)
+        initial_z = copy(particles.z)
+        initial_particle_time = particles.time
         nonfinite_model.fields.B[2, 2, 1] = complex(NaN)
         nonfinite_simulation = Simulation(
             nonfinite_model;
@@ -89,6 +102,12 @@ using QGYBJplus
         )
         @test_throws ErrorException run!(nonfinite_simulation)
         @test nonfinite_simulation.state == Failed
+        @test particles.x == initial_x
+        @test particles.y == initial_y
+        @test particles.z == initial_z
+        @test particles.time == initial_particle_time
+        @test nonfinite_simulation.clock.iteration == 0
+        @test nonfinite_simulation.clock.time == 0
     finally
         finalize_model!(nonfinite_model)
     end

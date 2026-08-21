@@ -35,7 +35,7 @@ construct a new simulation around the same model to continue from the current
 fields. This prevents closed output managers from overwriting earlier files.
 After every ETD-RK2 step, non-finite fields and excessive streamfunction
 growth are checked collectively, so all MPI ranks transition to `Failed`
-before scheduled output is written.
+before particle advection or scheduled output is attempted.
 
 ```julia
 try

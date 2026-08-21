@@ -32,7 +32,9 @@ function _check_termination_conditions!(simulation::Simulation)
     bad_count = MPI.Allreduce(local_bad ? 1 : 0, +, runtime.mpi.comm)
     bad_count == 0 || error("non-finite value detected in the model state")
 
-    psi_physical = allocate_fft_backward_dst(fields.psi, runtime)
+    # Reuse the runtime-owned FFT input buffer: this check runs every step and
+    # must not allocate a grid-sized physical field each time.
+    psi_physical = runtime.transform_destinations.input
     fft_backward!(psi_physical, fields.psi, runtime)
     local_maximum = maximum(abs, parent(psi_physical))
     global_maximum = MPI.Allreduce(local_maximum, MPI.MAX, runtime.mpi.comm)
@@ -366,16 +368,14 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
     mask = context.mask
     sumB!(fields.B, context.grid;
           Lmask=mask, workspace=context.workspace)
-    compute_velocities!(fields, context.grid;
-        plans=context.plans,
-        f=context.f,
-        N2=first(context.N2),
+    _diagnose_flow!(fields, context.grid, options, context.plans,
+        context.a, mask;
+        workspace=context.workspace,
         N2_profile=context.N2,
         rho_u=context.rho_u,
         rho_s=context.rho_s,
         compute_w=false,
-        workspace=context.workspace,
-        dealias_mask=mask)
+        use_wave_feedback=true)
 
     arrays = _etdrk2_arrays(fields, nothing)
     split_B_to_real_imag!(arrays.BRk, arrays.BIk, fields.B)
@@ -585,12 +585,12 @@ function run!(simulation::Simulation;
                simulation.clock.iteration < simulation.stop_iteration) &&
               _before_stop_time(simulation)
             step!(model, simulation.timestepper)
+            _check_termination_conditions!(simulation)
             _advect_model_particles!(model.particles, model,
                                      _time_step(simulation),
                                      simulation.clock.time)
             simulation.clock.iteration += 1
             simulation.clock.time += _time_step(simulation)
-            _check_termination_conditions!(simulation)
             _maybe_write_simulation_output!(simulation)
             _maybe_record_simulation_diagnostics!(simulation)
             _maybe_write_particle_output!(simulation)

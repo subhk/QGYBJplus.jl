@@ -25,7 +25,9 @@ The returned tuple reports the global squared norms of the prognostic wave
 envelope and diagnosed wave amplitude. `wave_energy` reconstructs amplitude
 and vertical-derivative fields with the model's selected `YBJ`, `YBJPlus`, or
 `PassiveWave` formulation, including no-dispersion runs whose timestep does
-not otherwise retain those diagnostic fields.
+not otherwise retain those diagnostic fields. For `YBJ()` with
+`WaveMeanFeedback()`, reconstruction uses the same effective-PV flow
+diagnosis as ETD-RK2.
 
 ## Runtime inspection
 

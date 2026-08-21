@@ -234,6 +234,20 @@ try
 
     nonfinite_model = stepping_model(grid)
     fill!(parent(nonfinite_model.fields.B), 0)
+    initialize_particles!(nonfinite_model, particles_in_box(
+        Float64,
+        -0.5;
+        x_max=grid.extent[1],
+        y_max=grid.extent[2],
+        nx=2,
+        ny=2,
+        use_3d_advection=false,
+    ))
+    particles = nonfinite_model.particles.particles
+    initial_x = copy(particles.x)
+    initial_y = copy(particles.y)
+    initial_z = copy(particles.z)
+    initial_particle_time = particles.time
     offender_rank = min(1, MPI.Comm_size(comm) - 1)
     if rank == offender_rank
         B_local = parent(nonfinite_model.fields.B)
@@ -264,6 +278,12 @@ try
     @testset "Collective non-finite termination" begin
         @test_throws ErrorException run!(nonfinite_simulation)
         @test nonfinite_simulation.state == Failed
+        @test particles.x == initial_x
+        @test particles.y == initial_y
+        @test particles.z == initial_z
+        @test particles.time == initial_particle_time
+        @test nonfinite_simulation.clock.iteration == 0
+        @test nonfinite_simulation.clock.time == 0
     end
 finally
     lazy_model === nothing || finalize_model!(lazy_model)
