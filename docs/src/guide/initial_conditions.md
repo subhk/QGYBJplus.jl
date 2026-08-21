@@ -64,10 +64,26 @@ set_wave_packet!(
 
 ## Direct array access
 
-Advanced applications may assign distributed spectral arrays through
-`model.fields.q` and `model.fields.B`. Use `scatter_from_root` with
-`model.runtime.geometry`, `model.runtime.mpi`, and `plans=model.runtime.plans`
-when the global array exists only on rank zero.
+Pass a global `(z, x, y)` array directly to initialize a physical field:
 
-After direct assignment, call model-level diagnostic operators as needed to
-refresh `ψ`, `A`, and velocities.
+```julia
+set!(model; ψ=psi_values, pv_method=:qg)
+set!(model; B=wave_values)
+```
+
+Use [`FieldArray`](@ref) to declare spectral data or `(x, y, z)` layout:
+
+```julia
+set!(model; B=FieldArray(B_hat; space=:spectral, layout=:zxy))
+```
+
+NetCDF-backed fields use [`FieldFile`](@ref). Its default layout is the
+file-oriented `(x, y, z)` ordering:
+
+```julia
+set!(model; B=FieldFile("initial.nc", "B"))
+```
+
+All public setters rebuild dependent `q`, `A`, `C`, and velocity diagnostics.
+Advanced applications may still assign distributed prognostic arrays directly,
+but then must refresh diagnostic operators themselves.

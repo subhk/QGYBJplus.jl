@@ -487,7 +487,8 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, 
 
     # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
     # No additional normalization needed here
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
+    nz_phys, nx_phys, ny_phys = size(tmpw_arr)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
     end
 end

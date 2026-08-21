@@ -142,6 +142,45 @@ struct RandomStreamfunction{T}
     seed::Int
 end
 
+"""A three-dimensional field supplied directly to [`set!`](@ref)."""
+struct FieldArray{A<:AbstractArray}
+    values::A
+    space::Symbol
+    layout::Symbol
+end
+
+function FieldArray(values::AbstractArray;
+    space::Symbol=:physical, layout::Symbol=:zxy)
+
+    ndims(values) == 3 ||
+        throw(ArgumentError("field arrays must be three-dimensional"))
+    space in (:physical, :spectral) ||
+        throw(ArgumentError("field space must be :physical or :spectral"))
+    layout in (:zxy, :xyz) ||
+        throw(ArgumentError("field layout must be :zxy or :xyz"))
+    return FieldArray(values, space, layout)
+end
+
+"""A NetCDF-backed three-dimensional field supplied to [`set!`](@ref)."""
+struct FieldFile
+    path::String
+    variable::String
+    space::Symbol
+    layout::Symbol
+end
+
+function FieldFile(path::AbstractString, variable::AbstractString;
+    space::Symbol=:physical, layout::Symbol=:xyz)
+
+    isempty(path) && throw(ArgumentError("field-file path cannot be empty"))
+    isempty(variable) && throw(ArgumentError("field-file variable cannot be empty"))
+    space in (:physical, :spectral) ||
+        throw(ArgumentError("field space must be :physical or :spectral"))
+    layout in (:zxy, :xyz) ||
+        throw(ArgumentError("field layout must be :zxy or :xyz"))
+    return FieldFile(String(path), String(variable), space, layout)
+end
+
 
 function RandomStreamfunction(; amplitude::Real=1.0,
     spectral_slope::Real=-3.0, seed::Integer=0)
@@ -207,4 +246,22 @@ function NetCDFOutput(; path::AbstractString="output", schedule=nothing,
     isempty(path) && throw(ArgumentError("output path cannot be empty"))
     output_fields = fields isa Symbol ? (fields,) : Tuple(fields)
     return NetCDFOutput(String(path), schedule, output_fields, velocities)
+end
+
+"""
+    EnergyDiagnosticsOutput(; path="output/diagnostic", schedule)
+
+Configuration for simulation-owned energy time-series files. `path` is the
+diagnostic directory itself, and `schedule` may be time- or iteration-based.
+"""
+struct EnergyDiagnosticsOutput{S<:AbstractSchedule}
+    path::String
+    schedule::S
+end
+
+function EnergyDiagnosticsOutput(; path::AbstractString="output/diagnostic",
+    schedule::AbstractSchedule=IterationInterval(1))
+
+    isempty(path) && throw(ArgumentError("diagnostic path cannot be empty"))
+    return EnergyDiagnosticsOutput(String(path), schedule)
 end

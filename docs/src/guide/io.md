@@ -21,6 +21,30 @@ simulation = Simulation(model; Δt=10.0, stop_iteration=1000,
 condition is written when output is enabled, and finalization writes the last
 iteration if it was not already scheduled.
 
+Time schedules keep a nominal next deadline. If a step crosses a deadline,
+one snapshot is written at that step and the next deadline advances from the
+schedule rather than from the late write, avoiding cumulative drift.
+
+## Energy diagnostics
+
+Passing a schedule as `diagnostics` records initial, scheduled, and final
+energy values in `diagnostic/` beneath the Eulerian output directory:
+
+```julia
+simulation = Simulation(
+    model;
+    output=NetCDFOutput(path="output"),
+    diagnostics=IterationInterval(10),
+)
+```
+
+The directory contains `wave_KE.nc`, `wave_PE.nc`, `wave_CE.nc`,
+`mean_flow_KE.nc`, `mean_flow_PE.nc`, and `total_energy.nc`. Configure an
+independent location with
+`EnergyDiagnosticsOutput(path="energies", schedule=TimeInterval(600.0))`.
+The summary file preserves the component series together with
+`total_wave_energy`, `total_flow_energy`, and `total_energy`.
+
 ## Snapshot schema
 
 Every file contains `x`, `y`, `z`, `time`, iteration metadata, spectral
@@ -48,8 +72,9 @@ reconstructed after the distributed scatter.
 
 ## Failure behavior
 
-Output exceptions move the simulation to `Failed`, close the output manager,
-and are rethrown on every rank. Use `try`/`finally` to guarantee cleanup:
+Output exceptions move the simulation to `Failed`, close the state,
+diagnostics, and particle managers, and are rethrown on every rank. Use
+`try`/`finally` to guarantee cleanup:
 
 ```julia
 try

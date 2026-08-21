@@ -21,10 +21,18 @@ simulation = Simulation(
 Specify either `stop_time` or `stop_iteration`. ETD-RK2 is created
 automatically and stored in `simulation.timestepper`.
 
+The diagnostics schedule records energy time series under the state-output
+directory's `diagnostic/` subdirectory. Use
+`EnergyDiagnosticsOutput(path=..., schedule=...)` to choose that directory
+explicitly, or `diagnostics=false` to disable diagnostic files.
+
 ## Lifecycle
 
 The lifecycle progresses through `Ready`, `Running`, and `Stopped`. An
 exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
+Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
+construct a new simulation around the same model to continue from the current
+fields. This prevents closed output managers from overwriting earlier files.
 
 ```julia
 try
@@ -38,12 +46,18 @@ Repeated finalization is safe. A finalized simulation cannot be run again.
 
 ## Overrides at run time
 
-`run!` accepts scoped overrides such as `Δt`, `stop_iteration`, `output`, and
-`diagnostics`. Constructor configuration is preferred for reproducible runs:
+Before the initial run, `run!` accepts scoped overrides such as `Δt`,
+`stop_iteration`, `output`, and `diagnostics`. Constructor configuration is
+preferred for reproducible runs:
 
 ```julia
 run!(simulation; stop_iteration=20, verbose=false)
 ```
+
+Changing `Δt` does not alter an existing `stop_time`; the simulation advances
+until the clock first reaches or crosses that time. Output-path, interval, and
+field-selection overrides rebuild the effective `NetCDFOutput` configuration
+before its manager opens.
 
 ## Clock access
 

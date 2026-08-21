@@ -205,7 +205,10 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
     # Real-space RHS
     rhsᵣ = similar(bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
+    # The physical FFT input pencil can have different local x/y extents from
+    # the spectral output pencil even when z is fully local.
+    nz_phys, nx_phys, ny_phys = size(rhsᵣ_arr)
+    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
         rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
     end
 

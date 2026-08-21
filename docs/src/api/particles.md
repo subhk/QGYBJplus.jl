@@ -48,6 +48,7 @@ from `model.runtime`.
 Particle trajectory helpers remain separate from Eulerian NetCDF snapshots:
 
 ```@docs
+ParticleOutputManager
 write_particle_trajectories
 read_particle_trajectories
 write_particle_snapshot

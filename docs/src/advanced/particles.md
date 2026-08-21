@@ -63,7 +63,20 @@ position after boundary normalization.
 
 ## Trajectories
 
-Use `write_particle_snapshot` for an instantaneous sample and
-`write_particle_trajectories` for recorded histories. Keep particle output
-paths distinct from the Eulerian `NetCDFOutput` directory when post-processing
-the two products independently.
+Attach a manager to the simulation for automatic initial, scheduled, and final
+particle output:
+
+```julia
+particle_output = ParticleOutputManager(
+    "output";
+    save_interval_iter=20,
+    output_mode=:trajectory,
+)
+simulation = Simulation(model; particle_output=particle_output, ...)
+```
+
+The simulation initializes and finalizes the manager on every MPI rank, while
+only the I/O rank writes the gathered trajectory. Snapshot and streaming modes
+are also available. Root-side setup and write failures are propagated to every
+rank and move the simulation to `Failed`. For one-off output, use
+`write_particle_snapshot` or `write_particle_trajectories` directly.

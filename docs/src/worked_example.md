@@ -56,7 +56,8 @@ for tests and notebooks while guaranteeing runtime cleanup.
 
 - `RectilinearGrid` owns the dimensional coordinate system.
 - `QGYBJModel` owns the fixed-flow YBJ+ equations and their arrays.
-- `Simulation` owns ETD-RK2, the clock, stopping criteria, and NetCDF output.
+- `Simulation` owns ETD-RK2, the clock, stopping criteria, NetCDF output, and
+  scheduled energy diagnostics.
 - `set!` initializes the barotropic dipole and Gaussian surface wave.
 
 The closure explicitly disables unused coefficients, avoiding dependence on

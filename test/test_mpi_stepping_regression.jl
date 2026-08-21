@@ -13,6 +13,7 @@ serial data model.
 
 using Test
 using MPI
+using NCDatasets
 using QGYBJplus
 
 const NX = 8
@@ -98,11 +99,16 @@ try
     scatter_initial_fields!(lazy_model, q_initial, B_initial, ψ_initial)
     scatter_initial_fields!(preallocated_model, q_initial, B_initial, ψ_initial)
 
+    diagnostic_dir = mktempdir()
     lazy = Simulation(
         lazy_model;
         Δt=ΔT,
         stop_iteration=NSTEPS,
         output=false,
+        diagnostics=EnergyDiagnosticsOutput(
+            path=diagnostic_dir,
+            schedule=IterationInterval(1),
+        ),
         verbose=false,
     )
     preallocated = Simulation(
@@ -127,6 +133,9 @@ try
         @test preallocated.clock.iteration == NSTEPS
         @test lazy.timestepper.workspace isa ExponentialRungeKutta2Workspace
         @test preallocated.timestepper.workspace === explicit_workspace
+        @test lazy.diagnostics_manager.closed
+        @test lazy.diagnostics_manager.time ≈
+              collect(0:NSTEPS) .* ΔT
 
         q_difference = global_maximum(maximum(abs,
             parent(lazy_model.fields.q) .- parent(preallocated_model.fields.q)))
@@ -155,6 +164,14 @@ try
         B_error = MPI.bcast(B_error, 0, comm)
         @test q_error < 1e-13
         @test B_error < 1e-13
+        if rank == 0
+            diagnostic_file = joinpath(diagnostic_dir, "total_energy.nc")
+            @test isfile(diagnostic_file)
+            NCDataset(diagnostic_file, "r") do dataset
+                @test dataset["time"][:] ≈ collect(0:NSTEPS) .* ΔT
+                @test all(isfinite, dataset["total_energy"][:])
+            end
+        end
     end
 finally
     lazy_model === nothing || finalize_model!(lazy_model)

@@ -10,6 +10,8 @@ CurrentModule = QGYBJplus
 - [`QGYBJModel`](@ref)
 - [`Simulation`](@ref)
 - [`NetCDFOutput`](@ref)
+- [`EnergyDiagnosticsOutput`](@ref)
+- [`ParticleOutputManager`](@ref)
 
 ## Initialization
 
@@ -18,6 +20,8 @@ CurrentModule = QGYBJplus
 - `set_surface_waves!`
 - `set_exponential_surface_waves!`
 - `set_wave_packet!`
+- [`FieldArray`](@ref)
+- [`FieldFile`](@ref)
 - `restore!`
 
 ## Integration and lifecycle
@@ -52,3 +56,4 @@ CurrentModule = QGYBJplus
 - `advect_particles!`
 - [`particles_in_layers`](@ref)
 - [`particles_random_3d`](@ref)
+- [`ParticleOutputManager`](@ref)

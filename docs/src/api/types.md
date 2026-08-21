@@ -52,9 +52,13 @@ NoDispersion
 ## Initialization and scheduling
 
 ```@docs
+set!
 SurfaceWave
 RandomStreamfunction
+FieldArray
+FieldFile
 TimeInterval
 IterationInterval
 NetCDFOutput
+EnergyDiagnosticsOutput
 ```

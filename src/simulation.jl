@@ -13,6 +13,38 @@ nprocs(simulation::Simulation) = nprocs(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
 _advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
 
+function _before_stop_time(simulation::Simulation)
+    stop_time = simulation.stop_time
+    stop_time === nothing && return true
+    time = simulation.clock.time
+    tolerance = 8eps(max(
+        abs(time), abs(stop_time), abs(_time_step(simulation)), one(time)))
+    return time < stop_time - tolerance
+end
+
+function _assert_mutable(owner::QGYBJModel)
+    owner.runtime.finalized && error("cannot modify a finalized model")
+    return owner
+end
+
+function _assert_mutable(simulation::Simulation)
+    state = simulation.state
+    if state === Running
+        throw(InvalidStateException(
+            "cannot modify a running simulation", :running))
+    elseif state === Failed
+        throw(InvalidStateException(
+            "cannot modify a failed simulation", :failed))
+    elseif state === Finalized
+        throw(InvalidStateException(
+            "cannot modify a finalized simulation", :finalized))
+    end
+    simulation.model.runtime.finalized &&
+        throw(InvalidStateException(
+            "model runtime has been finalized", :finalized))
+    return simulation
+end
+
 function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
 
@@ -28,7 +60,7 @@ function _configure_time_stepping!(simulation::Simulation;
     elseif stop_time !== nothing
         stop_time > 0 || throw(ArgumentError("stop_time must be positive"))
         simulation.stop_time = typeof(_time_step(simulation))(stop_time)
-        simulation.stop_iteration = max(1, ceil(Int, stop_time / _time_step(simulation)))
+        simulation.stop_iteration = nothing
     elseif simulation.stop_iteration === nothing && simulation.stop_time === nothing
         simulation.stop_iteration = 1000
     end
@@ -66,23 +98,36 @@ function _configure_output!(simulation::Simulation; output=nothing,
         options.save_velocities = output.velocities || :velocities in output.fields
     end
 
-    if diagnostics isa IterationInterval
-        options.diagnostics_interval = diagnostics.interval
-    elseif diagnostics isa TimeInterval
-        options.diagnostics_interval =
-            max(1, round(Int, diagnostics.interval / _time_step(simulation)))
-    elseif diagnostics isa Integer
+    diagnostic_schedule = diagnostics isa EnergyDiagnosticsOutput ?
+                          diagnostics.schedule : diagnostics
+    if diagnostics === false
+        options.diagnostics = false
+    elseif diagnostics isa EnergyDiagnosticsOutput
+        options.diagnostics = diagnostics
+    elseif diagnostics isa AbstractSchedule
+        options.diagnostics = diagnostics
+    elseif diagnostics isa Integer && !(diagnostics isa Bool)
         diagnostics > 0 || throw(ArgumentError("diagnostics interval must be positive"))
-        options.diagnostics_interval = Int(diagnostics)
+        options.diagnostics = IterationInterval(diagnostics)
     elseif diagnostics !== nothing
-        throw(ArgumentError("diagnostics must be an IterationInterval, TimeInterval, or integer"))
+        throw(ArgumentError(
+            "diagnostics must be an EnergyDiagnosticsOutput, schedule, integer, or false"))
+    end
+
+    if diagnostic_schedule isa IterationInterval
+        options.diagnostics_interval = diagnostic_schedule.interval
+    elseif diagnostic_schedule isa TimeInterval
+        options.diagnostics_interval =
+            max(1, round(Int, diagnostic_schedule.interval / _time_step(simulation)))
+    elseif diagnostic_schedule isa Integer && !(diagnostic_schedule isa Bool)
+        options.diagnostics_interval = Int(diagnostic_schedule)
     end
     return simulation
 end
 
 function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     stop_iteration=nothing, output=nothing, diagnostics=nothing,
-    verbose=nothing)
+    particle_output=nothing, verbose=nothing)
 
     model.runtime.finalized && error("cannot create a simulation from a finalized model")
     value = float(Δt)
@@ -97,6 +142,8 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
         nothing,
         options,
         nothing,
+        nothing,
+        particle_output,
         Ready,
     )
     _configure_time_stepping!(simulation; stop_time, stop_iteration)
@@ -113,9 +160,9 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     seed::Int=0,
     verbose::Bool=true)
 
+    _assert_mutable(owner)
     model = _model(owner)
     runtime = model.runtime
-    runtime.finalized && error("cannot modify a finalized model")
     grid = runtime.geometry
     geometry = model.grid
     fields = model.fields
@@ -180,9 +227,9 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     profile in (:gaussian, :exponential) ||
         throw(ArgumentError("profile must be :gaussian or :exponential"))
 
+    _assert_mutable(owner)
     model = _model(owner)
     runtime = model.runtime
-    runtime.finalized && error("cannot modify a finalized model")
     grid = runtime.geometry
     geometry = model.grid
     fields = model.fields
@@ -203,6 +250,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
         B_array[k_local, :, :] .= complex(T(amplitude) * vertical_profile)
     end
     fft_forward!(fields.B, B_phys, plans)
+    _refresh_wave_diagnostics!(model)
     return owner
 end
 
@@ -219,6 +267,81 @@ _first_notnothing(values...) = begin
     return nothing
 end
 
+_field_initializer(source::AbstractArray) = FieldArray(source)
+_field_initializer(source::Union{FieldArray, FieldFile}) = source
+
+function _read_field_values(source::FieldArray)
+    return Array(source.values)
+end
+
+function _read_field_values(source::FieldFile)
+    isfile(source.path) ||
+        throw(ArgumentError("field file does not exist: $(source.path)"))
+    return NCDataset(source.path, "r") do dataset
+        haskey(dataset, source.variable) || throw(ArgumentError(
+            "field file $(source.path) has no variable $(source.variable)"))
+        Array(dataset[source.variable][:, :, :])
+    end
+end
+
+function _field_values_zxy(model::QGYBJModel,
+    source::Union{FieldArray, FieldFile})
+
+    values = _run_on_root(model) do
+        raw = _read_field_values(source)
+        zxy = source.layout === :zxy ? raw : permutedims(raw, (3, 1, 2))
+        expected = (model.grid.size[3], model.grid.size[1], model.grid.size[2])
+        size(zxy) == expected || throw(DimensionMismatch(
+            "initial field has size $(size(zxy)); expected $expected in z-x-y layout"))
+        ComplexF64.(zxy)
+    end
+    return values
+end
+
+function _assign_initial_field!(destination, model::QGYBJModel,
+    source::Union{AbstractArray, FieldArray, FieldFile})
+
+    initializer = _field_initializer(source)
+    runtime = model.runtime
+    root_values = _field_values_zxy(model, initializer)
+    if initializer.space === :physical
+        physical = scatter_from_root(
+            root_values, runtime.geometry, runtime.mpi;
+            pencil=runtime.plans.input_pencil)
+        fft_forward!(destination, physical, runtime.plans)
+    else
+        spectral = scatter_from_root(
+            root_values, runtime.geometry, runtime.mpi; plans=runtime.plans)
+        copyto!(parent(destination), parent(spectral))
+    end
+    return destination
+end
+
+function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
+    fields = model.fields
+    runtime = model.runtime
+    if pv_method in (:qg, :balanced)
+        coefficients = runtime.coefficients
+        density = coefficients.stratification
+        add_balanced_component!(fields, runtime.geometry, coefficients.a_ell,
+            density.rho_u, density.rho_s)
+    elseif pv_method in (:barotropic, :asselin)
+        compute_barotropic_q_from_psi!(fields.q, fields.psi, runtime.geometry)
+    elseif pv_method !== :none
+        throw(ArgumentError("pv_method must be :qg, :barotropic, or :none"))
+    end
+    compute_velocities!(model; compute_w=false)
+    return model
+end
+
+function _refresh_wave_diagnostics!(model::QGYBJModel)
+    if model.physics.formulation isa YBJPlus ||
+       model.physics.formulation isa PassiveWave
+        invert_B_to_A!(model)
+    end
+    return model
+end
+
 """Set declarative initial conditions on a model or its simulation."""
 function set!(owner::Union{QGYBJModel, Simulation};
     ψ=nothing, psi=nothing, mean_flow=nothing,
@@ -227,6 +350,7 @@ function set!(owner::Union{QGYBJModel, Simulation};
     particles=nothing,
     verbose::Bool=false)
 
+    _assert_mutable(owner)
     model = _model(owner)
     flow = _first_notnothing(mean_flow, ψ, psi)
     wave = _first_notnothing(waves, B)
@@ -237,16 +361,27 @@ function set!(owner::Union{QGYBJModel, Simulation};
             set_mean_flow!(owner; method=:random, pv_method,
                 amplitude=flow.amplitude, spectral_slope=flow.spectral_slope,
                 seed=flow.seed, verbose)
+        elseif flow isa AbstractArray || flow isa FieldArray || flow isa FieldFile
+            _assign_initial_field!(model.fields.psi, model, flow)
+            _refresh_flow_diagnostics!(model, pv_method)
         else
             throw(ArgumentError(
-                "mean_flow/ψ must be a function or RandomStreamfunction"))
+                "mean_flow/ψ must be a function, RandomStreamfunction, " *
+                "array, FieldArray, or FieldFile"))
         end
     end
     if wave !== nothing
-        wave isa SurfaceWave || throw(ArgumentError("waves/B must be a SurfaceWave"))
-        set_surface_waves!(owner; amplitude=wave.amplitude,
-                           surface_depth=wave.scale,
-                           profile=wave.profile, verbose)
+        if wave isa SurfaceWave
+            set_surface_waves!(owner; amplitude=wave.amplitude,
+                               surface_depth=wave.scale,
+                               profile=wave.profile, verbose)
+        elseif wave isa AbstractArray || wave isa FieldArray || wave isa FieldFile
+            _assign_initial_field!(model.fields.B, model, wave)
+            _refresh_wave_diagnostics!(model)
+        else
+            throw(ArgumentError(
+                "waves/B must be a SurfaceWave, array, FieldArray, or FieldFile"))
+        end
     end
     particles !== nothing && initialize_particles!(model, particles)
     return owner
@@ -258,6 +393,7 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
     z_center::Union{Real, Nothing}=nothing,
     z_width::Union{Real, Nothing}=nothing)
 
+    _assert_mutable(owner)
     model = _model(owner)
     runtime = model.runtime
     grid = runtime.geometry
@@ -271,7 +407,48 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
                                 z_center=z_c, z_width=z_w)
     model.fields.B .= scatter_from_root(packet, grid, runtime.mpi;
                                         plans=runtime.plans)
+    _refresh_wave_diagnostics!(model)
     return owner
+end
+
+function _replace_output_field(fields::Tuple, aliases::Tuple,
+    canonical::Symbol, enabled::Bool)
+
+    filtered = Tuple(field for field in fields if !(field in aliases))
+    return enabled ? (filtered..., canonical) : filtered
+end
+
+function _apply_output_overrides!(simulation::Simulation;
+    output_dir=nothing, save_interval=nothing,
+    save_psi=nothing, save_waves=nothing, save_velocities=nothing)
+
+    any(value -> value !== nothing,
+        (output_dir, save_interval, save_psi, save_waves, save_velocities)) ||
+        return simulation
+
+    options = simulation.run_options
+    current = options.output
+    current isa NetCDFOutput || throw(ArgumentError(
+        "run-time output overrides require output=NetCDFOutput(...)"))
+
+    path = output_dir === nothing ? current.path : String(output_dir)
+    schedule = current.schedule
+    if save_interval !== nothing
+        save_interval > 0 ||
+            throw(ArgumentError("save_interval must be positive"))
+        schedule = TimeInterval(save_interval)
+    end
+    fields = current.fields
+    save_psi !== nothing &&
+        (fields = _replace_output_field(
+            fields, (:ψ, :psi, :q, :flow), :ψ, save_psi))
+    save_waves !== nothing &&
+        (fields = _replace_output_field(
+            fields, (:waves, :wave, :B, :A), :waves, save_waves))
+    velocities = save_velocities === nothing ?
+                 current.velocities : save_velocities
+    specification = NetCDFOutput(; path, schedule, fields, velocities)
+    return _configure_output!(simulation; output=specification)
 end
 
 """Advance a configured simulation with the current ETD-RK2 driver."""
@@ -296,6 +473,9 @@ function run!(simulation::Simulation;
         throw(InvalidStateException("simulation has been finalized", :finalized))
     simulation.state === Failed &&
         throw(InvalidStateException("simulation is in a failed state", :failed))
+    simulation.state === Stopped &&
+        throw(InvalidStateException(
+            "simulation has stopped; construct a new simulation to continue", :stopped))
 
     model = simulation.model
     runtime = model.runtime
@@ -303,29 +483,28 @@ function run!(simulation::Simulation;
         throw(InvalidStateException("model runtime has been finalized", :finalized))
     _configure_time_stepping!(simulation; Δt, stop_time, stop_iteration)
     _configure_output!(simulation; output, diagnostics, verbose)
+    _apply_output_overrides!(simulation;
+        output_dir, save_interval, save_psi, save_waves, save_velocities)
 
     options = simulation.run_options
     progress !== nothing && (options.verbose = progress)
-    output_dir !== nothing && (options.output_dir = output_dir)
-    save_interval !== nothing &&
-        (options.save_interval = typeof(_time_step(simulation))(save_interval))
     diagnostics_interval !== nothing &&
         (options.diagnostics_interval = diagnostics_interval)
-    save_psi !== nothing && (options.save_psi = save_psi)
-    save_waves !== nothing && (options.save_waves = save_waves)
-    save_velocities !== nothing && (options.save_velocities = save_velocities)
     options.diagnostics_interval > 0 ||
         throw(ArgumentError("diagnostics_interval must be positive"))
 
     simulation.state = Running
     try
         _prepare_simulation_output!(simulation)
+        _prepare_simulation_diagnostics!(simulation)
+        _prepare_particle_output!(simulation)
         _maybe_write_simulation_output!(simulation; initial=true)
+        _maybe_record_simulation_diagnostics!(simulation; initial=true)
+        _maybe_write_particle_output!(simulation; initial=true)
 
         while (simulation.stop_iteration === nothing ||
                simulation.clock.iteration < simulation.stop_iteration) &&
-              (simulation.stop_time === nothing ||
-               simulation.clock.time < simulation.stop_time)
+              _before_stop_time(simulation)
             step!(model, simulation.timestepper)
             _advect_model_particles!(model.particles, model,
                                      _time_step(simulation),
@@ -333,6 +512,8 @@ function run!(simulation::Simulation;
             simulation.clock.iteration += 1
             simulation.clock.time += _time_step(simulation)
             _maybe_write_simulation_output!(simulation)
+            _maybe_record_simulation_diagnostics!(simulation)
+            _maybe_write_particle_output!(simulation)
 
             if options.verbose && runtime.mpi.is_root &&
                simulation.clock.iteration % options.diagnostics_interval == 0
@@ -344,7 +525,15 @@ function run!(simulation::Simulation;
         simulation.state = Failed
         rethrow()
     finally
-        _finish_simulation_output!(simulation)
+        try
+            _finish_simulation_output!(simulation)
+        finally
+            try
+                _finish_simulation_diagnostics!(simulation)
+            finally
+                _finish_particle_output!(simulation)
+            end
+        end
     end
     return simulation
 end
@@ -353,7 +542,15 @@ function finalize_simulation!(simulation::Simulation)
     simulation.state === Finalized && return simulation
     simulation.state === Running &&
         throw(InvalidStateException("cannot finalize a running simulation", :running))
-    _finish_simulation_output!(simulation)
+    try
+        _finish_simulation_output!(simulation)
+    finally
+        try
+            _finish_simulation_diagnostics!(simulation)
+        finally
+            _finish_particle_output!(simulation)
+        end
+    end
     finalize_model!(simulation.model)
     simulation.state = Finalized
     return simulation
@@ -365,7 +562,8 @@ get_inertial_period(model::QGYBJModel) = 2π / model.physics.coriolis.f
 get_inertial_period(simulation::Simulation) = get_inertial_period(simulation.model)
 inertial_period(model::QGYBJModel) = get_inertial_period(model)
 inertial_period(simulation::Simulation) = get_inertial_period(simulation)
-get_duration(simulation::Simulation) = simulation.stop_iteration * _time_step(simulation)
+get_duration(simulation::Simulation) = simulation.stop_time === nothing ?
+    simulation.stop_iteration * _time_step(simulation) : simulation.stop_time
 get_duration_ip(simulation::Simulation) =
     get_duration(simulation) / get_inertial_period(simulation)
 
@@ -379,8 +577,13 @@ function Base.summary(io::IO, simulation::Simulation)
     @printf(io, "Domain: %.1f km × %.1f km × %.1f m\n",
             grid.extent[1] / 1e3, grid.extent[2] / 1e3, grid.extent[3])
     @printf(io, "Coriolis: f₀ = %.2e s⁻¹\n", model.physics.coriolis.f)
-    @printf(io, "Time step: Δt = %.2f s, iterations = %d\n",
-            _time_step(simulation), simulation.stop_iteration)
+    if simulation.stop_iteration === nothing
+        @printf(io, "Time step: Δt = %.2f s, stop time = %.2f s\n",
+                _time_step(simulation), simulation.stop_time)
+    else
+        @printf(io, "Time step: Δt = %.2f s, iterations = %d\n",
+                _time_step(simulation), simulation.stop_iteration)
+    end
     println(io, "MPI processes: $(nprocs(model))")
     println(io, "="^40)
 end

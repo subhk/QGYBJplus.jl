@@ -1,4 +1,5 @@
 using Test
+using NCDatasets
 using QGYBJplus
 
 @testset "Model-owned particle state and advection" begin
@@ -94,17 +95,63 @@ using QGYBJplus
         end
 
         initialize_particles!(model, box)
-        simulation = Simulation(
-            model;
-            Δt=0.1,
-            stop_iteration=1,
-            output=false,
-            verbose=false,
-        )
-        run!(simulation)
-        @test model.particles.particles.time ≈ simulation.clock.time
-        @test last(model.particles.particles.time_history) ≈
-              simulation.clock.time
+        mktempdir() do output_dir
+            particle_output = ParticleOutputManager(
+                output_dir;
+                save_interval_iter=1,
+                save_interval_time=0.0,
+                output_mode=:trajectory,
+            )
+            simulation = Simulation(
+                model;
+                Δt=0.1,
+                stop_iteration=2,
+                output=false,
+                particle_output=particle_output,
+                verbose=false,
+            )
+            @test simulation.particle_output_manager === particle_output
+            run!(simulation)
+            @test model.particles.particles.time ≈ simulation.clock.time
+            @test last(model.particles.particles.time_history) ≈
+                  simulation.clock.time
+            @test particle_output.save_count == 3
+            @test particle_output.time_series ≈ [0.0, 0.1, 0.2]
+            @test particle_output.closed
+            trajectory_path = joinpath(
+                output_dir, "particles", "particles_trajectory.nc")
+            @test isfile(trajectory_path)
+            NCDataset(trajectory_path, "r") do dataset
+                @test dataset["time"][:] ≈ [0.0, 0.1, 0.2]
+                @test size(dataset["x"]) == (6, 3)
+            end
+        end
+
+        mktempdir() do output_dir
+            # Make the first snapshot target a directory so NetCDF creation
+            # fails after manager setup has succeeded.
+            blocked_snapshot = joinpath(
+                output_dir, "particles", "particles_000000.nc")
+            mkpath(blocked_snapshot)
+            particle_output = ParticleOutputManager(
+                output_dir;
+                save_interval_iter=1,
+                save_interval_time=0.0,
+                output_mode=:snapshots,
+            )
+            failing_simulation = Simulation(
+                model;
+                Δt=0.1,
+                stop_iteration=1,
+                output=false,
+                particle_output=particle_output,
+                verbose=false,
+            )
+            @test_throws Exception run!(failing_simulation)
+            @test failing_simulation.state == Failed
+            @test particle_output.save_count == 0
+            @test particle_output.closed
+        end
     finally
         finalize_model!(model)
     end

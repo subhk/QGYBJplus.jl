@@ -24,10 +24,11 @@ mutable struct SimulationRunOptions{T}
     save_waves::Bool
     save_velocities::Bool
     output
+    diagnostics
 end
 
 default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
-    "output", nothing, 10, true, true, true, false, false)
+    "output", nothing, 10, true, true, true, false, false, false)
 
 """
     Simulation
@@ -43,5 +44,7 @@ mutable struct Simulation{M, T, I, R}
     stop_iteration::Union{Nothing, Int}
     run_options::R
     output_manager::Any
+    diagnostics_manager::Any
+    particle_output_manager::Any
     state::SimulationState
 end

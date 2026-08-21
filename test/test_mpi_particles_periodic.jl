@@ -34,6 +34,7 @@ RUN:
 using Test
 using MPI
 using FFTW
+using NCDatasets
 using QGYBJplus
 
 const Lx = 500e3
@@ -186,6 +187,63 @@ if rank == 0
         end
     end
 end
+
+
+# Simulation owns collective particle-output scheduling and finalization.
+particle_output_dir = mktempdir()
+particle_output = ParticleOutputManager(
+    particle_output_dir;
+    save_interval_iter=1,
+    save_interval_time=0.0,
+    output_mode=:trajectory,
+)
+particle_simulation = Simulation(
+    model;
+    Δt=1.0,
+    stop_iteration=1,
+    output=false,
+    particle_output=particle_output,
+    verbose=false,
+)
+run!(particle_simulation)
+@test particle_output.closed
+@test particle_output.save_count == 2
+if rank == 0
+    trajectory_path = joinpath(
+        particle_output_dir, "particles", "particles_trajectory.nc")
+    @test isfile(trajectory_path)
+    NCDataset(trajectory_path, "r") do dataset
+        @test dataset["time"][:] ≈ [0.0, 1.0]
+        @test size(dataset["x"]) == (NPtot, 2)
+    end
+end
+
+# Root-only setup failures must be reported on every rank without allowing
+# non-root ranks to proceed into later particle collectives.
+blocked_output = joinpath(particle_output_dir, "blocked")
+if rank == 0
+    open(blocked_output, "w") do io
+        write(io, "not a directory")
+    end
+end
+MPI.Barrier(comm)
+failing_particle_output = ParticleOutputManager(
+    blocked_output;
+    save_interval_iter=1,
+    save_interval_time=0.0,
+    output_mode=:trajectory,
+)
+failing_particle_simulation = Simulation(
+    model;
+    Δt=1.0,
+    stop_iteration=1,
+    output=false,
+    particle_output=failing_particle_output,
+    verbose=false,
+)
+@test_throws Exception run!(failing_particle_simulation)
+@test failing_particle_simulation.state == Failed
+@test failing_particle_output.closed
 
 MPI.Barrier(comm)
 finalize_model!(model)

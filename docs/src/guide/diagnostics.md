@@ -36,13 +36,13 @@ nprocs(simulation)
 ```
 
 Use an [`IterationInterval`](@ref) or [`TimeInterval`](@ref) when constructing
-the simulation to control progress reporting.
+the simulation to schedule energy diagnostics. `verbose=true` reports progress
+at the corresponding approximate iteration cadence.
 
 ## Output-based analysis
 
 [`NetCDFOutput`](@ref) writes the vertical `N2` and `a_ell` profiles alongside
-the fields needed for reproducible diagnostics. The repository also includes
+the fields needed for reproducible diagnostics. Simulation-owned energy
+managers write component time series configured by
+[`EnergyDiagnosticsOutput`](@ref). The repository also includes
 `examples/compute_energy.jl` for spatial kinetic-energy post-processing.
-
-Diagnostics do not own files or schedules; output ownership remains with the
-simulation.

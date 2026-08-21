@@ -99,6 +99,97 @@ using QGYBJplus
                 @test !haskey(ds, "u")
             end
 
+            timed_path = joinpath(output_dir, "timed")
+            timed_simulation = Simulation(
+                model;
+                Δt=0.6,
+                stop_time=3.0,
+                output=NetCDFOutput(
+                    path=timed_path,
+                    schedule=TimeInterval(1.0),
+                    fields=(:ψ,),
+                ),
+                verbose=false,
+            )
+            run!(timed_simulation)
+            timed_files = sort(filter(
+                name -> endswith(name, ".nc"), readdir(timed_path)))
+            @test timed_files == [
+                "state0001.nc", "state0002.nc", "state0003.nc", "state0004.nc"]
+            timed_values = map(timed_files) do name
+                NCDataset(joinpath(timed_path, name), "r") do dataset
+                    dataset["time"][1]
+                end
+            end
+            @test timed_values ≈ [0.0, 1.2, 2.4, 3.0]
+
+            original_override_path = joinpath(output_dir, "override_original")
+            effective_override_path = joinpath(output_dir, "override_effective")
+            override_simulation = Simulation(
+                model;
+                Δt=0.1,
+                stop_iteration=2,
+                output=NetCDFOutput(
+                    path=original_override_path,
+                    schedule=IterationInterval(2),
+                    fields=(:ψ,),
+                ),
+                verbose=false,
+            )
+            run!(override_simulation;
+                output_dir=effective_override_path,
+                save_interval=0.15,
+                save_psi=false,
+                save_waves=true,
+                save_velocities=true)
+            @test !isdir(original_override_path)
+            @test sort(readdir(effective_override_path)) ==
+                  ["state0001.nc", "state0002.nc"]
+            NCDataset(joinpath(effective_override_path, "state0002.nc"), "r") do ds
+                @test !haskey(ds, "psi")
+                @test haskey(ds, "LAr")
+                @test haskey(ds, "u")
+            end
+
+            diagnostic_path = joinpath(output_dir, "diagnostic_output")
+            diagnostic_simulation = Simulation(
+                model;
+                Δt=0.1,
+                stop_iteration=2,
+                output=false,
+                diagnostics=EnergyDiagnosticsOutput(
+                    path=diagnostic_path,
+                    schedule=IterationInterval(1),
+                ),
+                verbose=false,
+            )
+            run!(diagnostic_simulation)
+            @test diagnostic_simulation.diagnostics_manager.closed
+            @test sort(readdir(diagnostic_path)) == [
+                "mean_flow_KE.nc",
+                "mean_flow_PE.nc",
+                "total_energy.nc",
+                "wave_CE.nc",
+                "wave_KE.nc",
+                "wave_PE.nc",
+            ]
+            NCDataset(joinpath(diagnostic_path, "total_energy.nc"), "r") do ds
+                @test ds["time"][:] ≈ [0.0, 0.1, 0.2]
+                @test all(name -> haskey(ds, name), (
+                    "wave_KE", "wave_PE", "wave_CE",
+                    "mean_flow_KE", "mean_flow_PE",
+                    "total_wave_energy", "total_flow_energy",
+                    "total_energy"))
+                @test ds["total_wave_energy"][:] ≈
+                      ds["wave_KE"][:] .+ ds["wave_PE"][:] .+
+                      ds["wave_CE"][:]
+                @test ds["total_flow_energy"][:] ≈
+                      ds["mean_flow_KE"][:] .+ ds["mean_flow_PE"][:]
+                @test all(isfinite, ds["total_energy"][:])
+                @test first(ds["wave_KE"][:]) > 0
+                @test ds["wave_KE"][:] ≈ fill(first(ds["wave_KE"][:]), 3)
+            end
+
             failure_path = joinpath(output_dir, "forced_failure")
             mkpath(joinpath(failure_path, "state0001.nc"))
             failing_simulation = Simulation(
