@@ -217,7 +217,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        initialize_simulation, set!, run!, inertial_period,
        set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
-       is_root, nprocs, finalize_model!, finalize_simulation!
+       is_root, nprocs, restore!, finalize_model!, finalize_simulation!
 
 #=
 ================================================================================
@@ -287,6 +287,7 @@ include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.
 
 # Simplified simulation API (higher-level than model_interface.jl)
 include("simulation.jl")        # Simulation struct, initialize_simulation, run!
+include("core/io.jl")           # Simulation-owned output and model restart
 
 # Particle advection system (for Lagrangian tracking)
 include("particles/particle_advection.jl")  # Particle tracking core

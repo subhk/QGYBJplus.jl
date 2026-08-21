@@ -42,6 +42,6 @@ mutable struct Simulation{M, T, I, R}
     stop_time::Union{Nothing, T}
     stop_iteration::Union{Nothing, Int}
     run_options::R
+    output_manager::Any
     state::SimulationState
 end
-

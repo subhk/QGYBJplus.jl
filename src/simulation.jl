@@ -97,6 +97,7 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
         nothing,
         nothing,
         options,
+        nothing,
         Ready,
     )
     _configure_time_stepping!(simulation; stop_time, stop_iteration)
@@ -413,10 +414,6 @@ function run!(simulation::Simulation;
     end
     return simulation
 end
-
-_prepare_simulation_output!(simulation::Simulation) = simulation
-_maybe_write_simulation_output!(simulation::Simulation; initial::Bool=false) = simulation
-_finish_simulation_output!(simulation::Simulation) = simulation
 
 function finalize_simulation!(simulation::Simulation)
     simulation.state === Finalized && return simulation
