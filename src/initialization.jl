@@ -110,7 +110,9 @@ function initialize_from_config(config, G::Grid, S::ModelFields, plans;
     # the zero q field, wiping out the user's initial streamfunction.
     if params !== nothing && hasfield(typeof(S), :q)
         @info "Computing potential vorticity q from initialized streamfunction"
-        add_balanced_component!(S, G, params, plans; N2_profile=N2_profile)
+        profile = N2_profile === nothing ? fill(params.N², G.nz) : N2_profile
+        add_balanced_component!(S, G,
+            a_ell_from_N2(profile, params.f₀), rho_ut(params, G), rho_st(params, G))
     elseif config.initial_conditions.psi_type != :zero && params === nothing
         @warn "params not provided to initialize_from_config. " *
               "Potential vorticity q will remain zero, and the first timestep " *
@@ -636,7 +638,7 @@ function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitud
 end
 
 """
-    add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plans; N2_profile=nothing)
+    add_balanced_component!(S, G, a_ell, rho_u, rho_s)
 
 Add balanced component to the flow by computing geostrophically consistent fields.
 
@@ -650,59 +652,29 @@ Based on init_psi_generic and init_q from the Fortran implementation.
 # Arguments
 - `S::ModelFields`: Model state with streamfunction psi
 - `G::Grid`: Grid structure
-- `params::QGParams`: Model parameters (includes f0, N2)
-- `plans`: FFT plans
-- `N2_profile::Vector`: Optional N²(z) profile. If not provided, uses constant N²=1.
+- `a_ell`: Model-owned f²/N² coefficient profile
+- `rho_u`, `rho_s`: Model-owned density weights
 
 # Example
 ```julia
 # With constant stratification
-add_balanced_component!(state, grid, params, plans)
+add_balanced_component!(fields, grid, coefficients.a_ell,
+                        coefficients.rho_u, coefficients.rho_s)
 
 # With variable stratification
 N2 = compute_stratification_profile(strat_profile, grid)
-add_balanced_component!(state, grid, params, plans; N2_profile=N2)
+add_balanced_component!(fields, grid, a_ell, rho_u, rho_s)
 ```
 """
-function add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plans; N2_profile=nothing)
+function add_balanced_component!(S::ModelFields, G::Grid,
+    a_ell::AbstractVector, rho_u::AbstractVector, rho_s::AbstractVector)
     @info "Adding balanced component to initial state"
 
     nz = G.nz
     dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    dz2 = dz^2
-
-    # Get elliptic coefficient a_ell = f²/N²
-    # For constant N², a_ell = f₀²/N²
-    # For variable N², a_ell[k] = f₀²/N²[k]
-    f₀_sq = params.f₀^2
-    if N2_profile === nothing || isempty(N2_profile)
-        # Constant stratification N² = params.N²
-        a_ell = fill(Float64(f₀_sq / params.N²), nz)
-        @info "Using constant stratification (N² = $(params.N²))"
-    else
-        # Variable stratification from profile
-        if length(N2_profile) != nz
-            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), interpolating..."
-            # Simple linear interpolation if sizes don't match
-            N2_interp = zeros(Float64, nz)
-            for k in 1:nz
-                # Map k to position in N2_profile
-                pos = (k - 1) / (nz - 1) * (length(N2_profile) - 1) + 1
-                k_low = max(1, floor(Int, pos))
-                k_high = min(length(N2_profile), k_low + 1)
-                w = pos - k_low
-                N2_interp[k] = (1 - w) * N2_profile[k_low] + w * N2_profile[k_high]
-            end
-            a_ell = [f₀_sq / max(N2_interp[k], eps(Float64)) for k in 1:nz]
-        else
-            a_ell = [f₀_sq / max(N2_profile[k], eps(Float64)) for k in 1:nz]
-        end
-        @info "Using variable stratification from N² profile"
-    end
-
-    # Density weights (unity for Boussinesq)
-    r_ut = ones(Float64, nz)  # rho at unstaggered (u) points
-    r_st = ones(Float64, nz)  # rho at staggered (s) points
+    length(a_ell) == nz || throw(DimensionMismatch("a_ell must have length $nz"))
+    length(rho_u) == nz || throw(DimensionMismatch("rho_u must have length $nz"))
+    length(rho_s) == nz || throw(DimensionMismatch("rho_s must have length $nz"))
 
     # Get underlying arrays
     psi_arr = parent(S.psi)
@@ -711,7 +683,7 @@ function add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plan
     # Compute potential vorticity q from ψ
     # q = -kh² ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
     if hasfield(typeof(S), :q)
-        compute_q_from_psi!(S.q, S.psi, G, params, a_ell, r_ut, r_st, dz)
+        compute_q_from_psi!(S.q, S.psi, G, a_ell, rho_u, rho_s, dz)
         @info "Computed potential vorticity q from streamfunction"
     end
 
@@ -729,7 +701,7 @@ function add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plan
 end
 
 """
-    compute_q_from_psi!(q, psi, G, params, a_ell, r_ut, r_st, dz)
+    compute_q_from_psi!(q, psi, G, a_ell, rho_u, rho_s, dz)
 
 Compute QG potential vorticity from streamfunction.
 
@@ -741,7 +713,7 @@ In spectral space with finite differences in z:
 
 with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
 """
-function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
+function compute_q_from_psi!(q, psi, G::Grid, a_ell, r_ut, r_st, dz)
     nz = G.nz
     dz2 = dz^2
 

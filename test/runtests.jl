@@ -8,6 +8,7 @@ include("test_core_architecture.jl")
 include("test_model_ownership.jl")
 include("test_model_operators.jl")
 include("test_model_etdrk2.jl")
+include("test_model_initialization.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km

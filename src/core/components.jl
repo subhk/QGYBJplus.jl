@@ -135,6 +135,24 @@ struct SurfaceWave{T}
     profile::Symbol
 end
 
+"""Deterministic random streamfunction spectrum for model initialization."""
+struct RandomStreamfunction{T}
+    amplitude::T
+    spectral_slope::T
+    seed::Int
+end
+
+
+function RandomStreamfunction(; amplitude::Real=1.0,
+    spectral_slope::Real=-3.0, seed::Integer=0)
+    values = float.((amplitude, spectral_slope))
+    all(isfinite, values) ||
+        throw(ArgumentError("random streamfunction parameters must be finite"))
+    values[1] >= 0 || throw(ArgumentError("amplitude must be non-negative"))
+    T = promote_type(map(typeof, values)...)
+    return RandomStreamfunction{T}(T(amplitude), T(spectral_slope), Int(seed))
+end
+
 function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
     values = float.((amplitude, scale))
     all(isfinite, values) || throw(ArgumentError("wave amplitude and scale must be finite"))

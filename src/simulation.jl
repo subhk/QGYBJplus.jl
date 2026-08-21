@@ -211,6 +211,7 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     runtime = model.runtime
     runtime.finalized && error("cannot modify a finalized model")
     grid = runtime.computational_grid
+    geometry = model.grid
     fields = model.fields
     plans = runtime.plans
 
@@ -225,13 +226,13 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
         T = eltype(psi_array)
         for k_local in axes(psi_array, 1)
             k_global = local_range[1][k_local]
-            z = grid.z[k_global]
+            z = geometry.z[k_global]
             for j_local in axes(psi_array, 3)
                 j_global = local_range[3][j_local]
-                y = grid.y0 + (j_global - 1) * grid.dy
+                y = geometry.y[j_global]
                 for i_local in axes(psi_array, 2)
                     i_global = local_range[2][i_local]
-                    x = grid.x0 + (i_global - 1) * grid.dx
+                    x = geometry.x[i_global]
                     psi_array[k_local, i_local, j_local] = T(psi_func(x, y, z))
                 end
             end
@@ -247,13 +248,16 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     end
 
     if pv_method in (:qg, :balanced)
-        add_balanced_component!(fields, grid, runtime.parameters, plans;
-                                N2_profile=runtime.coefficients.N²)
+        coefficients = runtime.coefficients
+        density = coefficients.stratification
+        add_balanced_component!(fields, grid, coefficients.a_ell,
+            density.rho_u, density.rho_s)
     elseif pv_method in (:barotropic, :asselin)
         compute_barotropic_q_from_psi!(fields.q, fields.psi, grid)
     elseif pv_method !== :none
         throw(ArgumentError("pv_method must be :qg, :barotropic, or :none"))
     end
+    compute_velocities!(model; compute_w=false)
     return owner
 end
 
@@ -274,6 +278,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     runtime = model.runtime
     runtime.finalized && error("cannot modify a finalized model")
     grid = runtime.computational_grid
+    geometry = model.grid
     fields = model.fields
     plans = runtime.plans
     is_root(model) && verbose &&
@@ -283,10 +288,10 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     B_phys = allocate_fft_backward_dst(fields.B, runtime)
     B_array = parent(B_phys)
     T = typeof(real(zero(eltype(B_array))))
-    dz = grid.Lz / grid.nz
+    dz = geometry.dz
     for k_local in axes(B_array, 1)
         k_global = local_range[1][k_local]
-        depth = max(zero(T), -grid.z[k_global] - dz / 2)
+        depth = max(zero(T), -geometry.z[k_global] - dz / 2)
         vertical_profile = profile === :gaussian ?
             exp(-(depth^2) / surface_depth^2) : exp(-depth / surface_depth)
         B_array[k_local, :, :] .= complex(T(amplitude) * vertical_profile)
@@ -318,9 +323,16 @@ function set!(owner::Union{QGYBJModel, Simulation};
     flow = _first_notnothing(mean_flow, ψ, psi)
     wave = _first_notnothing(waves, B)
     if flow !== nothing
-        flow isa Function ||
-            throw(ArgumentError("mean_flow/ψ must be a function of (x, y, z)"))
-        set_mean_flow!(owner; psi_func=flow, pv_method, verbose)
+        if flow isa Function
+            set_mean_flow!(owner; psi_func=flow, pv_method, verbose)
+        elseif flow isa RandomStreamfunction
+            set_mean_flow!(owner; method=:random, pv_method,
+                amplitude=flow.amplitude, spectral_slope=flow.spectral_slope,
+                seed=flow.seed, verbose)
+        else
+            throw(ArgumentError(
+                "mean_flow/ψ must be a function or RandomStreamfunction"))
+        end
     end
     if wave !== nothing
         wave isa SurfaceWave || throw(ArgumentError("waves/B must be a SurfaceWave"))

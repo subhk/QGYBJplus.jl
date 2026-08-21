@@ -1274,7 +1274,9 @@ function parallel_initialize_fields!(state, grid, plans, config, mpi_config; par
 
     # Compute q from ψ
     if params !== nothing && hasfield(typeof(state), :q)
-        add_balanced_component!(state, grid, params, plans; N2_profile=N2_profile)
+        profile = N2_profile === nothing ? fill(params.N², grid.nz) : N2_profile
+        add_balanced_component!(state, grid,
+            a_ell_from_N2(profile, params.f₀), rho_ut(params, grid), rho_st(params, grid))
     end
 end
 
