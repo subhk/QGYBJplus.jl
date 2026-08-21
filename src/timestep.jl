@@ -151,13 +151,14 @@ function _diagnose_flow!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
             )
         end
 
-        invert_q_to_psi!(S, G; a=a, par=par, workspace=workspace)
+        invert_q_to_psi!(S, G; a,
+            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
         q_base === nothing || restore_prognostic_q!(S, q_base)
     end
 
-    compute_velocities!(S, G; plans=plans, params=par, compute_w=compute_w,
-                        N2_profile=N2_profile, workspace=workspace,
-                        dealias_mask=L)
+    compute_velocities!(S, G; plans, f=par.f₀, N2=par.N², compute_w,
+        N2_profile, rho_u=rho_ut(par, G), rho_s=rho_st(par, G),
+        workspace, dealias_mask=L)
     return S
 end
 
@@ -203,7 +204,8 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
             fill!(parent(S.A), zero(eltype(parent(S.A))))
             fill!(parent(S.C), zero(eltype(parent(S.C))))
         else
-            invert_B_to_A!(S, G, par, a; workspace=workspace)
+            invert_B_to_A!(S, G, a;
+                rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
         end
 
         convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
@@ -302,7 +304,8 @@ function _finalize_etdrk2_state!(S::ModelFields, G::Grid, par::QGParams, plans, 
         fill!(parent(S.A), zero(eltype(parent(S.A))))
         fill!(parent(S.C), zero(eltype(parent(S.C))))
     elseif par.ybj_plus
-        invert_B_to_A!(S, G, par, a; workspace=workspace)
+        invert_B_to_A!(S, G, a;
+            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
     else
         arrays = _etdrk2_arrays(S, timestep_workspace)
         split_B_to_real_imag!(arrays.BRk, arrays.BIk, S.B)

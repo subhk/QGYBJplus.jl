@@ -6,6 +6,7 @@ include("test_core_components.jl")
 include("test_model_fields.jl")
 include("test_core_architecture.jl")
 include("test_model_ownership.jl")
+include("test_model_operators.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -205,12 +206,12 @@ end
     @test size(S.q) == (par.nz, par.nx, par.ny)
 
     # Invert q->psi (all zeros)
-    invert_q_to_psi!(S, G; a, par=par)
+    invert_q_to_psi!(S, G; a)
     @test all(isfinite, real.(S.psi))
 
     # Put a simple B mode and invert to A (YBJ+)
     S.B[3, 2, 2] = 1 + 0im
-    invert_B_to_A!(S, G, par, a)
+    invert_B_to_A!(S, G, a)
     @test all(isfinite, real.(S.A))
 
     # One ETD-RK2 step should run without error
@@ -330,7 +331,7 @@ end
 
     # kh=0 psi inversion should zero the whole vertical column for that (i,j)
     S.q[3, 1, 1] = 1 + 0im
-    invert_q_to_psi!(S, G; a, par=par)
+    invert_q_to_psi!(S, G; a)
     @test all(iszero, S.psi[:, 1, 1])
 
     # Run one normal-branch step to ensure it executes
@@ -362,7 +363,7 @@ Tests for key physics operators that were identified as error-prone:
     S.B[8, 3, 3] = 1.0 + 0.5im
 
     # Invert to get A
-    invert_B_to_A!(S, G, par, a)
+    invert_B_to_A!(S, G, a)
 
     # Check A is finite and non-zero where B is non-zero
     @test all(isfinite, real.(S.A))
@@ -421,10 +422,10 @@ end
 
     # Set up a simple flow
     S.psi[8, 3, 3] = 1.0 + 0im
-    invert_q_to_psi!(S, G; a, par=par)
+    invert_q_to_psi!(S, G; a)
 
     # Compute velocities with N² profile
-    compute_velocities!(S, G; plans, params=par, N2_profile=N2_profile)
+    compute_velocities!(S, G; plans, f=par.f₀, N2=par.N², N2_profile=N2_profile)
 
     # Check velocities are finite
     @test all(isfinite, S.u)
@@ -434,7 +435,7 @@ end
     # Compute velocities without N² profile (should default to N²=1)
     S2 = deepcopy(S)
     S2.psi[8, 3, 3] = 1.0 + 0im
-    compute_velocities!(S2, G; plans, params=par)
+    compute_velocities!(S2, G; plans, f=par.f₀, N2=par.N²)
 
     # Results should be different when using variable vs constant N²
     # (unless by chance they're identical, which is unlikely)
@@ -449,7 +450,7 @@ end
 
     # Set a non-trivial B field and compute A
     S.B[8, 3, 3] = 1.0 + 0.5im
-    invert_B_to_A!(S, G, par, a)
+    invert_B_to_A!(S, G, a)
 
     # The A field should be non-zero after inversion
     @test !all(iszero, S.A)
@@ -458,7 +459,8 @@ end
     N2_profile = ones(par.nz)  # Constant for simplicity
 
     # Compute YBJ vertical velocity
-    QGYBJplus.Operators.compute_ybj_vertical_velocity!(S, G, plans, par; N2_profile=N2_profile)
+    QGYBJplus.Operators.compute_ybj_vertical_velocity!(S, G, plans;
+        f=par.f₀, N2=par.N², N2_profile=N2_profile)
 
     # Check w is finite (main verification that the code path works)
     @test all(isfinite, S.w)

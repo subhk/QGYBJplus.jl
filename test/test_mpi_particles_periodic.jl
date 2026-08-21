@@ -78,7 +78,7 @@ if rank == 0
     glob_psik = similar(phys)
     fft_forward!(glob_psik, phys, planss)
     parent(Ss.psi) .= glob_psik
-    compute_velocities!(Ss, Gs; plans=planss, params=par, compute_w=false)
+    compute_velocities!(Ss, Gs; plans=planss, f=par.f₀, N2=par.N², compute_w=false)
     u_ref = copy(parent(Ss.u))
     v_ref = copy(parent(Ss.v))
     w_ref = zeros(size(u_ref))

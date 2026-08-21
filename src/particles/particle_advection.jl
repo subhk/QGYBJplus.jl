@@ -735,7 +735,8 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     # Pass params and N2_profile to ensure consistent stratification handling
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
-                              params=params,
+                              f=params === nothing ? 1.0 : params.f₀,
+                              N2=params === nothing ? 1.0 : params.N²,
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w,
                               N2_profile=N2_profile)

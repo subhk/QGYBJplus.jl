@@ -104,7 +104,7 @@ the wave envelope B to wave amplitude A.
   to the caller, this falls back to constant N² with a warning.
 
 # Arguments
-- `par::QGParams`: Parameters including stratification choice and coefficients
+- `par`: Legacy parameter object containing stratification choices and coefficients
 - `G::Grid`: Grid with vertical levels z
 
 # Returns
@@ -118,7 +118,7 @@ a = a_ell_ut(par, G)  # Use in tridiagonal solver
 # Fortran Correspondence
 Matches `a_ell(k)` computed in `init_base_state` (init.f90).
 """
-function a_ell_ut(par::QGParams, G::Grid)
+function a_ell_ut(par, G::Grid)
     nz = G.nz
     a = similar(G.z)
     f₀_sq = par.f₀^2
@@ -182,7 +182,7 @@ function a_ell_ut(par::QGParams, G::Grid)
 end
 
 """
-    a_ell_from_N2(N2_profile::AbstractVector, par::QGParams) -> Vector
+    a_ell_from_N2(N2_profile::AbstractVector, coriolis) -> Vector
 
 Compute the vertical elliptic coefficient a(z) = f²/N²(z) from a given N² profile.
 
@@ -193,7 +193,7 @@ dynamics.
 
 # Arguments
 - `N2_profile::AbstractVector`: N²(z) values at each vertical level (length nz)
-- `par::QGParams`: Parameters (used for f₀)
+- `coriolis`: An [`FPlane`](@ref) or scalar Coriolis frequency
 
 # Returns
 Vector of length nz with a(z) = f²/N²(z) values.
@@ -203,7 +203,7 @@ Vector of length nz with a(z) = f²/N²(z) values.
 # Use custom N² profile for elliptic operators (depth = -z on unstaggered levels)
 dz = G.Lz / G.nz
 N2_profile = [compute_N2(-(z - dz / 2)) for z in G.z]
-a_ell = a_ell_from_N2(N2_profile, par)
+a_ell = a_ell_from_N2(N2_profile, FPlane(f=1e-4))
 invert_q_to_psi!(S, G; a=a_ell)
 ```
 
@@ -215,11 +215,11 @@ result in an empty output vector.
 This ensures custom stratification profiles provided by the user are actually
 used in the main dynamics, not just in vertical velocity calculations.
 """
-function a_ell_from_N2(N2_profile::AbstractVector, par::QGParams)
+function a_ell_from_N2(N2_profile::AbstractVector, f::Real)
     nz = length(N2_profile)
     T = eltype(N2_profile)
     a = similar(N2_profile)
-    f₀_sq = par.f₀^2
+    f₀_sq = f^2
 
     # Use consistent threshold for warning and clamping
     N2_min = sqrt(eps(T))
@@ -235,6 +235,9 @@ function a_ell_from_N2(N2_profile::AbstractVector, par::QGParams)
     end
     return a
 end
+
+a_ell_from_N2(N2_profile::AbstractVector, coriolis::FPlane) =
+    a_ell_from_N2(N2_profile, coriolis.f)
 
 #=
 ================================================================================
@@ -265,7 +268,7 @@ weights reduce to unity.
 - Otherwise returns ones(nz) for Boussinesq dynamics
 
 # Arguments
-- `par::QGParams`: May contain custom ρ_ut_profile
+- `par`: Legacy parameter object that may contain a custom `ρ_ut_profile`
 - `G::Grid`: Grid with vertical levels
 
 # Returns
@@ -274,7 +277,7 @@ Vector of length nz with density weights ρ(z_k).
 # Fortran Correspondence
 Matches `rho_ut(k)` in the Fortran implementation.
 """
-function rho_ut(par::QGParams, G::Grid)
+function rho_ut(par, G::Grid)
     # Check for user-provided custom profile
     if par.ρ_ut_profile !== nothing
         @assert length(par.ρ_ut_profile) == G.nz
@@ -305,7 +308,7 @@ or defined at half-levels.
 - Otherwise returns ones(nz) for Boussinesq dynamics
 
 # Arguments
-- `par::QGParams`: May contain custom ρ_st_profile
+- `par`: Legacy parameter object that may contain a custom `ρ_st_profile`
 - `G::Grid`: Grid with vertical levels
 
 # Returns
@@ -314,7 +317,7 @@ Vector of length nz with staggered density weights.
 # Fortran Correspondence
 Matches `rho_st(k)` in the Fortran implementation.
 """
-function rho_st(par::QGParams, G::Grid)
+function rho_st(par, G::Grid)
     # Check for user-provided custom profile
     if par.ρ_st_profile !== nothing
         @assert length(par.ρ_st_profile) == G.nz
@@ -349,13 +352,13 @@ This coefficient is provided for:
 - Future non-Boussinesq extensions
 
 # Arguments
-- `par::QGParams`: May contain custom b_ell_profile
+- `par`: Legacy parameter object that may contain a custom `b_ell_profile`
 - `G::Grid`: Grid with vertical levels
 
 # Returns
 Vector of length nz with b(z_k) values (default: zeros).
 """
-function b_ell_ut(par::QGParams, G::Grid)
+function b_ell_ut(par, G::Grid)
     # Check for user-provided custom profile
     if par.b_ell_profile !== nothing
         @assert length(par.b_ell_profile) == G.nz
@@ -410,7 +413,7 @@ where ρ is the background density profile. N² controls:
    - If no profile is provided to the caller, this falls back to constant N² with a warning.
 
 # Arguments
-- `par::QGParams`: Stratification type and coefficients
+- `par`: Legacy parameter object containing stratification type and coefficients
 - `G::Grid`: Grid with vertical levels
 
 # Returns
@@ -426,7 +429,7 @@ Vector of length nz with N²(z_k) values on unstaggered levels.
 # Fortran Correspondence
 Matches `n2(k)` computed in `init_base_state` (init.f90).
 """
-function N2_ut(par::QGParams, G::Grid)
+function N2_ut(par, G::Grid)
     nz = G.nz
     N2 = similar(G.z)
 
@@ -489,7 +492,7 @@ assumes constant background density, with stratification effects entering
 only through a_ell = 1/N² in the elliptic operators.
 
 # Arguments
-- `par::QGParams`: Model parameters
+- `par`: Legacy parameter object
 - `G::Grid`: Grid structure
 - `N2_profile`: Optional custom N² profile (currently ignored, reserved for future use)
 
@@ -505,7 +508,7 @@ this distinction doesn't matter.
 # Fortran Correspondence
 The Fortran test1 case also uses unity weights (Boussinesq).
 """
-function derive_density_profiles(par::QGParams, G::Grid; N2_profile=nothing)
+function derive_density_profiles(par, G::Grid; N2_profile=nothing)
     #= For the QG-YBJ+ model with Boussinesq approximation:
     - Background density ρ = const = 1 (nondimensional)
     - Stratification enters through a_ell = 1/N² in elliptic operators

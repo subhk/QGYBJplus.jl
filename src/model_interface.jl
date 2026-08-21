@@ -269,7 +269,7 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     # and vertical velocity calculations. Previously, custom N2_profiles were only used for
     # vertical velocity, causing inconsistent physics in non-constant stratification runs.
     if sim.N2_profile !== nothing && !isempty(sim.N2_profile)
-        a_ell = a_ell_from_N2(sim.N2_profile, sim.params)
+        a_ell = a_ell_from_N2(sim.N2_profile, sim.params.f₀)
         @info "Using custom N² profile for elliptic operators ($(length(sim.N2_profile)) levels)"
     else
         a_ell = a_ell_ut(sim.params, sim.grid)
@@ -1090,7 +1090,7 @@ function run_simulation!(S::ModelFields, G::Grid, par::QGParams, plans;
     # Use N2_profile for elliptic coefficient if provided, ensuring consistent physics
     # across q↔ψ inversions, B↔A inversions, and vertical velocity calculations
     if N2_profile !== nothing && length(N2_profile) == G.nz
-        a_ell = a_ell_from_N2(N2_profile, par)
+        a_ell = a_ell_from_N2(N2_profile, par.f₀)
     else
         a_ell = a_ell_ut(par, G)
         # Warn if stratification is non-constant but no profile provided
@@ -1104,17 +1104,19 @@ function run_simulation!(S::ModelFields, G::Grid, par::QGParams, plans;
 
     # Initial diagnostics use the same diagnosed flow as the time stepper.
     if !par.fixed_flow
-        invert_q_to_psi!(S, G; a=a_ell, par=par, workspace=workspace)
+        invert_q_to_psi!(S, G; a=a_ell,
+            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace=workspace)
     end
-    compute_velocities!(S, G; plans=plans, params=par, workspace=workspace,
-                        N2_profile=N2_profile, compute_w=true,
-                        dealias_mask=L_mask)
+    compute_velocities!(S, G; plans=plans, f=par.f₀, N2=par.N²,
+        workspace=workspace, N2_profile=N2_profile, compute_w=true,
+        rho_u=rho_ut(par, G), rho_s=rho_st(par, G), dealias_mask=L_mask)
 
     # Initialize A from B via elliptic inversion: A = (L⁺)⁻¹·B
     # This is needed before the first diagnostics printout (step 0)
     # For YBJ+, A is the wave amplitude and B = L⁺·A
     if par.ybj_plus
-        invert_B_to_A!(S, G, par, a_ell; workspace=workspace)
+        invert_B_to_A!(S, G, a_ell;
+            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace=workspace)
     end
 
     # Create output manager if config provided

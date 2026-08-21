@@ -35,7 +35,7 @@ function setup_model(par::QGParams)
     G = init_grid(par)
     S = allocate_fields(G)
     plans = plan_transforms!(G)
-    a = a_ell_ut(par, G)
+    a = a_ell_from_N2(N2_ut(par, G), par.f₀)
     return G, S, plans, a
 end
 
@@ -67,7 +67,7 @@ function setup_model_with_profile(par::QGParams)
     # Compute N² profile based on stratification type
     # Uses the same logic as physics.N2_ut (including warnings for profile-based types).
     N2_profile = N2_ut(par, G)
-    a = a_ell_from_N2(N2_profile, par)
+    a = a_ell_from_N2(N2_profile, par.f₀)
 
     return G, S, plans, a, N2_profile
 end
