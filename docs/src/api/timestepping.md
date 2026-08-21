@@ -1,53 +1,36 @@
-# Time stepping
+# [Time integration](@id api-timestepping)
 
-QGYBJplus uses a second-order exponential time-differencing Runge–Kutta method
-(ETD-RK2). Horizontal flow and wave hyperdiffusion are integrated exactly;
-advection, refraction, dispersion, and vertical diffusion are evaluated at two
-explicit Runge–Kutta stages.
-
-For a semilinear system ``u_t = Lu + N(u)``, the update is
-
-```math
-\begin{aligned}
-a &= e^{hL}u_n + h\varphi_1(hL)N(u_n),\\
-u_{n+1} &= a + h\varphi_2(hL)\left[N(a)-N(u_n)\right],
-\end{aligned}
+```@meta
+CurrentModule = QGYBJplus
 ```
 
-where ``\varphi_1(z)=(e^z-1)/z`` and
-``\varphi_2(z)=(e^z-1-z)/z^2``. The implementation uses series expansions near
-zero to avoid cancellation.
+QGYBJ+.jl uses second-order exponential Runge–Kutta integration exclusively.
+Horizontal hyperdiffusion is handled by exact integrating factors; the
+remaining tendency is evaluated in two stages.
 
-## High-level use
-
-[`run_simulation!`](@ref) and [`run!`](@ref) always use ETD-RK2:
+## Simulation-owned stepping
 
 ```julia
-run_simulation!(state, grid, params, plans;
-                output_config=output_config,
-                N2_profile=N2_profile)
+simulation = Simulation(model; Δt=10.0, stop_iteration=100, output=false)
+run!(simulation)
 ```
 
-## Low-level use
+The timestepper and reusable workspace live at
+`simulation.timestepper`.
+
+## Manual stepping
 
 ```julia
-a = a_ell_ut(params, grid)
-mask = dealias_mask(grid)
-next_state = copy_state(state)
-rk_workspace = ExpRK2Workspace(state, plans; G=grid)
-
-exp_rk2_step!(next_state, state, grid, params, plans;
-              a=a,
-              dealias_mask=mask,
-              timestep_workspace=rk_workspace)
+timestepper = ExponentialRungeKutta2(Δt=10.0)
+step!(model, timestepper)
 ```
 
-For MPI runs, pass the reusable [`MPIWorkspace`](@ref) as `workspace` and the
-[`ExpRK2Workspace`](@ref) as `timestep_workspace`.
-
-## API
+The first step allocates an [`ExponentialRungeKutta2Workspace`](@ref); later
+steps reuse it.
 
 ```@docs
-exp_rk2_step!
-ExpRK2Workspace
+ExponentialRungeKutta2
+ExponentialRungeKutta2Workspace
+step!
+run!
 ```

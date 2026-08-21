@@ -19,6 +19,7 @@ try
     include("test_simulation_lifecycle.jl")
     include("test_model_io.jl")
     include("test_model_particles.jl")
+    include("test_asselin_smoke.jl")
 finally
     if MPI.Initialized() && !MPI.Finalized()
         MPI.Barrier(MPI.COMM_WORLD)

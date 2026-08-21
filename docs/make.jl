@@ -50,7 +50,7 @@ makedocs(
         ],
         "API Reference" => [
             "Core Types" => "api/types.md",
-            "Grid & State" => "api/grid_state.md",
+            "Geometry & Fields" => "api/grid_state.md",
             "Physics Functions" => "api/physics.md",
             "Time Stepping" => "api/timestepping.md",
             "Particles" => "api/particles.md",

@@ -4,215 +4,76 @@
 CurrentModule = QGYBJplus
 ```
 
-```@raw html
-<div class="hero-section">
-<h1>QGYBJ+.jl</h1>
-<p>A high-performance Julia model for simulating wave-eddy interactions in the ocean</p>
-</div>
-```
+QGYBJ+.jl simulates interactions between quasigeostrophic balanced flow and
+near-inertial waves. It combines horizontally pseudo-spectral operators,
+second-order vertical differences, MPI pencil decomposition, and a
+second-order exponential Runge–Kutta integrator.
 
-**QGYBJ+.jl** implements the Quasi-Geostrophic Young-Ben Jelloul Plus (QG-YBJ+) model for simulating the interaction between near-inertial waves and mesoscale ocean eddies.
+## Composition-first interface
 
----
+Four objects have distinct ownership:
 
-## Start Here
-
-```@raw html
-<div class="learning-path">
-<div class="path-step">
-    <div class="step-number">1</div>
-    <div class="step-content">
-        <strong><a href="concepts/">Key Concepts</a></strong> — Understand what the model simulates and why it matters
-    </div>
-    <div class="step-time">15 min</div>
-</div>
-<div class="path-step">
-    <div class="step-number">2</div>
-    <div class="step-content">
-        <strong><a href="quickstart/">Quick Start</a></strong> — Run your first simulation with copy-paste code
-    </div>
-    <div class="step-time">5 min</div>
-</div>
-<div class="path-step">
-    <div class="step-number">3</div>
-    <div class="step-content">
-        <strong><a href="worked_example/">Worked Example</a></strong> — Build a real simulation step-by-step
-    </div>
-    <div class="step-time">30 min</div>
-</div>
-</div>
-```
-
----
-
-## What This Model Does
-
-The ocean contains two important types of motion at different scales:
-
-**Mesoscale Eddies** (~100 km scale)
-- Giant rotating vortices lasting weeks to months
-- Contain ~90% of ocean kinetic energy
-- Move slowly (~10 cm/s)
-
-**Near-Inertial Waves** (~10 km scale)
-- Wind-generated internal waves oscillating every ~17 hours
-- Key driver of ocean mixing
-- Propagate through the water column
-
-These two types of motion **interact strongly**: eddies refract and focus waves, while waves can feed energy back into the mean flow. QGYBJ+.jl simulates this coupled system using:
-
-- **Quasi-geostrophic (QG) dynamics** for the balanced eddy flow
-- **YBJ+ equations** for the near-inertial wave envelope
-- **Two-way coupling** capturing wave-mean flow energy exchange
-
----
-
-## Key Features
-
-```@raw html
-<div class="feature-grid">
-<div class="feature-card">
-    <h3>Spectral Methods</h3>
-    <p>Pseudo-spectral horizontal derivatives using FFTW for accuracy and speed</p>
-</div>
-<div class="feature-card">
-    <h3>ETD-RK2 Time Stepping</h3>
-    <p>Second-order exponential Runge–Kutta with exact horizontal hyperdiffusion</p>
-</div>
-<div class="feature-card">
-    <h3>MPI Parallel</h3>
-    <p>2D pencil decomposition scales to thousands of cores for large domains</p>
-</div>
-<div class="feature-card">
-    <h3>Particle Tracking</h3>
-    <p>Lagrangian advection with multiple interpolation schemes</p>
-</div>
-<div class="feature-card">
-    <h3>Configurable Physics</h3>
-    <p>Flexible stratification profiles, dissipation, and wave feedback options</p>
-</div>
-<div class="feature-card">
-    <h3>NetCDF Output</h3>
-    <p>Standard format for analysis with automatic energy diagnostics</p>
-</div>
-</div>
-```
-
----
-
-## Quick Example
-
-```@raw html
-<div class="quickstart-card">
-```
+1. [`RectilinearGrid`](@ref) stores immutable global geometry.
+2. [`QGYBJModel`](@ref) owns typed physics, numerics, fields, runtime
+   resources, and optional particles.
+3. [`Simulation`](@ref) owns the clock, ETD-RK2 timestepper, stopping rules,
+   schedules, output, and lifecycle.
+4. [`NetCDFOutput`](@ref) describes snapshot output without owning model data.
 
 ```julia
 using QGYBJplus
 
-grid = RectilinearGrid(size=(64, 64, 32),
-                       extent=(500e3, 500e3, 4000.0), centered=true)
-model = QGYBJModel(grid=grid,
-                   coriolis=FPlane(f=1e-4),
-                   stratification=ConstantStratification(N²=1e-5))
+grid = RectilinearGrid(
+    size=(64, 64, 32),
+    extent=(500e3, 500e3, 4000.0),
+    centered=true,
+)
+model = QGYBJModel(
+    grid=grid,
+    coriolis=FPlane(f=1e-4),
+    stratification=ConstantStratification(N²=1e-5),
+    flow=EvolvingFlow(),
+    feedback=WaveMeanFeedback(),
+    formulation=YBJPlus(),
+)
+set!(
+    model;
+    ψ=(x, y, z) -> 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3),
+    waves=SurfaceWave(amplitude=0.1, scale=30.0),
+)
 
-set!(model;
-     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
-     waves=SurfaceWave(amplitude=0.1, scale=30.0))
-
-simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
-                        output=NetCDFOutput(path="output",
-                                            schedule=TimeInterval(3600.0)))
-run!(simulation)
+simulation = Simulation(
+    model;
+    Δt=20.0,
+    stop_time=86400.0,
+    output=NetCDFOutput(
+        path="output",
+        schedule=TimeInterval(3600.0),
+    ),
+)
+try
+    run!(simulation)
+finally
+    finalize_simulation!(simulation)
+end
 ```
 
-```@raw html
-</div>
-```
+ETD-RK2 is the sole stepping scheme. The same model construction works in a
+single Julia process and under `mpiexecjl`.
 
----
+## Documentation map
 
-## Documentation Guide
+- [Key concepts](@ref concepts)
+- [Installation](@ref getting_started)
+- [Quick start](@ref quickstart)
+- [Asselin dipole walkthrough](@ref worked_example)
+- [Configuration](@ref configuration)
+- [MPI parallel execution](@ref parallel)
+- [Particle advection](@ref particles)
+- [Core API](@ref api-types)
 
-### For Beginners
-- [Key Concepts](@ref concepts) — Core ideas without code
-- [Installation](@ref getting_started) — How to install QGYBJ+.jl
-- [Quick Start](@ref quickstart) — Your first simulation in 5 minutes
-- [Worked Example](@ref worked_example) — Detailed walkthrough with explanations
+## References
 
-### Physics & Theory
-- [Model Overview](@ref physics-overview) — Physical background and equations
-- [QG Equations](@ref qg-equations) — Quasi-geostrophic dynamics
-- [YBJ+ Wave Model](@ref ybj-plus) — Near-inertial wave formulation
-- [Numerical Methods](@ref numerical-methods) — Algorithms and discretization
-
-### User Guide
-- [Configuration](@ref configuration) — Setting up simulations
-- [Stratification](@ref stratification) — Ocean density profiles
-- [I/O and Output](@ref io-output) — Saving and loading data
-- [Diagnostics](@ref diagnostics) — Energy and analysis tools
-
-### Advanced Topics
-- [MPI Parallelization](@ref parallel) — Running on clusters
-- [Particle Advection](@ref particles) — Lagrangian tracking
-- [Performance Tips](@ref performance) — Optimization strategies
-
-### Reference
-- [Core Types](@ref api-types) — QGParams, Grid, State
-- [Physics Functions](@ref api-physics) — Operators and solvers
-- [Full Index](@ref api-index) — Complete function listing
-
----
-
-## Installation
-
-```julia
-using Pkg
-Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
-```
-
-MPI parallel support (MPI.jl, PencilArrays.jl, PencilFFTs.jl) is included as a dependency and will be installed automatically.
-
-See [Installation Guide](@ref getting_started) for detailed instructions.
-
----
-
-## How Simulations Work
-
-The typical simulation workflow is:
-
-1. **Configure** — Create `QGParams` with grid size, domain, physics options
-2. **Setup** — Initialize `Grid`, `State`, FFT plans, and elliptic coefficients
-3. **Run** — Time-step the prognostic fields (q, B) with inversions each step
-4. **Output** — Save fields and diagnostics to NetCDF files
-
-See [Worked Example](@ref worked_example) for a complete walkthrough.
-
----
-
-## Citation
-
-If you use QGYBJ+.jl in your research, please cite:
-
-```bibtex
-@software{qgybj_jl,
-  author = {Kar, Subhajit},
-  title = {QGYBJ+.jl: A Julia Implementation of the QG-YBJ+ Model},
-  year = {2025},
-  url = {https://github.com/subhk/QGYBJplus.jl}
-}
-```
-
-## Key References
-
-- **Asselin & Young (2019)**: YBJ+ formulation for penetration of near-inertial waves
-- **Xie & Vanneste (2015)**: Wave feedback mechanism (qʷ term)
-- **Young & Ben Jelloul (1997)**: Original YBJ wave envelope equation
-
-## Getting Help
-
-- **Issues**: [GitHub Issues](https://github.com/subhk/QGYBJplus.jl/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/subhk/QGYBJplus.jl/discussions)
-
-## License
-
-QGYBJ+.jl is released under the MIT License.
+- Asselin & Young (2019), *Journal of Physical Oceanography*, 49, 1699–1717.
+- Xie & Vanneste (2015), *Journal of Fluid Mechanics*, 774, 143–169.
+- Young & Ben Jelloul (1997), *Journal of Marine Research*, 55, 735–766.

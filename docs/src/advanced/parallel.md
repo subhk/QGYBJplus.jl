@@ -1,116 +1,73 @@
-# [MPI Parallelization](@id parallel)
+# [MPI parallel execution](@id parallel)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-Run QGYBJ+.jl on distributed memory systems using 2D pencil decomposition.
+QGYBJ+.jl uses PencilArrays.jl and PencilFFTs.jl for two-dimensional pencil
+decomposition. Application code constructs the same model at every rank.
 
-!!! note "When to Use"
-    Recommended for grids ≥256³ or when memory is limited. For smaller problems, use threading: `julia -t auto`.
-
-## Quick Start
-
-```julia
-# parallel_run.jl
-using MPI, PencilArrays, PencilFFTs, QGYBJplus
-
-MPI.Init()
-mpi_config = QGYBJplus.setup_mpi_environment()
-
-params = default_params(Lx=1000e3, Ly=1000e3, Lz=5000.0, nx=256, ny=256, nz=128)
-grid = QGYBJplus.init_mpi_grid(params, mpi_config)
-plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
-state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
-workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
-
-a_vec = a_ell_ut(params, grid)
-mask = dealias_mask(grid)
-next_state = copy_state(state)
-rk_workspace = ExpRK2Workspace(state, plans; G=grid)
-
-for step in 1:1000
-    exp_rk2_step!(next_state, state, grid, params, plans;
-                  a=a_vec, dealias_mask=mask,
-                  workspace=workspace,
-                  timestep_workspace=rk_workspace)
-    state, next_state = next_state, state
-end
-
-MPI.Finalize()
-```
-
-Run with:
 ```bash
-mpiexec -n 16 julia --project parallel_run.jl
+mpiexecjl -n 4 julia --project=. examples/asselin_jpo2020.jl
 ```
 
-## Requirements
+## Topology
 
-MPI parallel packages (MPI.jl, PencilArrays.jl, PencilFFTs.jl) are included as dependencies and installed automatically with QGYBJ+.jl.
-
-**System MPI library required:**
-- **macOS**: `brew install open-mpi`
-- **Ubuntu**: `apt install libopenmpi-dev`
-
-## Scaling
-
-| Processes | Topology | Grid Size |
-|:----------|:---------|:----------|
-| 4 | 2×2 | 128³ |
-| 16 | 4×4 | 256³ |
-| 64 | 8×8 | 512³ |
-
-Use powers of 2 for optimal performance.
-
-## Key Concepts
-
-**2D Pencil Decomposition**: Domain split across px × py process grid. z-dimension stays local for efficient vertical solves.
-
-**Workspace**: Pre-allocate once to avoid repeated allocation:
-```julia
-workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
-```
-
-**State Copies**: Use `copy_state(S)` not `deepcopy(S)` to preserve pencil topology.
-
-## Key Functions
-
-| Function | Purpose |
-|:---------|:--------|
-| `setup_mpi_environment()` | Initialize MPI config |
-| `init_mpi_grid()` | Create distributed grid |
-| `plan_mpi_transforms()` | Create PencilFFT plans |
-| `init_mpi_state()` | Create distributed state |
-| `init_mpi_workspace()` | Allocate workspace |
-| `copy_state()` | Copy state (preserves topology) |
-| `mpi_reduce_sum()` | Sum across processes |
-
-## Global Reductions
+Automatic topology selection is suitable for most runs. Supply an explicit
+factorization when required:
 
 ```julia
-local_ke = flow_kinetic_energy(state.u, state.v)
-global_ke = QGYBJplus.mpi_reduce_sum(local_ke, mpi_config)
-if mpi_config.is_root
-    println("Total KE: $global_ke")
-end
+model = QGYBJModel(
+    grid=grid,
+    topology=(2, 4),
+    verbose=false,
+)
 ```
 
-## Job Scripts
+Both factors must divide the relevant global dimensions. Local decomposition
+metadata lives in `model.runtime.decomposition`; immutable global geometry
+remains in `model.grid`.
 
-### SLURM
+## Local ranges
+
+```julia
+spectral_range = get_local_range_spectral(model)
+physical_range = get_local_range_physical(model)
+i_global = local_to_global(1, 2, model.fields.q)
+```
+
+Avoid assuming that physical and spectral pencils have the same local axes.
+
+## Gather and scatter
+
+```julia
+global_q = gather_to_root(model.fields.q,
+                          model.runtime.geometry,
+                          model.runtime.mpi)
+
+model.fields.q .= scatter_from_root(global_q,
+                                    model.runtime.geometry,
+                                    model.runtime.mpi;
+                                    plans=model.runtime.plans)
+```
+
+Prefer scheduled NetCDF output for routine runs; explicit gather is primarily
+for tests and custom analysis.
+
+## MPI ownership
+
+If MPI was already initialized, the model treats it as externally owned and
+will not finalize it. Otherwise the first model initializes MPI and closes it
+during `finalize_model!`. Test suites that create multiple models should
+initialize MPI once around the suite.
+
+## Parallel verification
+
+The repository includes distributed regressions for transform round trips,
+ETD-RK2 rank independence, and particle migration:
+
 ```bash
-#!/bin/bash
-#SBATCH --nodes=4 --ntasks-per-node=16
-mpiexec -n 64 julia --project script.jl
+mpiexecjl -n 2 julia --project=. test/test_mpi_extension.jl
+mpiexecjl -n 2 julia --project=. test/test_mpi_stepping_regression.jl
+mpiexecjl -n 2 julia --project=. test/test_mpi_particles_periodic.jl
 ```
-
-## Troubleshooting
-
-| Problem | Solution |
-|:--------|:---------|
-| Pencil topology mismatch | Use `copy_state(S)` not `deepcopy(S)` |
-| Deadlock | All ranks must call collective operations |
-| Segfaults | Use `size(parent(arr))` for array dimensions |
-
-See [Troubleshooting](@ref troubleshooting) for more details.

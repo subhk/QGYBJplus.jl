@@ -14,7 +14,10 @@ grid = RectilinearGrid(size=(64, 64, 32),
                        extent=(500e3, 500e3, 4000.0), centered=true)
 model = QGYBJModel(grid=grid,
                    coriolis=FPlane(f=1e-4),
-                   stratification=ConstantStratification(N²=1e-5))
+                   stratification=ConstantStratification(N²=1e-5),
+                   flow=EvolvingFlow(),
+                   feedback=WaveMeanFeedback(),
+                   formulation=YBJPlus())
 
 set!(model;
      ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
@@ -23,7 +26,11 @@ set!(model;
 simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
                         output=NetCDFOutput(path="output",
                                             schedule=TimeInterval(3600.0)))
-run!(simulation)
+try
+    run!(simulation)
+finally
+    finalize_simulation!(simulation)
+end
 ```
 
 

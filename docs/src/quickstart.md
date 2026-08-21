@@ -1,192 +1,94 @@
-# [Quick Start Tutorial](@id quickstart)
+# [Quick start](@id quickstart)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-Run your first QGYBJ+.jl simulation in 5 minutes.
-
----
-
-## Minimal Example
-
-```@raw html
-<div class="quickstart-card">
-```
+## 1. Define immutable geometry
 
 ```julia
-using QGYBJplus
-
-grid = RectilinearGrid(size=(64, 64, 32),
-                       extent=(500e3, 500e3, 4000.0), centered=true)
-model = QGYBJModel(grid=grid,
-                   coriolis=FPlane(f=1e-4),
-                   stratification=ConstantStratification(N²=1e-5))
-
-set!(model;
-     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
-     waves=SurfaceWave(amplitude=0.1, scale=30.0))
-
-simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
-                        output=NetCDFOutput(path="output",
-                                            schedule=TimeInterval(3600.0)))
-run!(simulation)
+grid = RectilinearGrid(
+    size=(64, 64, 32),
+    x=(-250e3, 250e3),
+    y=(-250e3, 250e3),
+    z=(-4000.0, 0.0),
+)
 ```
 
-```@raw html
-</div>
-```
+Horizontal nodes are periodic and vertical nodes are cell centered. Global
+coordinates and wavenumbers remain on this object; local decomposition data
+belongs to the model runtime.
 
----
-
-## Step-by-Step Breakdown
-
-### Step 1: Create the Grid and Model
-
-```julia
-grid = RectilinearGrid(size=(64, 64, 32),
-                       extent=(500e3, 500e3, 4000.0), centered=true)
-model = QGYBJModel(grid=grid,
-                   coriolis=FPlane(f=1e-4),
-                   stratification=ConstantStratification(N²=1e-5),
-                   flow=:evolving,
-                   feedback=:wave_mean)
-```
-
-The model allocates its MPI decomposition, FFT plans, state, and workspaces.
-The same code works on one process or under `mpiexecjl`.
-
-### Step 2: Set Initial Conditions
-
-```julia
-set!(model;
-     ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
-     waves=SurfaceWave(amplitude=0.1, scale=30.0))
-```
-
-Use `pv_method=:barotropic` in `set!` when the supplied streamfunction is a
-vertically uniform imposed flow.
-
-### Step 3: Configure and Run
-
-```julia
-simulation = Simulation(model;
-                        Δt=20.0,
-                        stop_time=86400.0,
-                        output=NetCDFOutput(path="output",
-                                            schedule=TimeInterval(3600.0)),
-                        diagnostics=IterationInterval(100))
-run!(simulation)
-```
-
-ETD-RK2 is the only timestepper, so there is no method selector to configure.
-
-### Step 4: Access Results
-
-```julia
-state = simulation.state
-
-# Spectral fields (complex, in Fourier space)
-state.psi    # Streamfunction
-state.B      # Wave envelope
-state.A      # Wave amplitude (diagnosed from B)
-state.C      # Vertical derivative of A
-
-# Physical fields (real, in physical space)
-state.u      # Zonal velocity
-state.v      # Meridional velocity
-state.w      # Vertical velocity
-```
-
-### Step 5: Compute Diagnostics
-
-```julia
-# Mean flow kinetic energy
-KE = flow_kinetic_energy(state.u, state.v)
-
-# Wave energy components per YBJ+ equation (4.7)
-WKE, WPE, WCE = compute_detailed_wave_energy(state, simulation.grid, simulation.params)
-
-# Simple wave energy
-WE_B, WE_A = wave_energy(state.B, state.A)
-```
-
----
-
-## Common Configuration Options
-
-```@raw html
-<div class="feature-grid">
-<div class="feature-card">
-    <h3>Physics Options</h3>
-    <p>Control the physical model behavior</p>
-</div>
-<div class="feature-card">
-    <h3>Stratification</h3>
-    <p>Choose ocean density profile</p>
-</div>
-</div>
-```
+## 2. Compose a model
 
 ```julia
 model = QGYBJModel(
     grid=grid,
     coriolis=FPlane(f=1e-4),
     stratification=ConstantStratification(N²=1e-5),
-    closure=HorizontalHyperdiffusivity(flow=0.01, waves=1e5),
-    flow=:evolving,       # or :fixed
-    feedback=:wave_mean,  # or :none / :no_wave_feedback
-    ybj_plus=true,
+    closure=HorizontalHyperdiffusivity(
+        flow=0,
+        flow2=0,
+        waves=1e5,
+        waves2=0,
+        wave_laplacian_order=2,
+    ),
+    flow=FixedFlow(),
+    feedback=NoFeedback(),
+    formulation=YBJPlus(),
 )
 ```
 
-| Option | Default | Description |
-|:-------|:--------|:------------|
-| `ybj_plus` | `true` | Use YBJ+ formulation (recommended) |
-| `flow` | `:evolving` | Evolve the balanced flow or hold it fixed |
-| `feedback` | `:none` | Select no, one-way, or two-way wave–mean coupling |
-| `closure` | `HorizontalHyperdiffusivity()` | Flow and wave dissipation |
-| `stratification` | `ConstantStratification(N²=1e-5)` | Vertical stratification |
+The model owns `model.fields`, `model.physics`, `model.numerics`, and
+`model.runtime`. Prognostic arrays are `model.fields.q` and `model.fields.B`.
 
----
+## 3. Initialize fields
 
-## Output Files
-
-The `NetCDFOutput(path="output", ...)` above creates:
-
-```
-output/
-├── state0001.nc          # Field snapshots
-├── state0002.nc
-└── diagnostic/           # Energy time series
-    ├── wave_KE.nc
-    ├── mean_flow_KE.nc
-    └── total_energy.nc
+```julia
+set!(
+    model;
+    ψ=(x, y, z) -> 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3),
+    pv_method=:barotropic,
+    waves=SurfaceWave(amplitude=0.1, scale=30.0, profile=:gaussian),
+)
 ```
 
----
+Use `RandomStreamfunction` for deterministic spectral initialization or the
+model-level setters described in [Initial conditions](@ref initial-conditions).
 
-## What's Next?
+## 4. Configure and run
 
-```@raw html
-<div class="learning-path">
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../worked_example/">Worked Example</a></strong> — Detailed step-by-step walkthrough
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../guide/configuration/">Configuration Guide</a></strong> — All available parameters
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../advanced/parallel/">MPI Parallelization</a></strong> — Run large-scale simulations
-    </div>
-</div>
-</div>
+```julia
+simulation = Simulation(
+    model;
+    Δt=20.0,
+    stop_iteration=100,
+    output=NetCDFOutput(
+        path="output",
+        schedule=IterationInterval(20),
+        fields=(:ψ, :waves),
+        velocities=true,
+    ),
+    diagnostics=IterationInterval(10),
+)
+
+try
+    run!(simulation)
+finally
+    finalize_simulation!(simulation)
+end
 ```
+
+Inspect `simulation.clock.time`, `simulation.clock.iteration`, and
+`simulation.state`. Model arrays remain under `simulation.model.fields`.
+
+## 5. Restart
+
+Create a fresh, compatible model and restore its prognostic fields before
+starting a new simulation:
+
+```julia
+restore!(model, "output/state0006.nc")
+```
+
+See [I/O and restart](@ref io-output) for the file schema and scheduling rules.

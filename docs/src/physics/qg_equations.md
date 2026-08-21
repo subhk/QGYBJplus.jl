@@ -71,8 +71,7 @@ This is solved efficiently with the Thomas algorithm in O(nz) operations.
 
 In the code:
 ```julia
-# Called for each time step
-invert_q_to_psi!(state, grid, params, a_ell)
+invert_q_to_psi!(model)
 ```
 
 ## Velocity Fields
