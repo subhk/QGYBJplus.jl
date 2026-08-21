@@ -18,10 +18,8 @@ using Test
 using FFTW
 using MPI
 using QGYBJplus
-using QGYBJplus: setup_model, copy_fields, dealias_mask,
-                 exp_rk2_step!, ExpRK2Workspace,
-                 setup_mpi_environment, init_mpi_grid, plan_mpi_transforms,
-                 init_mpi_state, init_mpi_workspace, a_ell_ut, scatter_from_root
+using QGYBJplus: setup_model, copy_fields, exp_rk2_step!, ExpRK2Workspace,
+                 scatter_from_root
 
 const TEST_Lx = 2pi
 const TEST_Ly = 2pi
@@ -51,18 +49,28 @@ comm = MPI.COMM_WORLD
 rank = MPI.Comm_rank(comm)
 nprocs = MPI.Comm_size(comm)
 
+let model = nothing
 try
-    par = default_params(nx=8, ny=8, nz=8,
-                         Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz,
-                         ybj_plus=true,
-                         no_feedback=false, no_wave_feedback=false,
-                         inviscid=false, dt=1e-3, nt=NSTEPS)
+    public_grid = RectilinearGrid(size=(8, 8, 8),
+                                  extent=(TEST_Lx, TEST_Ly, TEST_Lz))
+    model = QGYBJModel(
+        grid=public_grid,
+        coriolis=FPlane(f=1),
+        stratification=ConstantStratification(N²=1),
+        feedback=WaveMeanFeedback(),
+        formulation=YBJPlus(),
+        verbose=false,
+    )
+    Simulation(model; Δt=1e-3, stop_iteration=NSTEPS, output=false,
+               verbose=false)
 
-    mpi_config = setup_mpi_environment()
-    gridp = init_mpi_grid(par, mpi_config)
-    plansp = plan_mpi_transforms(gridp, mpi_config)
-    ap = a_ell_ut(par, gridp)
-    Lp = dealias_mask(gridp)
+    runtime = model.runtime
+    par = runtime.parameters
+    mpi_config = runtime.mpi
+    gridp = runtime.computational_grid
+    plansp = runtime.plans
+    ap = runtime.coefficients.a_ell
+    Lp = runtime.dealias_mask
 
     # Generate deterministic global initial conditions in physical space and
     # transform them on root. q is real-valued; the wave envelope is complex.
@@ -83,14 +91,14 @@ try
     end
 
     function make_parallel_state()
-        state = init_mpi_state(gridp, plansp, mpi_config)
+        state = allocate_fields(public_grid, runtime)
         state.q .= scatter_from_root(glob_q, gridp, mpi_config; plans=plansp)
         state.B .= scatter_from_root(glob_B, gridp, mpi_config; plans=plansp)
         return state
     end
 
     fresh = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS)
-    workspace = init_mpi_workspace(gridp, mpi_config)
+    workspace = runtime.workspace
     reused = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS;
                      workspace=workspace, reuse_timestep_workspace=true)
 
@@ -130,7 +138,10 @@ try
         @test relative_error(npsip, npsis) < 1e-6
     end
 finally
-    if !MPI.Finalized()
+    if model !== nothing
+        finalize_model!(model)
+    elseif !MPI.Finalized()
         MPI.Finalize()
     end
+end
 end

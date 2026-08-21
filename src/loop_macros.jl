@@ -73,7 +73,8 @@ macro dealiased_wavenumber_loop(field, grid, mask, kept_body, masked_body)
     kept_expr = esc(kept_body)
     masked_expr = esc(masked_body)
     field_sym = gensym(:field)
-    grid_sym = gensym(:grid)
+    grid_sym = gensym(:grid_or_model)
+    geometry_sym = gensym(:geometry)
     mask_sym = gensym(:mask)
     arr_sym = gensym(:arr)
     nz_sym = gensym(:nz_local)
@@ -83,14 +84,18 @@ macro dealiased_wavenumber_loop(field, grid, mask, kept_body, masked_body)
     return quote
         local $field_sym = $field_expr
         local $grid_sym = $grid_expr
+        local $geometry_sym = $grid_sym isa QGYBJModel ? $grid_sym.grid : $grid_sym
         local $mask_sym = $mask_expr
+        if $mask_sym === nothing && $grid_sym isa QGYBJModel
+            $mask_sym = $grid_sym.runtime.dealias_mask
+        end
         local $arr_sym = parent($field_sym)
         local $nz_sym, $nx_sym, $ny_sym = size($arr_sym)
         @inbounds for $(esc(:k)) in 1:$nz_sym, $(esc(:j)) in 1:$ny_sym, $(esc(:i)) in 1:$nx_sym
             $(esc(:i_global)) = local_to_global($(esc(:i)), 2, $field_sym)
             $(esc(:j_global)) = local_to_global($(esc(:j)), 3, $field_sym)
-            $(esc(:kₓ)) = $grid_sym.kx[$(esc(:i_global))]
-            $(esc(:kᵧ)) = $grid_sym.ky[$(esc(:j_global))]
+            $(esc(:kₓ)) = $geometry_sym.kx[$(esc(:i_global))]
+            $(esc(:kᵧ)) = $geometry_sym.ky[$(esc(:j_global))]
             $(esc(:kₕ²)) = $(esc(:kₓ))^2 + $(esc(:kᵧ))^2
             if $mask_sym[$(esc(:i_global)), $(esc(:j_global))]
                 $kept_expr

@@ -328,6 +328,12 @@ function get_local_range(G::Grid)
     end
 end
 
+"""Return the full serial range for immutable global grid geometry."""
+function get_local_range(grid::RectilinearGrid)
+    nx, ny, nz = grid.size
+    return (1:nz, 1:nx, 1:ny)
+end
+
 """
     local_to_global(local_idx::Int, dim::Int, G::Grid) -> Int
     local_to_global(local_idx::Int, dim::Int, arr::AbstractArray) -> Int
@@ -368,6 +374,8 @@ function local_to_global(local_idx::Int, dim::Int, G::Grid)
     end
 end
 
+local_to_global(local_idx::Int, dim::Int, ::RectilinearGrid) = local_idx
+
 @inline function local_to_global(local_idx::Int, dim::Int, arr::AbstractArray)
     return local_idx
 end
@@ -387,6 +395,8 @@ Get the x-wavenumber for a local index, handling both serial and parallel cases.
     return G.kx[i_global]
 end
 
+@inline get_kx(i_local::Int, grid::RectilinearGrid) = grid.kx[i_local]
+
 """
     get_ky(j_local::Int, G::Grid) -> Real
 
@@ -396,6 +406,8 @@ Get the y-wavenumber for a local index, handling both serial and parallel cases.
     j_global = local_to_global(j_local, 3, G)
     return G.ky[j_global]
 end
+
+@inline get_ky(j_local::Int, grid::RectilinearGrid) = grid.ky[j_local]
 
 """
     get_kh2(i_local::Int, j_local::Int, k_local::Int, arr, G::Grid) -> Real
@@ -414,6 +426,9 @@ For parallel mode, accesses the local PencilArray element.
         return real(parent(G.kh2)[k_local, i_local, j_local])
     end
 end
+
+@inline get_kh2(i_local::Int, j_local::Int, k_local::Int, arr,
+                grid::RectilinearGrid) = grid.kh2[i_local, j_local]
 
 """
     get_local_dims(arr) -> Tuple{Int, Int, Int}

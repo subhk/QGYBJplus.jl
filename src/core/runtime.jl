@@ -149,3 +149,56 @@ function finalize_runtime!(runtime::ModelRuntime; synchronize::Bool=true)
     runtime.finalized = true
     return runtime
 end
+
+# Runtime-local layout and index mapping. Spectral layout is the default
+# because prognostic model fields live on the FFT output pencil.
+get_local_range_spectral(runtime::ModelRuntime) =
+    get_local_range_spectral(runtime.plans)
+get_local_range_physical(runtime::ModelRuntime) =
+    get_local_range_physical(runtime.plans)
+get_local_range(runtime::ModelRuntime) = get_local_range_spectral(runtime)
+get_local_range(model::QGYBJModel) = get_local_range(model.runtime)
+get_local_range_spectral(model::QGYBJModel) =
+    get_local_range_spectral(model.runtime)
+get_local_range_physical(model::QGYBJModel) =
+    get_local_range_physical(model.runtime)
+
+function local_to_global(local_index::Int, dimension::Int,
+    runtime::ModelRuntime)
+    return get_local_range_spectral(runtime)[dimension][local_index]
+end
+
+local_to_global(local_index::Int, dimension::Int, model::QGYBJModel) =
+    local_to_global(local_index, dimension, model.runtime)
+
+get_local_range_xy(runtime::ModelRuntime) = runtime.decomposition.local_range_xy
+get_local_range_z(runtime::ModelRuntime) = runtime.decomposition.local_range_z
+local_to_global_xy(local_index::Int, dimension::Int, runtime::ModelRuntime) =
+    get_local_range_xy(runtime)[dimension][local_index]
+local_to_global_z(local_index::Int, dimension::Int, runtime::ModelRuntime) =
+    get_local_range_z(runtime)[dimension][local_index]
+
+function z_is_local(runtime::ModelRuntime)
+    return get_local_range(runtime)[1] == 1:runtime.decomposition.global_dims[1]
+end
+z_is_local(model::QGYBJModel) = z_is_local(model.runtime)
+
+function get_kh2(i_local::Int, j_local::Int, k_local::Int, array,
+    model::QGYBJModel)
+    i_global = local_to_global(i_local, 2, array)
+    j_global = local_to_global(j_local, 3, array)
+    return model.grid.kh2[i_global, j_global]
+end
+
+get_kx(i_local::Int, array, model::QGYBJModel) =
+    model.grid.kx[local_to_global(i_local, 2, array)]
+get_ky(j_local::Int, array, model::QGYBJModel) =
+    model.grid.ky[local_to_global(j_local, 3, array)]
+
+transpose_to_z_pencil!(destination, source, runtime::ModelRuntime) =
+    transpose_to_z_pencil!(destination, source, runtime.decomposition)
+transpose_to_xy_pencil!(destination, source, runtime::ModelRuntime) =
+    transpose_to_xy_pencil!(destination, source, runtime.decomposition)
+
+allocate_fft_backward_dst(array, runtime::ModelRuntime) =
+    allocate_fft_backward_dst(array, runtime.plans)

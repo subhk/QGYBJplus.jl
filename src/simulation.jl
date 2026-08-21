@@ -219,8 +219,8 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
             throw(ArgumentError("psi_func must be provided when method=:function"))
         is_root(model) && verbose && println("Setting mean flow from analytical ψ(x, y, z)")
 
-        local_range = get_local_range_physical(plans)
-        psi_phys = allocate_fft_backward_dst(fields.psi, plans)
+        local_range = get_local_range_physical(runtime)
+        psi_phys = allocate_fft_backward_dst(fields.psi, runtime)
         psi_array = parent(psi_phys)
         T = eltype(psi_array)
         for k_local in axes(psi_array, 1)
@@ -279,8 +279,8 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     is_root(model) && verbose &&
         println("Setting surface waves: amplitude=$amplitude, scale=$surface_depth")
 
-    local_range = get_local_range_physical(plans)
-    B_phys = allocate_fft_backward_dst(fields.B, plans)
+    local_range = get_local_range_physical(runtime)
+    B_phys = allocate_fft_backward_dst(fields.B, runtime)
     B_array = parent(B_phys)
     T = typeof(real(zero(eltype(B_array))))
     dz = grid.Lz / grid.nz

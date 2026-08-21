@@ -174,6 +174,12 @@ function fft_forward!(dst, src, P::Plans)
     return dst
 end
 
+function fft_forward!(dst, src, runtime)
+    hasproperty(runtime, :plans) ||
+        throw(ArgumentError("third argument must be transform plans or a model runtime"))
+    return fft_forward!(dst, src, runtime.plans)
+end
+
 """
     fft_backward!(dst, src, P::Plans)
 
@@ -203,6 +209,12 @@ function fft_backward!(dst, src, P::Plans)
         dst[k, :, :] .= FFTW.ifft(src[k, :, :])
     end
     return dst
+end
+
+function fft_backward!(dst, src, runtime)
+    hasproperty(runtime, :plans) ||
+        throw(ArgumentError("third argument must be transform plans or a model runtime"))
+    return fft_backward!(dst, src, runtime.plans)
 end
 
 end # module Transforms
