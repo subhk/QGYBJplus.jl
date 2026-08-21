@@ -58,8 +58,7 @@ FORTRAN CORRESPONDENCE:
 
 module YBJNormal
 
-using ..QGYBJplus: Grid, QGParams
-using ..QGYBJplus: N2_ut
+using ..QGYBJplus: Grid
 using ..QGYBJplus: local_to_global, get_local_dims, z_is_local
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
@@ -198,7 +197,7 @@ Sigma is the solvability condition for the vertical integration.
 =#
 
 """
-    compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing, N2_profile=nothing) -> sigma
+    compute_sigma(f, G, nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing, N2_profile=nothing) -> sigma
 
 Compute the sigma constraint for normal YBJ A recovery.
 
@@ -220,14 +219,14 @@ where:
 - kh² = kₓ² + kᵧ²
 
 # Arguments
-- `par::QGParams`: Model parameters
+- `f`: Coriolis frequency
 - `G::Grid`: Grid with wavenumbers
 - `nBRk, nBIk`: Real/imaginary parts of advection forcing
 - `rBRk, rBIk`: Real/imaginary parts of refraction forcing
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `N2_profile`: Optional N²(z) profile for consistent stratification physics.
-  If not provided, uses N2_ut(par, G) based on par.stratification.
+  If not provided, uses a unit profile.
 
 # Returns
 2D complex array sigma(nx_local, ny_local) with the constraint values.
@@ -239,20 +238,20 @@ Matches `compute_sigma` in derivatives.f90.
 In MPI mode with 2D decomposition, this requires z to be fully local.
 Transpose operations are handled internally if needed.
 """
-function compute_sigma(par::QGParams, G::Grid,
+function compute_sigma(f::Real, G::Grid,
                        nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(nBRk, G)
 
     if need_transpose
-        return _compute_sigma_2d(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
+        return _compute_sigma_2d(f, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
     else
-        return _compute_sigma_direct(par, G, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
+        return _compute_sigma_direct(f, G, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
     end
 end
 
 # Direct computation when z is fully local
-function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
+function _compute_sigma_direct(f, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -285,16 +284,16 @@ function _compute_sigma_direct(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, L
     end
 
     # Scale by f/N² (inverse of dispersion coefficient factor)
-    # Use provided N2_profile if available, otherwise compute from params
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
+    # Use the supplied model-owned N² profile, with a unit fallback for direct use.
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
     N²_mean = sum(N²) / nz
-    σ .*= (par.f₀ / N²_mean)
+    σ .*= (f / N²_mean)
 
     return σ
 end
 
 # 2D decomposition version with transposes
-function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
+function _compute_sigma_2d(f, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -337,10 +336,10 @@ function _compute_sigma_2d(par::QGParams, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask
     end
 
     # Scale by f/N² (inverse of dispersion coefficient factor)
-    # Use provided N2_profile if available, otherwise compute from params
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
+    # Use the supplied model-owned N² profile, with a unit fallback for direct use.
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
     N²_mean = sum(N²) / nz
-    σ .*= (par.f₀ / N²_mean)
+    σ .*= (f / N²_mean)
 
     return σ
 end
@@ -355,7 +354,7 @@ integration (as opposed to YBJ+ which uses tridiagonal inversion).
 =#
 
 """
-    compute_A!(A, C, BRk, BIk, sigma, par, G; Lmask=nothing, workspace=nothing, N2_profile=nothing)
+    compute_A!(A, C, BRk, BIk, sigma, G; Lmask=nothing, workspace=nothing, N2_profile=nothing)
 
 Recover wave amplitude A from envelope B using normal YBJ vertical integration.
 
@@ -399,12 +398,11 @@ C[nz] = 0                      # Neumann BC at top
 - `C::Array{Complex,3}`: Output vertical derivative A_z (modified in-place)
 - `BRk, BIk`: Real/imaginary parts of wave envelope B
 - `sigma::Array{Complex,2}`: Sigma constraint from compute_sigma
-- `par::QGParams`: Model parameters
 - `G::Grid`: Grid structure
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `N2_profile`: Optional N²(z) profile for variable stratification. If not provided,
-  uses `N2_ut(par, G)`.
+  uses a unit profile.
 
 # Returns
 Tuple (A, C) with recovered amplitude and its vertical derivative.
@@ -418,24 +416,24 @@ which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 """
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
                     BRk::AbstractArray{<:Complex,3}, BIk::AbstractArray{<:Complex,3},
-                    sigma::AbstractArray{<:Complex,2}, par::QGParams, G::Grid;
+                    sigma::AbstractArray{<:Complex,2}, G::Grid;
                     Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(BRk, G)
 
     if need_transpose
-        _compute_A_2d!(A, C, BRk, BIk, sigma, par, G, Lmask, workspace, N2_profile)
+        _compute_A_2d!(A, C, BRk, BIk, sigma, G, Lmask, workspace, N2_profile)
     else
-        _compute_A_direct!(A, C, BRk, BIk, sigma, par, G, Lmask, N2_profile)
+        _compute_A_direct!(A, C, BRk, BIk, sigma, G, Lmask, N2_profile)
     end
     return A, C
 end
 
 # Direct computation when z is fully local
-function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
+function _compute_A_direct!(A, C, BRk, BIk, σ, G, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
 
     A_arr = parent(A)
@@ -486,10 +484,10 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, par, G, Lmask, N2_profile)
 end
 
 # 2D decomposition version with transposes
-function _compute_A_2d!(A, C, BRk, BIk, σ, par, G, Lmask, workspace, N2_profile)
+function _compute_A_2d!(A, C, BRk, BIk, σ, G, Lmask, workspace, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : N2_ut(par, G)
+    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
 
     # Transpose inputs to z-pencil

@@ -298,3 +298,32 @@ function Operators.compute_wave_velocities!(model::QGYBJModel;
         N2_profile=context.N2, compute_w, include_wave_velocity)
     return model
 end
+
+"""Advance `model` by one model-owned exponential Runge-Kutta step."""
+function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
+    context = _operator_context(model)
+    timestepper.workspace === nothing &&
+        (timestepper.workspace = ExponentialRungeKutta2Workspace(
+            model.fields, context.plans; G=context.grid))
+    timestep_workspace = timestepper.workspace
+    timestep_workspace isa ExponentialRungeKutta2Workspace ||
+        throw(ArgumentError("timestepper workspace has an incompatible type"))
+
+    options = ETDModelOptions(model.physics, model.numerics)
+    next_fields = timestep_workspace.next
+    _advance_etdrk2!(next_fields, model.fields, context.grid, options,
+        context.plans;
+        Δt=timestepper.Δt,
+        a=context.a,
+        dealias_mask=context.mask,
+        workspace=context.workspace,
+        N2_profile=context.N2,
+        rho_u=context.rho_u,
+        rho_s=context.rho_s,
+        timestep_workspace=timestep_workspace)
+
+    previous_fields = model.fields
+    model.fields = next_fields
+    timestep_workspace.next = previous_fields
+    return model
+end

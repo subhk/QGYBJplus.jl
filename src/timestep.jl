@@ -18,6 +18,57 @@ are evaluated with cancellation-safe series near zero.
 ================================================================================
 =#
 
+"""Typed physical and numerical choices consumed by the ETD-RK2 kernels."""
+struct ETDModelOptions{F, B, W, D, N, P, C, T}
+    f::T
+    flow::F
+    feedback::B
+    formulation::W
+    dissipation::D
+    dynamics::N
+    dispersion::P
+    closure::C
+    vertical_diffusivity::T
+end
+
+function ETDModelOptions(physics, numerics)
+    f = float(physics.coriolis.f)
+    return ETDModelOptions(
+        f,
+        physics.flow,
+        physics.feedback,
+        physics.formulation,
+        numerics.dissipation,
+        numerics.dynamics,
+        numerics.dispersion,
+        numerics.closure,
+        typeof(f)(numerics.vertical_diffusion.coefficient),
+    )
+end
+
+_fixed_flow(options::ETDModelOptions) = options.flow isa FixedFlow
+_ybj_plus(options::ETDModelOptions) =
+    options.formulation isa YBJPlus || options.formulation isa PassiveWave
+_passive_wave(options::ETDModelOptions) = options.formulation isa PassiveWave
+_inviscid(options::ETDModelOptions) = options.dissipation isa Inviscid
+_linear(options::ETDModelOptions) = options.dynamics isa LinearDynamics
+_no_dispersion(options::ETDModelOptions) = options.dispersion isa NoDispersion
+_wave_feedback_enabled(options::ETDModelOptions) =
+    !_fixed_flow(options) && options.feedback isa WaveMeanFeedback
+
+"""Second-order exponential Runge-Kutta timestepper."""
+mutable struct ExponentialRungeKutta2{T}
+    Δt::T
+    workspace::Any
+end
+
+function ExponentialRungeKutta2(; Δt::Real)
+    value = float(Δt)
+    isfinite(value) || throw(ArgumentError("Δt must be finite"))
+    value > 0 || throw(ArgumentError("Δt must be positive"))
+    return ExponentialRungeKutta2{typeof(value)}(value, nothing)
+end
+
 """Split the complex wave envelope into real-valued spectral components."""
 function split_B_to_real_imag!(BRk, BIk, B)
     B_arr = parent(B)
@@ -44,26 +95,27 @@ function combine_real_imag_to_B!(B, BRk, BIk)
 end
 
 """
-    replace_q_with_wave_feedback_rhs!(S, G, par, plans, L; kwargs...)
+    replace_q_with_wave_feedback_rhs!(S, G, options, plans, L; kwargs...)
 
 Temporarily replace prognostic PV by the inversion right-hand side
 `q_effective = q - q_wave`. The returned copy must be restored after the
 streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
-function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::Grid, par::QGParams, plans, L;
+function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::Grid,
+                                           options::ETDModelOptions, plans, L;
                                            BRk=nothing, BIk=nothing,
                                            q_base=nothing, qwk=nothing)
     q_base = q_base === nothing ? copy(S.q) : q_base
     parent(q_base) .= parent(S.q)
 
     qwk = qwk === nothing ? similar(S.q) : qwk
-    if par.ybj_plus
-        compute_qw_complex!(qwk, S.B, par, G, plans; Lmask=L)
+    if _ybj_plus(options)
+        compute_qw_complex!(qwk, S.B, G, plans; Lmask=L)
     else
         BRk = BRk === nothing ? similar(S.B) : BRk
         BIk = BIk === nothing ? similar(S.B) : BIk
         split_B_to_real_imag!(BRk, BIk, S.B)
-        compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+        compute_qw!(qwk, BRk, BIk, G, plans; Lmask=L)
     end
 
     q_arr = parent(S.q)
@@ -79,17 +131,15 @@ end
 
 restore_prognostic_q!(S::ModelFields, q_base) = (parent(S.q) .= parent(q_base); S)
 
-_wave_feedback_enabled(par::QGParams) =
-    !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
-
 """
-    ExpRK2Workspace(state)
+    ExponentialRungeKutta2Workspace(fields)
 
 Reusable stage and tendency storage for [`exp_rk2_step!`](@ref). Allocate once
 per simulation to avoid recreating the Runge-Kutta state and spectral tendency
 arrays on every step.
 """
-struct ExpRK2Workspace{S,A}
+mutable struct ExponentialRungeKutta2Workspace{S,A}
+    next::S
     stage::S
     rhsq0::A
     rhsB0::A
@@ -109,8 +159,9 @@ struct ExpRK2Workspace{S,A}
     qwk::A
 end
 
-function ExpRK2Workspace(S::ModelFields, plans=nothing; G=nothing)
-    return ExpRK2Workspace(
+function ExponentialRungeKutta2Workspace(S::ModelFields, plans=nothing; G=nothing)
+    return ExponentialRungeKutta2Workspace(
+        copy_fields(S),
         copy_fields(S),
         similar(S.q), similar(S.B), similar(S.q), similar(S.B),
         similar(S.q), similar(S.q), similar(S.B), similar(S.B),
@@ -135,15 +186,17 @@ function _etd_coefficients(x, h)
     return E, hphi1, hphi2
 end
 
-function _diagnose_flow!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
+function _diagnose_flow!(S::ModelFields, G::Grid,
+                         options::ETDModelOptions, plans, a, L;
                          workspace=nothing, N2_profile=nothing,
+                         rho_u=nothing, rho_s=nothing,
                          timestep_workspace=nothing, compute_w=false,
                          use_wave_feedback=true)
-    if !par.fixed_flow
+    if !_fixed_flow(options)
         q_base = nothing
-        if use_wave_feedback && _wave_feedback_enabled(par)
+        if use_wave_feedback && _wave_feedback_enabled(options)
             q_base = replace_q_with_wave_feedback_rhs!(
-                S, G, par, plans, L;
+                S, G, options, plans, L;
                 BRk=timestep_workspace === nothing ? nothing : timestep_workspace.BRk,
                 BIk=timestep_workspace === nothing ? nothing : timestep_workspace.BIk,
                 q_base=timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
@@ -151,13 +204,13 @@ function _diagnose_flow!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
             )
         end
 
-        invert_q_to_psi!(S, G; a,
-            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
+        invert_q_to_psi!(S, G; a, rho_u, rho_s, workspace)
         q_base === nothing || restore_prognostic_q!(S, q_base)
     end
 
-    compute_velocities!(S, G; plans, f=par.f₀, N2=par.N², compute_w,
-        N2_profile, rho_u=rho_ut(par, G), rho_s=rho_st(par, G),
+    N2 = N2_profile === nothing ? 1.0 : first(N2_profile)
+    compute_velocities!(S, G; plans, f=options.f, N2, compute_w,
+        N2_profile, rho_u, rho_s,
         workspace, dealias_mask=L)
     return S
 end
@@ -182,13 +235,15 @@ function _etdrk2_arrays(S::ModelFields, timestep_workspace)
 end
 
 function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
-                              par::QGParams, plans;
+                              options::ETDModelOptions, plans;
                               a, dealias_mask=nothing, workspace=nothing,
-                              N2_profile=nothing, timestep_workspace=nothing)
+                              N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+                              timestep_workspace=nothing)
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
-    par.ybj_plus || sumB!(S.B, G; Lmask=L, workspace=workspace)
-    _diagnose_flow!(S, G, par, plans, a, L;
+    _ybj_plus(options) || sumB!(S.B, G; Lmask=L, workspace=workspace)
+    _diagnose_flow!(S, G, options, plans, a, L;
                     workspace=workspace, N2_profile=N2_profile,
+                    rho_u=rho_u, rho_s=rho_s,
                     timestep_workspace=timestep_workspace,
                     compute_w=false, use_wave_feedback=true)
 
@@ -199,13 +254,12 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
     rBRk, rBIk = arrays.rBRk, arrays.rBIk
     BRk, BIk = arrays.BRk, arrays.BIk
 
-    if par.ybj_plus
-        if par.passive_scalar || par.no_dispersion
+    if _ybj_plus(options)
+        if _passive_wave(options) || _no_dispersion(options)
             fill!(parent(S.A), zero(eltype(parent(S.A))))
             fill!(parent(S.C), zero(eltype(parent(S.C))))
         else
-            invert_B_to_A!(S, G, a;
-                rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
+            invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
         end
 
         convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
@@ -217,31 +271,32 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
                      G, plans; Lmask=L)
         refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
 
-        if par.passive_scalar || par.no_dispersion
+        if _passive_wave(options) || _no_dispersion(options)
             fill!(parent(S.A), zero(eltype(parent(S.A))))
             fill!(parent(S.C), zero(eltype(parent(S.C))))
         else
-            sigma = compute_sigma(par, G, nBRk, nBIk, rBRk, rBIk;
+            sigma = compute_sigma(options.f, G, nBRk, nBIk, rBRk, rBIk;
                                   Lmask=L, N2_profile=N2_profile)
-            compute_A!(S.A, S.C, BRk, BIk, sigma, par, G;
+            compute_A!(S.A, S.C, BRk, BIk, sigma, G;
                        Lmask=L, N2_profile=N2_profile)
         end
     end
 
-    dissipation_q_nv!(dqk, S.q, par, G; workspace=workspace)
+    dissipation_q_nv!(dqk, S.q, options.vertical_diffusivity, G;
+        workspace=workspace)
 
-    par.inviscid && fill!(parent(dqk), zero(eltype(parent(dqk))))
-    if par.linear
+    _inviscid(options) && fill!(parent(dqk), zero(eltype(parent(dqk))))
+    if _linear(options)
         fill!(parent(nqk), zero(eltype(parent(nqk))))
-        if par.ybj_plus
+        if _ybj_plus(options)
             fill!(parent(nBk), zero(eltype(parent(nBk))))
         else
             fill!(parent(nBRk), zero(eltype(parent(nBRk))))
             fill!(parent(nBIk), zero(eltype(parent(nBIk))))
         end
     end
-    if par.passive_scalar
-        if par.ybj_plus
+    if _passive_wave(options)
+        if _ybj_plus(options)
             fill!(parent(rBk), zero(eltype(parent(rBk))))
         else
             fill!(parent(rBRk), zero(eltype(parent(rBRk))))
@@ -254,13 +309,13 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
     nqk_arr = parent(nqk)
     dqk_arr = parent(dqk)
     A_arr = parent(S.A)
-    alpha_disp = par.f₀ / 2
+    alpha_disp = options.f / 2
 
-    if par.ybj_plus
+    if _ybj_plus(options)
         nBk_arr = parent(nBk)
         rBk_arr = parent(rBk)
         @dealiased_wavenumber_loop S.q G L begin
-            rhsq_arr[k, i, j] = par.fixed_flow ? zero(eltype(rhsq_arr)) :
+            rhsq_arr[k, i, j] = _fixed_flow(options) ? zero(eltype(rhsq_arr)) :
                                     -nqk_arr[k, i, j] + dqk_arr[k, i, j]
             rhsB_arr[k, i, j] = -nBk_arr[k, i, j] +
                                  im * alpha_disp * kₕ² * A_arr[k, i, j] -
@@ -273,7 +328,7 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
         nBRk_arr, nBIk_arr = parent(nBRk), parent(nBIk)
         rBRk_arr, rBIk_arr = parent(rBRk), parent(rBIk)
         @dealiased_wavenumber_loop S.q G L begin
-            rhsq_arr[k, i, j] = par.fixed_flow ? zero(eltype(rhsq_arr)) :
+            rhsq_arr[k, i, j] = _fixed_flow(options) ? zero(eltype(rhsq_arr)) :
                                     -nqk_arr[k, i, j] + dqk_arr[k, i, j]
             rhsBR = -real(nBRk_arr[k, i, j]) -
                     alpha_disp * kₕ² * imag(A_arr[k, i, j]) -
@@ -291,25 +346,27 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
     return rhsq, rhsB
 end
 
-function _finalize_etdrk2_state!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
+function _finalize_etdrk2_state!(S::ModelFields, G::Grid,
+                                 options::ETDModelOptions, plans, a, L;
                                  workspace=nothing, N2_profile=nothing,
+                                 rho_u=nothing, rho_s=nothing,
                                  timestep_workspace=nothing)
-    par.ybj_plus || sumB!(S.B, G; Lmask=L, workspace=workspace)
-    _diagnose_flow!(S, G, par, plans, a, L;
+    _ybj_plus(options) || sumB!(S.B, G; Lmask=L, workspace=workspace)
+    _diagnose_flow!(S, G, options, plans, a, L;
                     workspace=workspace, N2_profile=N2_profile,
+                    rho_u=rho_u, rho_s=rho_s,
                     timestep_workspace=timestep_workspace,
                     compute_w=true, use_wave_feedback=true)
 
-    if par.passive_scalar || par.no_dispersion
+    if _passive_wave(options) || _no_dispersion(options)
         fill!(parent(S.A), zero(eltype(parent(S.A))))
         fill!(parent(S.C), zero(eltype(parent(S.C))))
-    elseif par.ybj_plus
-        invert_B_to_A!(S, G, a;
-            rho_u=rho_ut(par, G), rho_s=rho_st(par, G), workspace)
+    elseif _ybj_plus(options)
+        invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
     else
         arrays = _etdrk2_arrays(S, timestep_workspace)
         split_B_to_real_imag!(arrays.BRk, arrays.BIk, S.B)
-        if par.linear
+        if _linear(options)
             fill!(parent(arrays.nBRk), zero(eltype(parent(arrays.nBRk))))
             fill!(parent(arrays.nBIk), zero(eltype(parent(arrays.nBIk))))
         else
@@ -320,26 +377,22 @@ function _finalize_etdrk2_state!(S::ModelFields, G::Grid, par::QGParams, plans, 
         refraction_waqg!(arrays.rBRk, arrays.rBIk,
                          arrays.BRk, arrays.BIk, S.psi,
                          G, plans; Lmask=L)
-        sigma = compute_sigma(par, G, arrays.nBRk, arrays.nBIk,
+        sigma = compute_sigma(options.f, G, arrays.nBRk, arrays.nBIk,
                               arrays.rBRk, arrays.rBIk;
                               Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, arrays.BRk, arrays.BIk, sigma, par, G;
+        compute_A!(S.A, S.C, arrays.BRk, arrays.BIk, sigma, G;
                    Lmask=L, N2_profile=N2_profile)
     end
     return S
 end
 
-"""
-    exp_rk2_step!(Snp1, Sn, G, par, plans; a, kwargs...)
-
-Advance `Sn` by one second-order exponential Runge-Kutta step and write the
-result into `Snp1`. Horizontal hyperdiffusion is handled exactly through ETD
-phi functions. The method supports both YBJ+ and normal-YBJ formulations.
-"""
-function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParams, plans;
-                       a, dealias_mask=nothing, workspace=nothing,
-                       N2_profile=nothing, particle_tracker=nothing,
-                       current_time=nothing, timestep_workspace=nothing)
+"""Internal ETD-RK2 kernel over explicit model components."""
+function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::Grid,
+                          options::ETDModelOptions, plans;
+                          Δt::Real, a, dealias_mask=nothing, workspace=nothing,
+                          N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+                          particle_tracker=nothing, particle_context=nothing,
+                          current_time=nothing, timestep_workspace=nothing)
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
 
     if timestep_workspace === nothing
@@ -352,9 +405,9 @@ function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParam
         Sstage = timestep_workspace.stage
     end
 
-    _compute_etdrk2_rhs!(rhsq0, rhsB0, Sn, G, par, plans;
+    _compute_etdrk2_rhs!(rhsq0, rhsB0, Sn, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
-                         N2_profile=N2_profile,
+                         N2_profile=N2_profile, rho_u=rho_u, rho_s=rho_s,
                          timestep_workspace=timestep_workspace)
 
     qn_arr, Bn_arr = parent(Sn.q), parent(Sn.B)
@@ -362,12 +415,14 @@ function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParam
     rhsq0_arr, rhsB0_arr = parent(rhsq0), parent(rhsB0)
 
     @dealiased_wavenumber_loop Sn.q G L begin
-        lambda_q = int_factor(kₓ, kᵧ, par; waves=false)
-        lambda_B = int_factor(kₓ, kᵧ, par; waves=true)
-        Eq, hphi1q, _ = _etd_coefficients(lambda_q, par.dt)
-        EB, hphi1B, _ = _etd_coefficients(lambda_B, par.dt)
+        lambda_q = int_factor(kₓ, kᵧ, Δt, options.closure;
+            waves=false, inviscid=_inviscid(options))
+        lambda_B = int_factor(kₓ, kᵧ, Δt, options.closure;
+            waves=true, inviscid=_inviscid(options))
+        Eq, hphi1q, _ = _etd_coefficients(lambda_q, Δt)
+        EB, hphi1B, _ = _etd_coefficients(lambda_B, Δt)
 
-        qstage_arr[k, i, j] = par.fixed_flow ? qn_arr[k, i, j] :
+        qstage_arr[k, i, j] = _fixed_flow(options) ? qn_arr[k, i, j] :
                                   Eq * qn_arr[k, i, j] + hphi1q * rhsq0_arr[k, i, j]
         Bstage_arr[k, i, j] = EB * Bn_arr[k, i, j] + hphi1B * rhsB0_arr[k, i, j]
     end begin
@@ -375,21 +430,23 @@ function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParam
         Bstage_arr[k, i, j] = 0
     end
 
-    _compute_etdrk2_rhs!(rhsq1, rhsB1, Sstage, G, par, plans;
+    _compute_etdrk2_rhs!(rhsq1, rhsB1, Sstage, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
-                         N2_profile=N2_profile,
+                         N2_profile=N2_profile, rho_u=rho_u, rho_s=rho_s,
                          timestep_workspace=timestep_workspace)
 
     qnp1_arr, Bnp1_arr = parent(Snp1.q), parent(Snp1.B)
     rhsq1_arr, rhsB1_arr = parent(rhsq1), parent(rhsB1)
 
     @dealiased_wavenumber_loop Sn.q G L begin
-        lambda_q = int_factor(kₓ, kᵧ, par; waves=false)
-        lambda_B = int_factor(kₓ, kᵧ, par; waves=true)
-        Eq, hphi1q, hphi2q = _etd_coefficients(lambda_q, par.dt)
-        EB, hphi1B, hphi2B = _etd_coefficients(lambda_B, par.dt)
+        lambda_q = int_factor(kₓ, kᵧ, Δt, options.closure;
+            waves=false, inviscid=_inviscid(options))
+        lambda_B = int_factor(kₓ, kᵧ, Δt, options.closure;
+            waves=true, inviscid=_inviscid(options))
+        Eq, hphi1q, hphi2q = _etd_coefficients(lambda_q, Δt)
+        EB, hphi1B, hphi2B = _etd_coefficients(lambda_B, Δt)
 
-        qnp1_arr[k, i, j] = par.fixed_flow ? qn_arr[k, i, j] :
+        qnp1_arr[k, i, j] = _fixed_flow(options) ? qn_arr[k, i, j] :
                                 Eq * qn_arr[k, i, j] +
                                 hphi1q * rhsq0_arr[k, i, j] +
                                 hphi2q * (rhsq1_arr[k, i, j] - rhsq0_arr[k, i, j])
@@ -401,13 +458,53 @@ function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParam
         Bnp1_arr[k, i, j] = 0
     end
 
-    _finalize_etdrk2_state!(Snp1, G, par, plans, a, L;
+    _finalize_etdrk2_state!(Snp1, G, options, plans, a, L;
                             workspace=workspace, N2_profile=N2_profile,
+                            rho_u=rho_u, rho_s=rho_s,
                             timestep_workspace=timestep_workspace)
 
     if particle_tracker !== nothing
-        advect_particles!(particle_tracker, Snp1, G, par.dt, current_time;
-                          params=par, N2_profile=N2_profile)
+        advect_particles!(particle_tracker, Snp1, G, Δt, current_time;
+                          params=particle_context, N2_profile=N2_profile)
     end
     return Snp1
+end
+
+function _legacy_etd_options(par)
+    feedback = par.no_feedback ? NoFeedback() :
+               par.no_wave_feedback ? NoWaveFeedback() : WaveMeanFeedback()
+    formulation = par.passive_scalar ? PassiveWave() :
+                  par.ybj_plus ? YBJPlus() : YBJ()
+    closure = HorizontalHyperdiffusivity(
+        flow=par.νₕ₁,
+        flow2=par.νₕ₂,
+        flow_laplacian_order=par.ilap1,
+        flow_laplacian_order2=par.ilap2,
+        waves=par.νₕ₁ʷ,
+        waves2=par.νₕ₂ʷ,
+        wave_laplacian_order=par.ilap1w,
+        wave_laplacian_order2=par.ilap2w,
+    )
+    return ETDModelOptions(
+        float(par.f₀),
+        par.fixed_flow ? FixedFlow() : EvolvingFlow(),
+        feedback,
+        formulation,
+        par.inviscid ? Inviscid() : Dissipative(),
+        par.linear ? LinearDynamics() : NonlinearDynamics(),
+        par.no_dispersion ? NoDispersion() : Dispersive(),
+        closure,
+        float(par.νz),
+    )
+end
+
+"""Temporary legacy boundary; new code advances a model with [`step!`](@ref)."""
+function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par, plans;
+    a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
+    particle_tracker=nothing, current_time=nothing, timestep_workspace=nothing)
+    return _advance_etdrk2!(Snp1, Sn, G, _legacy_etd_options(par), plans;
+        Δt=par.dt, a, dealias_mask, workspace, N2_profile,
+        rho_u=rho_ut(par, G), rho_s=rho_st(par, G),
+        particle_tracker, particle_context=par, current_time,
+        timestep_workspace)
 end

@@ -8,7 +8,7 @@ with the configuration system, including time stepping with output management.
 using Printf
 using ..QGYBJplus: QGParams, Grid, ModelFields, setup_model, default_params
 using ..QGYBJplus: plan_transforms!, init_grid, allocate_fields, fft_backward!
-using ..QGYBJplus: exp_rk2_step!, ExpRK2Workspace
+using ..QGYBJplus: exp_rk2_step!, ExponentialRungeKutta2Workspace
 using ..QGYBJplus: invert_q_to_psi!, invert_B_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: transpose_to_z_pencil!, local_to_global_z, allocate_z_pencil
@@ -289,7 +289,7 @@ function run_simulation!(sim::QGYBJSimulation{T}; progress_callback=nothing) whe
     Sn = sim.state
     Snp1 = sim.state_next
     mpi_workspace = init_mpi_workspace(sim.grid, sim.parallel_config; T=T)
-    timestep_workspace = ExpRK2Workspace(Sn, sim.plans; G=sim.grid)
+    timestep_workspace = ExponentialRungeKutta2Workspace(Sn, sim.plans; G=sim.grid)
 
     @info "Starting ETD-RK2 time integration loop"
 
@@ -1048,7 +1048,7 @@ output_config = OutputConfig(
 S_final = run_simulation!(S, G, par, plans; output_config=output_config)
 ```
 
-See also: `OutputConfig`, `exp_rk2_step!`, `ExpRK2Workspace`
+See also: `OutputConfig`, `exp_rk2_step!`, `ExponentialRungeKutta2Workspace`
 """
 function run_simulation!(S::ModelFields, G::Grid, par::QGParams, plans;
                          output_config::Union{OutputConfig,Nothing}=nothing,
@@ -1226,7 +1226,7 @@ function run_simulation!(S::ModelFields, G::Grid, par::QGParams, plans;
 
     Sn = copy_fields(S)
     Snp1 = copy_fields(S)
-    timestep_workspace = ExpRK2Workspace(Sn, plans; G=G)
+    timestep_workspace = ExponentialRungeKutta2Workspace(Sn, plans; G=G)
 
     for step in 1:nt
         exp_rk2_step!(Snp1, Sn, G, par, plans;

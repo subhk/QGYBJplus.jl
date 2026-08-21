@@ -18,7 +18,7 @@ using Test
 using FFTW
 using MPI
 using QGYBJplus
-using QGYBJplus: setup_model, copy_fields, exp_rk2_step!, ExpRK2Workspace,
+using QGYBJplus: setup_model, copy_fields, exp_rk2_step!, ExponentialRungeKutta2Workspace,
                  scatter_from_root
 
 const TEST_Lx = 2pi
@@ -34,7 +34,7 @@ function step_n!(initial, G, par, plans, a, L, nsteps;
 
     Sn = copy_fields(initial)
     Snp1 = copy_fields(Sn)
-    timestep_workspace = reuse_timestep_workspace ? ExpRK2Workspace(Sn, plans; G=G) : nothing
+    timestep_workspace = reuse_timestep_workspace ? ExponentialRungeKutta2Workspace(Sn, plans; G=G) : nothing
     for _ in 1:nsteps
         exp_rk2_step!(Snp1, Sn, G, par, plans;
                       a=a, dealias_mask=L, workspace=workspace,

@@ -7,6 +7,7 @@ include("test_model_fields.jl")
 include("test_core_architecture.jl")
 include("test_model_ownership.jl")
 include("test_model_operators.jl")
+include("test_model_etdrk2.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -103,7 +104,7 @@ end
     end
 
     dqk = similar(qok)
-    dissipation_q_nv!(dqk, qok, par, G)
+    dissipation_q_nv!(dqk, qok, par.νz, G)
 
     k2 = (pi / TEST_Lz)^2
     for k in 2:(par.nz - 1)
@@ -240,7 +241,7 @@ end
     S.B[3, 2, 2] = 1.0 + 0.2im
 
     Snp1 = copy_fields(S)
-    timestep_workspace = ExpRK2Workspace(S, plans; G=G)
+    timestep_workspace = ExponentialRungeKutta2Workspace(S, plans; G=G)
     exp_rk2_step!(Snp1, S, G, par, plans;
                   a=a, dealias_mask=L,
                   timestep_workspace=timestep_workspace)
@@ -279,7 +280,9 @@ end
     G, S, plans, a = setup_model(par)
     S.B[2, 2, 1] = 1.2 - 0.7im
     initial_mode = S.B[2, 2, 1]
-    damping = exp(-int_factor(G.kx[2], G.ky[1], par; waves=true))
+    options = QGYBJplus._legacy_etd_options(par)
+    damping = exp(-int_factor(G.kx[2], G.ky[1], par.dt, options.closure;
+        waves=true, inviscid=options.dissipation isa Inviscid))
 
     Snp1 = copy_fields(S)
     exp_rk2_step!(Snp1, S, G, par, plans;
@@ -302,8 +305,9 @@ end
 
     q_original = copy(parent(S.q))
     rhsq, rhsB = similar(S.q), similar(S.B)
-    QGYBJplus._compute_etdrk2_rhs!(rhsq, rhsB, S, G, par, plans;
-                                   a=a, dealias_mask=L)
+    options = QGYBJplus._legacy_etd_options(par)
+    QGYBJplus._compute_etdrk2_rhs!(rhsq, rhsB, S, G, options, plans;
+        a=a, dealias_mask=L, N2_profile=fill(par.N², G.nz))
 
     @test parent(S.q) ≈ q_original
     @test all(isfinite, parent(S.psi))
@@ -400,13 +404,17 @@ end
     if isdefined(QGYBJplus.Nonlinear, :int_factor)
         kx, ky = 1.0, 1.0
         dt = par.dt
-        int_f = QGYBJplus.Nonlinear.int_factor(kx, ky, par; waves=false)
+        options = QGYBJplus._legacy_etd_options(par)
+        int_f = QGYBJplus.Nonlinear.int_factor(kx, ky, par.dt, options.closure;
+            waves=false, inviscid=options.dissipation isa Inviscid)
         @test isfinite(int_f)
         @test int_f > 0  # Should be positive dissipation
 
         # Verify isotropic: at (1,1) should have same factor as at (sqrt(2), 0)
-        int_f_diagonal = QGYBJplus.Nonlinear.int_factor(1.0, 1.0, par; waves=false)
-        int_f_axis = QGYBJplus.Nonlinear.int_factor(sqrt(2.0), 0.0, par; waves=false)
+        int_f_diagonal = QGYBJplus.Nonlinear.int_factor(
+            1.0, 1.0, par.dt, options.closure; waves=false)
+        int_f_axis = QGYBJplus.Nonlinear.int_factor(
+            sqrt(2.0), 0.0, par.dt, options.closure; waves=false)
         @test isapprox(int_f_diagonal, int_f_axis, rtol=1e-10)
     end
 end
@@ -579,7 +587,7 @@ end
     fft_forward!(BIk, BI_phys, plans)
 
     qwk = zeros(ComplexF64, G.nz, G.nx, G.ny)
-    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=L)
+    compute_qw!(qwk, BRk, BIk, G, plans; Lmask=L)
 
     qw_phys = zeros(ComplexF64, G.nz, G.nx, G.ny)
     fft_backward!(qw_phys, qwk, plans)

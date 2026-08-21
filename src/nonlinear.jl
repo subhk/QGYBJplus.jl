@@ -45,7 +45,7 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep.
 
 module Nonlinear
 
-using ..QGYBJplus: Grid, local_to_global, z_is_local
+using ..QGYBJplus: Grid, HorizontalHyperdiffusivity, local_to_global, z_is_local
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
@@ -681,7 +681,7 @@ No additional scaling is needed since B already contains the wave amplitude.
 =#
 
 """
-    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
+    compute_qw!(qwk, BRk, BIk, G, plans; Lmask=nothing)
 
 Compute wave feedback on mean flow: qʷ from wave field B.
 
@@ -712,7 +712,6 @@ The final qʷ is real-valued after combining terms.
 # Arguments
 - `qwk`: Output array for q̂ʷ (spectral)
 - `BRk, BIk`: Wave field components (spectral)
-- `par`: QGParams
 - `G::Grid`: Grid struct
 - `plans`: FFT plans
 - `Lmask`: Dealiasing mask
@@ -723,11 +722,11 @@ since we solve dimensional equations where B has actual amplitude.
 
 # Example
 ```julia
-compute_qw!(qw, BR, BI, params, grid, plans; Lmask=L)
+compute_qw!(qw, BR, BI, grid, plans; Lmask=L)
 # qw now contains wave feedback term
 ```
 """
-function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
+function compute_qw!(qʷₖ, BRk, BIk, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -837,11 +836,11 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
 end
 
 """
-    compute_qw_complex!(qʷₖ, Bk, par, G, plans; Lmask=nothing)
+    compute_qw_complex!(qʷₖ, Bk, G, plans; Lmask=nothing)
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 """
-function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
+function compute_qw_complex!(qʷₖ, Bk, G::Grid, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     qʷₖ_arr = parent(qʷₖ)
@@ -936,7 +935,7 @@ with Neumann boundary conditions (∂q/∂z = 0 at top/bottom).
 =#
 
 """
-    dissipation_q_nv!(dqk, qok, par, G; workspace=nothing)
+    dissipation_q_nv!(dqk, qok, vertical_diffusivity, G; workspace=nothing)
 
 Compute vertical diffusion of q with Neumann boundary conditions.
 
@@ -956,7 +955,7 @@ Boundary points (Neumann):
 # Arguments
 - `dqk`: Output array for diffusion term
 - `qok`: Input q field at the current Runge-Kutta stage
-- `par`: QGParams (for nuz coefficient)
+- `vertical_diffusivity`: Scalar vertical diffusivity coefficient
 - `G::Grid`: Grid struct
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 
@@ -967,16 +966,17 @@ so the operation is the same for each (kx, ky) mode.
 # Fortran Correspondence
 This matches `dissipation_q_nv` in derivatives.f90.
 """
-function dissipation_q_nv!(dqk, qok, par, G::Grid; workspace=nothing)
+function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::Grid;
+    workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
     need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(qok, G)
 
     if need_transpose
-        _dissipation_q_nv_2d!(dqk, qok, par, G, workspace)
+        _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G, workspace)
     else
-        _dissipation_q_nv_direct!(dqk, qok, par, G)
+        _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G)
     end
 
     return dqk
@@ -985,7 +985,7 @@ end
 """
 Direct vertical diffusion for serial or 1D decomposition (z fully local).
 """
-function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
+function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::Grid)
     nz = G.nz
 
     # Get underlying arrays
@@ -1005,7 +1005,7 @@ function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     # Vertical grid spacing (safe now since nz >= 2)
     Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
-    νz = par.νz
+    νz = vertical_diffusivity
 
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
@@ -1024,7 +1024,7 @@ end
 """
 2D decomposition vertical diffusion with transposes.
 """
-function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
+function _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G::Grid, workspace)
     nz = G.nz
 
     # Handle nz=1 case: no vertical diffusion possible with single layer
@@ -1051,7 +1051,7 @@ function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
     # Vertical grid spacing (safe now since nz >= 2)
     Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
-    νz = par.νz
+    νz = vertical_diffusivity
 
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
@@ -1089,7 +1089,7 @@ where λ = ν₁kₕ^(2n₁) + ν₂kₕ^(2n₂)
 =#
 
 """
-    int_factor(kx, ky, par; waves=false)
+    int_factor(kx, ky, Δt, closure; waves=false, inviscid=false)
 
 Compute hyperdiffusion integrating factor for given wavenumber.
 
@@ -1108,7 +1108,9 @@ For efficiency, we return just λ×dt (the exponent).
 
 # Arguments
 - `kx, ky`: Horizontal wavenumber components
-- `par`: QGParams (contains ν₁, ν₂, n₁, n₂)
+- `Δt`: Time-step length
+- `closure`: [`HorizontalHyperdiffusivity`](@ref) coefficients and orders
+- `inviscid`: Disable the integrating factor when true
 - `waves::Bool`: If true, use wave hyperdiffusion (nuh1w, ilap1w, etc.)
 
 # Returns
@@ -1119,7 +1121,7 @@ Note: Uses isotropic form `(kx² + ky²)^n` for proper damping of diagonal modes
 # Usage in Time Stepping
 ```julia
 # After computing tendency
-factor = exp(-int_factor(kx, ky, par))
+factor = exp(-int_factor(kx, ky, Δt, closure))
 q_new = factor * q_tendency
 ```
 
@@ -1129,18 +1131,18 @@ This matches the integrating factor computation in the main loop of main_waqg.f9
 # Example
 ```julia
 # Get integrating factor for wavenumber (3, 4)
-lambda_dt = int_factor(3.0, 4.0, params)
+lambda_dt = int_factor(3.0, 4.0, Δt, closure)
 factor = exp(-lambda_dt)  # Multiply solution by this
 ```
 """
-function int_factor(kₓ::Real, kᵧ::Real, par; waves::Bool=false)
+function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
+    closure::HorizontalHyperdiffusivity; waves::Bool=false,
+    inviscid::Bool=false)
     # When inviscid=true, disable ALL dissipation including hyperdiffusion
     # Return 0 so that exp(-0) = 1 (no damping)
-    if hasfield(typeof(par), :inviscid) && par.inviscid
+    if inviscid
         return 0.0
     end
-
-    Δt = par.dt
     # Use isotropic form: ν * (kx² + ky²)^n = ν * kh^{2n}
     # This is the standard (-∇²)^n hyperdiffusion operator.
     # Previous form ν*(|kx|^{2n} + |ky|^{2n}) under-damped diagonal modes.
@@ -1148,13 +1150,13 @@ function int_factor(kₓ::Real, kᵧ::Real, par; waves::Bool=false)
 
     if waves
         # Wave field hyperdiffusion (often smaller or zero)
-        ν₁ʷ = par.νₕ₁ʷ; n₁ʷ = par.ilap1w
-        ν₂ʷ = par.νₕ₂ʷ; n₂ʷ = par.ilap2w
+        ν₁ʷ = closure.waves; n₁ʷ = closure.wave_laplacian_order
+        ν₂ʷ = closure.waves2; n₂ʷ = closure.wave_laplacian_order2
         return Δt * ( ν₁ʷ * kₕ²^n₁ʷ + ν₂ʷ * kₕ²^n₂ʷ )
     else
         # Mean flow hyperdiffusion
-        ν₁ = par.νₕ₁; n₁ = par.ilap1
-        ν₂ = par.νₕ₂; n₂ = par.ilap2
+        ν₁ = closure.flow; n₁ = closure.flow_laplacian_order
+        ν₂ = closure.flow2; n₂ = closure.flow_laplacian_order2
         return Δt * ( ν₁ * kₕ²^n₁ + ν₂ * kₕ²^n₂ )
     end
 end

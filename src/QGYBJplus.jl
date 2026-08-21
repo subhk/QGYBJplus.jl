@@ -126,7 +126,7 @@ The exports are organized by functionality:
 
 3. TIME STEPPING:
    - exp_rk2_step!: Second-order exponential Runge-Kutta integration
-   - ExpRK2Workspace: Reusable Runge-Kutta stage storage
+   - ExponentialRungeKutta2Workspace: Reusable Runge-Kutta stage storage
 
 4. HIGH-LEVEL INTERFACE:
    - QGYBJSimulation, setup_simulation, run_simulation!
@@ -154,7 +154,7 @@ export QGParams, Grid, ModelFields,
        jacobian_spectral!, convol_waqg!, refraction_waqg!, compute_qw!, dissipation_q_nv!, int_factor,
        init_random_psi!, init_analytical_psi!, init_analytical_waves!, init_surface_waves!,
        add_balanced_component!, compute_q_from_psi!, compute_barotropic_q_from_psi!, initialize_from_config,
-        exp_rk2_step!, ExpRK2Workspace,
+        exp_rk2_step!, ExponentialRungeKutta2, ExponentialRungeKutta2Workspace, step!,
         sumB!, compute_sigma, compute_A!,
         omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energy_vavg, slice_horizontal, slice_vertical_xz,
         # Global energy diagnostics (MPI-aware)
