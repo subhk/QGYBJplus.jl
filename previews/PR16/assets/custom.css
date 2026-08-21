@@ -1,0 +1,530 @@
+/* QGYBJ+.jl Custom Documentation Styles */
+/* Ocean-inspired color palette for a wave-eddy simulation package */
+
+:root {
+    /* Primary colors - ocean blues */
+    --primary-color: #0077b6;
+    --primary-dark: #023e8a;
+    --primary-light: #48cae4;
+
+    /* Accent colors */
+    --accent-color: #00b4d8;
+    --accent-warm: #f77f00;
+
+    /* Neutrals */
+    --text-color: #2b2d42;
+    --text-muted: #6c757d;
+    --bg-light: #f8f9fa;
+    --bg-code: #f1f3f5;
+    --border-color: #dee2e6;
+
+    /* Status colors */
+    --success-color: #06d6a0;
+    --warning-color: #ffd166;
+    --danger-color: #ef476f;
+    --info-color: #118ab2;
+}
+
+/* ============================================
+   TYPOGRAPHY
+   ============================================ */
+
+/* Better body text */
+#documenter .docs-main article {
+    font-size: 1.05rem;
+    line-height: 1.7;
+    color: var(--text-color);
+}
+
+/* Headings with accent underline */
+#documenter .docs-main h1 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    color: var(--primary-dark);
+    border-bottom: 3px solid var(--primary-color);
+    padding-bottom: 0.5rem;
+    margin-top: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+#documenter .docs-main h2 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--primary-dark);
+    border-bottom: 2px solid var(--accent-color);
+    padding-bottom: 0.4rem;
+    margin-top: 2.5rem;
+    margin-bottom: 1.2rem;
+}
+
+#documenter .docs-main h3 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--primary-color);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+#documenter .docs-main h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-top: 1.5rem;
+}
+
+/* ============================================
+   SIDEBAR
+   ============================================ */
+
+#documenter .docs-sidebar {
+    background: linear-gradient(180deg, var(--primary-dark) 0%, #034078 100%);
+}
+
+#documenter .docs-sidebar .docs-logo img {
+    max-width: 150px;
+}
+
+#documenter .docs-sidebar .docs-package-name {
+    color: white;
+    font-weight: 700;
+    font-size: 1.3rem;
+}
+
+#documenter .docs-sidebar .docs-package-name .docs-autofit {
+    color: white;
+}
+
+#documenter .docs-sidebar ul.docs-menu li a {
+    color: rgba(255, 255, 255, 0.85);
+    transition: all 0.2s ease;
+}
+
+#documenter .docs-sidebar ul.docs-menu li a:hover {
+    color: white;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+#documenter .docs-sidebar ul.docs-menu li.is-active > a {
+    color: white;
+    background-color: var(--accent-color);
+    font-weight: 600;
+}
+
+#documenter .docs-sidebar ul.docs-menu .tocitem {
+    border-left: 3px solid transparent;
+}
+
+#documenter .docs-sidebar ul.docs-menu li.is-active > .tocitem {
+    border-left-color: white;
+}
+
+/* ============================================
+   CODE BLOCKS
+   ============================================ */
+
+#documenter .docs-main pre {
+    background-color: #1e1e2e;
+    border-radius: 8px;
+    padding: 1.2rem;
+    margin: 1.5rem 0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    border: 1px solid #313244;
+}
+
+#documenter .docs-main pre code {
+    color: #cdd6f4;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+/* Inline code */
+#documenter .docs-main code {
+    background-color: var(--bg-code);
+    color: var(--primary-dark);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+#documenter .docs-main pre code {
+    background-color: transparent;
+    padding: 0;
+}
+
+/* ============================================
+   ADMONITIONS (Note, Warning, Tip boxes)
+   ============================================ */
+
+#documenter .admonition {
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border: none;
+    overflow: hidden;
+}
+
+#documenter .admonition-header {
+    font-weight: 600;
+    padding: 0.8rem 1rem;
+    font-size: 0.95rem;
+}
+
+#documenter .admonition-body {
+    padding: 1rem;
+    background-color: white;
+}
+
+/* Note */
+#documenter .admonition.is-info {
+    border-left: 4px solid var(--info-color);
+}
+#documenter .admonition.is-info .admonition-header {
+    background-color: var(--info-color);
+    color: white;
+}
+
+/* Tip */
+#documenter .admonition.is-success {
+    border-left: 4px solid var(--success-color);
+}
+#documenter .admonition.is-success .admonition-header {
+    background-color: var(--success-color);
+    color: white;
+}
+
+/* Warning */
+#documenter .admonition.is-warning {
+    border-left: 4px solid var(--warning-color);
+}
+#documenter .admonition.is-warning .admonition-header {
+    background-color: var(--warning-color);
+    color: var(--text-color);
+}
+
+/* Danger */
+#documenter .admonition.is-danger {
+    border-left: 4px solid var(--danger-color);
+}
+#documenter .admonition.is-danger .admonition-header {
+    background-color: var(--danger-color);
+    color: white;
+}
+
+/* ============================================
+   TABLES
+   ============================================ */
+
+#documenter .docs-main table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+#documenter .docs-main table thead {
+    background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+}
+
+#documenter .docs-main table th {
+    color: white;
+    font-weight: 600;
+    padding: 1rem;
+    text-align: left;
+    border: none;
+}
+
+#documenter .docs-main table td {
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#documenter .docs-main table tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+#documenter .docs-main table tbody tr:hover {
+    background-color: var(--bg-light);
+}
+
+#documenter .docs-main table tbody tr:nth-child(even) {
+    background-color: #fafbfc;
+}
+
+#documenter .docs-main table tbody tr:nth-child(even):hover {
+    background-color: var(--bg-light);
+}
+
+/* ============================================
+   LINKS
+   ============================================ */
+
+#documenter .docs-main a {
+    color: var(--primary-color);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s ease;
+}
+
+#documenter .docs-main a:hover {
+    color: var(--primary-dark);
+    border-bottom-color: var(--primary-color);
+}
+
+/* ============================================
+   HORIZONTAL RULES
+   ============================================ */
+
+#documenter .docs-main hr {
+    border: none;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
+    margin: 3rem 0;
+}
+
+/* ============================================
+   MATH BLOCKS
+   ============================================ */
+
+#documenter .docs-main .MathJax {
+    font-size: 1.05em;
+}
+
+#documenter .docs-main mjx-container[display="true"] {
+    background-color: var(--bg-light);
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+}
+
+/* ============================================
+   DOCSTRINGS
+   ============================================ */
+
+#documenter .docs-main .docstring {
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    margin: 1.5rem 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+#documenter .docs-main .docstring header {
+    background: linear-gradient(135deg, var(--bg-light) 0%, white 100%);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.8rem 1rem;
+    border-radius: 8px 8px 0 0;
+}
+
+#documenter .docs-main .docstring header code {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--primary-dark);
+    background: transparent;
+}
+
+#documenter .docs-main .docstring article {
+    padding: 1rem;
+}
+
+/* ============================================
+   SEARCH
+   ============================================ */
+
+#documenter .docs-sidebar form.docs-search input {
+    border-radius: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+    padding: 0.5rem 1rem;
+}
+
+#documenter .docs-sidebar form.docs-search input::placeholder {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+#documenter .docs-sidebar form.docs-search input:focus {
+    border-color: var(--accent-color);
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ============================================
+   FOOTER
+   ============================================ */
+
+#documenter .docs-main footer {
+    border-top: 2px solid var(--border-color);
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    color: var(--text-muted);
+}
+
+/* ============================================
+   RESPONSIVE IMPROVEMENTS
+   ============================================ */
+
+@media screen and (max-width: 1024px) {
+    #documenter .docs-main article {
+        padding: 1rem;
+    }
+
+    #documenter .docs-main h1 {
+        font-size: 1.8rem;
+    }
+
+    #documenter .docs-main h2 {
+        font-size: 1.4rem;
+    }
+}
+
+/* ============================================
+   SPECIAL LANDING PAGE STYLES
+   ============================================ */
+
+/* Hero section styling for index page */
+.hero-section {
+    background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary-color) 50%, var(--accent-color) 100%);
+    color: white;
+    padding: 3rem 2rem;
+    border-radius: 12px;
+    margin: -1rem -1rem 2rem -1rem;
+    text-align: center;
+}
+
+.hero-section h1 {
+    color: white !important;
+    border-bottom: none !important;
+    font-size: 2.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+.hero-section p {
+    font-size: 1.2rem;
+    opacity: 0.95;
+    max-width: 700px;
+    margin: 0 auto;
+}
+
+/* Feature cards */
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.feature-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.feature-card h3 {
+    color: var(--primary-color) !important;
+    margin-top: 0 !important;
+    margin-bottom: 0.8rem !important;
+    font-size: 1.2rem !important;
+}
+
+.feature-card p {
+    color: var(--text-muted);
+    margin-bottom: 0;
+    font-size: 0.95rem;
+}
+
+/* Quick start card */
+.quickstart-card {
+    background: linear-gradient(135deg, #1e1e2e 0%, #2a2a3e 100%);
+    border-radius: 12px;
+    padding: 2rem;
+    margin: 2rem 0;
+}
+
+.quickstart-card h3 {
+    color: var(--accent-color) !important;
+    margin-top: 0 !important;
+}
+
+/* Learning path cards */
+.learning-path {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.path-step {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--bg-light);
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    border-left: 4px solid var(--primary-color);
+    transition: border-color 0.2s ease;
+}
+
+.path-step:hover {
+    border-left-color: var(--accent-color);
+}
+
+.path-step .step-number {
+    background: var(--primary-color);
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.path-step .step-content {
+    flex-grow: 1;
+}
+
+.path-step .step-content strong {
+    color: var(--primary-dark);
+}
+
+.path-step .step-time {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Badge styles */
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.badge-blue {
+    background-color: var(--primary-light);
+    color: var(--primary-dark);
+}
+
+.badge-green {
+    background-color: #d3f9d8;
+    color: #087f5b;
+}
+
+.badge-orange {
+    background-color: #fff3bf;
+    color: #e67700;
+}
