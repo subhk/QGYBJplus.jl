@@ -51,50 +51,6 @@ using Printf
 ================================================================================
 =#
 
-"""Schedule output or diagnostics at a time interval measured in seconds."""
-struct TimeInterval{T}
-    interval::T
-end
-
-function TimeInterval(interval::Real)
-    interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
-    value = float(interval)
-    return TimeInterval{typeof(value)}(value)
-end
-
-"""Schedule output or diagnostics every `interval` model iterations."""
-struct IterationInterval
-    interval::Int
-end
-
-function IterationInterval(interval::Integer)
-    interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
-    return IterationInterval(Int(interval))
-end
-
-"""
-    NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves), velocities=false)
-
-Declarative NetCDF output settings for [`Simulation`](@ref). `schedule` may be
-a [`TimeInterval`](@ref) or [`IterationInterval`](@ref).
-"""
-struct NetCDFOutput{S}
-    path::String
-    schedule::S
-    fields::Tuple
-    velocities::Bool
-end
-
-function NetCDFOutput(; path::AbstractString="output", schedule=nothing,
-    fields=(:ψ, :waves), velocities::Bool=false)
-
-    schedule === nothing || schedule isa TimeInterval || schedule isa IterationInterval ||
-        throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
-    isempty(path) && throw(ArgumentError("output path cannot be empty"))
-    output_fields = fields isa Symbol ? (fields,) : Tuple(fields)
-    return NetCDFOutput(String(path), schedule, output_fields, velocities)
-end
-
 mutable struct SimulationRunOptions{T}
     output_dir::String
     save_interval::Union{Nothing, T}
@@ -108,122 +64,6 @@ end
 
 default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
     "output", nothing, 10, true, true, true, false, nothing)
-
-"""
-    RectilinearGrid(; size, extent=nothing, x=nothing, y=nothing, z=nothing,
-                      centered=false)
-
-Describe a regular periodic-horizontal grid. `size` is `(nx, ny, nz)` and
-`extent` is `(Lx, Ly, Lz)`. Alternatively, pass coordinate ranges such as
-`x=(-35e3, 35e3)`, `y=(-35e3, 35e3)`, and `z=(-3e3, 0)`.
-"""
-struct RectilinearGridSpec{T}
-    size::NTuple{3, Int}
-    extent::NTuple{3, T}
-    origin::NTuple{2, T}
-end
-
-function RectilinearGrid(; size::NTuple{3, Int},
-    extent::Union{Nothing, Tuple{<:Real, <:Real, <:Real}}=nothing,
-    x::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
-    y::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
-    z::Union{Nothing, Tuple{<:Real, <:Real}}=nothing,
-    centered::Bool=false)
-
-    all(>(0), size) || throw(ArgumentError("all grid dimensions must be positive"))
-    if extent === nothing
-        x === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or x=(x₁, x₂)"))
-        y === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or y=(y₁, y₂)"))
-        z === nothing && throw(ArgumentError("provide extent=(Lx, Ly, Lz) or z=(z₁, z₂)"))
-        extent = (x[2] - x[1], y[2] - y[1], abs(z[2] - z[1]))
-    end
-
-    extent_values = float.(extent)
-    T = promote_type(map(typeof, extent_values)...)
-    Lx, Ly, Lz = T.(extent_values)
-    all(>(zero(T)), (Lx, Ly, Lz)) || throw(ArgumentError("all grid extents must be positive"))
-
-    _check_extent(range, length, name) = begin
-        range === nothing && return
-        actual = T(abs(range[2] - range[1]))
-        isapprox(actual, length; rtol=10eps(T), atol=10eps(T) * max(length, one(T))) ||
-            throw(ArgumentError("$name range length $actual does not match extent $length"))
-    end
-    _check_extent(x, Lx, "x")
-    _check_extent(y, Ly, "y")
-    _check_extent(z, Lz, "z")
-
-    if centered && (x !== nothing || y !== nothing)
-        throw(ArgumentError("centered=true cannot be combined with explicit x or y ranges"))
-    end
-    x0 = x === nothing ? (centered ? -Lx / 2 : zero(T)) : T(x[1])
-    y0 = y === nothing ? (centered ? -Ly / 2 : zero(T)) : T(y[1])
-    return RectilinearGridSpec{T}(size, (Lx, Ly, Lz), (x0, y0))
-end
-
-"""Constant Coriolis parameter for an f-plane model."""
-struct FPlane{T}
-    f::T
-end
-
-FPlane(; f::Real) = FPlane(f)
-FPlane(f::Real) = FPlane{typeof(float(f))}(float(f))
-
-"""Constant buoyancy frequency squared `N²` in s⁻²."""
-struct ConstantStratification{T}
-    N²::T
-end
-
-ConstantStratification(; N²::Real) = ConstantStratification(N²)
-function ConstantStratification(N²::Real)
-    N² > 0 || throw(ArgumentError("N² must be positive (got $N²)"))
-    return ConstantStratification{typeof(float(N²))}(float(N²))
-end
-
-"""Horizontal hyperdiffusion coefficients for the balanced flow and waves."""
-struct HorizontalHyperdiffusivity{T}
-    flow::T
-    flow2::T
-    flow_laplacian_order::Int
-    flow_laplacian_order2::Int
-    waves::T
-    waves2::T
-    wave_laplacian_order::Int
-    wave_laplacian_order2::Int
-end
-
-function HorizontalHyperdiffusivity(; flow::Real=0.01, flow2::Real=10.0,
-    flow_laplacian_order::Int=2, flow_laplacian_order2::Int=6,
-    waves::Real=0.0, waves2::Real=10.0,
-    wave_laplacian_order::Int=2, wave_laplacian_order2::Int=6)
-
-    coefficients = (flow, flow2, waves, waves2)
-    all(>=(0), coefficients) || throw(ArgumentError("hyperdiffusion coefficients must be non-negative"))
-    orders = (flow_laplacian_order, flow_laplacian_order2,
-              wave_laplacian_order, wave_laplacian_order2)
-    all(>(0), orders) || throw(ArgumentError("Laplacian orders must be positive"))
-    values = float.(coefficients)
-    T = promote_type(map(typeof, values)...)
-    return HorizontalHyperdiffusivity{T}(
-        T(flow), T(flow2), flow_laplacian_order, flow_laplacian_order2,
-        T(waves), T(waves2), wave_laplacian_order, wave_laplacian_order2)
-end
-
-"""Horizontally uniform, surface-confined wave initial condition."""
-struct SurfaceWave{T}
-    amplitude::T
-    scale::T
-    profile::Symbol
-end
-
-function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
-    scale > 0 || throw(ArgumentError("wave scale must be positive (got $scale)"))
-    profile in (:gaussian, :exponential) ||
-        throw(ArgumentError("profile must be :gaussian or :exponential"))
-    values = float.((amplitude, scale))
-    T = promote_type(map(typeof, values)...)
-    return SurfaceWave{T}(T(amplitude), T(scale), profile)
-end
 
 #=
 ================================================================================
@@ -456,7 +296,7 @@ end
 Construct a complete QG-YBJ+ model while hiding MPI decomposition, FFT plans,
 workspaces, and parameter bookkeeping. Time integration is always ETD-RK2.
 """
-function QGYBJModel(; grid::RectilinearGridSpec,
+function QGYBJModel(; grid::RectilinearGrid,
     coriolis=FPlane(f=1e-4),
     stratification=ConstantStratification(N²=1e-5),
     closure::HorizontalHyperdiffusivity=HorizontalHyperdiffusivity(),
@@ -486,10 +326,6 @@ function QGYBJModel(; grid::RectilinearGridSpec,
         νₕ₁ʷ=closure.waves, νₕ₂ʷ=closure.waves2,
         ilap1w=closure.wave_laplacian_order, ilap2w=closure.wave_laplacian_order2,
         topology=topology, parallel_io=parallel_io, verbose=verbose)
-end
-
-function Base.show(io::IO, grid::RectilinearGridSpec)
-    print(io, "RectilinearGrid(size=$(grid.size), extent=$(grid.extent))")
 end
 
 #=

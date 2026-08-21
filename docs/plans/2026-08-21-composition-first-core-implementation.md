@@ -79,8 +79,9 @@ the implementation that makes the complete contract green.
 
 **Step 1: Add failing component and geometry tests**
 
-Test constructor validation, centered/explicit origins, cell-center coordinates,
-wavenumber convention, and typed constructor conversion:
+Test constructor validation, centered/explicit origins, horizontal Fourier
+collocation coordinates, vertical cell-center coordinates, wavenumber
+convention, and typed constructor conversion:
 
 ```julia
 @testset "RectilinearGrid geometry" begin
@@ -89,7 +90,7 @@ wavenumber convention, and typed constructor conversion:
     @test grid.size == (8, 6, 4)
     @test grid.extent == (8.0, 6.0, 2.0)
     @test grid.origin == (-4.0, -3.0)
-    @test grid.x[1] == -3.5
+    @test grid.x[1] == -4.0
     @test grid.z == [-1.75, -1.25, -0.75, -0.25]
     @test grid.kx[1] == 0
     @test_throws ArgumentError RectilinearGrid(size=(0, 8, 4), extent=(1, 1, 1))

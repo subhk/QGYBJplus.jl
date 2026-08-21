@@ -2,6 +2,8 @@ using Test
 using QGYBJplus
 using NCDatasets
 
+include("test_core_components.jl")
+
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
 const TEST_Ly = 500e3  # 500 km

@@ -202,9 +202,13 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        ParticleConfig3D, ParticleDistribution, initialize_particles_3d!,
        UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
        # High-level Simulation API (simplified interface)
-       Simulation, QGYBJModel, RectilinearGrid, RectilinearGridSpec,
-       FPlane, ConstantStratification, HorizontalHyperdiffusivity, SurfaceWave,
-       TimeInterval, IterationInterval, NetCDFOutput,
+       Simulation, QGYBJModel, RectilinearGrid,
+       AbstractCoriolis, FPlane, AbstractStratification, ConstantStratification,
+       AbstractClosure, HorizontalHyperdiffusivity,
+       FlowEvolution, FixedFlow, EvolvingFlow,
+       FeedbackMode, NoFeedback, WaveMeanFeedback, NoWaveFeedback,
+       WaveFormulation, YBJPlus, YBJ, PassiveWave, SurfaceWave,
+       AbstractSchedule, TimeInterval, IterationInterval, NetCDFOutput,
        initialize_simulation, set!, run!, inertial_period,
        set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
@@ -220,6 +224,8 @@ that is "used" back into the main QGYBJplus namespace.
 =#
 
 # Core data structures and parameters
+include("core/components.jl") # Typed physics, numerics, schedules, and output specifications
+include("core/grid.jl")       # RectilinearGrid: immutable global geometry
 include("parameters.jl")    # QGParams: all model parameters
 include("grid.jl")          # Grid: spatial coordinates and wavenumbers
 
