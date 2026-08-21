@@ -1,6 +1,6 @@
 #=
 ================================================================================
-                        grid.jl - Spatial Grid and State
+                        grid.jl - Spatial Grid and ModelFields
 ================================================================================
 
 This file defines the fundamental data structures for the QG-YBJ+ model:
@@ -52,14 +52,14 @@ Diagnostic (computed from prognostic):
 
 PARALLELIZATION:
 ----------------
-The Grid and State structs support both serial and parallel (MPI) execution:
+The Grid and ModelFields structs support both serial and parallel (MPI) execution:
 - Serial: Standard Julia Arrays
 - Parallel: PencilArrays for distributed memory
 
 FORTRAN CORRESPONDENCE:
 ----------------------
 - Grid corresponds to init_arrays in init.f90
-- State corresponds to the field arrays in main_waqg.f90
+- ModelFields corresponds to the field arrays in main_waqg.f90
 
 ================================================================================
 =#
@@ -115,7 +115,7 @@ G = init_grid(par)
 # G.kx[33] = -32 × (2π/Lx) (most negative wavenumber)
 ```
 
-See also: [`init_grid`](@ref), [`State`](@ref)
+See also: [`init_grid`](@ref), [`ModelFields`](@ref)
 """
 Base.@kwdef mutable struct Grid{T, AT}
     #= Grid dimensions and spacings =#
@@ -431,195 +431,3 @@ end
 Check if an array is a PencilArray (parallel) or regular Array (serial).
 """
 is_parallel_array(arr) = !(typeof(parent(arr)) === typeof(arr))
-
-#=
-================================================================================
-                            STATE STRUCTURE
-================================================================================
-=#
-
-"""
-    State{T, RT, CT}
-
-Container for all prognostic and diagnostic fields in the QG-YBJ+ model.
-
-# Type Parameters
-- `T`: Floating point type (Float64)
-- `RT`: Real array type (Array{T,3} or PencilArray{T,3})
-- `CT`: Complex array type (Array{Complex{T},3} or PencilArray{Complex{T},3})
-
-# Prognostic Fields (evolved in time)
-- `q::CT`: QG potential vorticity in spectral space
-- `B::CT`: YBJ+ wave envelope B = L⁺A in spectral space
-
-# Diagnostic Fields (computed from prognostic)
-- `psi::CT`: Streamfunction ψ (from q via elliptic inversion)
-- `A::CT`: Wave amplitude (from B via YBJ+ inversion)
-- `C::CT`: Vertical derivative C = ∂A/∂z (for wave velocities)
-
-# Velocity Fields (real space)
-- `u::RT`: Zonal velocity u = -∂ψ/∂y
-- `v::RT`: Meridional velocity v = ∂ψ/∂x
-- `w::RT`: Vertical velocity (from omega equation or YBJ)
-
-# Array Dimensions
-All arrays have shape (nz, nx, ny).
-- Spectral fields (q, psi, A, B, C): Complex arrays
-- Real-space fields (u, v, w): Real arrays
-
-# Physical Interpretation
-The prognostic variables are:
-1. q: Quasi-geostrophic potential vorticity
-   - Related to ψ by: q = ∇²ψ + (f²/N²)∂²ψ/∂z²
-
-2. B: YBJ+ wave envelope
-   - Related to wave amplitude A by: B = L⁺A
-   - L⁺ is an elliptic operator involving ∂²/∂z² and kh²
-
-# Example
-```julia
-G = init_grid(par)
-S = init_state(G)
-
-# Access fields
-q_spectral = S.q          # Complex (nz, nx, ny)
-u_realspace = S.u         # Real (nz, nx, ny)
-```
-
-See also: [`init_state`](@ref), [`Grid`](@ref)
-"""
-Base.@kwdef mutable struct State{T, RT<:AbstractArray{T,3}, CT<:AbstractArray{Complex{T},3}}
-    #= Prognostic fields (spectral space, complex)
-    These are the variables that are time-stepped =#
-    q::CT           # QG potential vorticity
-    B::CT           # YBJ+ wave envelope (B = L⁺A)
-
-    #= Diagnostic fields (spectral space, complex)
-    These are computed from prognostic fields =#
-    psi::CT         # Streamfunction (from q via inversion)
-    A::CT           # Wave amplitude (from B via YBJ+ inversion)
-    C::CT           # Vertical derivative A_z
-
-    #= Velocity fields (real space, real)
-    Computed from ψ and optionally A =#
-    u::RT           # Zonal velocity: u = -∂ψ/∂y
-    v::RT           # Meridional velocity: v = ∂ψ/∂x
-    w::RT           # Vertical velocity (from omega equation)
-end
-
-"""
-    allocate_field(T, G; complex=false) -> Array
-
-Allocate a 3D field array of size (nz, nx, ny).
-
-Uses PencilArrays when parallel decomposition is available,
-otherwise standard Julia Arrays.
-
-# Arguments
-- `T::Type`: Element type (Float64)
-- `G::Grid`: Grid struct (determines array size and parallel mode)
-- `complex::Bool`: If true, allocate complex array
-
-# Returns
-- Serial mode: `Array{T,3}` or `Array{Complex{T},3}`
-- Parallel mode: `PencilArray{T,3}` or `PencilArray{Complex{T},3}`
-
-# Example
-```julia
-q = allocate_field(Float64, G; complex=true)   # Complex spectral field
-u = allocate_field(Float64, G; complex=false)  # Real velocity field
-```
-"""
-function allocate_field(::Type{T}, G::Grid; complex::Bool=false) where {T}
-    sz = (G.nz, G.nx, G.ny)
-    if G.decomp === nothing
-        # Serial mode: use standard Arrays
-        return complex ? Array{Complex{T}}(undef, sz) : Array{T}(undef, sz)
-    else
-        # Parallel mode: use PencilArrays via the MPI extension
-        # The extension overloads this function; if we reach here, extension isn't loaded
-        error("Parallel mode requires the MPI extension. " *
-              "Load with: using MPI; MPI.Init(); using PencilArrays, PencilFFTs")
-    end
-end
-
-"""
-    init_state(G::Grid; T=Float64) -> State
-
-Allocate and initialize a State with all fields set to zero.
-
-# Arguments
-- `G::Grid`: Grid struct (determines array sizes)
-- `T::Type`: Floating point type (default Float64)
-
-# Returns
-State struct with:
-- Spectral fields (q, psi, A, B, C): Complex arrays, initialized to 0
-- Real fields (u, v, w): Real arrays, initialized to 0
-
-# Example
-```julia
-G = init_grid(par)
-S = init_state(G)
-
-# All fields are zero - use init_random_psi! or similar to set ICs
-init_random_psi!(S, G, par, plans)
-```
-
-See also: `State`, `init_random_psi!`
-"""
-function init_state(G::Grid; T=Float64)
-    # Allocate spectral (complex) fields
-    q   = allocate_field(T, G; complex=true);    fill!(q, 0)
-    psi = allocate_field(T, G; complex=true);    fill!(psi, 0)
-    A   = allocate_field(T, G; complex=true);    fill!(A, 0)
-    B   = allocate_field(T, G; complex=true);    fill!(B, 0)
-    C   = allocate_field(T, G; complex=true);    fill!(C, 0)
-
-    # Allocate real-space (real) fields
-    u   = allocate_field(T, G; complex=false);   fill!(u, 0)
-    v   = allocate_field(T, G; complex=false);   fill!(v, 0)
-    w   = allocate_field(T, G; complex=false);   fill!(w, 0)
-
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
-end
-
-"""
-    copy_state(src::State) -> State
-
-Create a copy of a State struct, preserving array properties (including PencilArray topology).
-
-Unlike `deepcopy`, this function uses `similar` to create destination arrays that maintain
-the same pencil decomposition as the source. This is essential for MPI parallel runs where
-PencilArrays must have matching topologies for transpose operations.
-
-# Arguments
-- `src::State`: Source state to copy
-
-# Returns
-New State struct with copied data but compatible array structure.
-
-# Example
-```julia
-Snm1 = copy_state(S)   # Creates copy with same pencil topology (MPI-safe)
-# vs.
-Snm1 = deepcopy(S)     # BREAKS pencil topology - causes transpose errors!
-```
-
-See also: [`State`](@ref), [`init_state`](@ref)
-"""
-function copy_state(src::State{T, RT, CT}) where {T, RT, CT}
-    # Use similar to preserve array structure (including PencilArray topology)
-    # For regular Arrays, similar creates a new array with same type/size
-    # For PencilArrays, similar preserves the pencil decomposition
-    q   = similar(src.q);   q   .= src.q
-    B   = similar(src.B);   B   .= src.B
-    psi = similar(src.psi); psi .= src.psi
-    A   = similar(src.A);   A   .= src.A
-    C   = similar(src.C);   C   .= src.C
-    u   = similar(src.u);   u   .= src.u
-    v   = similar(src.v);   v   .= src.v
-    w   = similar(src.w);   w   .= src.w
-
-    return State{T, RT, CT}(q, B, psi, A, C, u, v, w)
-end

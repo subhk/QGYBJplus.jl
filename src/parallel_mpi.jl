@@ -54,7 +54,7 @@ import PencilArrays: Pencil, PencilArray, MPITopology
 import PencilArrays: range_local, range_remote, transpose!, gather, pencil, decomposition, permutation
 import PencilFFTs: PencilFFTPlan, allocate_input, allocate_output
 
-# Note: Grid, State, QGParams, Plans are already in scope since we're included in QGYBJplus
+# Note: Grid, ModelFields, QGParams, Plans are already in scope since we're included in QGYBJplus
 # init_analytical_psi!, init_analytical_waves!, add_balanced_component! also already available
 
 # Import fft_forward! and fft_backward! from Transforms submodule to extend with MPI methods
@@ -565,10 +565,10 @@ function _transpose_input_to_output!(dst::PencilArray, src::PencilArray, plans::
 end
 
 """
-    init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64) -> State
-    init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64) -> State
+    init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64) -> ModelFields
+    init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64) -> ModelFields
 
-Initialize a State with MPI-distributed PencilArrays.
+Initialize a ModelFields with MPI-distributed PencilArrays.
 
 - `init_mpi_state(grid, mpi_config)` allocates all arrays on the grid's pencil_xy.
 - `init_mpi_state(grid, plans, mpi_config)` allocates spectral arrays on the FFT
@@ -604,7 +604,7 @@ function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Fl
     v = PencilArray{T}(undef, physical_pencil); fill!(v, 0)
     w = PencilArray{T}(undef, physical_pencil); fill!(w, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+    return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
 function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
@@ -627,7 +627,7 @@ function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
     v = PencilArray{T}(undef, pencil_xy); fill!(v, 0)
     w = PencilArray{T}(undef, pencil_xy); fill!(w, 0)
 
-    return State{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
+    return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
 # Alias for backward compatibility

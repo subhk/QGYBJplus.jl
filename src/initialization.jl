@@ -10,7 +10,7 @@ Provides functions for initializing fields from various sources:
 
 using Random
 using LinearAlgebra
-using ..QGYBJplus: Grid, State, QGParams
+using ..QGYBJplus: Grid, ModelFields, QGParams
 using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!, compute_wavenumbers!
 using ..QGYBJplus: local_to_global
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
@@ -20,7 +20,7 @@ import PencilArrays: PencilArray
 const _allocate_fft_dst = allocate_fft_backward_dst
 
 """
-    initialize_from_config(config::ModelConfig, G::Grid, S::State, plans;
+    initialize_from_config(config::ModelConfig, G::Grid, S::ModelFields, plans;
                            params=nothing, N2_profile=nothing, parallel_config=nothing)
 
 Initialize model state from configuration.
@@ -32,13 +32,13 @@ wipe out the user-provided initial conditions.
 # Arguments
 - `config`: Model configuration with initial condition settings
 - `G::Grid`: Grid structure
-- `S::State`: Model state to initialize
+- `S::ModelFields`: Model state to initialize
 - `plans`: FFT plans
 - `params`: QGParams (optional). If provided, q is computed from ψ for consistency.
 - `N2_profile`: Optional N²(z) profile for variable stratification.
 - `parallel_config`: MPIConfig for parallel file I/O when using `:from_file`.
 """
-function initialize_from_config(config, G::Grid, S::State, plans;
+function initialize_from_config(config, G::Grid, S::ModelFields, plans;
                                 params=nothing, N2_profile=nothing, parallel_config=nothing)
     @info "Initializing model fields from configuration"
 
@@ -636,7 +636,7 @@ function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitud
 end
 
 """
-    add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_profile=nothing)
+    add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plans; N2_profile=nothing)
 
 Add balanced component to the flow by computing geostrophically consistent fields.
 
@@ -648,7 +648,7 @@ This function:
 Based on init_psi_generic and init_q from the Fortran implementation.
 
 # Arguments
-- `S::State`: Model state with streamfunction psi
+- `S::ModelFields`: Model state with streamfunction psi
 - `G::Grid`: Grid structure
 - `params::QGParams`: Model parameters (includes f0, N2)
 - `plans`: FFT plans
@@ -664,7 +664,7 @@ N2 = compute_stratification_profile(strat_profile, grid)
 add_balanced_component!(state, grid, params, plans; N2_profile=N2)
 ```
 """
-function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_profile=nothing)
+function add_balanced_component!(S::ModelFields, G::Grid, params::QGParams, plans; N2_profile=nothing)
     @info "Adding balanced component to initial state"
 
     nz = G.nz
@@ -716,7 +716,7 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
     end
 
     # Note: Geostrophic velocities (u, v) are NOT computed here.
-    # The State struct has u, v as real-space arrays, and proper velocity computation
+    # The ModelFields struct has u, v as real-space arrays, and proper velocity computation
     # requires FFT plans and workspace. Velocities will be computed consistently by
     # compute_velocities! during the first ETD-RK2 stage.
 
@@ -900,11 +900,11 @@ function compute_buoyancy_from_psi!(b, psi, G::Grid, dz)
 end
 
 """
-    check_initial_conditions(S::State, G::Grid, plans)
+    check_initial_conditions(S::ModelFields, G::Grid, plans)
 
 Perform basic checks on initial conditions.
 """
-function check_initial_conditions(S::State, G::Grid, plans)
+function check_initial_conditions(S::ModelFields, G::Grid, plans)
     @info "Checking initial conditions..."
     
     # Check for NaNs or Infs

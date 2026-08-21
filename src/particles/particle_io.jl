@@ -192,7 +192,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     w_series::Vector{Vector{T}}
     particle_ids::Vector{Int}
 
-    # State flags
+    # ModelFields flags
     initialized::Bool
     is_io_rank::Bool                 # Only rank 0 writes in parallel
 

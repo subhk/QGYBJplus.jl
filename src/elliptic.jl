@@ -66,7 +66,7 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJplus: Grid, State, local_to_global, z_is_local, is_parallel_array
+using ..QGYBJplus: Grid, ModelFields, local_to_global, z_is_local, is_parallel_array
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -140,7 +140,7 @@ For each horizontal wavenumber (kₓ, kᵧ), solve the vertical ODE:
 with Neumann boundary conditions ψ_z = 0 at top and bottom.
 
 # Arguments
-- `S::State`: State struct containing `q` (input) and `psi` (output)
+- `S::ModelFields`: ModelFields struct containing `q` (input) and `psi` (output)
 - `G::Grid`: Grid struct with wavenumbers and vertical coordinates
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length nz
 - `par`: Optional QGParams for density weighting (defaults to unity weights)
@@ -188,7 +188,7 @@ a_vec = a_ell_ut(params, G)  # Compute a_ell = f²/N²
 invert_q_to_psi!(state, grid; a=a_vec)
 ```
 """
-function invert_q_to_psi!(S::State, G::Grid; a::AbstractVector, par=nothing, workspace=nothing)
+function invert_q_to_psi!(S::ModelFields, G::Grid; a::AbstractVector, par=nothing, workspace=nothing)
     nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
 
@@ -209,7 +209,7 @@ end
 """
 Direct solve for serial mode or 1D decomposition (z fully local).
 """
-function _invert_q_to_psi_direct!(S::State, G::Grid, a::AbstractVector, par)
+function _invert_q_to_psi_direct!(S::ModelFields, G::Grid, a::AbstractVector, par)
     nz = G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -328,7 +328,7 @@ end
 """
 2D decomposition: transpose to z-pencil, solve, transpose back.
 """
-function _invert_q_to_psi_2d!(S::State, G::Grid, a::AbstractVector, par, workspace)
+function _invert_q_to_psi_2d!(S::ModelFields, G::Grid, a::AbstractVector, par, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace if not provided
@@ -828,7 +828,7 @@ For each horizontal wavenumber (kₓ, kᵧ), solve:
 with Neumann boundary conditions A_z = 0 at top and bottom.
 
 # Arguments
-- `S::State`: State containing `B` (input), `A` and `C` (output)
+- `S::ModelFields`: ModelFields containing `B` (input), `A` and `C` (output)
 - `G::Grid`: Grid struct
 - `par`: QGParams (for f0, N2 parameters)
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
@@ -854,7 +854,7 @@ equation.
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90.
 """
-function invert_B_to_A!(S::State, G::Grid, par, a::AbstractVector; workspace=nothing)
+function invert_B_to_A!(S::ModelFields, G::Grid, par, a::AbstractVector; workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
@@ -872,7 +872,7 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_B_to_A_direct!(S::State, G::Grid, par, a::AbstractVector)
+function _invert_B_to_A_direct!(S::ModelFields, G::Grid, par, a::AbstractVector)
     nz = G.nz
 
     A_arr = parent(S.A)
@@ -1023,7 +1023,7 @@ end
 """
 2D decomposition B→A solve with transposes.
 """
-function _invert_B_to_A_2d!(S::State, G::Grid, par, a::AbstractVector, workspace)
+function _invert_B_to_A_2d!(S::ModelFields, G::Grid, par, a::AbstractVector, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace

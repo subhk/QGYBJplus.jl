@@ -12,7 +12,7 @@ Provides nicely formatted output with Unicode box characters.
 using Printf
 
 # Import types from parent module
-using ..QGYBJplus: QGParams, Grid, State, OutputConfig, Plans, MPIConfig,
+using ..QGYBJplus: QGParams, Grid, ModelFields, OutputConfig, Plans, MPIConfig,
                DomainConfig, StratificationConfig, InitialConditionConfig, ModelConfig
 using ..QGYBJplus.UnifiedParticleAdvection: ParticleConfig, ParticleTracker
 using ..QGYBJplus.UnifiedParticleAdvection.EnhancedParticleConfig: ParticleConfig3D
@@ -231,14 +231,14 @@ function Base.show(io::IO, G::Grid{T,AT}) where {T,AT}
 end
 
 # ============================================================================
-#                       State PRETTY PRINTING
+#                       ModelFields PRETTY PRINTING
 # ============================================================================
 
-function Base.show(io::IO, ::MIME"text/plain", S::State{T,RT,CT}) where {T,RT,CT}
+function Base.show(io::IO, ::MIME"text/plain", S::ModelFields{T,RT,CT}) where {T,RT,CT}
     width = 50
     key_width = 18
 
-    print_box_top(io, "State{$T}", width)
+    print_box_top(io, "ModelFields{$T}", width)
 
     # Get size from one of the arrays
     sz = size(S.psi)
@@ -254,9 +254,9 @@ function Base.show(io::IO, ::MIME"text/plain", S::State{T,RT,CT}) where {T,RT,CT
 end
 
 # Compact single-line show
-function Base.show(io::IO, S::State{T,RT,CT}) where {T,RT,CT}
+function Base.show(io::IO, S::ModelFields{T,RT,CT}) where {T,RT,CT}
     sz = size(S.psi)
-    print(io, "State{$T}($(format_size(sz...)))")
+    print(io, "ModelFields{$T}($(format_size(sz...)))")
 end
 
 # ============================================================================
@@ -271,7 +271,7 @@ function Base.show(io::IO, ::MIME"text/plain", cfg::OutputConfig{T}) where T
 
     print_section_header(io, "Output Directory", width)
     print_box_row(io, "Path", cfg.output_dir, width; key_width)
-    print_box_row(io, "State file pattern", cfg.state_file_pattern, width; key_width)
+    print_box_row(io, "Model-field pattern", cfg.state_file_pattern, width; key_width)
 
     print_section_header(io, "Save Intervals", width)
     print_box_row(io, "ψ interval", format_number(cfg.psi_interval), width; key_width)

@@ -30,7 +30,7 @@ const TEST_Lz = 4000.0 # 4 km
 function run_serial_tests()
     # Load QGYBJplus using @eval to allow non-top-level loading
     @eval using QGYBJplus
-    @eval using QGYBJplus: QGParams, Grid, State, Plans, plan_transforms!, fft_forward!, fft_backward!
+    @eval using QGYBJplus: QGParams, Grid, ModelFields, Plans, plan_transforms!, fft_forward!, fft_backward!
 
     println("=" ^ 60)
     println("QGYBJplus.jl Serial Mode Test")
@@ -55,9 +55,9 @@ function run_serial_tests()
             @test grid.decomp === nothing  # No MPI decomposition
             println("  ✓ Grid created (serial mode)")
 
-            state = QGYBJplus.init_state(grid)
+            state = QGYBJplus.allocate_fields(grid)
             @test size(state.psi) == (32, 32, 16)
-            println("  ✓ State created")
+            println("  ✓ ModelFields created")
         end
 
         @testset "FFT Transforms (Serial)" begin
@@ -143,7 +143,7 @@ function run_mpi_tests()
                 end
             end
 
-            @testset "Parallel State" begin
+            @testset "Parallel ModelFields" begin
                 mpi_config = QGYBJplus.setup_mpi_environment()
                 params = QGYBJplus.default_params(nx=64, ny=64, nz=32, Lx=TEST_Lx, Ly=TEST_Ly, Lz=TEST_Lz)
                 grid = QGYBJplus.init_mpi_grid(params, mpi_config)

@@ -11,7 +11,7 @@ Initialize grid, state, FFT plans, and elliptic coefficient for a basic run.
 - `par`: Model parameters (REQUIRED - use `default_params(Lx=..., Ly=..., Lz=...)`)
 
 # Returns
-Tuple of (Grid, State, Plans, a_ell)
+Tuple of (Grid, ModelFields, Plans, a_ell)
 
 # Note on Stratification
 This function uses constant N² (from par.N²) for the elliptic coefficient.
@@ -33,7 +33,7 @@ function setup_model(par::QGParams)
     end
 
     G = init_grid(par)
-    S = init_state(G)
+    S = allocate_fields(G)
     plans = plan_transforms!(G)
     a = a_ell_ut(par, G)
     return G, S, plans, a
@@ -50,7 +50,7 @@ it falls back to constant N² with a warning. Use the high-level stratification
 API or provide an explicit N² profile for those cases.
 
 # Returns
-Tuple of (Grid, State, Plans, a_ell, N2_profile)
+Tuple of (Grid, ModelFields, Plans, a_ell, N2_profile)
 
 # Example
 ```julia
@@ -61,7 +61,7 @@ G, S, plans, a, N2_profile = setup_model_with_profile(par)
 """
 function setup_model_with_profile(par::QGParams)
     G = init_grid(par)
-    S = init_state(G)
+    S = allocate_fields(G)
     plans = plan_transforms!(G)
 
     # Compute N² profile based on stratification type

@@ -85,7 +85,7 @@ High-level container for all simulation components.
 - `workspace`: Pre-allocated workspace arrays
 - `N2_profile`: Stratification profile N²(z) on unstaggered (face) levels
 """
-mutable struct Simulation{T, G<:Grid, S<:State, P, M<:MPIConfig, W, R}
+mutable struct Simulation{T, G<:Grid, S<:ModelFields, P, M<:MPIConfig, W, R}
     grid::G
     state::S
     params::QGParams{T}
@@ -117,7 +117,7 @@ This is the main entry point for the high-level API. It handles:
 - MPI initialization and environment setup
 - Grid creation with domain decomposition
 - FFT plan creation
-- State allocation
+- ModelFields allocation
 - Workspace allocation
 - Stratification profile computation
 

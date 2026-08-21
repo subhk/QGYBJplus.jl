@@ -43,7 +43,7 @@ module UnifiedParticleAdvection
 # Bind names from parent module (QGYBJplus) without using/import
 const _PARENT = Base.parentmodule(@__MODULE__)
 const Grid = _PARENT.Grid
-const State = _PARENT.State
+const ModelFields = _PARENT.ModelFields
 const plan_transforms! = _PARENT.plan_transforms!
 const compute_total_velocities! = _PARENT.compute_total_velocities!
 const ParallelConfig = _PARENT.ParallelConfig
@@ -334,7 +334,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         plans = plan_transforms!(grid, parallel_config)
 
         # Defer halo exchange setup until first velocity update
-        # This allows us to get actual local dimensions from State arrays
+        # This allows us to get actual local dimensions from ModelFields arrays
         # (which may differ from 1D decomposition assumption in 2D pencil decomposition)
         halo_info = nothing  # Will be set up lazily in update_velocity_fields!
 
@@ -640,7 +640,7 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function advect_particles!(tracker::ParticleTracker{T},
-                          state::State, grid::Grid, dt::T, current_time=nothing;
+                          state::ModelFields, grid::Grid, dt::T, current_time=nothing;
                           params=nothing, N2_profile=nothing) where T
     
     # Use simulation time if provided, otherwise use tracker's internal time
@@ -715,7 +715,7 @@ end
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
 
-Handles 2D pencil decomposition by getting actual local dimensions from State arrays.
+Handles 2D pencil decomposition by getting actual local dimensions from ModelFields arrays.
 
 # Arguments
 - `params`: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
@@ -729,7 +729,7 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
-                                state::State, grid::Grid;
+                                state::ModelFields, grid::Grid;
                                 params=nothing, N2_profile=nothing) where T
     # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
     # Pass params and N2_profile to ensure consistent stratification handling
@@ -740,7 +740,7 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                               use_ybj_w=tracker.config.use_ybj_w,
                               N2_profile=N2_profile)
 
-    # Get actual local dimensions from State arrays
+    # Get actual local dimensions from ModelFields arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
     u_data = parent(state.u)
     v_data = parent(state.v)

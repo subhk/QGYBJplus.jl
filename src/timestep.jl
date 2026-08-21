@@ -50,7 +50,7 @@ Temporarily replace prognostic PV by the inversion right-hand side
 `q_effective = q - q_wave`. The returned copy must be restored after the
 streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
-function replace_q_with_wave_feedback_rhs!(S::State, G::Grid, par::QGParams, plans, L;
+function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::Grid, par::QGParams, plans, L;
                                            BRk=nothing, BIk=nothing,
                                            q_base=nothing, qwk=nothing)
     q_base = q_base === nothing ? copy(S.q) : q_base
@@ -77,7 +77,7 @@ function replace_q_with_wave_feedback_rhs!(S::State, G::Grid, par::QGParams, pla
     return q_base
 end
 
-restore_prognostic_q!(S::State, q_base) = (parent(S.q) .= parent(q_base); S)
+restore_prognostic_q!(S::ModelFields, q_base) = (parent(S.q) .= parent(q_base); S)
 
 _wave_feedback_enabled(par::QGParams) =
     !par.fixed_flow && !par.no_feedback && !par.no_wave_feedback
@@ -109,9 +109,9 @@ struct ExpRK2Workspace{S,A}
     qwk::A
 end
 
-function ExpRK2Workspace(S::State, plans=nothing; G=nothing)
+function ExpRK2Workspace(S::ModelFields, plans=nothing; G=nothing)
     return ExpRK2Workspace(
-        copy_state(S),
+        copy_fields(S),
         similar(S.q), similar(S.B), similar(S.q), similar(S.B),
         similar(S.q), similar(S.q), similar(S.B), similar(S.B),
         similar(S.B), similar(S.B), similar(S.B), similar(S.B),
@@ -135,7 +135,7 @@ function _etd_coefficients(x, h)
     return E, hphi1, hphi2
 end
 
-function _diagnose_flow!(S::State, G::Grid, par::QGParams, plans, a, L;
+function _diagnose_flow!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
                          workspace=nothing, N2_profile=nothing,
                          timestep_workspace=nothing, compute_w=false,
                          use_wave_feedback=true)
@@ -161,7 +161,7 @@ function _diagnose_flow!(S::State, G::Grid, par::QGParams, plans, a, L;
     return S
 end
 
-function _etdrk2_arrays(S::State, timestep_workspace)
+function _etdrk2_arrays(S::ModelFields, timestep_workspace)
     if timestep_workspace === nothing
         return (
             nqk=similar(S.q), dqk=similar(S.q),
@@ -180,7 +180,7 @@ function _etdrk2_arrays(S::State, timestep_workspace)
     )
 end
 
-function _compute_etdrk2_rhs!(rhsq, rhsB, S::State, G::Grid,
+function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
                               par::QGParams, plans;
                               a, dealias_mask=nothing, workspace=nothing,
                               N2_profile=nothing, timestep_workspace=nothing)
@@ -289,7 +289,7 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::State, G::Grid,
     return rhsq, rhsB
 end
 
-function _finalize_etdrk2_state!(S::State, G::Grid, par::QGParams, plans, a, L;
+function _finalize_etdrk2_state!(S::ModelFields, G::Grid, par::QGParams, plans, a, L;
                                  workspace=nothing, N2_profile=nothing,
                                  timestep_workspace=nothing)
     par.ybj_plus || sumB!(S.B, G; Lmask=L, workspace=workspace)
@@ -333,7 +333,7 @@ Advance `Sn` by one second-order exponential Runge-Kutta step and write the
 result into `Snp1`. Horizontal hyperdiffusion is handled exactly through ETD
 phi functions. The method supports both YBJ+ and normal-YBJ formulations.
 """
-function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
+function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par::QGParams, plans;
                        a, dealias_mask=nothing, workspace=nothing,
                        N2_profile=nothing, particle_tracker=nothing,
                        current_time=nothing, timestep_workspace=nothing)
@@ -342,7 +342,7 @@ function exp_rk2_step!(Snp1::State, Sn::State, G::Grid, par::QGParams, plans;
     if timestep_workspace === nothing
         rhsq0, rhsB0 = similar(Sn.q), similar(Sn.B)
         rhsq1, rhsB1 = similar(Sn.q), similar(Sn.B)
-        Sstage = copy_state(Sn)
+        Sstage = copy_fields(Sn)
     else
         rhsq0, rhsB0 = timestep_workspace.rhsq0, timestep_workspace.rhsB0
         rhsq1, rhsB1 = timestep_workspace.rhsq1, timestep_workspace.rhsB1

@@ -97,7 +97,7 @@ Vertical derivatives use second-order finite differences.
 module Operators
 
 using LinearAlgebra
-using ..QGYBJplus: Grid, State, local_to_global, z_is_local
+using ..QGYBJplus: Grid, ModelFields, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
@@ -171,7 +171,7 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 3. Optionally solve omega equation or use YBJ formula for w
 
 # Arguments
-- `S::State`: State with ψ (input) and u, v, w (output)
+- `S::ModelFields`: ModelFields with ψ (input) and u, v, w (output)
 - `G::Grid`: Grid with wavenumbers kx, ky
 - `plans`: FFT plans (auto-generated if nothing)
 - `params`: Model parameters (for f₀, N²)
@@ -183,7 +183,7 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
 
 # Returns
-Modified State with updated u, v, w fields.
+Modified ModelFields with updated u, v, w fields.
 
 # Note
 This computes ONLY QG velocities. For Lagrangian advection including wave
@@ -192,7 +192,7 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_velocities!(S::ModelFields, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -324,7 +324,7 @@ Strong w occurs at:
 w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 
 # Arguments
-- `S::State`: State with ψ (input) and w (output)
+- `S::ModelFields`: ModelFields with ψ (input) and w (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters (f₀)
@@ -337,7 +337,7 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
 """
-function compute_vertical_velocity!(S::State, G::Grid, plans, params; 
+function compute_vertical_velocity!(S::ModelFields, G::Grid, plans, params;
                             N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     # Compute default dealiasing mask if not provided
     # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
@@ -357,7 +357,7 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params;
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask)
+function _compute_vertical_velocity_direct!(S::ModelFields, G::Grid, plans, params, N2_profile, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -503,7 +503,7 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 end
 
 # 2D decomposition version with transposes
-function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, dealias_mask)
+function _compute_vertical_velocity_2d!(S::ModelFields, G::Grid, plans, params, N2_profile, workspace, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get stratification parameters
@@ -709,7 +709,7 @@ This represents vertical motion induced by:
 4. **Combine**: Apply equation (2.10) with oscillating e^{-ift} factor
 
 # Arguments
-- `S::State`: State with B (input) and w (output)
+- `S::ModelFields`: ModelFields with B (input) and w (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters (f₀)
@@ -735,7 +735,7 @@ either:
 # References
 - Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
 """
-function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
+function compute_ybj_vertical_velocity!(S::ModelFields, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
@@ -757,7 +757,7 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion, t)
+function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::Grid, plans, params, N2_profile, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -897,7 +897,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 end
 
 # 2D decomposition version with transposes
-function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
+function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get parameters
@@ -1083,7 +1083,7 @@ For Lagrangian particle advection, always use this function rather than
 `compute_velocities!` to include wave effects.
 
 # Arguments
-- `S::State`: State with ψ, A, B (input) and u, v, w (output)
+- `S::ModelFields`: ModelFields with ψ, A, B (input) and u, v, w (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters
@@ -1095,9 +1095,9 @@ For Lagrangian particle advection, always use this function rather than
 - `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
 
 # Returns
-Modified State with total velocity fields u, v, w.
+Modified ModelFields with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+function compute_total_velocities!(S::ModelFields, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
     # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
     compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace, dealias_mask=dealias_mask)
 
@@ -1182,7 +1182,7 @@ Near-inertial waves contribute to particle advection through two mechanisms:
 11. Add contributions to existing u, v, w fields (in-place modification)
 
 # Arguments
-- `S::State`: State with A, B, C (input) and u, v, w modified (output)
+- `S::ModelFields`: ModelFields with A, B, C (input) and u, v, w modified (output)
 - `G::Grid`: Grid structure
 - `plans`: FFT plans
 - `params`: Model parameters (requires f₀ for Stokes drift normalization, N² for stratification)
@@ -1199,7 +1199,7 @@ Call after compute_velocities! to get total velocity.
 - Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
+function compute_wave_velocities!(S::ModelFields, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays

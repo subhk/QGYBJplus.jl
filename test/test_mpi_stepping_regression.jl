@@ -18,7 +18,7 @@ using Test
 using FFTW
 using MPI
 using QGYBJplus
-using QGYBJplus: setup_model, copy_state, dealias_mask,
+using QGYBJplus: setup_model, copy_fields, dealias_mask,
                  exp_rk2_step!, ExpRK2Workspace,
                  setup_mpi_environment, init_mpi_grid, plan_mpi_transforms,
                  init_mpi_state, init_mpi_workspace, a_ell_ut, scatter_from_root
@@ -32,10 +32,10 @@ gnorm2(field, comm) = MPI.Allreduce(sum(abs2, parent(field)), MPI.SUM, comm)
 
 function step_n!(initial, G, par, plans, a, L, nsteps;
                  workspace=nothing, reuse_timestep_workspace=false)
-    nsteps > 0 || return copy_state(initial)
+    nsteps > 0 || return copy_fields(initial)
 
-    Sn = copy_state(initial)
-    Snp1 = copy_state(Sn)
+    Sn = copy_fields(initial)
+    Snp1 = copy_fields(Sn)
     timestep_workspace = reuse_timestep_workspace ? ExpRK2Workspace(Sn, plans; G=G) : nothing
     for _ in 1:nsteps
         exp_rk2_step!(Snp1, Sn, G, par, plans;

@@ -117,7 +117,7 @@ The exports are organized by functionality:
 1. CORE DATA STRUCTURES:
    - QGParams: All model parameters (physics, numerics, switches)
    - Grid: Spatial grid and spectral wavenumbers
-   - State: Prognostic (q, B) and diagnostic (ψ, A, u, v, w) fields
+   - ModelFields: Prognostic (q, B) and diagnostic (ψ, A, u, v, w) fields
 
 2. PHYSICS ROUTINES:
    - Elliptic solvers: invert_q_to_psi!, invert_B_to_A!, invert_helmholtz!
@@ -139,8 +139,8 @@ The exports are organized by functionality:
 =#
 
 # Public API - Core functionality
-export QGParams, Grid, State,
-       init_grid, init_state, copy_state,
+export QGParams, Grid, ModelFields,
+       init_grid, allocate_fields, copy_fields,
        plan_transforms!, setup_parallel_transforms, fft_forward!, fft_backward!,
        compute_wavenumbers!,
        # Local-to-global index mapping for PencilArrays compatibility
@@ -228,6 +228,7 @@ include("core/components.jl") # Typed physics, numerics, schedules, and output s
 include("core/grid.jl")       # RectilinearGrid: immutable global geometry
 include("parameters.jl")    # QGParams: all model parameters
 include("grid.jl")          # Grid: spatial coordinates and wavenumbers
+include("core/fields.jl")   # ModelFields: prognostic and diagnostic arrays
 
 # FFT and spectral transforms
 include("transforms.jl")    # FFTW planning, fft_forward!, fft_backward!

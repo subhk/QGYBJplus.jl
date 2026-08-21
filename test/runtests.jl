@@ -3,6 +3,7 @@ using QGYBJplus
 using NCDatasets
 
 include("test_core_components.jl")
+include("test_model_fields.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -212,7 +213,7 @@ end
 
     # One ETD-RK2 step should run without error
     L = dealias_mask(G)
-    Snp1 = copy_state(S)
+    Snp1 = copy_fields(S)
     exp_rk2_step!(Snp1, S, G, par, plans; a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
@@ -235,7 +236,7 @@ end
     # Seed a nontrivial wave mode
     S.B[3, 2, 2] = 1.0 + 0.2im
 
-    Snp1 = copy_state(S)
+    Snp1 = copy_fields(S)
     timestep_workspace = ExpRK2Workspace(S, plans; G=G)
     exp_rk2_step!(Snp1, S, G, par, plans;
                   a=a, dealias_mask=L,
@@ -277,7 +278,7 @@ end
     initial_mode = S.B[2, 2, 1]
     damping = exp(-int_factor(G.kx[2], G.ky[1], par; waves=true))
 
-    Snp1 = copy_state(S)
+    Snp1 = copy_fields(S)
     exp_rk2_step!(Snp1, S, G, par, plans;
                   a=a, dealias_mask=dealias_mask(G))
 
@@ -332,7 +333,7 @@ end
 
     # Run one normal-branch step to ensure it executes
     S.B[4, 3, 3] = 0.5 + 0.2im
-    Snp1 = copy_state(S)
+    Snp1 = copy_fields(S)
     exp_rk2_step!(Snp1, S, G, par, plans; a, dealias_mask=L)
 
     @test all(isfinite, real.(Snp1.q))
@@ -473,7 +474,7 @@ end
     # A should initially be zero
     @test all(iszero, S.A)
 
-    Snp1 = copy_state(S)
+    Snp1 = copy_fields(S)
     exp_rk2_step!(Snp1, S, G, par, plans; a=a, dealias_mask=L)
 
     # After the step, A should be computed (not zero if B was non-zero)
@@ -619,12 +620,12 @@ end
     initial.q[2, 2, 2] = 1e-2 + 0im
     initial.B[2, 2, 2] = 2e-2 + 1e-2im
 
-    expected = copy_state(initial)
-    expected_next = copy_state(initial)
+    expected = copy_fields(initial)
+    expected_next = copy_fields(initial)
     exp_rk2_step!(expected_next, expected, G, par, plans;
                   a=a, dealias_mask=dealias_mask(G))
 
-    actual = copy_state(initial)
+    actual = copy_fields(initial)
     run_simulation!(actual, G, par, plans;
                     print_progress=false, diagnostics_interval=typemax(Int))
 
@@ -702,7 +703,7 @@ end
     end
 end
 
-@testset "State output preserves variable stratification" begin
+@testset "ModelFields output preserves variable stratification" begin
     par = default_params(nx=4, ny=4, nz=4, Lx=2pi, Ly=2pi, Lz=1.0,
                          f₀=2.0, N²=1.0)
     G, S, plans, _ = setup_model(par)

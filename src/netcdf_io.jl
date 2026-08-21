@@ -2,7 +2,7 @@
 Enhanced NetCDF I/O functionality for QG-YBJ model.
 
 This module provides comprehensive NetCDF input/output capabilities including:
-- State file output with time series (state0001.nc, state0002.nc, ...)
+- ModelFields file output with time series (state0001.nc, state0002.nc, ...)
 - Initial condition reading from NetCDF files
 - Stratification profile I/O
 - Flexible variable selection and metadata handling
@@ -12,7 +12,7 @@ using NCDatasets
 using Printf
 using Dates
 using MPI  # Import MPI at module level to avoid dynamic loading
-using ..QGYBJplus: Grid, State, QGParams
+using ..QGYBJplus: Grid, ModelFields, QGParams
 using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
@@ -155,7 +155,7 @@ function should_output_diagnostics(manager::OutputManager, time::Real)
 end
 
 """
-    write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing, N2_profile=nothing, write_psi=nothing, write_waves=nothing)
+    write_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real, parallel_config=nothing; params=nothing, N2_profile=nothing, write_psi=nothing, write_waves=nothing)
 
 Write complete state to NetCDF file with standardized naming.
 Unified interface for both serial and parallel I/O.
@@ -166,7 +166,7 @@ Unified interface for both serial and parallel I/O.
 - `write_psi`: Override whether to write ψ for this call (defaults to config save flag).
 - `write_waves`: Override whether to write L+A for this call (defaults to config save flag).
 """
-function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config=nothing;
+function write_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real, parallel_config=nothing;
                           params=nothing, N2_profile=nothing,
                           write_psi=nothing, write_waves=nothing)
     if !HAS_NCDS
@@ -212,13 +212,13 @@ function write_state_file(manager::OutputManager, S::State, G::Grid, plans, time
 end
 
 """
-    write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real;
+    write_serial_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real;
                             params=nothing, write_psi=true, write_waves=true,
                             write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
 
 Write state file in serial mode.
 """
-function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real;
+function write_serial_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real;
                                  params=nothing, N2_profile=nothing,
                                  write_psi=true, write_waves=true,
                                  write_velocities=false, write_vertical_velocity=false,
@@ -385,7 +385,7 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
         end
 
         # Global attributes
-        ds.attrib["title"] = "QG-YBJ Model State"
+        ds.attrib["title"] = "QG-YBJ Model Fields"
         ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
         ds.attrib["file_counter"] = manager.psi_counter
@@ -419,13 +419,13 @@ function write_serial_state_file(manager::OutputManager, S::State, G::Grid, plan
 end
 
 """
-    write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config;
+    write_parallel_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real, parallel_config;
                               params=nothing, write_psi=true, write_waves=true,
                               write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
 
 Write state file using parallel NetCDF I/O.
 """
-function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, plans, time::Real, parallel_config;
+function write_parallel_state_file(manager::OutputManager, S::ModelFields, G::Grid, plans, time::Real, parallel_config;
                                    params=nothing, N2_profile=nothing,
                                    write_psi=true, write_waves=true,
                                    write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
@@ -509,7 +509,7 @@ function write_parallel_state_file(manager::OutputManager, S::State, G::Grid, pl
 end
 
 """
-    write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
+    write_parallel_netcdf_file(filepath, S::ModelFields, G::Grid, plans, time, parallel_config;
                                params=nothing, write_psi=true, write_waves=true,
                                write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
 
@@ -517,7 +517,7 @@ Write NetCDF file with 2D decomposition support.
 Uses gather-to-root approach: all data is gathered to rank 0, which writes the file.
 This is simpler and more reliable than parallel NetCDF.
 """
-function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, parallel_config;
+function write_parallel_netcdf_file(filepath, S::ModelFields, G::Grid, plans, time, parallel_config;
                                     params=nothing, N2_profile=nothing,
                                     write_psi=true, write_waves=true,
                                     write_velocities=false, write_vertical_velocity=false, write_vorticity=false)
@@ -548,14 +548,14 @@ function write_parallel_netcdf_file(filepath, S::State, G::Grid, plans, time, pa
 end
 
 """
-    gather_state_for_io(S::State, G::Grid, parallel_config;
+    gather_state_for_io(S::ModelFields, G::Grid, parallel_config;
                         gather_psi=true, gather_waves=true,
                         gather_velocities=false, gather_vertical_velocity=false)
 
 Gather distributed state to rank 0 for I/O.
 Uses QGYBJplus.gather_to_root which handles 2D decomposition properly.
 """
-function gather_state_for_io(S::State, G::Grid, parallel_config;
+function gather_state_for_io(S::ModelFields, G::Grid, parallel_config;
                              gather_psi=true, gather_waves=true,
                              gather_velocities=false, gather_vertical_velocity=false)
     # Use QGYBJplus's gather function which handles 2D decomposition
@@ -759,7 +759,7 @@ function write_gathered_state_file(filepath, gathered_state, G::Grid, plans, tim
         end
 
         # Global attributes
-        ds.attrib["title"] = "QG-YBJ Model State (Gathered)"
+        ds.attrib["title"] = "QG-YBJ Model Fields (Gathered)"
         ds.attrib["created_at"] = string(now())
         ds.attrib["model_time"] = time
 
@@ -1209,7 +1209,7 @@ function create_empty_state_file(filepath::String, G::Grid, time::Real; metadata
         LAi_var.attrib["long_name"] = "L+A imaginary part"
         
         # Global attributes
-        ds.attrib["title"] = "QG-YBJ Model State Time Series"
+        ds.attrib["title"] = "QG-YBJ Model Fields Time Series"
         ds.attrib["created_at"] = string(now())
         
         for (key, value) in metadata
@@ -1229,7 +1229,7 @@ end
 Legacy compatibility wrapper for writing stream function to NetCDF.
 Directly writes psi field without using OutputManager.
 """
-function ncdump_psi(S::State, G::Grid, plans; path="psi.out.nc")
+function ncdump_psi(S::ModelFields, G::Grid, plans; path="psi.out.nc")
     @info "Writing psi to: $path"
 
     # Convert spectral psi to real space
@@ -1282,7 +1282,7 @@ end
 Legacy compatibility wrapper for writing L+A wave field to NetCDF.
 Directly writes wave field without using OutputManager.
 """
-function ncdump_la(S::State, G::Grid, plans; path="la.out.nc")
+function ncdump_la(S::ModelFields, G::Grid, plans; path="la.out.nc")
     @info "Writing L+A to: $path"
 
     # Convert spectral B to real space (full complex IFFT)
@@ -1342,7 +1342,7 @@ Legacy compatibility wrapper for reading stream function from NetCDF.
 Uses the enhanced I/O system internally.
 Supports both serial and parallel (2D decomposition) modes.
 """
-function ncread_psi!(S::State, G::Grid, plans; path="psi000.in.nc", parallel_config=nothing)
+function ncread_psi!(S::ModelFields, G::Grid, plans; path="psi000.in.nc", parallel_config=nothing)
     @info "Using legacy ncread_psi! (compatibility mode)"
 
     # Use the enhanced read function with parallel support
@@ -1361,7 +1361,7 @@ Legacy compatibility wrapper for reading L+A wave field from NetCDF.
 Uses the enhanced I/O system internally.
 Supports both serial and parallel (2D decomposition) modes.
 """
-function ncread_la!(S::State, G::Grid, plans; path="la000.in.nc", parallel_config=nothing)
+function ncread_la!(S::ModelFields, G::Grid, plans; path="la000.in.nc", parallel_config=nothing)
     @info "Using legacy ncread_la! (compatibility mode)"
 
     # Use the enhanced read function with parallel support

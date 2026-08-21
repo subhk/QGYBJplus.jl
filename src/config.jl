@@ -5,7 +5,7 @@ This module provides a user-friendly interface for setting up domains,
 initial conditions, stratification, and output configurations.
 """
 
-using ..QGYBJplus: QGParams, Grid, State
+using ..QGYBJplus: QGParams, Grid, ModelFields
 
 """
     DomainConfig
@@ -128,7 +128,7 @@ Base.@kwdef struct OutputConfig{T}
     # Output format
     output_format::Symbol = :netcdf  # :netcdf, :hdf5
     
-    # State file naming pattern
+    # Model-field file naming pattern
     state_file_pattern::String = "state%04d.nc"  # e.g., state0001.nc, state0002.nc
     
     # Variables to save

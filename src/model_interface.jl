@@ -6,8 +6,8 @@ with the configuration system, including time stepping with output management.
 """
 
 using Printf
-using ..QGYBJplus: QGParams, Grid, State, setup_model, default_params
-using ..QGYBJplus: plan_transforms!, init_grid, init_state, fft_backward!
+using ..QGYBJplus: QGParams, Grid, ModelFields, setup_model, default_params
+using ..QGYBJplus: plan_transforms!, init_grid, allocate_fields, fft_backward!
 using ..QGYBJplus: exp_rk2_step!, ExpRK2Workspace
 using ..QGYBJplus: invert_q_to_psi!, invert_B_to_A!, compute_velocities!
 using ..QGYBJplus: local_to_global
@@ -40,8 +40,8 @@ mutable struct QGYBJSimulation{T}
     # Model components
     params::QGParams{T}
     grid::Grid
-    state::State
-    state_next::State  # ETD-RK2 destination buffer
+    state::ModelFields
+    state_next::ModelFields  # ETD-RK2 destination buffer
     
     # Transform plans
     plans
@@ -359,7 +359,7 @@ end
 Check if output is needed and write files.
 """
 function check_and_output!(sim::QGYBJSimulation)
-    # State output - unified interface handles both serial and parallel
+    # ModelFields output - unified interface handles both serial and parallel
     write_psi = should_output_psi(sim.output_manager, sim.current_time)
     write_waves = should_output_waves(sim.output_manager, sim.current_time)
     if write_psi || write_waves
@@ -488,7 +488,7 @@ function compute_and_output_diagnostics!(sim::QGYBJSimulation{T}) where T
 end
 
 """
-    compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams; N2_profile=nothing) -> (WKE, WPE, WCE)
+    compute_detailed_wave_energy(state::ModelFields, grid::Grid, params::QGParams; N2_profile=nothing) -> (WKE, WPE, WCE)
 
 Compute detailed wave energy components per YBJ+ paper:
 - WKE: Wave kinetic energy = (1/2)|LA|² per equation (4.7)
@@ -501,7 +501,7 @@ Compute detailed wave energy components per YBJ+ paper:
 - `N2_profile`: Optional N²(z) profile for variable stratification. When provided,
   uses `a_ell(z) = f₀²/N²(z)` per vertical level.
 """
-function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams{T}; N2_profile=nothing) where T
+function compute_detailed_wave_energy(state::ModelFields, grid::Grid, params::QGParams{T}; N2_profile=nothing) where T
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
@@ -631,7 +631,7 @@ function compute_detailed_wave_energy(state::State, grid::Grid, params::QGParams
 end
 
 """
-    compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
+    compute_kinetic_energy(state::ModelFields, grid::Grid, plans; Ar2::Real=1.0)
 
 Compute domain-integrated kinetic energy following the Fortran diag_zentrum routine.
 
@@ -641,7 +641,7 @@ The kinetic energy is computed as:
 with proper dealiasing correction (subtract 0.5 × value at kx=ky=0).
 
 # Arguments
-- `state::State`: Current model state with psi (streamfunction)
+- `state::ModelFields`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
 - `Ar2::Real`: Aspect ratio squared (default 1.0)
@@ -649,7 +649,7 @@ with proper dealiasing correction (subtract 0.5 × value at kx=ky=0).
 # Returns
 Domain-integrated kinetic energy (scalar).
 """
-function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
+function compute_kinetic_energy(state::ModelFields, grid::Grid, plans; Ar2::Real=1.0)
     T = eltype(real(state.psi[1]))
     nz = grid.nz
     nx = grid.nx
@@ -703,7 +703,7 @@ function compute_kinetic_energy(state::State, grid::Grid, plans; Ar2::Real=1.0)
 end
 
 """
-    compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector; a_ell::Real=1.0, workspace=nothing)
+    compute_potential_energy(state::ModelFields, grid::Grid, plans, N2_profile::Vector; a_ell::Real=1.0, workspace=nothing)
 
 Compute domain-integrated potential energy following the Fortran diag_zentrum routine.
 
@@ -716,7 +716,7 @@ For dimensionally correct QG available potential energy, use `a_ell = f₀²`:
 This matches the standard QG APE formula: PE = (1/2) ∫ (f²/N²) (∂ψ/∂z)² dV
 
 # Arguments
-- `state::State`: Current model state with psi (streamfunction)
+- `state::ModelFields`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure
 - `plans`: FFT plans
 - `N2_profile::Vector`: Buoyancy frequency squared N²(z)
@@ -735,7 +735,7 @@ PE_nondim = compute_potential_energy(state, grid, plans, N2_profile)
 PE_phys = compute_potential_energy(state, grid, plans, N2_profile; a_ell=params.f₀^2)
 ```
 """
-function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0), workspace=nothing) where T
+function compute_potential_energy(state::ModelFields, grid::Grid, plans, N2_profile::Vector{T}; a_ell::Real=T(1.0), workspace=nothing) where T
     nz = grid.nz
     nx = grid.nx
     ny = grid.ny
@@ -812,7 +812,7 @@ function compute_potential_energy(state::State, grid::Grid, plans, N2_profile::V
 end
 
 """
-    compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
+    compute_wave_energy(state::ModelFields, grid::Grid, plans; params=nothing)
 
 Compute wave kinetic energy per YBJ+ equation (4.7).
 
@@ -823,7 +823,7 @@ where LA = ∂_z(a(z) × C) using the L operator from equation (1.3),
 with a(z) = f²/N² and C = ∂A/∂z.
 
 # Arguments
-- `state::State`: Current model state with B, A, and C fields
+- `state::ModelFields`: Current model state with B, A, and C fields
 - `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
 - `params`: Optional QGParams for stratification (uses constant N² if not provided)
@@ -831,7 +831,7 @@ with a(z) = f²/N² and C = ∂A/∂z.
 # Returns
 Domain-integrated wave kinetic energy (scalar).
 """
-function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
+function compute_wave_energy(state::ModelFields, grid::Grid, plans; params=nothing)
     T = eltype(real(state.B[1]))
     nz = grid.nz
     nx = grid.nx
@@ -923,7 +923,7 @@ function compute_wave_energy(state::State, grid::Grid, plans; params=nothing)
 end
 
 """
-    compute_enstrophy(state::State, grid::Grid, plans)
+    compute_enstrophy(state::ModelFields, grid::Grid, plans)
 
 Compute domain-integrated enstrophy (mean squared vorticity).
 
@@ -933,14 +933,14 @@ Enstrophy is computed as:
 where ζ = ∇²ψ = -kh²ψ is the relative vorticity (in spectral space).
 
 # Arguments
-- `state::State`: Current model state with psi (streamfunction)
+- `state::ModelFields`: Current model state with psi (streamfunction)
 - `grid::Grid`: Grid structure with wavenumbers
 - `plans`: FFT plans
 
 # Returns
 Domain-integrated enstrophy (scalar).
 """
-function compute_enstrophy(state::State, grid::Grid, plans)
+function compute_enstrophy(state::ModelFields, grid::Grid, plans)
     T = eltype(real(state.psi[1]))
     nz = grid.nz
     nx = grid.nx
@@ -1001,12 +1001,12 @@ Run a complete QG-YBJ+ simulation with automatic time-stepping, output, and diag
 This is the recommended high-level interface that handles all the details of:
 - Second-order exponential Runge-Kutta time integration
 - Exact horizontal hyperdiffusion and two explicit nonlinear stages
-- State-buffer rotation (no manual management needed)
+- ModelFields-buffer rotation (no manual management needed)
 - Periodic output to NetCDF files
 - Progress reporting and diagnostics
 
 # Arguments
-- `S::State`: Initial state (will be modified in-place)
+- `S::ModelFields`: Initial state (will be modified in-place)
 - `G::Grid`: Spatial grid
 - `par::QGParams`: Model parameters (includes dt, nt)
 - `plans`: FFT plans
@@ -1025,7 +1025,7 @@ This is the recommended high-level interface that handles all the details of:
 - `progress_interval::Int=0`: Steps between progress updates (0 = auto, based on nt)
 
 # Returns
-- Final `State` at the end of the simulation
+- Final `ModelFields` at the end of the simulation
 
 # Example
 ```julia
@@ -1050,7 +1050,7 @@ S_final = run_simulation!(S, G, par, plans; output_config=output_config)
 
 See also: `OutputConfig`, `exp_rk2_step!`, `ExpRK2Workspace`
 """
-function run_simulation!(S::State, G::Grid, par::QGParams, plans;
+function run_simulation!(S::ModelFields, G::Grid, par::QGParams, plans;
                          output_config::Union{OutputConfig,Nothing}=nothing,
                          mpi_config=nothing,
                          parallel_config=nothing,
@@ -1174,7 +1174,7 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     B_phys = _allocate_fft_dst(S.B, plans)
     A_phys = _allocate_fft_dst(S.A, plans)
 
-    report_step = function(state::State, step::Int, current_time)
+    report_step = function(state::ModelFields, step::Int, current_time)
         if diagnostics_interval > 0 && step % diagnostics_interval == 0
             max_u = reduce_max_if_mpi(maximum(abs, parent(state.u)), mpi_config)
             max_v = reduce_max_if_mpi(maximum(abs, parent(state.v)), mpi_config)
@@ -1222,8 +1222,8 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
         end
     end
 
-    Sn = copy_state(S)
-    Snp1 = copy_state(S)
+    Sn = copy_fields(S)
+    Snp1 = copy_fields(S)
     timestep_workspace = ExpRK2Workspace(Sn, plans; G=G)
 
     for step in 1:nt
@@ -1471,7 +1471,7 @@ function setup_model_with_config(config::ModelConfig{T}) where T
     )
 
     grid = init_grid(params)
-    state = init_state(grid)
+    state = allocate_fields(grid)
     plans = plan_transforms!(grid)
 
     return params, grid, state, plans
