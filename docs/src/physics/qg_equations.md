@@ -18,14 +18,26 @@ where ``\mathcal{D}_q`` is dissipation and ``\mathcal{F}_q`` is forcing.
 
 ### Potential Vorticity Definition
 
+With wave feedback enabled, the prognostic ``q`` is the total generalized
+potential vorticity,
+
 ```math
-q = \underbrace{\nabla^2\psi}_{\text{relative vorticity}} + \underbrace{\frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right)}_{\text{stretching term}}
+q = q^g + q^w,
+```
+
+where the balanced contribution is
+
+```math
+q^g = \underbrace{\nabla^2\psi}_{\text{relative vorticity}} + \underbrace{\frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right)}_{\text{stretching term}}.
 ```
 
 For uniform stratification (``N^2 = \text{const}``):
 ```math
-q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2}
+q^g = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2}.
 ```
+
+Without wave feedback, ``q^w = 0`` and the prognostic ``q`` reduces to
+``q^g``.
 
 ### Physical Interpretation
 
@@ -37,10 +49,12 @@ q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2}
 
 ## Streamfunction Inversion
 
-Given ``q``, we solve for ``\psi`` via the elliptic equation:
+Given total ``q``, we solve for ``\psi`` from its balanced component. With
+feedback enabled the elliptic right-hand side is ``q-q^w``; without feedback,
+``q^w=0``:
 
 ```math
-\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q
+\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q-q^w.
 ```
 
 ### Spectral Representation
@@ -48,7 +62,7 @@ Given ``q``, we solve for ``\psi`` via the elliptic equation:
 In spectral space (horizontal) with vertical finite differences:
 
 ```math
--k_h^2 \hat{\psi} + \frac{\partial}{\partial z}\left(a(z)\frac{\partial\hat{\psi}}{\partial z}\right) = \hat{q}
+-k_h^2 \hat{\psi} + \frac{\partial}{\partial z}\left(a(z)\frac{\partial\hat{\psi}}{\partial z}\right) = \widehat{q^g}
 ```
 
 where:
@@ -60,7 +74,7 @@ where:
 For each horizontal wavenumber ``(k_x, k_y)``, the vertical discretization gives:
 
 ```math
-a_k \hat{\psi}_{k-1} + b_k \hat{\psi}_k + c_k \hat{\psi}_{k+1} = \hat{q}_k
+a_k \hat{\psi}_{k-1} + b_k \hat{\psi}_k + c_k \hat{\psi}_{k+1} = \widehat{q^g}_k
 ```
 
 This is solved efficiently with the Thomas algorithm in O(nz) operations.
@@ -161,25 +175,26 @@ When waves are present, the QG equation includes a feedback term through a modif
 The wave-induced PV ``q^w`` is computed from the wave envelope ``B``:
 
 ```math
-q^w = \frac{i}{2} J(B^*, B) + \frac{1}{4} \nabla_h^2 |B|^2
+q^w = \frac{i}{2f_0} J(B^*, B) + \frac{1}{4f_0} \nabla_h^2 |B|^2
 ```
 
 where ``B = B_R + i B_I`` is the complex wave envelope with units of velocity (m/s).
 
 !!! note "Dimensional Equations"
     The model solves dimensional equations where ``B`` has actual velocity amplitude.
-    No additional scaling factors are needed.
+    No separate amplitude scaling is applied, but the Coriolis normalization
+    ``1/f_0`` remains part of the dimensional wave PV.
 
 ### Effective PV for Inversion
 
 The streamfunction is obtained by inverting the **effective** PV:
 
 ```math
-q^* = q - q^w
+q^g = q - q^w
 ```
 
 ```math
-\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q^*
+\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q^g
 ```
 
 This means the wave feedback **modifies the inversion** rather than appearing as an explicit advection term.

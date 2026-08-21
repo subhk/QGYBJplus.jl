@@ -50,8 +50,8 @@ end
 function normal_ybj_model(grid, dispersion)
     return QGYBJModel(
         grid=grid,
-        coriolis=FPlane(f=1),
-        stratification=ConstantStratification(N²=1),
+        coriolis=FPlane(f=2),
+        stratification=ConstantStratification(N²=3),
         closure=HorizontalHyperdiffusivity(
             flow=0, flow2=0, waves=0, waves2=0),
         flow=FixedFlow(),
@@ -99,6 +99,7 @@ if rank == 0
     ψ_initial[2, 2, 1] = -0.2 + 0.05im
     ψ_initial[2, NX, 1] = conj(ψ_initial[2, 2, 1])
     B_initial[3, 2, 2] = 1.2 - 0.7im
+    B_initial[3, 3, 1] = 0.6 + 0.2im
     B_initial[6, 3, 1] = -0.4 + 0.9im
 
     B_expected = similar(B_initial)
@@ -115,6 +116,37 @@ try
     preallocated_model = stepping_model(grid)
     scatter_initial_fields!(lazy_model, q_initial, B_initial, ψ_initial)
     scatter_initial_fields!(preallocated_model, q_initial, B_initial, ψ_initial)
+
+    @testset "MPI dimensional wave feedback" begin
+        context = QGYBJplus._operator_context(lazy_model)
+        BRk = similar(lazy_model.fields.B)
+        BIk = similar(lazy_model.fields.B)
+        qw_f1 = similar(lazy_model.fields.q)
+        qw_f2 = similar(lazy_model.fields.q)
+        qw_split = similar(lazy_model.fields.q)
+
+        QGYBJplus.split_B_to_real_imag!(
+            BRk, BIk, lazy_model.fields.B, context.plans)
+        QGYBJplus.compute_qw_complex!(
+            qw_f1, lazy_model.fields.B, context.grid, context.plans;
+            f=1.0, Lmask=context.mask)
+        QGYBJplus.compute_qw_complex!(
+            qw_f2, lazy_model.fields.B, context.grid, context.plans;
+            f=2.0, Lmask=context.mask)
+        QGYBJplus.compute_qw!(
+            qw_split, BRk, BIk, context.grid, context.plans;
+            f=2.0, Lmask=context.mask)
+
+        feedback_energy = MPI.Allreduce(
+            sum(abs2, parent(qw_f1)), +, comm)
+        scaling_error = global_maximum(maximum(abs,
+            parent(qw_f2) .- 0.5 .* parent(qw_f1)))
+        split_error = global_maximum(maximum(abs,
+            parent(qw_split) .- parent(qw_f2)))
+        @test feedback_energy > 0
+        @test scaling_error < 1e-13
+        @test split_error < 1e-13
+    end
 
     diagnostic_dir = mktempdir()
     lazy = Simulation(
@@ -232,15 +264,60 @@ try
         normal_model = normal_ybj_model(grid, dispersion)
         try
             B_normal = zeros(ComplexF64, NZ, NX, NY)
-            B_normal[:, 2, 1] .= (1, -1, 1, -1, 1, -1, 1, -1)
+            B_normal[:, 2, 1] .= (
+                1 + 0.5im, -1 - 0.2im, 1 + 0.4im, -1 - 0.1im,
+                1 + 0.3im, -1 - 0.6im, 1 + 0.2im, -1 - 0.5im)
             set!(normal_model;
                 B=FieldArray(B_normal; space=:spectral), verbose=false)
             A_energy = MPI.Allreduce(
                 sum(abs2, parent(normal_model.fields.A)), +, comm)
             C_energy = MPI.Allreduce(
                 sum(abs2, parent(normal_model.fields.C)), +, comm)
+            A_imaginary_energy = MPI.Allreduce(
+                sum(abs2, imag.(parent(normal_model.fields.A))), +, comm)
+            C_imaginary_energy = MPI.Allreduce(
+                sum(abs2, imag.(parent(normal_model.fields.C))), +, comm)
             @test A_energy > 0
             @test C_energy > 0
+            @test A_imaginary_energy > 0
+            @test C_imaginary_energy > 0
+
+            A_result = gather_to_root(
+                normal_model.fields.A,
+                normal_model.runtime.geometry,
+                normal_model.runtime.mpi,
+            )
+            C_result = gather_to_root(
+                normal_model.fields.C,
+                normal_model.runtime.geometry,
+                normal_model.runtime.mpi,
+            )
+            reconstruction_error = 0.0
+            derivative_error = 0.0
+            if rank == 0
+                expected_A = zeros(ComplexF64, NZ)
+                expected_C = zeros(ComplexF64, NZ)
+                cumulative_B = 0.0im
+                Δz = grid.z[2] - grid.z[1]
+                for k in 2:NZ
+                    cumulative_B += B_normal[k-1, 2, 1]
+                    expected_A[k] = expected_A[k-1] +
+                        cumulative_B * (3 / 2^2) * Δz^2
+                end
+                expected_A .-= sum(expected_A) / NZ
+                for k in 1:(NZ-1)
+                    expected_C[k] =
+                        (expected_A[k+1] - expected_A[k]) / Δz
+                end
+                reconstruction_error = maximum(abs,
+                    A_result[:, 2, 1] .- expected_A)
+                derivative_error = maximum(abs,
+                    C_result[:, 2, 1] .- expected_C)
+            end
+            reconstruction_error = MPI.bcast(reconstruction_error, 0, comm)
+            derivative_error = MPI.bcast(derivative_error, 0, comm)
+            @test reconstruction_error < 1e-13
+            @test derivative_error < 1e-13
 
             normal_diagnostic_dir = MPI.bcast(
                 rank == 0 ? mktempdir() : "", 0, comm)

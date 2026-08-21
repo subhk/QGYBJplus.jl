@@ -41,6 +41,16 @@ removing the diagnosed wave contribution from total potential vorticity. The
 ETD-RK2 kernel restores the prognostic quantity after inversion, so model
 ownership does not change during a stage.
 
+For the dimensional wave envelope ``B``, the diagnosed contribution is
+
+```math
+q^w = \frac{i}{2f_0}J(B^*, B)
+    + \frac{1}{4f_0}\nabla_h^2 |B|^2.
+```
+
+Both ETD-RK2 stages diagnose this contribution from the stage-local complex
+wave field.
+
 ## Energy pathway
 
 In the inviscid continuous system, work exchanged through the feedback term is

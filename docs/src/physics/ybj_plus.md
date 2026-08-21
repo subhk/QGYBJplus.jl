@@ -10,7 +10,8 @@ and the horizontally regularized YBJ+ relation of Asselin & Young (2019).
 
 ## Prognostic and diagnostic wave variables
 
-The model advances `B`. The wave amplitude `A` is diagnosed from
+The model advances `B`. For `YBJPlus()`, the wave amplitude `A` is diagnosed
+from
 
 ```math
 B = \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right)
@@ -19,6 +20,15 @@ B = \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right)
 
 The horizontal Helmholtz contribution regularizes short horizontal scales.
 At each `(kₓ,kᵧ)`, recovering `A` is a tridiagonal vertical solve.
+
+For `YBJ()`, the horizontal Helmholtz contribution is omitted:
+
+```math
+B = \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right).
+```
+
+This original-YBJ relation is recovered by vertical integration using the
+inverse coefficient ``N^2/f_0^2`` and a tendency solvability constraint.
 
 ```julia
 invert_B_to_A!(model)

@@ -14,6 +14,7 @@ try
     include("test_core_architecture.jl")
     include("test_model_ownership.jl")
     include("test_model_operators.jl")
+    include("test_wave_feedback.jl")
     include("test_model_etdrk2.jl")
     include("test_model_initialization.jl")
     include("test_simulation_lifecycle.jl")

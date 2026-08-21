@@ -69,27 +69,45 @@ function ExponentialRungeKutta2(; Δt::Real)
     return ExponentialRungeKutta2{typeof(value)}(value, nothing)
 end
 
-"""Split the complex wave envelope into real-valued spectral components."""
-function split_B_to_real_imag!(BRk, BIk, B)
-    B_arr = parent(B)
-    BRk_arr = parent(BRk)
-    BIk_arr = parent(BIk)
+"""
+Split a complex physical wave envelope into the separate spectra of its real
+and imaginary components.
 
-    @local_spectral_loop B begin
-        BRk_arr[k, i, j] = Complex(real(B_arr[k, i, j]), 0)
-        BIk_arr[k, i, j] = Complex(imag(B_arr[k, i, j]), 0)
+Taking `real` and `imag` of Fourier coefficients is not a valid field split:
+in general `FFT(real(B)) != real(FFT(B))`. This helper therefore transforms to
+physical space, separates the components, and transforms both back.
+"""
+function split_B_to_real_imag!(BRk, BIk, B, plans;
+                               Bphysical=nothing,
+                               component_physical=nothing)
+    Bphysical = Bphysical === nothing ?
+        allocate_fft_backward_dst(B, plans) : Bphysical
+    component_physical = component_physical === nothing ?
+        similar(Bphysical) : component_physical
+    Bphysical === component_physical &&
+        throw(ArgumentError("wave-component split requires distinct physical buffers"))
+
+    fft_backward!(Bphysical, B, plans)
+    Bphysical_arr = parent(Bphysical)
+    component_arr = parent(component_physical)
+    @inbounds for index in eachindex(Bphysical_arr, component_arr)
+        value = Bphysical_arr[index]
+        component_arr[index] = complex(real(value), 0)
+        Bphysical_arr[index] = complex(imag(value), 0)
     end
+    fft_forward!(BRk, component_physical, plans)
+    fft_forward!(BIk, Bphysical, plans)
     return BRk, BIk
 end
 
-"""Combine real-valued spectral components into the complex wave envelope."""
+"""Combine separate real/imaginary-component spectra into `FFT(BR + i BI)`."""
 function combine_real_imag_to_B!(B, BRk, BIk)
     B_arr = parent(B)
     BRk_arr = parent(BRk)
     BIk_arr = parent(BIk)
 
     @local_spectral_loop B begin
-        B_arr[k, i, j] = complex(real(BRk_arr[k, i, j]), real(BIk_arr[k, i, j]))
+        B_arr[k, i, j] = BRk_arr[k, i, j] + im * BIk_arr[k, i, j]
     end
     return B
 end
@@ -103,20 +121,12 @@ streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
 function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::RuntimeGeometry,
                                            options::ETDModelOptions, plans, L;
-                                           BRk=nothing, BIk=nothing,
                                            q_base=nothing, qwk=nothing)
     q_base = q_base === nothing ? copy(S.q) : q_base
     parent(q_base) .= parent(S.q)
 
     qwk = qwk === nothing ? similar(S.q) : qwk
-    if _ybj_plus(options)
-        compute_qw_complex!(qwk, S.B, G, plans; Lmask=L)
-    else
-        BRk = BRk === nothing ? similar(S.B) : BRk
-        BIk = BIk === nothing ? similar(S.B) : BIk
-        split_B_to_real_imag!(BRk, BIk, S.B)
-        compute_qw!(qwk, BRk, BIk, G, plans; Lmask=L)
-    end
+    compute_qw_complex!(qwk, S.B, G, plans; f=options.f, Lmask=L)
 
     q_arr = parent(S.q)
     q_base_arr = parent(q_base)
@@ -149,12 +159,6 @@ mutable struct ExponentialRungeKutta2Workspace{S,A}
     dqk::A
     nBk::A
     rBk::A
-    nBRk::A
-    nBIk::A
-    rBRk::A
-    rBIk::A
-    BRk::A
-    BIk::A
     q_base::A
     qwk::A
 end
@@ -165,8 +169,7 @@ function ExponentialRungeKutta2Workspace(S::ModelFields, plans=nothing; G=nothin
         copy_fields(S),
         similar(S.q), similar(S.B), similar(S.q), similar(S.B),
         similar(S.q), similar(S.q), similar(S.B), similar(S.B),
-        similar(S.B), similar(S.B), similar(S.B), similar(S.B),
-        similar(S.B), similar(S.B), similar(S.q), similar(S.q),
+        similar(S.q), similar(S.q),
     )
 end
 
@@ -197,8 +200,6 @@ function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
         if use_wave_feedback && _wave_feedback_enabled(options)
             q_base = replace_q_with_wave_feedback_rhs!(
                 S, G, options, plans, L;
-                BRk=timestep_workspace === nothing ? nothing : timestep_workspace.BRk,
-                BIk=timestep_workspace === nothing ? nothing : timestep_workspace.BIk,
                 q_base=timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
                 qwk=timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
             )
@@ -220,17 +221,11 @@ function _etdrk2_arrays(S::ModelFields, timestep_workspace)
         return (
             nqk=similar(S.q), dqk=similar(S.q),
             nBk=similar(S.B), rBk=similar(S.B),
-            nBRk=similar(S.B), nBIk=similar(S.B),
-            rBRk=similar(S.B), rBIk=similar(S.B),
-            BRk=similar(S.B), BIk=similar(S.B),
         )
     end
     return (
         nqk=timestep_workspace.nqk, dqk=timestep_workspace.dqk,
         nBk=timestep_workspace.nBk, rBk=timestep_workspace.rBk,
-        nBRk=timestep_workspace.nBRk, nBIk=timestep_workspace.nBIk,
-        rBRk=timestep_workspace.rBRk, rBIk=timestep_workspace.rBIk,
-        BRk=timestep_workspace.BRk, BIk=timestep_workspace.BIk,
     )
 end
 
@@ -250,97 +245,56 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
     arrays = _etdrk2_arrays(S, timestep_workspace)
     nqk, dqk = arrays.nqk, arrays.dqk
     nBk, rBk = arrays.nBk, arrays.rBk
-    nBRk, nBIk = arrays.nBRk, arrays.nBIk
-    rBRk, rBIk = arrays.rBRk, arrays.rBIk
-    BRk, BIk = arrays.BRk, arrays.BIk
 
-    if _ybj_plus(options)
-        if _passive_wave(options) || _no_dispersion(options)
-            fill!(parent(S.A), zero(eltype(parent(S.A))))
-            fill!(parent(S.C), zero(eltype(parent(S.C))))
-        else
-            invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
-        end
+    # B is a complex physical field represented by its complex Fourier
+    # transform. Both YBJ formulations therefore use complex advection and
+    # refraction kernels; only the B -> A diagnostic relation differs.
+    convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
+    convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L)
+    refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L)
 
-        convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
-        convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L)
-        refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L)
+    if _linear(options)
+        fill!(parent(nqk), zero(eltype(parent(nqk))))
+        fill!(parent(nBk), zero(eltype(parent(nBk))))
+    end
+    _passive_wave(options) &&
+        fill!(parent(rBk), zero(eltype(parent(rBk))))
+
+    if _passive_wave(options) || _no_dispersion(options)
+        fill!(parent(S.A), zero(eltype(parent(S.A))))
+        fill!(parent(S.C), zero(eltype(parent(S.C))))
+    elseif _ybj_plus(options)
+        invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
     else
-        split_B_to_real_imag!(BRk, BIk, S.B)
-        convol_waqg!(nqk, nBRk, nBIk, S.u, S.v, S.q, BRk, BIk,
-                     G, plans; Lmask=L)
-        refraction_waqg!(rBRk, rBIk, BRk, BIk, S.psi, G, plans; Lmask=L)
-
-        if _passive_wave(options) || _no_dispersion(options)
-            fill!(parent(S.A), zero(eltype(parent(S.A))))
-            fill!(parent(S.C), zero(eltype(parent(S.C))))
-        else
-            sigma = compute_sigma(options.f, G, nBRk, nBIk, rBRk, rBIk;
-                                  Lmask=L, N2_profile=N2_profile)
-            compute_A!(S.A, S.C, BRk, BIk, sigma, G;
-                       Lmask=L, N2_profile=N2_profile)
-        end
+        sigma = compute_sigma(options.f, G, nBk, rBk;
+                              Lmask=L, workspace)
+        compute_A!(S.A, S.C, S.B, sigma, G;
+                   f=options.f, Lmask=L, workspace,
+                   N2_profile=N2_profile)
     end
 
     dissipation_q_nv!(dqk, S.q, options.vertical_diffusivity, G;
         workspace=workspace)
 
     _inviscid(options) && fill!(parent(dqk), zero(eltype(parent(dqk))))
-    if _linear(options)
-        fill!(parent(nqk), zero(eltype(parent(nqk))))
-        if _ybj_plus(options)
-            fill!(parent(nBk), zero(eltype(parent(nBk))))
-        else
-            fill!(parent(nBRk), zero(eltype(parent(nBRk))))
-            fill!(parent(nBIk), zero(eltype(parent(nBIk))))
-        end
-    end
-    if _passive_wave(options)
-        if _ybj_plus(options)
-            fill!(parent(rBk), zero(eltype(parent(rBk))))
-        else
-            fill!(parent(rBRk), zero(eltype(parent(rBRk))))
-            fill!(parent(rBIk), zero(eltype(parent(rBIk))))
-        end
-    end
-
     rhsq_arr = parent(rhsq)
     rhsB_arr = parent(rhsB)
     nqk_arr = parent(nqk)
     dqk_arr = parent(dqk)
+    nBk_arr = parent(nBk)
+    rBk_arr = parent(rBk)
     A_arr = parent(S.A)
     alpha_disp = options.f / 2
 
-    if _ybj_plus(options)
-        nBk_arr = parent(nBk)
-        rBk_arr = parent(rBk)
-        @dealiased_wavenumber_loop S.q G L begin
-            rhsq_arr[k, i, j] = _fixed_flow(options) ? zero(eltype(rhsq_arr)) :
-                                    -nqk_arr[k, i, j] + dqk_arr[k, i, j]
-            rhsB_arr[k, i, j] = -nBk_arr[k, i, j] +
-                                 im * alpha_disp * kₕ² * A_arr[k, i, j] -
-                                 0.5im * rBk_arr[k, i, j]
-        end begin
-            rhsq_arr[k, i, j] = 0
-            rhsB_arr[k, i, j] = 0
-        end
-    else
-        nBRk_arr, nBIk_arr = parent(nBRk), parent(nBIk)
-        rBRk_arr, rBIk_arr = parent(rBRk), parent(rBIk)
-        @dealiased_wavenumber_loop S.q G L begin
-            rhsq_arr[k, i, j] = _fixed_flow(options) ? zero(eltype(rhsq_arr)) :
-                                    -nqk_arr[k, i, j] + dqk_arr[k, i, j]
-            rhsBR = -real(nBRk_arr[k, i, j]) -
-                    alpha_disp * kₕ² * imag(A_arr[k, i, j]) -
-                    0.5 * real(rBIk_arr[k, i, j])
-            rhsBI = -real(nBIk_arr[k, i, j]) +
-                    alpha_disp * kₕ² * real(A_arr[k, i, j]) +
-                    0.5 * real(rBRk_arr[k, i, j])
-            rhsB_arr[k, i, j] = complex(rhsBR, rhsBI)
-        end begin
-            rhsq_arr[k, i, j] = 0
-            rhsB_arr[k, i, j] = 0
-        end
+    @dealiased_wavenumber_loop S.q G L begin
+        rhsq_arr[k, i, j] = _fixed_flow(options) ? zero(eltype(rhsq_arr)) :
+                                -nqk_arr[k, i, j] + dqk_arr[k, i, j]
+        rhsB_arr[k, i, j] = -nBk_arr[k, i, j] +
+                             im * alpha_disp * kₕ² * A_arr[k, i, j] -
+                             0.5im * rBk_arr[k, i, j]
+    end begin
+        rhsq_arr[k, i, j] = 0
+        rhsB_arr[k, i, j] = 0
     end
 
     return rhsq, rhsB
@@ -365,23 +319,19 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
         invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
     else
         arrays = _etdrk2_arrays(S, timestep_workspace)
-        split_B_to_real_imag!(arrays.BRk, arrays.BIk, S.B)
         if _linear(options)
-            fill!(parent(arrays.nBRk), zero(eltype(parent(arrays.nBRk))))
-            fill!(parent(arrays.nBIk), zero(eltype(parent(arrays.nBIk))))
+            fill!(parent(arrays.nBk), zero(eltype(parent(arrays.nBk))))
         else
-            convol_waqg!(arrays.nqk, arrays.nBRk, arrays.nBIk,
-                         S.u, S.v, S.q, arrays.BRk, arrays.BIk,
-                         G, plans; Lmask=L)
+            convol_waqg_B!(arrays.nBk, S.u, S.v, S.B,
+                           G, plans; Lmask=L)
         end
-        refraction_waqg!(arrays.rBRk, arrays.rBIk,
-                         arrays.BRk, arrays.BIk, S.psi,
-                         G, plans; Lmask=L)
-        sigma = compute_sigma(options.f, G, arrays.nBRk, arrays.nBIk,
-                              arrays.rBRk, arrays.rBIk;
-                              Lmask=L, N2_profile=N2_profile)
-        compute_A!(S.A, S.C, arrays.BRk, arrays.BIk, sigma, G;
-                   Lmask=L, N2_profile=N2_profile)
+        refraction_waqg_B!(arrays.rBk, S.B, S.psi,
+                           G, plans; Lmask=L)
+        sigma = compute_sigma(options.f, G, arrays.nBk, arrays.rBk;
+                              Lmask=L, workspace)
+        compute_A!(S.A, S.C, S.B, sigma, G;
+                   f=options.f, Lmask=L, workspace,
+                   N2_profile=N2_profile)
     end
     return S
 end

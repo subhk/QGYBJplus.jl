@@ -18,7 +18,7 @@ The nonlinear terms represent:
    - Waves are refracted by gradients in relative vorticity ζ = ∇²ψ
    - This causes wave focusing in anticyclones, defocusing in cyclones
 
-3. WAVE FEEDBACK: qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+3. WAVE FEEDBACK: qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
    - Waves can modify the mean flow through nonlinear wave-wave interactions
    - This is the Xie & Vanneste (2015) wave feedback term
 
@@ -674,14 +674,14 @@ This represents the averaged effect of nonlinear wave-wave interactions
 on the balanced flow (Xie & Vanneste 2015).
 
 For dimensional equations where B has actual velocity units:
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
 
-No additional scaling is needed since B already contains the wave amplitude.
+The factor 1/f₀ converts the quadratic velocity-gradient terms to PV units.
 ================================================================================
 =#
 
 """
-    compute_qw!(qwk, BRk, BIk, G, plans; Lmask=nothing)
+    compute_qw!(qwk, BRk, BIk, G, plans; f, Lmask=nothing)
 
 Compute wave feedback on mean flow: qʷ from wave field B.
 
@@ -693,14 +693,15 @@ interaction in the QG-YBJ+ model.
 # Mathematical Form (Xie & Vanneste 2015)
 For dimensional equations where B has velocity units [m/s]:
 
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
 
 where:
 - B* is the complex conjugate of B
 - J(B*, B) = B*ₓBᵧ - B*ᵧBₓ is the Jacobian
 - |B|² = BR² + BI² is the wave energy density
 
-No W2F scaling is applied since B already has its actual dimensional amplitude.
+No separate wave-amplitude scaling is applied since B already has its actual
+dimensional amplitude. The Coriolis normalization 1/f₀ remains required.
 
 # Decomposition
 Let B = BR + i×BI. Then:
@@ -714,20 +715,25 @@ The final qʷ is real-valued after combining terms.
 - `BRk, BIk`: Wave field components (spectral)
 - `G::RuntimeGeometry`: RuntimeGeometry struct
 - `plans`: FFT plans
+- `f`: Coriolis frequency f₀
 - `Lmask`: Dealiasing mask
 
 # Fortran Correspondence
-This is similar to `compute_qw` in derivatives.f90, but without the W2F scaling
-since we solve dimensional equations where B has actual amplitude.
+This is the dimensional counterpart of `compute_qw` in derivatives.f90. The
+legacy nondimensional amplitude factors are absent, while 1/f₀ is retained.
 
 # Example
 ```julia
-compute_qw!(qw, BR, BI, grid, plans; Lmask=L)
+compute_qw!(qw, BR, BI, grid, plans; f=f₀, Lmask=L)
 # qw now contains wave feedback term
 ```
 """
-function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
+function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans;
+                     f::Real, Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
+    isfinite(f) && !iszero(f) ||
+        throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
+    inv_f = inv(float(f))
 
     # Get underlying arrays
     qʷₖ_arr = parent(qʷₖ)
@@ -775,7 +781,7 @@ function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
     BRₓᵣ_arr = parent(BRₓᵣ); BRᵧᵣ_arr = parent(BRᵧᵣ)
     BIₓᵣ_arr = parent(BIₓᵣ); BIᵧᵣ_arr = parent(BIᵧᵣ)
 
-    #= Compute (i/2)J(B*, B) term
+    #= Compute the unscaled (i/2)J(B*, B) term
     J(B*, B) = 2i(BRₓBIᵧ - BRᵧBIₓ)  [purely imaginary]
     So (i/2)J(B*, B) = i² × (BRₓBIᵧ - BRᵧBIₓ) = -(BRₓBIᵧ - BRᵧBIₓ) = BRᵧBIₓ - BRₓBIᵧ =#
     qʷᵣ = _allocate_fft_dst(qʷₖ, plans)
@@ -807,7 +813,7 @@ function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
     tempₖ_arr = parent(tempₖ)
 
     #= Assemble qʷ in spectral space
-    qʷ = J_term + (1/4)∇²|B|²
+    qʷ = (1/f₀) [J_term + (1/4)∇²|B|²]
     where ∇² → -kₕ² in spectral space =#
     fft_forward!(qʷₖ, qʷᵣ, plans)
     qʷₖ_arr = parent(qʷₖ)
@@ -824,9 +830,9 @@ function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
         kₕ² = kₓ^2 + kᵧ^2
       
         if should_keep(i_global, j_global)
-            # qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
-            # For dimensional equations, B has actual amplitude - no W2F scaling needed
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            qʷₖ_arr[k, i_local, j_local] = inv_f *
+                (qʷₖ_arr[k, i_local, j_local] -
+                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end
@@ -836,12 +842,16 @@ function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
 end
 
 """
-    compute_qw_complex!(qʷₖ, Bk, G, plans; Lmask=nothing)
+    compute_qw_complex!(qʷₖ, Bk, G, plans; f, Lmask=nothing)
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 """
-function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans; Lmask=nothing)
+function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
+                             f::Real, Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
+    isfinite(f) && !iszero(f) ||
+        throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
+    inv_f = inv(float(f))
 
     qʷₖ_arr = parent(qʷₖ)
 
@@ -912,7 +922,9 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans; Lmask=nothin
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
         if should_keep(i_global, j_global)
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            qʷₖ_arr[k, i_local, j_local] = inv_f *
+                (qʷₖ_arr[k, i_local, j_local] -
+                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end

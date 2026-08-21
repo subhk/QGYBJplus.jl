@@ -378,25 +378,19 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
         use_wave_feedback=true)
 
     arrays = _etdrk2_arrays(fields, nothing)
-    split_B_to_real_imag!(arrays.BRk, arrays.BIk, fields.B)
     if _linear(options)
-        fill!(parent(arrays.nBRk), zero(eltype(parent(arrays.nBRk))))
-        fill!(parent(arrays.nBIk), zero(eltype(parent(arrays.nBIk))))
+        fill!(parent(arrays.nBk), zero(eltype(parent(arrays.nBk))))
     else
-        convol_waqg!(arrays.nqk, arrays.nBRk, arrays.nBIk,
-            fields.u, fields.v, fields.q, arrays.BRk, arrays.BIk,
+        convol_waqg_B!(arrays.nBk, fields.u, fields.v, fields.B,
             context.grid, context.plans; Lmask=mask)
     end
-    refraction_waqg!(arrays.rBRk, arrays.rBIk,
-        arrays.BRk, arrays.BIk, fields.psi,
+    refraction_waqg_B!(arrays.rBk, fields.B, fields.psi,
         context.grid, context.plans; Lmask=mask)
     sigma = compute_sigma(context.f, context.grid,
-        arrays.nBRk, arrays.nBIk, arrays.rBRk, arrays.rBIk;
-        Lmask=mask, workspace=context.workspace,
-        N2_profile=context.N2)
-    compute_A!(fields.A, fields.C, arrays.BRk, arrays.BIk,
-        sigma, context.grid;
-        Lmask=mask, workspace=context.workspace,
+        arrays.nBk, arrays.rBk;
+        Lmask=mask, workspace=context.workspace)
+    compute_A!(fields.A, fields.C, fields.B, sigma, context.grid;
+        f=context.f, Lmask=mask, workspace=context.workspace,
         N2_profile=context.N2)
     return fields
 end

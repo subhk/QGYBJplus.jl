@@ -19,13 +19,18 @@ QGYBJ+.jl simulates the interaction between mesoscale eddies and near-inertial w
 
 ### QG Potential Vorticity
 ```math
-\frac{\partial q}{\partial t} + J(\psi, q) + J(\psi, q^w) = \text{dissipation}
+\frac{\partial q}{\partial t} + J(\psi, q) = \text{dissipation}
 ```
-where ``q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2}``
+where the prognostic total PV is
+``q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2} + q^w``.
+The wave contribution is diagnosed from ``B`` and removed from ``q`` only for
+streamfunction inversion.
 
 ### YBJ+ Wave Envelope
 ```math
-\frac{\partial B}{\partial t} + J(\psi, B) = i\frac{k_h^2}{2 \cdot Bu \cdot Ro} A + \frac{1}{2}\zeta B + \text{dissipation}
+\frac{\partial B}{\partial t} + J(\psi, B)
+= -\frac{i}{2}\zeta B - \frac{if_0}{2}\nabla_h^2 A
++ \text{dissipation}
 ```
 where ``B = L^+ A`` and A is recovered via elliptic inversion.
 
@@ -34,8 +39,8 @@ where ``B = L^+ A`` and A is recovered via elliptic inversion.
 | Process | Term | Effect |
 |:--------|:-----|:-------|
 | Advection | ``J(\psi, B)`` | Waves carried by flow |
-| Refraction | ``\frac{1}{2}\zeta B`` | Waves focus in anticyclones |
-| Dispersion | ``i k_h^2 A`` | Horizontal spreading |
+| Refraction | ``-(i/2)\zeta B`` | Waves focus in anticyclones |
+| Dispersion | ``-(if_0/2)\nabla_h^2 A`` | Horizontal spreading |
 
 !!! tip "Wave Trapping"
     Effective frequency ``f_{\text{eff}} = f_0 + \zeta/2``. In anticyclones (ζ < 0), waves slow and accumulate.
