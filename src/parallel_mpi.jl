@@ -275,11 +275,16 @@ end
 # Two-step transpose using PencilArrays' built-in MPI transpose.
 # We keep a cached xz-pencil buffer to satisfy the "one-dimension-at-a-time" rule.
 #
-# IMPORTANT: Use WeakRef to avoid keeping arrays alive that have been garbage collected.
-# The cache is keyed by (decomposition tuple, global dims, element type) instead of objectid,
-# to avoid issues with objectid reuse after garbage collection.
-const _transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, Any}()
-const _plan_transpose_buffer_cache = Dict{Tuple{Any, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, Any}()
+# PencilArrays topologies compare structurally but hash by identity, so storing a
+# topology directly in a Dict key can intermittently alias equal-shaped model
+# runtimes. Key by object identity and keep only a weak reference to each buffer.
+# A live buffer retains its topology, which prevents objectid reuse; a collected
+# buffer is validated and replaced before use.
+const _transpose_buffer_cache = Dict{
+    Tuple{UInt, Tuple{Int,Int}, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType},
+    WeakRef}()
+const _plan_transpose_buffer_cache = Dict{
+    Tuple{UInt, Tuple{Int,Int}, NTuple{3,Int}, Any, DataType}, WeakRef}()
 const _buffer_cache_lock = ReentrantLock()
 
 @inline function _decomp_diff_count(a::NTuple{2, Int}, b::NTuple{2, Int})
@@ -298,6 +303,18 @@ function _intermediate_decomp(src::NTuple{2, Int}, dst::NTuple{2, Int})
     return nothing
 end
 
+function _transpose_buffer_key(src::PencilArray, dst::PencilArray,
+                               ::Type{T}) where T
+    src_p = pencil(src)
+    dst_p = pencil(dst)
+    src_decomp = decomposition(src_p)
+    dst_decomp = decomposition(dst_p)
+    dims = PencilArrays.size_global(src_p)
+    topo = PencilArrays.topology(src_p)
+    perm = permutation(src_p)
+    return (objectid(topo), src_decomp, dst_decomp, dims, perm, T)
+end
+
 function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) where T
     src_p = pencil(src)
     dst_p = pencil(dst)
@@ -307,21 +324,25 @@ function _get_transpose_buffer(src::PencilArray, dst::PencilArray, ::Type{T}) wh
     topo = PencilArrays.topology(src_p)
     perm = permutation(src_p)
 
-    # Use stable key based on decomposition and dimensions, not objectid
-    key = (topo, src_decomp, dst_decomp, dims, perm, T)
+    key = _transpose_buffer_key(src, dst, T)
 
-    lock(_buffer_cache_lock) do
-        if !haskey(_transpose_buffer_cache, key)
+    buffer = lock(_buffer_cache_lock) do
+        reference = get(_transpose_buffer_cache, key, nothing)
+        cached = reference === nothing ? nothing : reference.value
+        if cached === nothing ||
+           PencilArrays.topology(pencil(cached)) !== topo
             mid_decomp = _intermediate_decomp(src_decomp, dst_decomp)
             if mid_decomp === nothing
                 error("Cannot construct intermediate pencil between decompositions " *
                       "$src_decomp and $dst_decomp.")
             end
             mid_pencil = Pencil(topo, dims, mid_decomp; permute=perm)
-            _transpose_buffer_cache[key] = PencilArray{T}(undef, mid_pencil)
+            cached = PencilArray{T}(undef, mid_pencil)
+            _transpose_buffer_cache[key] = WeakRef(cached)
         end
+        cached
     end
-    return _transpose_buffer_cache[key]::PencilArray{T}
+    return buffer::PencilArray{T}
 end
 
 # Note: _get_plan_transpose_buffer is defined after MPIPlans struct (see below)
@@ -491,6 +512,14 @@ struct MPIPlans{P, PI, PO}
 end
 
 # Buffer cache for plan transpose operations (defined here since MPIPlans is now available)
+function _plan_transpose_buffer_key(plans::MPIPlans, ::Type{T}) where T
+    dims = PencilArrays.size_global(plans.input_pencil)
+    input_decomp = decomposition(plans.input_pencil)
+    topo = PencilArrays.topology(plans.input_pencil)
+    perm = permutation(plans.input_pencil)
+    return (objectid(topo), input_decomp, dims, perm, T)
+end
+
 function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
     if PencilArrays.topology(plans.input_pencil) !== PencilArrays.topology(plans.output_pencil)
         error("PencilFFTs plan input/output topologies differ. " *
@@ -501,16 +530,20 @@ function _get_plan_transpose_buffer(plans::MPIPlans, ::Type{T}) where T
     topo = PencilArrays.topology(plans.input_pencil)
     perm = permutation(plans.input_pencil)
 
-    # Use stable key based on decomposition and dimensions, not objectid
-    key = (topo, input_decomp, dims, perm, T)
+    key = _plan_transpose_buffer_key(plans, T)
 
-    lock(_buffer_cache_lock) do
-        if !haskey(_plan_transpose_buffer_cache, key)
+    buffer = lock(_buffer_cache_lock) do
+        reference = get(_plan_transpose_buffer_cache, key, nothing)
+        cached = reference === nothing ? nothing : reference.value
+        if cached === nothing ||
+           PencilArrays.topology(pencil(cached)) !== topo
             pencil_xz = Pencil(topo, dims, (1, 3); permute=perm)
-            _plan_transpose_buffer_cache[key] = PencilArray{T}(undef, pencil_xz)
+            cached = PencilArray{T}(undef, pencil_xz)
+            _plan_transpose_buffer_cache[key] = WeakRef(cached)
         end
+        cached
     end
-    return _plan_transpose_buffer_cache[key]::PencilArray{T}
+    return buffer::PencilArray{T}
 end
 
 # Plan-based transpose functions (defined after MPIPlans)

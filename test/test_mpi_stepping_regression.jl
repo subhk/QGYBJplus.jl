@@ -142,6 +142,43 @@ try
     )
     explicit_workspace = preallocated.timestepper.workspace
 
+    @testset "Runtime-local transpose cache identity" begin
+        lazy_key = QGYBJplus._transpose_buffer_key(
+            lazy_model.fields.q,
+            lazy_model.runtime.workspace.q_z,
+            eltype(lazy_model.fields.q),
+        )
+        preallocated_key = QGYBJplus._transpose_buffer_key(
+            preallocated_model.fields.q,
+            preallocated_model.runtime.workspace.q_z,
+            eltype(preallocated_model.fields.q),
+        )
+        lazy_plan_key = QGYBJplus._plan_transpose_buffer_key(
+            lazy_model.runtime.plans, eltype(lazy_model.fields.q))
+        preallocated_plan_key = QGYBJplus._plan_transpose_buffer_key(
+            preallocated_model.runtime.plans,
+            eltype(preallocated_model.fields.q))
+        lazy_buffer = QGYBJplus._get_transpose_buffer(
+            lazy_model.fields.q,
+            lazy_model.runtime.workspace.q_z,
+            eltype(lazy_model.fields.q),
+        )
+        preallocated_buffer = QGYBJplus._get_transpose_buffer(
+            preallocated_model.fields.q,
+            preallocated_model.runtime.workspace.q_z,
+            eltype(preallocated_model.fields.q),
+        )
+        lazy_plan_buffer = QGYBJplus._get_plan_transpose_buffer(
+            lazy_model.runtime.plans, eltype(lazy_model.fields.q))
+        preallocated_plan_buffer = QGYBJplus._get_plan_transpose_buffer(
+            preallocated_model.runtime.plans,
+            eltype(preallocated_model.fields.q))
+        @test !isequal(lazy_key, preallocated_key)
+        @test !isequal(lazy_plan_key, preallocated_plan_key)
+        @test lazy_buffer !== preallocated_buffer
+        @test lazy_plan_buffer !== preallocated_plan_buffer
+    end
+
     run!(lazy)
     run!(preallocated)
 
