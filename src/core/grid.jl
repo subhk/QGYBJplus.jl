@@ -30,6 +30,81 @@ struct RectilinearGrid{T}
     kh2::Matrix{T}
 end
 
+"""
+    RuntimeGeometry(base, kh2, decomposition)
+
+Runtime-local spectral metadata derived from a [`RectilinearGrid`](@ref).
+Global geometry remains owned exactly once by `base`; only the distributed
+horizontal wavenumber field and decomposition live here.
+"""
+struct RuntimeGeometry{G, K, D}
+    base::G
+    kh2::K
+    decomposition::D
+end
+
+@inline function Base.getproperty(geometry::RuntimeGeometry, name::Symbol)
+    name === :base && return getfield(geometry, :base)
+    name === :kh2 && return getfield(geometry, :kh2)
+    name === :decomposition && return getfield(geometry, :decomposition)
+
+    base = getfield(geometry, :base)
+    name === :nx && return base.size[1]
+    name === :ny && return base.size[2]
+    name === :nz && return base.size[3]
+    name === :Lx && return base.extent[1]
+    name === :Ly && return base.extent[2]
+    name === :Lz && return base.extent[3]
+    name === :x0 && return base.origin[1]
+    name === :y0 && return base.origin[2]
+    name === :dx && return base.dx
+    name === :dy && return base.dy
+    name === :dz && return base.dz
+    name === :x && return base.x
+    name === :y && return base.y
+    name === :z && return base.z
+    name === :kx && return base.kx
+    name === :ky && return base.ky
+    return getfield(geometry, name)
+end
+
+Base.propertynames(::RuntimeGeometry, private::Bool=false) =
+    (:base, :kh2, :decomposition, :nx, :ny, :nz, :Lx, :Ly, :Lz,
+     :x0, :y0, :dx, :dy, :dz, :x, :y, :z, :kx, :ky)
+
+get_local_range(geometry::RectilinearGrid) =
+    (1:geometry.size[3], 1:geometry.size[1], 1:geometry.size[2])
+get_local_range(geometry::RuntimeGeometry) =
+    geometry.decomposition === nothing ? get_local_range(geometry.base) :
+                                         geometry.decomposition.local_range_xy
+
+@inline local_to_global(index::Int, dimension::Int,
+                        ::AbstractArray) = index
+@inline function local_to_global(index::Int, dimension::Int,
+                                 array::PencilArray)
+    ranges = PencilArrays.range_local(PencilArrays.pencil(array))
+    return ranges[dimension][index]
+end
+@inline local_to_global(index::Int, dimension::Int,
+                        ::RectilinearGrid) = index
+@inline function local_to_global(index::Int, dimension::Int,
+                                 geometry::RuntimeGeometry)
+    return get_local_range(geometry)[dimension][index]
+end
+
+get_local_dims(array) = size(parent(array))
+is_parallel_array(array) = array isa PencilArray
+
+@inline get_kx(index::Int, geometry::RuntimeGeometry) =
+    geometry.kx[local_to_global(index, 2, geometry)]
+@inline get_ky(index::Int, geometry::RuntimeGeometry) =
+    geometry.ky[local_to_global(index, 3, geometry)]
+@inline function get_kh2(i::Int, j::Int, k::Int, array,
+                         geometry::RuntimeGeometry)
+    geometry.decomposition === nothing && return geometry.kh2[i, j]
+    return real(parent(geometry.kh2)[k, i, j])
+end
+
 function _grid_bounds(bounds, name::String)
     bounds isa Tuple && length(bounds) == 2 ||
         throw(ArgumentError("$name must be a two-element tuple"))

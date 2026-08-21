@@ -51,7 +51,7 @@ FORTRAN CORRESPONDENCE:
 
 module Diagnostics
 
-using ..QGYBJplus: Grid
+using ..QGYBJplus: RuntimeGeometry
 using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
 using ..QGYBJplus: local_to_global, z_is_local
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
@@ -122,7 +122,7 @@ Strong RHS forcing occurs where:
 # Arguments
 - `rhs::Array{Complex,3}`: Output RHS array (modified in-place)
 - `psi::Array{Complex,3}`: Spectral streamfunction
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
@@ -133,9 +133,9 @@ Modified rhs array with the omega equation forcing.
 # Fortran Correspondence
 Matches `omega_eqn_rhs` computation in the Fortran implementation.
 """
-function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing, workspace=nothing)
+function omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(psi, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(psi, G)
 
     if need_transpose
         _omega_eqn_rhs_2d!(rhs, psi, G, plans, Lmask, workspace)
@@ -146,7 +146,7 @@ function omega_eqn_rhs!(rhs, psi, G::Grid, plans; Lmask=nothing, workspace=nothi
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
+function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -226,7 +226,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::Grid, plans, Lmask)
 end
 
 # 2D decomposition version with transposes
-function _omega_eqn_rhs_2d!(rhs, psi, G::Grid, plans, Lmask, workspace)
+function _omega_eqn_rhs_2d!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -393,8 +393,8 @@ The total KE integrates over z with density weighting:
 
 # Arguments
 - `uk, vk`: Spectral velocity fields (complex)
-- `G::Grid`: Grid structure
-- `par`: QGParams (for density profiles)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider for density profiles
 - `Lmask`: Optional dealiasing mask (default: all modes included)
 
 # Returns
@@ -407,7 +407,7 @@ and `energy_linear` (diagnostics.f90:3024-3107).
 # Note
 In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global total.
 """
-function flow_kinetic_energy_spectral(uk, vk, G::Grid, par; Lmask=nothing)
+function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
 
@@ -476,8 +476,8 @@ For QG: b = ψ_z, so PE represents available potential energy from isopycnal til
 
 # Arguments
 - `bk`: Spectral buoyancy field (complex)
-- `G::Grid`: Grid structure
-- `par`: QGParams (for f0, N2 and density profiles)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider for Coriolis, stratification, and density
 - `Lmask`: Optional dealiasing mask
 
 # Returns
@@ -486,7 +486,7 @@ Total potential energy, normalized by nz, with density weighting.
 # Fortran Correspondence
 Matches the potential energy computation in `diag_zentrum` (ps term).
 """
-function flow_potential_energy_spectral(bk, G::Grid, par; Lmask=nothing)
+function flow_potential_energy_spectral(bk, G::RuntimeGeometry, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
 
@@ -589,7 +589,7 @@ This function returns the vertical average:
 In MPI mode with 2D decomposition, this returns LOCAL data only.
 For full domain visualization, gather data to root first.
 """
-function wave_energy_vavg(B, G::Grid, plans)
+function wave_energy_vavg(B, G::RuntimeGeometry, plans)
     nz = G.nz
 
     # Get local dimensions
@@ -638,7 +638,7 @@ slice at LOCAL vertical index k.
 
 # Arguments
 - `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `k::Int`: LOCAL vertical index for slice (1 ≤ k ≤ nz_local)
 
@@ -649,7 +649,7 @@ slice at LOCAL vertical index k.
 In MPI mode with 2D decomposition, k is a LOCAL index.
 For full domain slices, gather data to root first.
 """
-function slice_horizontal(field, G::Grid, plans; k::Int)
+function slice_horizontal(field, G::RuntimeGeometry, plans; k::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Inverse FFT entire field to get real slice
@@ -687,7 +687,7 @@ slice at LOCAL y-index j.
 
 # Arguments
 - `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `j::Int`: LOCAL Y-index for slice (1 ≤ j ≤ ny_local)
 
@@ -698,7 +698,7 @@ slice at LOCAL y-index j.
 In MPI mode with 2D decomposition, j is a LOCAL index.
 For full domain slices, gather data to root first.
 """
-function slice_vertical_xz(field, G::Grid, plans; j::Int)
+function slice_vertical_xz(field, G::RuntimeGeometry, plans; j::Int)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     Xr = _allocate_fft_dst(field, plans)
@@ -801,8 +801,8 @@ Three components of wave energy:
 - `BR, BI`: Real and imaginary parts of wave envelope B (spectral)
 - `AR, AI`: Real and imaginary parts of wave amplitude A (spectral)
 - `CR, CI`: Real and imaginary parts of C = ∂A/∂z (spectral)
-- `G::Grid`: Grid structure
-- `par`: QGParams (for f0, N2)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider for Coriolis and stratification
 - `Lmask`: Optional dealiasing mask
 
 # Returns
@@ -814,7 +814,7 @@ Matches `wave_energy` subroutine in diagnostics.f90 (lines 647-743).
 # Note
 In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global totals.
 """
-function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothing)
+function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
 
@@ -844,7 +844,7 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothin
         ones(Float64, nz)
     end
 
-    # Grid spacing for vertical derivative
+    # RuntimeGeometry spacing for vertical derivative
     Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
 
     # Accumulate energy
@@ -1034,15 +1034,15 @@ Compute GLOBAL kinetic energy in spectral space across all MPI processes.
 
 # Arguments
 - `uk, vk`: Spectral velocity fields (local portion in MPI mode)
-- `G::Grid`: Grid structure
-- `par`: QGParams
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider
 - `Lmask`: Optional dealiasing mask
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
 Global kinetic energy with dealiasing and density weighting.
 """
-function flow_kinetic_energy_spectral_global(uk, vk, G::Grid, par; Lmask=nothing, mpi_config=nothing)
+function flow_kinetic_energy_spectral_global(uk, vk, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
     KE_local = flow_kinetic_energy_spectral(uk, vk, G, par; Lmask=Lmask)
 
     if mpi_config === nothing
@@ -1059,15 +1059,15 @@ Compute GLOBAL potential energy in spectral space across all MPI processes.
 
 # Arguments
 - `bk`: Spectral buoyancy field (local portion in MPI mode)
-- `G::Grid`: Grid structure
-- `par`: QGParams
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider
 - `Lmask`: Optional dealiasing mask
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
 Global potential energy with dealiasing and density weighting.
 """
-function flow_potential_energy_spectral_global(bk, G::Grid, par; Lmask=nothing, mpi_config=nothing)
+function flow_potential_energy_spectral_global(bk, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
     PE_local = flow_potential_energy_spectral(bk, G, par; Lmask=Lmask)
 
     if mpi_config === nothing
@@ -1084,15 +1084,15 @@ Compute GLOBAL wave energies in spectral space across all MPI processes.
 
 # Arguments
 - `BR, BI, AR, AI, CR, CI`: Spectral wave fields (local portions in MPI mode)
-- `G::Grid`: Grid structure
-- `par`: QGParams
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `par`: Coefficient provider
 - `Lmask`: Optional dealiasing mask
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
 Tuple (WKE, WPE, WCE) of global wave energy components.
 """
-function wave_energy_spectral_global(BR, BI, AR, AI, CR, CI, G::Grid, par; Lmask=nothing, mpi_config=nothing)
+function wave_energy_spectral_global(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
     WKE_local, WPE_local, WCE_local = wave_energy_spectral(BR, BI, AR, AI, CR, CI, G, par; Lmask=Lmask)
 
     if mpi_config === nothing

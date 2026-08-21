@@ -64,10 +64,13 @@ using QGYBJplus
             @test parent(model.fields.B) ≈ B_saved
             @test simulation.output_manager.closed
 
-            expected_flow_energy = flow_kinetic_energy_global(
-                model.fields.u, model.fields.v, model.runtime.mpi)
-            expected_wave_energy = wave_energy_global(
-                model.fields.B, model.fields.A, model.runtime.mpi)
+            expected_flow_energy = 0.5 * sum(
+                abs2.(parent(model.fields.u)) .+
+                abs2.(parent(model.fields.v)))
+            expected_wave_energy = (
+                sum(abs2, parent(model.fields.B)),
+                sum(abs2, parent(model.fields.A)),
+            )
             @test flow_kinetic_energy(model) ≈ expected_flow_energy
             model_wave_energy = wave_energy(model)
             @test first(model_wave_energy) ≈ first(expected_wave_energy)

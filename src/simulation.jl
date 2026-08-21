@@ -7,8 +7,6 @@ _model(model::QGYBJModel) = model
 _model(simulation::Simulation) = simulation.model
 
 _runtime(model::QGYBJModel) = model.runtime
-_computational_grid(model::QGYBJModel) = model.runtime.computational_grid
-_parameters(model::QGYBJModel) = model.runtime.parameters
 
 is_root(simulation::Simulation) = is_root(simulation.model)
 nprocs(simulation::Simulation) = nprocs(simulation.model)
@@ -105,77 +103,6 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     return _configure_output!(simulation; output, diagnostics, verbose)
 end
 
-"""
-    initialize_simulation(; kwargs...)
-
-Temporary keyword boundary for the pre-composition setup vocabulary. It now
-returns a distinct `Simulation` containing a real `QGYBJModel`.
-"""
-function initialize_simulation(;
-    nx::Int, ny::Int, nz::Int,
-    Lx::Real, Ly::Real, Lz::Real,
-    centered::Bool=false,
-    x0::Union{Real, Nothing}=nothing,
-    y0::Union{Real, Nothing}=nothing,
-    f₀::Real=1e-4,
-    N²::Real=1e-5,
-    stratification_profile=nothing,
-    dt::Real=1.0,
-    nt::Int=1000,
-    ybj_plus::Bool=true,
-    fixed_flow::Bool=false,
-    no_feedback::Union{Bool, Nothing}=nothing,
-    no_wave_feedback::Bool=false,
-    νₕ₁::Real=0.01,
-    νₕ₂::Real=10.0,
-    ilap1::Int=2,
-    ilap2::Int=6,
-    νₕ₁ʷ::Real=0.0,
-    νₕ₂ʷ::Real=10.0,
-    ilap1w::Int=2,
-    ilap2w::Int=6,
-    topology=nothing,
-    parallel_io::Bool=false,
-    verbose::Bool=true)
-
-    if centered && (x0 !== nothing || y0 !== nothing)
-        throw(ArgumentError("centered=true cannot be combined with x0 or y0"))
-    end
-    x_bounds = x0 === nothing ? nothing : (x0, x0 + Lx)
-    y_bounds = y0 === nothing ? nothing : (y0, y0 + Ly)
-    grid = RectilinearGrid(size=(nx, ny, nz), extent=(Lx, Ly, Lz),
-                           x=x_bounds, y=y_bounds, centered=centered)
-
-    feedback = if no_feedback === true ||
-                  (no_feedback === nothing && no_wave_feedback)
-        NoFeedback()
-    elseif no_wave_feedback
-        NoWaveFeedback()
-    else
-        WaveMeanFeedback()
-    end
-    stratification = stratification_profile === nothing ?
-                     ConstantStratification(N²=N²) : stratification_profile
-    closure = HorizontalHyperdiffusivity(
-        flow=νₕ₁, flow2=νₕ₂,
-        flow_laplacian_order=ilap1, flow_laplacian_order2=ilap2,
-        waves=νₕ₁ʷ, waves2=νₕ₂ʷ,
-        wave_laplacian_order=ilap1w, wave_laplacian_order2=ilap2w)
-
-    model = QGYBJModel(
-        grid=grid,
-        coriolis=FPlane(f=f₀),
-        stratification=stratification,
-        closure=closure,
-        flow=fixed_flow ? FixedFlow() : EvolvingFlow(),
-        feedback=feedback,
-        formulation=ybj_plus ? YBJPlus() : YBJ(),
-        topology=topology,
-        parallel_io=parallel_io,
-        verbose=verbose)
-    return Simulation(model; Δt=dt, stop_iteration=nt, verbose=verbose)
-end
-
 """Set the balanced streamfunction and derive potential vorticity."""
 function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     psi_func=nothing,
@@ -189,7 +116,7 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     model = _model(owner)
     runtime = model.runtime
     runtime.finalized && error("cannot modify a finalized model")
-    grid = runtime.computational_grid
+    grid = runtime.geometry
     geometry = model.grid
     fields = model.fields
     plans = runtime.plans
@@ -256,7 +183,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     model = _model(owner)
     runtime = model.runtime
     runtime.finalized && error("cannot modify a finalized model")
-    grid = runtime.computational_grid
+    grid = runtime.geometry
     geometry = model.grid
     fields = model.fields
     plans = runtime.plans
@@ -333,7 +260,7 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
 
     model = _model(owner)
     runtime = model.runtime
-    grid = runtime.computational_grid
+    grid = runtime.geometry
     z_c = z_center === nothing ? grid.Lz / 2 : z_center
     z_w = z_width === nothing ? grid.Lz / 4 : z_width
     0 <= z_c <= grid.Lz ||

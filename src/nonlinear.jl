@@ -45,7 +45,7 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep.
 
 module Nonlinear
 
-using ..QGYBJplus: Grid, HorizontalHyperdiffusivity, local_to_global, z_is_local
+using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity, local_to_global, z_is_local
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
@@ -59,7 +59,7 @@ const PARENT = Base.parentmodule(@__MODULE__)
 const _allocate_fft_dst = allocate_fft_backward_dst
 
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.
-function _prefilter_spectral!(dst, src, G::Grid, Lmask)
+function _prefilter_spectral!(dst, src, G::RuntimeGeometry, Lmask)
     nx, ny = G.nx, G.ny
     src_arr = parent(src)
     dst_arr = parent(dst)
@@ -118,7 +118,7 @@ In vector form: J(φ, χ) = ẑ · (∇φ × ∇χ)
 - `dstk`: Output array for Ĵ(φ, χ) in spectral space
 - `phik`: φ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
 - `chik`: χ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
-- `G::Grid`: Grid with wavenumber arrays
+- `G::RuntimeGeometry`: RuntimeGeometry with wavenumber arrays
 - `plans`: FFT plans from plan_transforms!
 - `Lmask`: Optional 2/3 dealiasing mask (true = keep mode, false = zero)
 
@@ -133,7 +133,7 @@ so the physical derivatives are extracted via `real()`.
 jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
-function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
+function jacobian_spectral!(dstk, φₖ, χₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -262,7 +262,7 @@ where u, v are the geostrophic velocities (in real space).
 - `nqk, nBRk, nBIk`: Output arrays (spectral)
 - `u, v`: Real-space velocity arrays (precomputed)
 - `qk, BRk, BIk`: Input fields (spectral)
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `plans`: FFT plans
 - `Lmask`: Dealiasing mask (true = keep mode, false = zero)
 
@@ -280,7 +280,7 @@ This matches `convol_waqg` in derivatives.f90.
 # Note
 The velocities u, v should be precomputed and passed in real space.
 """
-function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask=nothing)
+function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -401,7 +401,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
 end
 
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
-function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_real::Bool=false)
+function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans; Lmask=nothing, use_real::Bool=false)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     u_arr = parent(u); v_arr = parent(v)
@@ -455,7 +455,7 @@ end
 
 Compute advection of q using divergence form without splitting wave fields.
 """
-function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing)
+function convol_waqg_q!(nqk, u, v, qk, G::RuntimeGeometry, plans; Lmask=nothing)
     return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask, use_real=true)
 end
 
@@ -464,7 +464,7 @@ end
 
 Compute advection of complex B directly (YBJ+ path).
 """
-function convol_waqg_B!(nBk, u, v, Bk, G::Grid, plans; Lmask=nothing)
+function convol_waqg_B!(nBk, u, v, Bk, G::RuntimeGeometry, plans; Lmask=nothing)
     return _convol_advect!(nBk, u, v, Bk, G, plans; Lmask=Lmask, use_real=false)
 end
 
@@ -521,7 +521,7 @@ refraction_waqg!(rBR, rBI, BR, BI, psi, grid, plans; Lmask=L)
 # rBR, rBI now contain the refraction tendencies
 ```
 """
-function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -605,7 +605,7 @@ end
 
 Compute wave refraction term ζ*B directly for complex B (YBJ+ path).
 """
-function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψₖ)
@@ -712,7 +712,7 @@ The final qʷ is real-valued after combining terms.
 # Arguments
 - `qwk`: Output array for q̂ʷ (spectral)
 - `BRk, BIk`: Wave field components (spectral)
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `plans`: FFT plans
 - `Lmask`: Dealiasing mask
 
@@ -726,7 +726,7 @@ compute_qw!(qw, BR, BI, grid, plans; Lmask=L)
 # qw now contains wave feedback term
 ```
 """
-function compute_qw!(qʷₖ, BRk, BIk, G::Grid, plans; Lmask=nothing)
+function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -840,7 +840,7 @@ end
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 """
-function compute_qw_complex!(qʷₖ, Bk, G::Grid, plans; Lmask=nothing)
+function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     qʷₖ_arr = parent(qʷₖ)
@@ -956,7 +956,7 @@ Boundary points (Neumann):
 - `dqk`: Output array for diffusion term
 - `qok`: Input q field at the current Runge-Kutta stage
 - `vertical_diffusivity`: Scalar vertical diffusivity coefficient
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Note
@@ -966,12 +966,12 @@ so the operation is the same for each (kx, ky) mode.
 # Fortran Correspondence
 This matches `dissipation_q_nv` in derivatives.f90.
 """
-function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::Grid;
+function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::RuntimeGeometry;
     workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(qok, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(qok, G)
 
     if need_transpose
         _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G, workspace)
@@ -985,7 +985,7 @@ end
 """
 Direct vertical diffusion for serial or 1D decomposition (z fully local).
 """
-function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::Grid)
+function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry)
     nz = G.nz
 
     # Get underlying arrays
@@ -1024,7 +1024,7 @@ end
 """
 2D decomposition vertical diffusion with transposes.
 """
-function _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G::Grid, workspace)
+function _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry, workspace)
     nz = G.nz
 
     # Handle nz=1 case: no vertical diffusion possible with single layer

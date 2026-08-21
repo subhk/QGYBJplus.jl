@@ -6,7 +6,7 @@ function UnifiedParticleAdvection.ParticleTracker(
     runtime.finalized && error("cannot attach particles to a finalized model")
     return UnifiedParticleAdvection.ParticleTracker(
         configuration,
-        runtime.computational_grid,
+        runtime.geometry,
         runtime.mpi;
         plans=runtime.plans,
         model=model,
@@ -51,10 +51,11 @@ function UnifiedParticleAdvection.advect_particles!(
     UnifiedParticleAdvection.advect_particles!(
         tracker,
         model.fields,
-        runtime.computational_grid,
+        runtime.geometry,
         value,
         current_time;
-        params=runtime.parameters,
+        f=model.physics.coriolis.f,
+        N2=first(runtime.coefficients.N²),
         N2_profile=runtime.coefficients.N²,
     )
     return model

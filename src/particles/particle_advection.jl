@@ -42,7 +42,7 @@ module UnifiedParticleAdvection
 
 # Bind names from parent module (QGYBJplus) without using/import
 const _PARENT = Base.parentmodule(@__MODULE__)
-const Grid = _PARENT.Grid
+const RuntimeGeometry = _PARENT.RuntimeGeometry
 const ModelFields = _PARENT.ModelFields
 const plan_transforms! = _PARENT.plan_transforms!
 const compute_total_velocities! = _PARENT.compute_total_velocities!
@@ -245,7 +245,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     particles::ParticleState{T}
     model::Any
     
-    # Grid information
+    # RuntimeGeometry information
     nx::Int; ny::Int; nz::Int
     Lx::T; Ly::T; Lz::T
     x0::T; y0::T
@@ -288,7 +288,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     base_output_filename::String       # Base filename for automatic file splitting
     auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid,
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::RuntimeGeometry,
                                 parallel_config=nothing;
                                 plans=nothing, model=nothing) where T
         np = config.nx_particles * config.ny_particles
@@ -347,7 +347,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.x0, grid.y0,
-            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
+            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz,
             u_field, v_field, w_field, transform_plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
@@ -360,7 +360,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing;
+ParticleTracker(config::ParticleConfig{T}, grid::RuntimeGeometry, parallel_config=nothing;
                 kwargs...) where T =
     ParticleTracker{T}(config, grid, parallel_config; kwargs...)
 
@@ -381,7 +381,7 @@ Helper function to set up halo exchange system.
                           - QUINTIC:   3 halo cells
                           - ADAPTIVE:  3 halo cells (supports all schemes)
 """
-function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
+function setup_halo_exchange_for_grid(grid::RuntimeGeometry, rank::Int, nprocs::Int, comm, ::Type{T};
                                      local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
                                      process_grid::Union{Nothing,Tuple{Int,Int}}=nothing,
                                      periodic_x::Bool=true,
@@ -436,12 +436,12 @@ end
 
 Compute local domain bounds for MPI rank (1D or 2D decomposition).
 """
-function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothing)
+function compute_local_domain(grid::RuntimeGeometry, rank::Int, nprocs::Int; topology=nothing)
     # Determine process grid (px × py)
     px, py = if topology !== nothing
         topology
-    elseif grid.decomp !== nothing && hasfield(typeof(grid.decomp), :topology)
-        grid.decomp.topology
+    elseif grid.decomposition !== nothing && hasfield(typeof(grid.decomposition), :topology)
+        grid.decomposition.topology
     else
         (nprocs, 1)
     end
@@ -637,10 +637,10 @@ Respects the particle_advec_time setting - particles remain stationary until thi
 Parameters:
 - tracker: ParticleTracker instance
 - state: Current fluid state
-- grid: Grid information
+- grid: RuntimeGeometry information
 - dt: Time step
 - current_time: Current simulation time (if not provided, uses tracker's internal time)
-- params: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
+- `f`, `N2`: Physical coefficients used by the velocity diagnostic.
 - N2_profile: Optional N²(z) profile for nonuniform stratification. If not provided and
   `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
   simulation's actual stratification.
@@ -651,8 +651,10 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function advect_particles!(tracker::ParticleTracker{T},
-                          state::ModelFields, grid::Grid, dt::T, current_time=nothing;
-                          params=nothing, N2_profile=nothing) where T
+                          state::ModelFields, grid::RuntimeGeometry, dt::T,
+                          current_time=nothing;
+                          f::Real=1, N2::Real=1,
+                          N2_profile=nothing) where T
     
     # Use simulation time if provided, otherwise use tracker's internal time
     if current_time !== nothing
@@ -682,9 +684,8 @@ function advect_particles!(tracker::ParticleTracker{T},
         return tracker
     end
     
-    # Normal advection process starts here
-    # Update velocity fields (pass params and N2_profile for consistent YBJ vertical velocity)
-    update_velocity_fields!(tracker, state, grid; params=params, N2_profile=N2_profile)
+    # Normal advection process starts here.
+    update_velocity_fields!(tracker, state, grid; f, N2, N2_profile)
     
     # Advect particles using chosen integration method
     if tracker.config.integration_method == :euler
@@ -730,7 +731,7 @@ Computes the complete velocity field needed for proper QG-YBJ particle advection
 Handles 2D pencil decomposition by getting actual local dimensions from ModelFields arrays.
 
 # Arguments
-- `params`: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
+- `f`, `N2`: Physical coefficients used by the velocity diagnostic.
 - `N2_profile`: Optional N²(z) profile for nonuniform stratification. If not provided and
   `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
   simulation's actual stratification.
@@ -741,14 +742,14 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
-                                state::ModelFields, grid::Grid;
-                                params=nothing, N2_profile=nothing) where T
-    # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
-    # Pass params and N2_profile to ensure consistent stratification handling
+                                state::ModelFields, grid::RuntimeGeometry;
+                                f::Real=1, N2::Real=1,
+                                N2_profile=nothing) where T
+    # Compute total velocities with the model's physical coefficients.
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
-                              f=params === nothing ? 1.0 : params.f₀,
-                              N2=params === nothing ? 1.0 : params.N²,
+                              f,
+                              N2,
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w,
                               N2_profile=N2_profile)
@@ -920,7 +921,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         Lx_ext = nx_ext * tracker.dx
         Ly_ext = ny_ext * tracker.dy
 
-        # Grid info uses extended domain lengths since we're interpolating in extended arrays
+        # RuntimeGeometry info uses extended domain lengths since we're interpolating in extended arrays
         z_min = -tracker.Lz
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                     Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz,
@@ -1235,7 +1236,7 @@ function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
     y_rel = tracker.config.periodic_y ?
             _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
 
-    # Grid parameters
+    # RuntimeGeometry parameters
     nx = tracker.nx
     ny = tracker.ny
     dx = tracker.dx

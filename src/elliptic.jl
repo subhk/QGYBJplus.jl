@@ -66,7 +66,7 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJplus: Grid, ModelFields, local_to_global, z_is_local, is_parallel_array
+using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local, is_parallel_array
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
 const PARENT = Base.parentmodule(@__MODULE__)
@@ -141,7 +141,7 @@ with Neumann boundary conditions ψ_z = 0 at top and bottom.
 
 # Arguments
 - `S::ModelFields`: ModelFields struct containing `q` (input) and `psi` (output)
-- `G::Grid`: Grid struct with wavenumbers and vertical coordinates
+- `G::RuntimeGeometry`: RuntimeGeometry struct with wavenumbers and vertical coordinates
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length nz
 - `rho_u`, `rho_s`: Optional density weights on unstaggered and staggered levels
 - `workspace`: Optional z-pencil workspace arrays for 2D decomposition
@@ -188,7 +188,7 @@ a_vec = a_ell_from_N2(N2_profile, FPlane(f=1e-4))
 invert_q_to_psi!(state, grid; a=a_vec)
 ```
 """
-function invert_q_to_psi!(S::ModelFields, G::Grid; a::AbstractVector,
+function invert_q_to_psi!(S::ModelFields, G::RuntimeGeometry; a::AbstractVector,
     rho_u=nothing, rho_s=nothing, workspace=nothing)
     nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
@@ -198,7 +198,7 @@ function invert_q_to_psi!(S::ModelFields, G::Grid; a::AbstractVector,
         throw(DimensionMismatch("rho_s must have length nz=$nz"))
 
     # Check if we need to do transpose (2D decomposition)
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.q, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.q, G)
 
     if need_transpose
         # 2D decomposition: transpose to z-pencil, solve, transpose back
@@ -214,7 +214,7 @@ end
 """
 Direct solve for serial mode or 1D decomposition (z fully local).
 """
-function _invert_q_to_psi_direct!(S::ModelFields, G::Grid, a::AbstractVector,
+function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
     rho_u, rho_s)
     nz = G.nz
 
@@ -326,7 +326,7 @@ end
 """
 2D decomposition: transpose to z-pencil, solve, transpose back.
 """
-function _invert_q_to_psi_2d!(S::ModelFields, G::Grid, a::AbstractVector,
+function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
     rho_u, rho_s, workspace)
     nz = G.nz
 
@@ -469,7 +469,7 @@ Boundary flux terms are added to RHS:
 # Arguments
 - `dstk`: Output array (nz, nx, ny) for solution φ
 - `rhs`: Right-hand side array (nz, nx, ny)
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `a::AbstractVector`: Second derivative coefficient a(z), length nz
 - `b::AbstractVector`: First derivative coefficient b(z), length nz (default zeros)
 - `scale_kh2::Real`: Multiplier α for kₕ² term (default 1.0)
@@ -482,7 +482,7 @@ This matches `helmholtzdouble` in elliptic.f90 exactly.
 # Note
 For 2D decomposition, boundary conditions are not yet supported and will trigger a warning.
 """
-function invert_helmholtz!(dstk, rhs, G::Grid;
+function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            a::AbstractVector,
                            b::AbstractVector=zeros(eltype(a), length(a)),
                            scale_kh2::Real=1.0,
@@ -492,7 +492,7 @@ function invert_helmholtz!(dstk, rhs, G::Grid;
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(rhs, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(rhs, G)
 
     if need_transpose
         _invert_helmholtz_2d!(dstk, rhs, G, a, b, scale_kh2, bot_bc, top_bc, workspace)
@@ -522,7 +522,7 @@ Matches Fortran `helmholtzdouble` discretization exactly:
 - Interior: d[k] = -2a[k] - kh²Δz²
 - Boundary conditions incorporated via RHS modifications
 """
-function _invert_helmholtz_direct!(dstk, rhs, G::Grid, a, b, scale_kh2, bot_bc, top_bc)
+function _invert_helmholtz_direct!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc)
     nz = G.nz
 
     dst_arr = parent(dstk)
@@ -657,7 +657,7 @@ Matches Fortran `helmholtzdouble` discretization exactly:
 - Interior: d[k] = -2a[k] - kh²Δz²
 
 """
-function _invert_helmholtz_2d!(dstk, rhs, G::Grid, a, b, scale_kh2, bot_bc, top_bc, workspace)
+function _invert_helmholtz_2d!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc, workspace)
     nz = G.nz
 
     @assert length(a) == nz "a must have length nz=$nz"
@@ -825,7 +825,7 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 
 # Arguments
 - `S::ModelFields`: ModelFields containing `B` (input), `A` and `C` (output)
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
 - `rho_u`, `rho_s`: Optional density weights on unstaggered and staggered levels
 - `workspace`: Optional z-pencil workspace for 2D decomposition
@@ -850,7 +850,7 @@ equation.
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90.
 """
-function invert_B_to_A!(S::ModelFields, G::Grid, a::AbstractVector;
+function invert_B_to_A!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector;
     rho_u=nothing, rho_s=nothing, workspace=nothing)
     nz = G.nz
     rho_u === nothing || length(rho_u) == nz ||
@@ -859,7 +859,7 @@ function invert_B_to_A!(S::ModelFields, G::Grid, a::AbstractVector;
         throw(DimensionMismatch("rho_s must have length nz=$nz"))
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.B, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.B, G)
 
     if need_transpose
         _invert_B_to_A_2d!(S, G, a, rho_u, rho_s, workspace)
@@ -873,7 +873,7 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_B_to_A_direct!(S::ModelFields, G::Grid, a::AbstractVector,
+function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
     rho_u, rho_s)
     nz = G.nz
 
@@ -1017,7 +1017,7 @@ end
 """
 2D decomposition B→A solve with transposes.
 """
-function _invert_B_to_A_2d!(S::ModelFields, G::Grid, a::AbstractVector,
+function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
     rho_u, rho_s, workspace)
     nz = G.nz
 

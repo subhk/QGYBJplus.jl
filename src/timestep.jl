@@ -101,7 +101,7 @@ Temporarily replace prognostic PV by the inversion right-hand side
 `q_effective = q - q_wave`. The returned copy must be restored after the
 streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
-function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::Grid,
+function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::RuntimeGeometry,
                                            options::ETDModelOptions, plans, L;
                                            BRk=nothing, BIk=nothing,
                                            q_base=nothing, qwk=nothing)
@@ -134,9 +134,9 @@ restore_prognostic_q!(S::ModelFields, q_base) = (parent(S.q) .= parent(q_base); 
 """
     ExponentialRungeKutta2Workspace(fields)
 
-Reusable stage and tendency storage for [`exp_rk2_step!`](@ref). Allocate once
-per simulation to avoid recreating the Runge-Kutta state and spectral tendency
-arrays on every step.
+Reusable stage and tendency storage for model-owned [`step!`](@ref). Allocate
+once per simulation to avoid recreating the Runge-Kutta state and spectral
+tendency arrays on every step.
 """
 mutable struct ExponentialRungeKutta2Workspace{S,A}
     next::S
@@ -186,7 +186,7 @@ function _etd_coefficients(x, h)
     return E, hphi1, hphi2
 end
 
-function _diagnose_flow!(S::ModelFields, G::Grid,
+function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
                          options::ETDModelOptions, plans, a, L;
                          workspace=nothing, N2_profile=nothing,
                          rho_u=nothing, rho_s=nothing,
@@ -234,7 +234,7 @@ function _etdrk2_arrays(S::ModelFields, timestep_workspace)
     )
 end
 
-function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
+function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
                               options::ETDModelOptions, plans;
                               a, dealias_mask=nothing, workspace=nothing,
                               N2_profile=nothing, rho_u=nothing, rho_s=nothing,
@@ -346,7 +346,7 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::Grid,
     return rhsq, rhsB
 end
 
-function _finalize_etdrk2_state!(S::ModelFields, G::Grid,
+function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
                                  options::ETDModelOptions, plans, a, L;
                                  workspace=nothing, N2_profile=nothing,
                                  rho_u=nothing, rho_s=nothing,
@@ -387,7 +387,7 @@ function _finalize_etdrk2_state!(S::ModelFields, G::Grid,
 end
 
 """Internal ETD-RK2 kernel over explicit model components."""
-function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::Grid,
+function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry,
                           options::ETDModelOptions, plans;
                           Δt::Real, a, dealias_mask=nothing, workspace=nothing,
                           N2_profile=nothing, rho_u=nothing, rho_s=nothing,
@@ -468,43 +468,4 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::Grid,
                           params=particle_context, N2_profile=N2_profile)
     end
     return Snp1
-end
-
-function _legacy_etd_options(par)
-    feedback = par.no_feedback ? NoFeedback() :
-               par.no_wave_feedback ? NoWaveFeedback() : WaveMeanFeedback()
-    formulation = par.passive_scalar ? PassiveWave() :
-                  par.ybj_plus ? YBJPlus() : YBJ()
-    closure = HorizontalHyperdiffusivity(
-        flow=par.νₕ₁,
-        flow2=par.νₕ₂,
-        flow_laplacian_order=par.ilap1,
-        flow_laplacian_order2=par.ilap2,
-        waves=par.νₕ₁ʷ,
-        waves2=par.νₕ₂ʷ,
-        wave_laplacian_order=par.ilap1w,
-        wave_laplacian_order2=par.ilap2w,
-    )
-    return ETDModelOptions(
-        float(par.f₀),
-        par.fixed_flow ? FixedFlow() : EvolvingFlow(),
-        feedback,
-        formulation,
-        par.inviscid ? Inviscid() : Dissipative(),
-        par.linear ? LinearDynamics() : NonlinearDynamics(),
-        par.no_dispersion ? NoDispersion() : Dispersive(),
-        closure,
-        float(par.νz),
-    )
-end
-
-"""Temporary legacy boundary; new code advances a model with [`step!`](@ref)."""
-function exp_rk2_step!(Snp1::ModelFields, Sn::ModelFields, G::Grid, par, plans;
-    a, dealias_mask=nothing, workspace=nothing, N2_profile=nothing,
-    particle_tracker=nothing, current_time=nothing, timestep_workspace=nothing)
-    return _advance_etdrk2!(Snp1, Sn, G, _legacy_etd_options(par), plans;
-        Δt=par.dt, a, dealias_mask, workspace, N2_profile,
-        rho_u=rho_ut(par, G), rho_s=rho_st(par, G),
-        particle_tracker, particle_context=par, current_time,
-        timestep_workspace)
 end

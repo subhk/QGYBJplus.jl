@@ -90,7 +90,7 @@ end
 runtime = model.runtime
 model.fields.psi .= scatter_from_root(
     glob_psik,
-    runtime.computational_grid,
+    runtime.geometry,
     runtime.mpi;
     plans=runtime.plans,
 )

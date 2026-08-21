@@ -53,7 +53,7 @@ end
 Enhanced particle configuration supporting 3D distributions.
 
 Domain bounds (x_max, y_max, z_max) are REQUIRED - no defaults.
-Use the Grid to get domain size: `x_max = G.Lx, y_max = G.Ly, z_max = G.Lz` (depth).
+Use model geometry to choose `x_max`, `y_max`, and `z_max`.
 If you pass `z_min`, then `z_max` is treated as a coordinate (typically ≤ 0).
 Single-level distributions can use `z_min == z_max`.
 """

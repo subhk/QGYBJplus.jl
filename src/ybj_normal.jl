@@ -58,7 +58,7 @@ FORTRAN CORRESPONDENCE:
 
 module YBJNormal
 
-using ..QGYBJplus: Grid
+using ..QGYBJplus: RuntimeGeometry
 using ..QGYBJplus: local_to_global, get_local_dims, z_is_local
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
@@ -93,7 +93,7 @@ For wavenumbers outside the mask or kh² = 0, set B = 0.
 
 # Arguments
 - `B::Array{Complex,3}`: Wave envelope (modified in-place)
-- `G::Grid`: Grid structure with wavenumbers
+- `G::RuntimeGeometry`: RuntimeGeometry structure with wavenumbers
 - `Lmask`: Optional dealiasing mask (default: all modes kept)
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 
@@ -103,9 +103,9 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 # Fortran Correspondence
 Matches `sumB` in derivatives.f90.
 """
-function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=nothing)
+function sumB!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry; Lmask=nothing, workspace=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(B, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(B, G)
 
     if need_transpose
         _sumB_2d!(B, G, Lmask, workspace)
@@ -116,7 +116,7 @@ function sumB!(B::AbstractArray{<:Complex,3}, G::Grid; Lmask=nothing, workspace=
 end
 
 # Direct computation when z is fully local
-function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
+function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -149,7 +149,7 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask)
 end
 
 # 2D decomposition version with transposes
-function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::Grid, Lmask, workspace)
+function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -220,7 +220,7 @@ where:
 
 # Arguments
 - `f`: Coriolis frequency
-- `G::Grid`: Grid with wavenumbers
+- `G::RuntimeGeometry`: RuntimeGeometry with wavenumbers
 - `nBRk, nBIk`: Real/imaginary parts of advection forcing
 - `rBRk, rBIk`: Real/imaginary parts of refraction forcing
 - `Lmask`: Optional dealiasing mask
@@ -238,10 +238,10 @@ Matches `compute_sigma` in derivatives.f90.
 In MPI mode with 2D decomposition, this requires z to be fully local.
 Transpose operations are handled internally if needed.
 """
-function compute_sigma(f::Real, G::Grid,
+function compute_sigma(f::Real, G::RuntimeGeometry,
                        nBRk, nBIk, rBRk, rBIk; Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(nBRk, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(nBRk, G)
 
     if need_transpose
         return _compute_sigma_2d(f, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
@@ -251,7 +251,7 @@ function compute_sigma(f::Real, G::Grid,
 end
 
 # Direct computation when z is fully local
-function _compute_sigma_direct(f, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
+function _compute_sigma_direct(f, G::RuntimeGeometry, nBRk, nBIk, rBRk, rBIk, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -293,7 +293,7 @@ function _compute_sigma_direct(f, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, N2_pro
 end
 
 # 2D decomposition version with transposes
-function _compute_sigma_2d(f, G::Grid, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
+function _compute_sigma_2d(f, G::RuntimeGeometry, nBRk, nBIk, rBRk, rBIk, Lmask, workspace, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
@@ -398,7 +398,7 @@ C[nz] = 0                      # Neumann BC at top
 - `C::Array{Complex,3}`: Output vertical derivative A_z (modified in-place)
 - `BRk, BIk`: Real/imaginary parts of wave envelope B
 - `sigma::Array{Complex,2}`: Sigma constraint from compute_sigma
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `N2_profile`: Optional N²(z) profile for variable stratification. If not provided,
@@ -416,10 +416,10 @@ which solves the full L⁺A = B elliptic problem via tridiagonal solve.
 """
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
                     BRk::AbstractArray{<:Complex,3}, BIk::AbstractArray{<:Complex,3},
-                    sigma::AbstractArray{<:Complex,2}, G::Grid;
+                    sigma::AbstractArray{<:Complex,2}, G::RuntimeGeometry;
                     Lmask=nothing, workspace=nothing, N2_profile=nothing)
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(BRk, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(BRk, G)
 
     if need_transpose
         _compute_A_2d!(A, C, BRk, BIk, sigma, G, Lmask, workspace, N2_profile)

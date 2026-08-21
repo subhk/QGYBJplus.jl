@@ -32,9 +32,9 @@ USAGE:
 
     MPI.Init()
     mpi_config = QGYBJplus.setup_mpi_environment()
-    grid = QGYBJplus.init_mpi_grid(params, mpi_config)
-    plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
-    state = QGYBJplus.init_mpi_state(grid, plans, mpi_config)
+    geometry = QGYBJplus.build_runtime_geometry(global_geometry, mpi_config)
+    plans = QGYBJplus.plan_distributed_transforms(geometry, mpi_config)
+    fields = QGYBJplus.allocate_distributed_fields(geometry, plans, mpi_config)
 """
 
 using MPI
@@ -54,7 +54,7 @@ import PencilArrays: Pencil, PencilArray, MPITopology
 import PencilArrays: range_local, range_remote, transpose!, gather, pencil, decomposition, permutation
 import PencilFFTs: PencilFFTPlan, allocate_input, allocate_output
 
-# Note: Grid, ModelFields, QGParams, Plans are already in scope since we're included in QGYBJplus
+# Core runtime types are already in scope because this file is included directly.
 # init_analytical_psi!, init_analytical_waves!, add_balanced_component! also already available
 
 # Import fft_forward! and fft_backward! from Transforms submodule to extend with MPI methods
@@ -225,10 +225,10 @@ function create_pencil_decomposition(nx::Int, ny::Int, nz::Int, mpi_config::MPIC
 
     # Validate topology against grid dimensions
     if dims[decomp_dims[1]] < px
-        error("Grid dimension for dim=$(decomp_dims[1]) is smaller than process topology px=$px.")
+        error("RuntimeGeometry dimension for dim=$(decomp_dims[1]) is smaller than process topology px=$px.")
     end
     if dims[decomp_dims[2]] < py
-        error("Grid dimension for dim=$(decomp_dims[2]) is smaller than process topology py=$py.")
+        error("RuntimeGeometry dimension for dim=$(decomp_dims[2]) is smaller than process topology py=$py.")
     end
 
     if mpi_config.is_root
@@ -395,59 +395,42 @@ end
 
 # Note: _transpose_output_to_input! and _transpose_input_to_output! are defined after MPIPlans struct
 
-# Grid-based versions
-function transpose_to_z_pencil!(dst, src, grid::Grid)
-    decomp = grid.decomp
+# RuntimeGeometry-based versions
+function transpose_to_z_pencil!(dst, src, grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     transpose_to_z_pencil!(dst, src, decomp)
 end
 
-function transpose_to_xy_pencil!(dst, src, grid::Grid)
-    decomp = grid.decomp
+function transpose_to_xy_pencil!(dst, src, grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     transpose_to_xy_pencil!(dst, src, decomp)
 end
 
 #=
 ================================================================================
-                        GRID INITIALIZATION WITH MPI
+                    RUNTIME GEOMETRY WITH MPI
 ================================================================================
 =#
 
 """
-    init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3)) -> Grid
+    build_runtime_geometry(global_geometry, mpi_config; decomp_dims=(2,3))
 
-Initialize a Grid with MPI-distributed arrays using a 2D PencilArrays decomposition.
+Build distributed spectral metadata from immutable global geometry.
 Note: the current PencilFFTs backend requires `decomp_dims=(2,3)` for FFT plans.
 """
-function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3))
-    T = Float64
-    nx, ny, nz = params.nx, params.ny, params.nz
+function build_runtime_geometry(global_geometry::RectilinearGrid,
+                                mpi_config::MPIConfig; decomp_dims=(2, 3))
+    T = eltype(global_geometry.x)
+    nx, ny, nz = global_geometry.size
 
     # Create 2D pencil decomposition
     decomp = create_pencil_decomposition(nx, ny, nz, mpi_config; decomp_dims=decomp_dims)
-
-    # Horizontal grid spacing
-    dx = params.Lx / nx
-    dy = params.Ly / ny
-
-    # Vertical grid (same on all processes): z ∈ [-Lz, 0] at cell centers
-    if nz == 1
-        z = T[-params.Lz / 2]
-        dz = T[params.Lz]
-    else
-        dz_scalar = params.Lz / nz
-        z = T.(-params.Lz .+ (collect(1:nz) .- 0.5) .* dz_scalar)
-        dz = fill(T(dz_scalar), nz - 1)
-    end
-
-    # Wavenumbers (global arrays, same on all processes)
-    kx = T.([i <= (nx+1)÷2 ? (2π/params.Lx)*(i-1) : (2π/params.Lx)*(i-1-nx) for i in 1:nx])
-    ky = T.([j <= (ny+1)÷2 ? (2π/params.Ly)*(j-1) : (2π/params.Ly)*(j-1-ny) for j in 1:ny])
 
     # Create distributed kh2 array in xy-pencil configuration (stored as z,x,y)
     kh2_pencil = PencilArray{T}(undef, decomp.pencil_xy)
@@ -461,25 +444,14 @@ function init_mpi_grid(params::QGParams, mpi_config::MPIConfig; decomp_dims=(2,3
             i_global = local_range[2][i_local]
             for j_local in axes(parent_arr, 3)
                 j_global = local_range[3][j_local]
-                parent_arr[k_local, i_local, j_local] = kx[i_global]^2 + ky[j_global]^2
+                parent_arr[k_local, i_local, j_local] =
+                    global_geometry.kh2[i_global, j_global]
             end
         end
     end
 
-    return Grid{T, typeof(kh2_pencil)}(
-        nx, ny, nz,
-        params.Lx, params.Ly, params.Lz,
-        params.x0, params.y0,  # Domain origin (centered=true gives -Lx/2, -Ly/2)
-        dx, dy,
-        z, dz,
-        kx, ky,
-        kh2_pencil,
-        decomp
-    )
+    return RuntimeGeometry(global_geometry, kh2_pencil, decomp)
 end
-
-# Alias for backward compatibility
-const init_parallel_grid = init_mpi_grid
 
 #=
 ================================================================================
@@ -506,8 +478,8 @@ end
 
 FFT plans for MPI-parallel execution using PencilFFTs.
 
-This struct is defined here (before init_mpi_state) so it can be used as a type annotation.
-The plan creation function `plan_mpi_transforms` is defined later in this file.
+This struct is defined before field allocation so it can be used in dispatch.
+The distributed plan constructor is defined later in this file.
 """
 struct MPIPlans{P, PI, PO}
     forward::P
@@ -565,27 +537,27 @@ function _transpose_input_to_output!(dst::PencilArray, src::PencilArray, plans::
 end
 
 """
-    init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64) -> ModelFields
-    init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64) -> ModelFields
+    allocate_distributed_fields(geometry, plans, mpi_config; T=Float64)
 
 Initialize a ModelFields with MPI-distributed PencilArrays.
 
-- `init_mpi_state(grid, mpi_config)` allocates all arrays on the grid's pencil_xy.
-- `init_mpi_state(grid, plans, mpi_config)` allocates spectral arrays on the FFT
+- `allocate_distributed_fields(geometry, mpi_config)` allocates all arrays on
+  the physical pencil.
+- The plan-aware method allocates spectral arrays on the FFT
   plan's output pencil and physical arrays on the FFT input pencil to avoid
   extra transposes in the FFT wrappers.
 
 # Example
 ```julia
-G = init_mpi_grid(par, mpi_config)
-plans = plan_mpi_transforms(G, mpi_config)
-S = init_mpi_state(G, plans, mpi_config)  # spectral on output pencil
+plans = plan_distributed_transforms(geometry, mpi_config)
+fields = allocate_distributed_fields(geometry, plans, mpi_config)
 ```
 """
-function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Float64)
-    decomp = grid.decomp
+function allocate_distributed_fields(grid::RuntimeGeometry, plans::MPIPlans,
+                                     mpi_config::MPIConfig; T=Float64)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition. Use init_mpi_grid() first.")
+        error("runtime geometry has no MPI decomposition")
     end
 
     # Spectral fields live on FFT output pencil; physical fields on input pencil.
@@ -607,10 +579,11 @@ function init_mpi_state(grid::Grid, plans::MPIPlans, mpi_config::MPIConfig; T=Fl
     return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
-function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
-    decomp = grid.decomp
+function allocate_distributed_fields(grid::RuntimeGeometry,
+                                     mpi_config::MPIConfig; T=Float64)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition. Use init_mpi_grid() first.")
+        error("runtime geometry has no MPI decomposition")
     end
 
     pencil_xy = decomp.pencil_xy
@@ -630,18 +603,16 @@ function init_mpi_state(grid::Grid, mpi_config::MPIConfig; T=Float64)
     return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
-# Alias for backward compatibility
-const init_parallel_state = init_mpi_state
-
 """
-    init_mpi_workspace(grid::Grid, mpi_config::MPIConfig; T=Float64) -> MPIWorkspace
+    allocate_distributed_workspace(geometry, mpi_config; T=Float64)
 
 Initialize pre-allocated workspace arrays for transpose operations.
 """
-function init_mpi_workspace(grid::Grid, mpi_config::MPIConfig; T=Float64)
-    decomp = grid.decomp
+function allocate_distributed_workspace(grid::RuntimeGeometry,
+                                        mpi_config::MPIConfig; T=Float64)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
 
     pencil_z = decomp.pencil_z
@@ -662,17 +633,18 @@ end
 ================================================================================
 =#
 
-# Note: MPIPlans struct is defined earlier in this file (before init_mpi_state)
+# `MPIPlans` is defined above so allocation can dispatch on it.
 
 """
-    plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig) -> MPIPlans
+    plan_distributed_transforms(geometry, mpi_config) -> MPIPlans
 
 Create PencilFFTs plans for parallel 2D horizontal FFT execution.
 """
-function plan_mpi_transforms(grid::Grid, mpi_config::MPIConfig)
-    decomp = grid.decomp
+function plan_distributed_transforms(grid::RuntimeGeometry,
+                                     mpi_config::MPIConfig)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
 
     pencil_xy = decomp.pencil_xy
@@ -873,10 +845,10 @@ end
 ================================================================================
 =#
 
-function get_local_range_xy(grid::Grid)
-    decomp = grid.decomp
+function get_local_range_xy(grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     return decomp.local_range_xy
 end
@@ -902,19 +874,19 @@ function get_local_range_spectral(plans::MPIPlans)
 end
 
 """
-    z_is_local(grid::Grid) -> Bool
+    z_is_local(grid::RuntimeGeometry) -> Bool
 
 Return true if the z-dimension is fully local on each rank.
 """
-function z_is_local(grid::Grid)
-    decomp = grid.decomp
+function z_is_local(grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
         return true
     end
     return decomp.local_range_xy[1] == 1:grid.nz
 end
 
-function z_is_local(arr::AbstractArray, grid::Grid)
+function z_is_local(arr::AbstractArray, grid::RuntimeGeometry)
     if arr isa PencilArray
         ranges = range_local(pencil(arr))
         return ranges[1] == 1:grid.nz
@@ -922,34 +894,34 @@ function z_is_local(arr::AbstractArray, grid::Grid)
     return true
 end
 
-function get_local_range_z(grid::Grid)
-    decomp = grid.decomp
+function get_local_range_z(grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     return decomp.local_range_z
 end
 
-function local_to_global_xy(local_idx::Int, dim::Int, grid::Grid)
-    decomp = grid.decomp
+function local_to_global_xy(local_idx::Int, dim::Int, grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     return decomp.local_range_xy[dim][local_idx]
 end
 
-function local_to_global_z(local_idx::Int, dim::Int, grid::Grid)
-    decomp = grid.decomp
+function local_to_global_z(local_idx::Int, dim::Int, grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     return decomp.local_range_z[dim][local_idx]
 end
 
-function local_indices(grid::Grid)
-    decomp = grid.decomp
+function local_indices(grid::RuntimeGeometry)
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     return decomp.local_range_xy
 end
@@ -961,11 +933,11 @@ end
 =#
 
 """
-    gather_to_root(arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
+    gather_to_root(arr::PencilArray, grid::RuntimeGeometry, mpi_config::MPIConfig)
 
 Gather a distributed PencilArray to the root process.
 """
-function gather_to_root(arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
+function gather_to_root(arr::PencilArray, grid::RuntimeGeometry, mpi_config::MPIConfig)
     # Use GC.@preserve to prevent garbage collection during MPI communication
     local gathered
     GC.@preserve arr begin
@@ -975,21 +947,21 @@ function gather_to_root(arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
 end
 
 # Also support regular arrays (for compatibility)
-function gather_to_root(arr::AbstractArray, grid::Grid, mpi_config::MPIConfig)
+function gather_to_root(arr::AbstractArray, grid::RuntimeGeometry, mpi_config::MPIConfig)
     # For regular arrays, just return on root
     return mpi_config.is_root ? arr : nothing
 end
 
 """
-    scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig; pencil=nothing, plans=nothing)
+    scatter_from_root(arr, grid::RuntimeGeometry, mpi_config::MPIConfig; pencil=nothing, plans=nothing)
 
 Scatter an array from root to all processes as PencilArrays.
 
-By default, scatters to `grid.decomp.pencil_xy`. Pass `plans` (MPIPlans) to
+By default, scatters to `grid.decomposition.pencil_xy`. Pass `plans` (MPIPlans) to
 scatter directly to the FFT output pencil for spectral fields.
 """
-function scatter_from_root(arr, grid::Grid, mpi_config::MPIConfig; pencil=nothing, plans=nothing)
-    decomp = grid.decomp
+function scatter_from_root(arr, grid::RuntimeGeometry, mpi_config::MPIConfig; pencil=nothing, plans=nothing)
+    decomp = grid.decomposition
     target_pencil = if plans !== nothing
         plans.output_pencil
     elseif pencil !== nothing
@@ -1057,14 +1029,14 @@ end
 =#
 
 """
-    allocate_z_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
+    allocate_z_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
 
 Allocate an array in z-pencil configuration for vertical operations.
 """
-function allocate_z_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
-    decomp = grid.decomp
+function allocate_z_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     arr = PencilArray{T}(undef, decomp.pencil_z)
     fill!(arr, zero(T))
@@ -1072,14 +1044,14 @@ function allocate_z_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
 end
 
 """
-    allocate_xy_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
+    allocate_xy_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
 
 Allocate an array in xy-pencil configuration for horizontal operations (FFTs).
 """
-function allocate_xy_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
-    decomp = grid.decomp
+function allocate_xy_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     arr = PencilArray{T}(undef, decomp.pencil_xy)
     fill!(arr, zero(T))
@@ -1087,14 +1059,14 @@ function allocate_xy_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
 end
 
 """
-    allocate_xz_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
+    allocate_xz_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
 
 Allocate an array in xz-pencil (intermediate) configuration.
 """
-function allocate_xz_pencil(grid::Grid, ::Type{T}=ComplexF64) where T
-    decomp = grid.decomp
+function allocate_xz_pencil(grid::RuntimeGeometry, ::Type{T}=ComplexF64) where T
+    decomp = grid.decomposition
     if decomp === nothing
-        error("Grid does not have MPI decomposition")
+        error("RuntimeGeometry does not have MPI decomposition")
     end
     arr = PencilArray{T}(undef, decomp.pencil_xz)
     fill!(arr, zero(T))
@@ -1108,7 +1080,7 @@ end
 =#
 
 """
-    init_mpi_random_field!(arr::PencilArray, grid::Grid, amplitude, seed_offset=0; seed=0)
+    init_mpi_random_field!(arr::PencilArray, grid::RuntimeGeometry, amplitude, seed_offset=0; seed=0)
 
 Initialize a PencilArray with deterministic random values.
 """
@@ -1136,7 +1108,7 @@ end
     return sqrt(-2 * log(u1)) * cos(2 * pi * u2)
 end
 
-function init_mpi_random_field!(arr::PencilArray, grid::Grid,
+function init_mpi_random_field!(arr::PencilArray, grid::RuntimeGeometry,
                                 amplitude::Real, seed_offset::Int=0; seed::Int=0)
     local_range = range_local(pencil(arr))
     parent_arr = parent(arr)
@@ -1158,11 +1130,11 @@ function init_mpi_random_field!(arr::PencilArray, grid::Grid,
 end
 
 """
-    init_mpi_random_psi!(psik::PencilArray, G::Grid, amplitude; slope=-3.0, seed=0, seed_offset=0)
+    init_mpi_random_psi!(psik::PencilArray, G::RuntimeGeometry, amplitude; slope=-3.0, seed=0, seed_offset=0)
 
 Initialize random streamfunction with Hermitian symmetry for real IFFT output.
 """
-function init_mpi_random_psi!(psik::PencilArray, G::Grid, amplitude::Real;
+function init_mpi_random_psi!(psik::PencilArray, G::RuntimeGeometry, amplitude::Real;
                               slope::Real=-3.0, seed::Int=0, seed_offset::Int=0)
     fill!(psik, zero(eltype(psik)))
 
@@ -1216,77 +1188,12 @@ function init_mpi_random_psi!(psik::PencilArray, G::Grid, amplitude::Real;
 end
 
 """
-    parallel_initialize_fields!(state, grid, plans, config, mpi_config; params=nothing)
-
-Initialize fields with MPI support, including file-based initial conditions.
-"""
-function parallel_initialize_fields!(state, grid, plans, config, mpi_config; params=nothing, N2_profile=nothing)
-    if config.initial_conditions.psi_type == :random
-        init_mpi_random_psi!(state.psi, grid, config.initial_conditions.psi_amplitude;
-                             seed=config.initial_conditions.random_seed, seed_offset=0)
-    elseif config.initial_conditions.psi_type == :analytical
-        init_analytical_psi!(state.psi, grid, config.initial_conditions.psi_amplitude, plans)
-    elseif config.initial_conditions.psi_type == :from_file
-        state.psi .= read_initial_psi(config.initial_conditions.psi_filename, grid, plans;
-                                      parallel_config=mpi_config)
-    else
-        fill!(state.psi, zero(eltype(state.psi)))
-    end
-
-    if config.initial_conditions.wave_type == :random
-        init_mpi_random_field!(state.B, grid, config.initial_conditions.wave_amplitude, 1;
-                               seed=config.initial_conditions.random_seed)
-    elseif config.initial_conditions.wave_type == :analytical
-        init_analytical_waves!(state.B, grid, config.initial_conditions.wave_amplitude, plans)
-    elseif config.initial_conditions.wave_type == :from_file
-        state.B .= read_initial_waves(config.initial_conditions.wave_filename, grid, plans;
-                                      parallel_config=mpi_config)
-    elseif config.initial_conditions.wave_type == :surface_waves
-        init_surface_waves!(
-            state.B, grid,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=config.initial_conditions.wave_profile
-        )
-    elseif config.initial_conditions.wave_type == :surface_exponential
-        init_surface_waves!(
-            state.B, grid,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=:exponential
-        )
-    elseif config.initial_conditions.wave_type == :surface_gaussian
-        init_surface_waves!(
-            state.B, grid,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=:gaussian
-        )
-    else
-        fill!(state.B, zero(eltype(state.B)))
-    end
-
-    # Compute q from ψ
-    if params !== nothing && hasfield(typeof(state), :q)
-        profile = N2_profile === nothing ? fill(params.N², grid.nz) : N2_profile
-        add_balanced_component!(state, grid,
-            a_ell_from_N2(profile, params.f₀), rho_ut(params, grid), rho_st(params, grid))
-    end
-end
-
-"""
     write_mpi_field(filename, varname, arr::PencilArray, grid, mpi_config)
 
 Gather a distributed PencilArray to root for writing.
 """
 function write_mpi_field(filename::String, varname::String,
-                         arr::PencilArray, grid::Grid, mpi_config::MPIConfig)
+                         arr::PencilArray, grid::RuntimeGeometry, mpi_config::MPIConfig)
     gathered = gather(arr)
     if mpi_config.is_root && gathered !== nothing
         return gathered
@@ -1331,6 +1238,3 @@ end
 reduce_sum_if_mpi(val, ::Nothing) = val
 reduce_min_if_mpi(val, ::Nothing) = val
 reduce_max_if_mpi(val, ::Nothing) = val
-
-# Alias for backward compatibility
-const gather_array_for_io = gather_to_root

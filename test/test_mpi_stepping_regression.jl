@@ -1,147 +1,165 @@
-#=
-================================================================================
-                    MPI stepping regression tests
-================================================================================
+"""
+Composition-first MPI stepping regression.
 
-The distributed vertical operators and FFT paths require a genuine multi-rank
-run. This test checks:
+Run with one or more ranks, for example:
 
-  1. Reusable MPI workspace execution agrees with allocation-on-demand.
-  2. Distributed and serial stepping produce the same global spectral norms.
+    mpiexec -n 2 julia --project=. test/test_mpi_stepping_regression.jl
 
-RUN:
-    mpiexec -n 4 julia --project=. test/test_mpi_stepping_regression.jl
-================================================================================
-=#
+The fixed-flow, passive-wave configuration has a closed-form solution: each
+wave Fourier coefficient is damped by the ETD integrating factor. This gives
+the same rank-independent reference without constructing a second legacy
+serial data model.
+"""
 
 using Test
-using FFTW
 using MPI
 using QGYBJplus
-using QGYBJplus: setup_model, copy_fields, exp_rk2_step!, ExponentialRungeKutta2Workspace,
-                 scatter_from_root
 
-const TEST_Lx = 2pi
-const TEST_Ly = 2pi
-const TEST_Lz = 1.0
+const NX = 8
+const NY = 8
+const NZ = 8
 const NSTEPS = 3
+const ΔT = 1e-3
+const WAVE_DIFFUSIVITY = 0.3
 
-gnorm2(field, comm) = MPI.Allreduce(sum(abs2, parent(field)), MPI.SUM, comm)
-
-function step_n!(initial, G, par, plans, a, L, nsteps;
-                 workspace=nothing, reuse_timestep_workspace=false)
-    nsteps > 0 || return copy_fields(initial)
-
-    Sn = copy_fields(initial)
-    Snp1 = copy_fields(Sn)
-    timestep_workspace = reuse_timestep_workspace ? ExponentialRungeKutta2Workspace(Sn, plans; G=G) : nothing
-    for _ in 1:nsteps
-        exp_rk2_step!(Snp1, Sn, G, par, plans;
-                      a=a, dealias_mask=L, workspace=workspace,
-                      timestep_workspace=timestep_workspace)
-        Sn, Snp1 = Snp1, Sn
-    end
-    return Sn
-end
-
-MPI.Init()
+MPI.Initialized() || MPI.Init()
 comm = MPI.COMM_WORLD
 rank = MPI.Comm_rank(comm)
-nprocs = MPI.Comm_size(comm)
 
-let model = nothing
-try
-    public_grid = RectilinearGrid(size=(8, 8, 8),
-                                  extent=(TEST_Lx, TEST_Ly, TEST_Lz))
-    model = QGYBJModel(
-        grid=public_grid,
+function stepping_model(grid)
+    return QGYBJModel(
+        grid=grid,
         coriolis=FPlane(f=1),
         stratification=ConstantStratification(N²=1),
-        feedback=WaveMeanFeedback(),
-        formulation=YBJPlus(),
+        closure=HorizontalHyperdiffusivity(
+            flow=0,
+            flow2=0,
+            waves=WAVE_DIFFUSIVITY,
+            waves2=0,
+            wave_laplacian_order=1,
+        ),
+        flow=FixedFlow(),
+        formulation=PassiveWave(),
+        linear=LinearDynamics(),
+        no_dispersion=NoDispersion(),
         verbose=false,
     )
-    Simulation(model; Δt=1e-3, stop_iteration=NSTEPS, output=false,
-               verbose=false)
+end
 
+function scatter_initial_fields!(model, q, B, ψ)
     runtime = model.runtime
-    par = runtime.parameters
-    mpi_config = runtime.mpi
-    gridp = runtime.computational_grid
-    plansp = runtime.plans
-    ap = runtime.coefficients.a_ell
-    Lp = runtime.dealias_mask
-
-    # Generate deterministic global initial conditions in physical space and
-    # transform them on root. q is real-valued; the wave envelope is complex.
-    glob_q = nothing
-    glob_B = nothing
-    if rank == 0
-        q_phys = zeros(Float64, par.nz, par.nx, par.ny)
-        B_phys = zeros(ComplexF64, par.nz, par.nx, par.ny)
-        for k in 1:par.nz, j in 1:par.ny, i in 1:par.nx
-            x = 2pi * (i - 1) / par.nx
-            y = 2pi * (j - 1) / par.ny
-            vertical = sin(pi * (k - 0.5) / par.nz)
-            q_phys[k, i, j] = 1e-2 * vertical * sin(x) * cos(y)
-            B_phys[k, i, j] = 2e-2 * vertical * (cos(x) + im * sin(y))
-        end
-        glob_q = FFTW.fft(q_phys, (2, 3))
-        glob_B = FFTW.fft(B_phys, (2, 3))
+    for (destination, global_field) in (
+        (model.fields.q, q),
+        (model.fields.B, B),
+        (model.fields.psi, ψ),
+    )
+        destination .= scatter_from_root(
+            global_field,
+            runtime.geometry,
+            runtime.mpi;
+            plans=runtime.plans,
+        )
     end
+    return model
+end
 
-    function make_parallel_state()
-        state = allocate_fields(public_grid, runtime)
-        state.q .= scatter_from_root(glob_q, gridp, mpi_config; plans=plansp)
-        state.B .= scatter_from_root(glob_B, gridp, mpi_config; plans=plansp)
-        return state
+function global_maximum(value)
+    return MPI.Allreduce(value, MPI.MAX, comm)
+end
+
+grid = RectilinearGrid(size=(NX, NY, NZ), extent=(2π, 2π, 1.0))
+q_initial = B_initial = ψ_initial = nothing
+B_expected = nothing
+
+if rank == 0
+    q_initial = zeros(ComplexF64, NZ, NX, NY)
+    B_initial = zeros(ComplexF64, NZ, NX, NY)
+    ψ_initial = zeros(ComplexF64, NZ, NX, NY)
+
+    # All selected modes lie within the radial two-thirds cutoff.
+    q_initial[2, 2, 1] = 0.5 - 0.1im
+    q_initial[2, NX, 1] = conj(q_initial[2, 2, 1])
+    ψ_initial[2, 2, 1] = -0.2 + 0.05im
+    ψ_initial[2, NX, 1] = conj(ψ_initial[2, 2, 1])
+    B_initial[3, 2, 2] = 1.2 - 0.7im
+    B_initial[6, 3, 1] = -0.4 + 0.9im
+
+    B_expected = similar(B_initial)
+    for k in 1:NZ, i in 1:NX, j in 1:NY
+        damping = exp(-NSTEPS * ΔT * WAVE_DIFFUSIVITY * grid.kh2[i, j])
+        B_expected[k, i, j] = damping * B_initial[k, i, j]
     end
+end
 
-    fresh = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS)
-    workspace = runtime.workspace
-    reused = step_n!(make_parallel_state(), gridp, par, plansp, ap, Lp, NSTEPS;
-                     workspace=workspace, reuse_timestep_workspace=true)
+let lazy_model=nothing, preallocated_model=nothing
+try
+    lazy_model = stepping_model(grid)
+    preallocated_model = stepping_model(grid)
+    scatter_initial_fields!(lazy_model, q_initial, B_initial, ψ_initial)
+    scatter_initial_fields!(preallocated_model, q_initial, B_initial, ψ_initial)
 
-    dq = MPI.Allreduce(maximum(abs.(parent(fresh.q) .- parent(reused.q))), MPI.MAX, comm)
-    dB = MPI.Allreduce(maximum(abs.(parent(fresh.B) .- parent(reused.B))), MPI.MAX, comm)
-    dpsi = MPI.Allreduce(maximum(abs.(parent(fresh.psi) .- parent(reused.psi))), MPI.MAX, comm)
+    lazy = Simulation(
+        lazy_model;
+        Δt=ΔT,
+        stop_iteration=NSTEPS,
+        output=false,
+        verbose=false,
+    )
+    preallocated = Simulation(
+        preallocated_model;
+        Δt=ΔT,
+        stop_iteration=NSTEPS,
+        output=false,
+        verbose=false,
+    )
+    preallocated.timestepper.workspace = ExponentialRungeKutta2Workspace(
+        preallocated_model.fields,
+        preallocated_model.runtime.plans;
+        G=preallocated_model.runtime.geometry,
+    )
+    explicit_workspace = preallocated.timestepper.workspace
 
-    nqp = gnorm2(reused.q, comm)
-    nBp = gnorm2(reused.B, comm)
-    npsip = gnorm2(reused.psi, comm)
+    run!(lazy)
+    run!(preallocated)
 
-    nqs = 0.0
-    nBs = 0.0
-    npsis = 0.0
-    if rank == 0
-        Gs, Ss, planss, as = setup_model(par)
-        Ss.q .= glob_q
-        Ss.B .= glob_B
-        serial = step_n!(Ss, Gs, par, planss, as, dealias_mask(Gs), NSTEPS)
-        nqs = sum(abs2, serial.q)
-        nBs = sum(abs2, serial.B)
-        npsis = sum(abs2, serial.psi)
-    end
-    nqs = MPI.bcast(nqs, 0, comm)
-    nBs = MPI.bcast(nBs, 0, comm)
-    npsis = MPI.bcast(npsis, 0, comm)
+    @testset "MPI ETD-RK2 stepping" begin
+        @test lazy.clock.iteration == NSTEPS
+        @test preallocated.clock.iteration == NSTEPS
+        @test lazy.timestepper.workspace isa ExponentialRungeKutta2Workspace
+        @test preallocated.timestepper.workspace === explicit_workspace
 
-    relative_error(a, b) = abs(a - b) / max(abs(b), eps())
+        q_difference = global_maximum(maximum(abs,
+            parent(lazy_model.fields.q) .- parent(preallocated_model.fields.q)))
+        B_difference = global_maximum(maximum(abs,
+            parent(lazy_model.fields.B) .- parent(preallocated_model.fields.B)))
+        ψ_difference = global_maximum(maximum(abs,
+            parent(lazy_model.fields.psi) .- parent(preallocated_model.fields.psi)))
+        @test q_difference < 1e-13
+        @test B_difference < 1e-13
+        @test ψ_difference < 1e-13
 
-    @testset "MPI stepping" begin
-        @test nprocs > 1
-        @test dq < 1e-12
-        @test dB < 1e-12
-        @test dpsi < 1e-12
-        @test relative_error(nqp, nqs) < 1e-6
-        @test relative_error(nBp, nBs) < 1e-6
-        @test relative_error(npsip, npsis) < 1e-6
+        q_result = gather_to_root(
+            lazy_model.fields.q,
+            lazy_model.runtime.geometry,
+            lazy_model.runtime.mpi,
+        )
+        B_result = gather_to_root(
+            lazy_model.fields.B,
+            lazy_model.runtime.geometry,
+            lazy_model.runtime.mpi,
+        )
+
+        q_error = rank == 0 ? maximum(abs, q_result .- q_initial) : 0.0
+        B_error = rank == 0 ? maximum(abs, B_result .- B_expected) : 0.0
+        q_error = MPI.bcast(q_error, 0, comm)
+        B_error = MPI.bcast(B_error, 0, comm)
+        @test q_error < 1e-13
+        @test B_error < 1e-13
     end
 finally
-    if model !== nothing
-        finalize_model!(model)
-    elseif !MPI.Finalized()
-        MPI.Finalize()
-    end
+    lazy_model === nothing || finalize_model!(lazy_model)
+    preallocated_model === nothing || finalize_model!(preallocated_model)
+    MPI.Barrier(comm)
+    MPI.Finalize()
 end
 end

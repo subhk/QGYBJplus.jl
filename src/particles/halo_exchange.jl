@@ -142,7 +142,7 @@ mutable struct HaloInfo{T<:AbstractFloat}
                          periodic_y::Bool=true,
                          local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
                          process_grid::Union{Nothing,Tuple{Int,Int}}=nothing) where T
-        # grid_info can be a Grid object or a NamedTuple with (nx, ny, nz)
+        # `grid_info` may be runtime geometry or a matching named tuple.
 
         # Extract global dimensions
         nx_global = grid_info.nx

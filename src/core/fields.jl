@@ -58,9 +58,9 @@ Allocate an uninitialized serial field using the legacy computational grid.
 Distributed allocation is handled by the MPI runtime until that ownership is
 moved into `ModelRuntime`.
 """
-function allocate_field(::Type{T}, grid::Grid; complex::Bool=false) where {T}
+function allocate_field(::Type{T}, grid::RuntimeGeometry; complex::Bool=false) where {T}
     dimensions = (grid.nz, grid.nx, grid.ny)
-    if grid.decomp === nothing
+    if grid.decomposition === nothing
         return complex ? Array{Complex{T}}(undef, dimensions) :
                          Array{T}(undef, dimensions)
     end
@@ -74,8 +74,8 @@ function allocate_fields(grid::RectilinearGrid; T::Type{<:AbstractFloat}=Float64
     return ModelFields(T, (nz, nx, ny))
 end
 
-"""Allocate zero-filled fields for the current computational `Grid`."""
-function allocate_fields(grid::Grid; T::Type{<:AbstractFloat}=Float64)
+"""Allocate zero-filled fields for the current computational `RuntimeGeometry`."""
+function allocate_fields(grid::RuntimeGeometry; T::Type{<:AbstractFloat}=Float64)
     q = allocate_field(T, grid; complex=true)
     B = allocate_field(T, grid; complex=true)
     psi = allocate_field(T, grid; complex=true)

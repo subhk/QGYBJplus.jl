@@ -1,4 +1,4 @@
-"""State for a simulation-owned NetCDF output stream."""
+"""Manager for a simulation-owned NetCDF output stream."""
 mutable struct ModelOutputManager{T, S}
     specification::S
     counter::Int
@@ -6,6 +6,9 @@ mutable struct ModelOutputManager{T, S}
     last_iteration::Union{Nothing, Int}
     closed::Bool
 end
+
+@inline _to_xyz(array::AbstractArray) = permutedims(array, (2, 3, 1))
+@inline _from_xyz(array::AbstractArray) = permutedims(array, (3, 1, 2))
 
 ModelOutputManager(specification::S, ::Type{T}) where {S, T} =
     ModelOutputManager{T, S}(specification, 1, nothing, nothing, false)
@@ -76,7 +79,7 @@ end
 function _gather_array(field, model::QGYBJModel)
     runtime = model.runtime
     gathered = gather_to_root(
-        field, runtime.computational_grid, runtime.mpi)
+        field, runtime.geometry, runtime.mpi)
     return runtime.mpi.is_root ? Array(parent(gathered)) : nothing
 end
 
@@ -250,9 +253,9 @@ function restore!(model::QGYBJModel, path::AbstractString)
     q_root = is_root(model) ? first(root_fields) : nothing
     B_root = is_root(model) ? last(root_fields) : nothing
     runtime = model.runtime
-    q = scatter_from_root(q_root, runtime.computational_grid, runtime.mpi;
+    q = scatter_from_root(q_root, runtime.geometry, runtime.mpi;
                           plans=runtime.plans)
-    B = scatter_from_root(B_root, runtime.computational_grid, runtime.mpi;
+    B = scatter_from_root(B_root, runtime.geometry, runtime.mpi;
                           plans=runtime.plans)
     copyto!(parent(model.fields.q), parent(q))
     copyto!(parent(model.fields.B), parent(B))

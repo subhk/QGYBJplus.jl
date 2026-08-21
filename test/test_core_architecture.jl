@@ -35,4 +35,45 @@ using QGYBJplus
     @test has_model
     has_model && @test simulation.model === model
     @test typeof(model) !== typeof(simulation)
+
+    @testset "legacy API is absent" begin
+        forbidden_symbols = (
+            :Grid,
+            :State,
+            :QGParams,
+            :RectilinearGridSpec,
+            :QGYBJSimulation,
+            :default_params,
+            :setup_model,
+            :initialize_simulation,
+            :setup_simulation,
+            :run_simulation!,
+            :create_simple_config,
+            :run_simple_simulation,
+            :DomainConfig,
+            :ModelConfig,
+        )
+        for symbol in forbidden_symbols
+            @test !isdefined(QGYBJplus, symbol)
+        end
+
+        @test !hasproperty(model.runtime, :parameters)
+        @test !hasproperty(model.runtime, :computational_grid)
+    end
+
+    finalize_simulation!(simulation)
+end
+
+@testset "source contains one data model" begin
+    source_directory = normpath(joinpath(@__DIR__, "..", "src"))
+    source = join(
+        (read(joinpath(root, file), String)
+         for (root, _, files) in walkdir(source_directory)
+         for file in files if endswith(file, ".jl")),
+        '\n',
+    )
+    for legacy_name in ("Grid", "State", "QGParams",
+                        "RectilinearGridSpec", "QGYBJSimulation")
+        @test isnothing(match(Regex("\\b$(legacy_name)\\b"), source))
+    end
 end

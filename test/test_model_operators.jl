@@ -40,7 +40,7 @@ using QGYBJplus
         invert_q_to_psi!(model)
         invert_q_to_psi!(
             q_reference,
-            runtime.computational_grid;
+            runtime.geometry;
             a=coefficients.a_ell,
             rho_u=density.rho_u,
             rho_s=density.rho_s,
@@ -54,7 +54,7 @@ using QGYBJplus
         invert_B_to_A!(model)
         invert_B_to_A!(
             B_reference,
-            runtime.computational_grid,
+            runtime.geometry,
             coefficients.a_ell;
             rho_u=density.rho_u,
             rho_s=density.rho_s,
@@ -67,7 +67,7 @@ using QGYBJplus
         compute_velocities!(model; compute_w=false)
         compute_velocities!(
             velocity_reference,
-            runtime.computational_grid;
+            runtime.geometry;
             plans=runtime.plans,
             f=model.physics.coriolis.f,
             N2_profile=coefficients.N²,
@@ -82,7 +82,7 @@ using QGYBJplus
         compute_ybj_vertical_velocity!(model; skip_inversion=true, t=0.0)
         compute_ybj_vertical_velocity!(
             ybj_reference,
-            runtime.computational_grid,
+            runtime.geometry,
             runtime.plans;
             f=model.physics.coriolis.f,
             N2_profile=coefficients.N²,

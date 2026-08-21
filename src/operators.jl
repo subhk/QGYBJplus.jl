@@ -97,7 +97,7 @@ Vertical derivatives use second-order finite differences.
 module Operators
 
 using LinearAlgebra
-using ..QGYBJplus: Grid, ModelFields, local_to_global, z_is_local
+using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
@@ -113,7 +113,7 @@ const _allocate_fft_dst = allocate_fft_backward_dst
 # (Direct import via `using ..QGYBJplus: invert_B_to_A!` can fail in some loading contexts)
 # @inline invert_B_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_B_to_A!(args...; kwargs...)
 
-function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid)
+function _coerce_N2_profile(N2_profile, N2_const, nz, G::RuntimeGeometry)
     N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
     N2_const_T = N2_type(N2_const)
 
@@ -172,7 +172,7 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 
 # Arguments
 - `S::ModelFields`: ModelFields with ψ (input) and u, v, w (output)
-- `G::Grid`: Grid with wavenumbers kx, ky
+- `G::RuntimeGeometry`: RuntimeGeometry with wavenumbers kx, ky
 - `plans`: FFT plans (auto-generated if nothing)
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
@@ -192,7 +192,7 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::ModelFields, G::Grid; plans=nothing,
+function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
     N2_profile=nothing, rho_u=nothing, rho_s=nothing,
     workspace=nothing, dealias_mask=nothing)
@@ -329,7 +329,7 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 
 # Arguments
 - `S::ModelFields`: ModelFields with ψ (input) and w (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
@@ -341,7 +341,7 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
 """
-function compute_vertical_velocity!(S::ModelFields, G::Grid, plans;
+function compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
     f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
     workspace=nothing, dealias_mask=nothing)
     # Compute default dealiasing mask if not provided
@@ -351,7 +351,7 @@ function compute_vertical_velocity!(S::ModelFields, G::Grid, plans;
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.psi, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.psi, G)
 
     profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     if need_transpose
@@ -363,7 +363,7 @@ function compute_vertical_velocity!(S::ModelFields, G::Grid, plans;
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::ModelFields, G::Grid, plans,
+function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
     f, N2_profile, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
@@ -493,7 +493,7 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::Grid, plans,
 end
 
 # 2D decomposition version with transposes
-function _compute_vertical_velocity_2d!(S::ModelFields, G::Grid, plans,
+function _compute_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
     f, N2_profile, workspace, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
@@ -684,7 +684,7 @@ This represents vertical motion induced by:
 
 # Arguments
 - `S::ModelFields`: ModelFields with B (input) and w (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
@@ -709,7 +709,7 @@ either:
 # References
 - Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
 """
-function compute_ybj_vertical_velocity!(S::ModelFields, G::Grid, plans;
+function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
     f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
     rho_u=nothing, rho_s=nothing, workspace=nothing,
     skip_inversion=false, t=nothing)
@@ -723,7 +723,7 @@ function compute_ybj_vertical_velocity!(S::ModelFields, G::Grid, plans;
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.A, G)
 
     profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     if need_transpose
@@ -737,7 +737,7 @@ function compute_ybj_vertical_velocity!(S::ModelFields, G::Grid, plans;
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::Grid, plans,
+function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
     f, N2_profile, rho_u, rho_s, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
@@ -861,7 +861,7 @@ function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::Grid, plans,
 end
 
 # 2D decomposition version with transposes
-function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::Grid, plans,
+function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
     f, N2_profile, rho_u, rho_s, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
@@ -1032,7 +1032,7 @@ For Lagrangian particle advection, always use this function rather than
 
 # Arguments
 - `S::ModelFields`: ModelFields with ψ, A, B (input) and u, v, w (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
@@ -1045,7 +1045,7 @@ For Lagrangian particle advection, always use this function rather than
 # Returns
 Modified ModelFields with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::ModelFields, G::Grid; plans=nothing,
+function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
     N2_profile=nothing, rho_u=nothing, rho_s=nothing,
     workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
@@ -1136,7 +1136,7 @@ Near-inertial waves contribute to particle advection through two mechanisms:
 
 # Arguments
 - `S::ModelFields`: ModelFields with A, B, C (input) and u, v, w modified (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true (default), compute and add vertical wave Stokes drift
@@ -1152,7 +1152,7 @@ Call after compute_velocities! to get total velocity.
 - Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::ModelFields, G::Grid; plans=nothing,
+function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true,
     include_wave_velocity=true, N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz

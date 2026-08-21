@@ -25,8 +25,8 @@ using QGYBJplus
         @test runtime.mpi.nprocs == MPI.Comm_size(MPI.COMM_WORLD)
         @test grid.x == collect(range(-π, step=2π / 8, length=8))
         @test grid.y == collect(range(-π, step=2π / 8, length=8))
-        @test grid.kx == runtime.computational_grid.kx
-        @test grid.ky == runtime.computational_grid.ky
+        @test grid.kx == runtime.geometry.kx
+        @test grid.ky == runtime.geometry.ky
 
         runtime_methods = (
             applicable(get_local_range, runtime),
