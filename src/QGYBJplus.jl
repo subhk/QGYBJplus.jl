@@ -213,6 +213,7 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        DynamicsMode, NonlinearDynamics, LinearDynamics,
        DispersionMode, Dispersive, NoDispersion, VerticalDiffusivity,
        AbstractSchedule, TimeInterval, IterationInterval, NetCDFOutput,
+       Clock, SimulationState, Ready, Running, Stopped, Failed, Finalized,
        initialize_simulation, set!, run!, inertial_period,
        set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
@@ -279,6 +280,7 @@ include("stratification.jl")    # Stratification profiles
 # Composition-first model and runtime ownership
 include("core/model.jl")
 include("core/runtime.jl")
+include("core/simulation.jl")
 
 # High-level user interface (depends on the above)
 include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.

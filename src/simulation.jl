@@ -3,35 +3,6 @@
 using MPI
 using Printf
 
-mutable struct SimulationRunOptions{T}
-    output_dir::String
-    save_interval::Union{Nothing, T}
-    diagnostics_interval::Int
-    verbose::Bool
-    save_psi::Bool
-    save_waves::Bool
-    save_velocities::Bool
-    output
-end
-
-default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
-    "output", nothing, 10, true, true, true, false, nothing)
-
-"""
-    Simulation(model; Δt=1, stop_time=nothing, stop_iteration=nothing, ...)
-
-Own run configuration for a `QGYBJModel`. The model and simulation are
-deliberately distinct objects: model fields and runtime resources stay with
-the model, while time-step and lifecycle configuration stay here.
-"""
-mutable struct Simulation{M, T, R}
-    model::M
-    Δt::T
-    stop_time::Union{Nothing, T}
-    stop_iteration::Union{Nothing, Int}
-    run_options::R
-end
-
 _model(model::QGYBJModel) = model
 _model(simulation::Simulation) = simulation.model
 
@@ -41,13 +12,14 @@ _parameters(model::QGYBJModel) = model.runtime.parameters
 
 is_root(simulation::Simulation) = is_root(simulation.model)
 nprocs(simulation::Simulation) = nprocs(simulation.model)
+_time_step(simulation::Simulation) = simulation.timestepper.Δt
 
 function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
 
     if Δt !== nothing
         Δt > 0 || throw(ArgumentError("Δt must be positive (got $Δt)"))
-        simulation.Δt = typeof(simulation.Δt)(Δt)
+        simulation.timestepper.Δt = typeof(_time_step(simulation))(Δt)
     end
 
     if stop_iteration !== nothing
@@ -56,15 +28,12 @@ function _configure_time_stepping!(simulation::Simulation;
         simulation.stop_time = nothing
     elseif stop_time !== nothing
         stop_time > 0 || throw(ArgumentError("stop_time must be positive"))
-        simulation.stop_time = typeof(simulation.Δt)(stop_time)
-        simulation.stop_iteration = max(1, ceil(Int, stop_time / simulation.Δt))
+        simulation.stop_time = typeof(_time_step(simulation))(stop_time)
+        simulation.stop_iteration = max(1, ceil(Int, stop_time / _time_step(simulation)))
     elseif simulation.stop_iteration === nothing && simulation.stop_time === nothing
         simulation.stop_iteration = 1000
     end
 
-    parameters = _parameters(simulation.model)
-    parameters.dt = typeof(parameters.dt)(simulation.Δt)
-    parameters.nt = simulation.stop_iteration
     return simulation
 end
 
@@ -91,7 +60,7 @@ function _configure_output!(simulation::Simulation; output=nothing,
             throw(ArgumentError("output must be a NetCDFOutput or false"))
         options.output = output
         options.output_dir = output.path
-        interval = _schedule_in_seconds(output.schedule, simulation.Δt)
+        interval = _schedule_in_seconds(output.schedule, _time_step(simulation))
         options.save_interval = interval === nothing ? options.save_interval : interval
         options.save_psi = _saves_psi(output.fields)
         options.save_waves = _saves_waves(output.fields)
@@ -102,7 +71,7 @@ function _configure_output!(simulation::Simulation; output=nothing,
         options.diagnostics_interval = diagnostics.interval
     elseif diagnostics isa TimeInterval
         options.diagnostics_interval =
-            max(1, round(Int, diagnostics.interval / simulation.Δt))
+            max(1, round(Int, diagnostics.interval / _time_step(simulation)))
     elseif diagnostics isa Integer
         diagnostics > 0 || throw(ArgumentError("diagnostics interval must be positive"))
         options.diagnostics_interval = Int(diagnostics)
@@ -121,7 +90,15 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     isfinite(value) && value > 0 ||
         throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
     options = default_run_options(typeof(value))
-    simulation = Simulation(model, value, nothing, nothing, options)
+    simulation = Simulation(
+        model,
+        Clock(typeof(value)),
+        ExponentialRungeKutta2(Δt=value),
+        nothing,
+        nothing,
+        options,
+        Ready,
+    )
     _configure_time_stepping!(simulation; stop_time, stop_iteration)
     return _configure_output!(simulation; output, diagnostics, verbose)
 end
@@ -381,9 +358,17 @@ function run!(simulation::Simulation;
     save_waves::Union{Bool, Nothing}=nothing,
     save_velocities::Union{Bool, Nothing}=nothing)
 
+    simulation.state === Running &&
+        throw(InvalidStateException("simulation is already running", :running))
+    simulation.state === Finalized &&
+        throw(InvalidStateException("simulation has been finalized", :finalized))
+    simulation.state === Failed &&
+        throw(InvalidStateException("simulation is in a failed state", :failed))
+
     model = simulation.model
     runtime = model.runtime
-    runtime.finalized && error("cannot run a finalized model")
+    runtime.finalized &&
+        throw(InvalidStateException("model runtime has been finalized", :finalized))
     _configure_time_stepping!(simulation; Δt, stop_time, stop_iteration)
     _configure_output!(simulation; output, diagnostics, verbose)
 
@@ -391,7 +376,7 @@ function run!(simulation::Simulation;
     progress !== nothing && (options.verbose = progress)
     output_dir !== nothing && (options.output_dir = output_dir)
     save_interval !== nothing &&
-        (options.save_interval = typeof(simulation.Δt)(save_interval))
+        (options.save_interval = typeof(_time_step(simulation))(save_interval))
     diagnostics_interval !== nothing &&
         (options.diagnostics_interval = diagnostics_interval)
     save_psi !== nothing && (options.save_psi = save_psi)
@@ -400,49 +385,56 @@ function run!(simulation::Simulation;
     options.diagnostics_interval > 0 ||
         throw(ArgumentError("diagnostics_interval must be positive"))
 
-    parameters = runtime.parameters
-    write_output = options.output !== false
-    if write_output && runtime.mpi.is_root
-        mkpath(options.output_dir)
+    simulation.state = Running
+    try
+        _prepare_simulation_output!(simulation)
+        _maybe_write_simulation_output!(simulation; initial=true)
+
+        while (simulation.stop_iteration === nothing ||
+               simulation.clock.iteration < simulation.stop_iteration) &&
+              (simulation.stop_time === nothing ||
+               simulation.clock.time < simulation.stop_time)
+            step!(model, simulation.timestepper)
+            simulation.clock.iteration += 1
+            simulation.clock.time += _time_step(simulation)
+            _maybe_write_simulation_output!(simulation)
+
+            if options.verbose && runtime.mpi.is_root &&
+               simulation.clock.iteration % options.diagnostics_interval == 0
+                @info "Simulation progress" iteration=simulation.clock.iteration time=simulation.clock.time
+            end
+        end
+        simulation.state = Stopped
+    catch
+        simulation.state = Failed
+        rethrow()
+    finally
+        _finish_simulation_output!(simulation)
     end
-    MPI.Barrier(runtime.mpi.comm)
-
-    interval = options.save_interval === nothing ?
-               inertial_period(model) : options.save_interval
-    interval > 0 || throw(ArgumentError("save_interval must be positive"))
-    output_config = write_output ? OutputConfig(
-        output_dir=options.output_dir,
-        state_file_pattern="state%04d.nc",
-        psi_interval=interval,
-        wave_interval=interval,
-        diagnostics_interval=interval,
-        save_psi=options.save_psi,
-        save_waves=options.save_waves,
-        save_velocities=options.save_velocities,
-        save_vorticity=false,
-        save_diagnostics=false) : nothing
-
-    run_simulation!(model.fields, runtime.computational_grid, parameters,
-                    runtime.plans;
-        output_config,
-        mpi_config=runtime.mpi,
-        workspace=runtime.workspace,
-        N2_profile=runtime.coefficients.N²,
-        print_progress=runtime.mpi.is_root && options.verbose,
-        diagnostics_interval=options.diagnostics_interval)
     return simulation
 end
 
-finalize_simulation!(simulation::Simulation) =
-    (finalize_model!(simulation.model); simulation)
+_prepare_simulation_output!(simulation::Simulation) = simulation
+_maybe_write_simulation_output!(simulation::Simulation; initial::Bool=false) = simulation
+_finish_simulation_output!(simulation::Simulation) = simulation
+
+function finalize_simulation!(simulation::Simulation)
+    simulation.state === Finalized && return simulation
+    simulation.state === Running &&
+        throw(InvalidStateException("cannot finalize a running simulation", :running))
+    _finish_simulation_output!(simulation)
+    finalize_model!(simulation.model)
+    simulation.state = Finalized
+    return simulation
+end
 finalize_simulation!(model::QGYBJModel) = finalize_model!(model)
 
-get_time(simulation::Simulation, step::Int) = step * simulation.Δt
+get_time(simulation::Simulation, step::Int) = step * _time_step(simulation)
 get_inertial_period(model::QGYBJModel) = 2π / model.physics.coriolis.f
 get_inertial_period(simulation::Simulation) = get_inertial_period(simulation.model)
 inertial_period(model::QGYBJModel) = get_inertial_period(model)
 inertial_period(simulation::Simulation) = get_inertial_period(simulation)
-get_duration(simulation::Simulation) = simulation.stop_iteration * simulation.Δt
+get_duration(simulation::Simulation) = simulation.stop_iteration * _time_step(simulation)
 get_duration_ip(simulation::Simulation) =
     get_duration(simulation) / get_inertial_period(simulation)
 
@@ -457,12 +449,13 @@ function Base.summary(io::IO, simulation::Simulation)
             grid.extent[1] / 1e3, grid.extent[2] / 1e3, grid.extent[3])
     @printf(io, "Coriolis: f₀ = %.2e s⁻¹\n", model.physics.coriolis.f)
     @printf(io, "Time step: Δt = %.2f s, iterations = %d\n",
-            simulation.Δt, simulation.stop_iteration)
+            _time_step(simulation), simulation.stop_iteration)
     println(io, "MPI processes: $(nprocs(model))")
     println(io, "="^40)
 end
 
 function Base.show(io::IO, simulation::Simulation)
     print(io, "Simulation(model=$(simulation.model.grid.size), " *
-              "Δt=$(simulation.Δt), stop_iteration=$(simulation.stop_iteration))")
+              "Δt=$(_time_step(simulation)), stop_iteration=$(simulation.stop_iteration), " *
+              "state=$(simulation.state))")
 end

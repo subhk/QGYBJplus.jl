@@ -9,6 +9,7 @@ include("test_model_ownership.jl")
 include("test_model_operators.jl")
 include("test_model_etdrk2.jl")
 include("test_model_initialization.jl")
+include("test_simulation_lifecycle.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -679,7 +680,7 @@ end
 
     @test simulation !== model
     @test simulation.model === model
-    @test simulation.Δt == 2e-3
+    @test simulation.timestepper.Δt == 2e-3
     @test simulation.stop_iteration == 1
     @test model.physics.flow isa FixedFlow
     @test model.physics.feedback isa NoFeedback
