@@ -6,6 +6,9 @@ abstract type AbstractClosure end
 abstract type FlowEvolution end
 abstract type FeedbackMode end
 abstract type WaveFormulation end
+abstract type DissipationMode end
+abstract type DynamicsMode end
+abstract type DispersionMode end
 abstract type AbstractSchedule end
 
 """Constant Coriolis parameter for an f-plane model."""
@@ -59,6 +62,38 @@ struct YBJ <: WaveFormulation end
 
 """Advect the wave envelope as a passive field."""
 struct PassiveWave <: WaveFormulation end
+
+"""Apply the configured horizontal and vertical dissipative closures."""
+struct Dissipative <: DissipationMode end
+
+"""Disable all dissipative terms."""
+struct Inviscid <: DissipationMode end
+
+"""Retain nonlinear advection and wave–flow interactions."""
+struct NonlinearDynamics <: DynamicsMode end
+
+"""Disable nonlinear advection terms."""
+struct LinearDynamics <: DynamicsMode end
+
+"""Retain wave dispersion."""
+struct Dispersive <: DispersionMode end
+
+"""Disable wave dispersion."""
+struct NoDispersion <: DispersionMode end
+
+"""Vertical diffusivity for balanced potential vorticity."""
+struct VerticalDiffusivity{T}
+    coefficient::T
+end
+
+function VerticalDiffusivity(coefficient::Real)
+    value = float(coefficient)
+    isfinite(value) || throw(ArgumentError("vertical diffusivity must be finite"))
+    value >= 0 || throw(ArgumentError("vertical diffusivity must be non-negative"))
+    return VerticalDiffusivity{typeof(value)}(value)
+end
+
+VerticalDiffusivity(; coefficient::Real=0) = VerticalDiffusivity(coefficient)
 
 """Horizontal hyperdiffusion coefficients for the balanced flow and waves."""
 struct HorizontalHyperdiffusivity{T} <: AbstractClosure

@@ -202,17 +202,21 @@ export DomainConfig, StratificationConfig, InitialConditionConfig, OutputConfig,
        ParticleConfig3D, ParticleDistribution, initialize_particles_3d!,
        UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
        # High-level Simulation API (simplified interface)
-       Simulation, QGYBJModel, RectilinearGrid,
+       Simulation, QGYBJModel, ModelPhysics, ModelNumerics,
+       ModelRuntime, OperatorCoefficients, RectilinearGrid,
        AbstractCoriolis, FPlane, AbstractStratification, ConstantStratification,
        AbstractClosure, HorizontalHyperdiffusivity,
        FlowEvolution, FixedFlow, EvolvingFlow,
        FeedbackMode, NoFeedback, WaveMeanFeedback, NoWaveFeedback,
        WaveFormulation, YBJPlus, YBJ, PassiveWave, SurfaceWave,
+       DissipationMode, Dissipative, Inviscid,
+       DynamicsMode, NonlinearDynamics, LinearDynamics,
+       DispersionMode, Dispersive, NoDispersion, VerticalDiffusivity,
        AbstractSchedule, TimeInterval, IterationInterval, NetCDFOutput,
        initialize_simulation, set!, run!, inertial_period,
        set_mean_flow!, set_surface_waves!, set_exponential_surface_waves!, set_wave_packet!,
        get_inertial_period, get_duration, get_duration_ip,
-       is_root, nprocs, finalize_simulation!
+       is_root, nprocs, finalize_model!, finalize_simulation!
 
 #=
 ================================================================================
@@ -271,6 +275,10 @@ include("config.jl")            # Configuration types (DomainConfig, etc.)
 include("netcdf_io.jl")         # NetCDF I/O with legacy compatibility
 include("initialization.jl")    # Field initialization helpers
 include("stratification.jl")    # Stratification profiles
+
+# Composition-first model and runtime ownership
+include("core/model.jl")
+include("core/runtime.jl")
 
 # High-level user interface (depends on the above)
 include("model_interface.jl")   # QGYBJSimulation, run_simulation!, etc.

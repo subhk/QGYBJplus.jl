@@ -4,6 +4,8 @@ using NCDatasets
 
 include("test_core_components.jl")
 include("test_model_fields.jl")
+include("test_core_architecture.jl")
+include("test_model_ownership.jl")
 
 # Test domain size (small for unit tests)
 const TEST_Lx = 500e3  # 500 km
@@ -644,8 +646,6 @@ end
                                             waves=0.0, waves2=0.0),
         flow=:fixed,
         feedback=:none,
-        Δt=1e-3,
-        stop_iteration=2,
         topology=(1, 1),
         verbose=false,
     )
@@ -666,21 +666,22 @@ end
                             diagnostics=IterationInterval(1),
                             verbose=false)
 
-    @test simulation === model
-    @test simulation.params.dt == 2e-3
-    @test simulation.params.nt == 1
-    @test simulation.params.fixed_flow
-    @test simulation.params.no_feedback
+    @test simulation !== model
+    @test simulation.model === model
+    @test simulation.Δt == 2e-3
+    @test simulation.stop_iteration == 1
+    @test model.physics.flow isa FixedFlow
+    @test model.physics.feedback isa NoFeedback
     @test simulation.run_options.save_interval == 4e-3
     @test !simulation.run_options.save_psi
     @test simulation.run_options.save_waves
     @test inertial_period(simulation) == 2π
-    @test maximum(abs, parent(simulation.state.q)) > 0
-    @test maximum(abs, parent(simulation.state.B)) > 0
+    @test maximum(abs, parent(model.fields.q)) > 0
+    @test maximum(abs, parent(model.fields.B)) > 0
 
     run!(simulation; output=false, progress=false)
-    @test all(isfinite, parent(simulation.state.q))
-    @test all(isfinite, parent(simulation.state.B))
+    @test all(isfinite, parent(model.fields.q))
+    @test all(isfinite, parent(model.fields.B))
 end
 
 @testset "Configured simulation uses ETD-RK2" begin
@@ -750,13 +751,13 @@ end
 end
 
 @testset "Simplified API enables requested wave feedback" begin
-    sim = initialize_simulation(
+    simulation = initialize_simulation(
         nx=4, ny=4, nz=2,
         Lx=2pi, Ly=2pi, Lz=1.0,
         f₀=1.0, N²=1.0,
         nt=1, no_wave_feedback=false,
         verbose=false,
     )
-    @test !sim.params.no_feedback
-    @test !sim.params.no_wave_feedback
+    @test simulation isa Simulation
+    @test simulation.model.physics.feedback isa WaveMeanFeedback
 end
