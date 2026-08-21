@@ -47,6 +47,22 @@ function stepping_model(grid)
     )
 end
 
+function normal_ybj_model(grid, dispersion)
+    return QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=1),
+        stratification=ConstantStratification(N²=1),
+        closure=HorizontalHyperdiffusivity(
+            flow=0, flow2=0, waves=0, waves2=0),
+        flow=FixedFlow(),
+        feedback=NoFeedback(),
+        formulation=YBJ(),
+        linear=LinearDynamics(),
+        no_dispersion=dispersion,
+        verbose=false,
+    )
+end
+
 function scatter_initial_fields!(model, q, B, ψ)
     runtime = model.runtime
     for (destination, global_field) in (
@@ -92,7 +108,8 @@ if rank == 0
     end
 end
 
-let lazy_model=nothing, preallocated_model=nothing
+let lazy_model=nothing, preallocated_model=nothing,
+    normal_model=nothing, nonfinite_model=nothing
 try
     lazy_model = stepping_model(grid)
     preallocated_model = stepping_model(grid)
@@ -173,9 +190,86 @@ try
             end
         end
     end
+
+    for dispersion in (Dispersive(), NoDispersion())
+        normal_model = normal_ybj_model(grid, dispersion)
+        try
+            B_normal = zeros(ComplexF64, NZ, NX, NY)
+            B_normal[:, 2, 1] .= (1, -1, 1, -1, 1, -1, 1, -1)
+            set!(normal_model;
+                B=FieldArray(B_normal; space=:spectral), verbose=false)
+            A_energy = MPI.Allreduce(
+                sum(abs2, parent(normal_model.fields.A)), +, comm)
+            C_energy = MPI.Allreduce(
+                sum(abs2, parent(normal_model.fields.C)), +, comm)
+            @test A_energy > 0
+            @test C_energy > 0
+
+            normal_diagnostic_dir = MPI.bcast(
+                rank == 0 ? mktempdir() : "", 0, comm)
+            normal_simulation = Simulation(
+                normal_model;
+                Δt=ΔT,
+                stop_iteration=1,
+                output=false,
+                diagnostics=EnergyDiagnosticsOutput(
+                    path=normal_diagnostic_dir,
+                    schedule=IterationInterval(1),
+                ),
+                verbose=false,
+            )
+            run!(normal_simulation)
+            if rank == 0
+                NCDataset(joinpath(
+                    normal_diagnostic_dir, "total_energy.nc"), "r") do dataset
+                    @test all(>(0), dataset["wave_KE"][:])
+                    @test all(isfinite, dataset["total_energy"][:])
+                end
+            end
+        finally
+            finalize_model!(normal_model)
+            normal_model = nothing
+        end
+    end
+
+    nonfinite_model = stepping_model(grid)
+    fill!(parent(nonfinite_model.fields.B), 0)
+    offender_rank = min(1, MPI.Comm_size(comm) - 1)
+    if rank == offender_rank
+        B_local = parent(nonfinite_model.fields.B)
+        injected = false
+        for j in axes(B_local, 3)
+            for i in axes(B_local, 2)
+                i_global = local_to_global(i, 2, nonfinite_model.fields.B)
+                j_global = local_to_global(j, 3, nonfinite_model.fields.B)
+                if nonfinite_model.runtime.dealias_mask[i_global, j_global] &&
+                   grid.kh2[i_global, j_global] > 0
+                    B_local[1, i, j] = complex(NaN)
+                    injected = true
+                    break
+                end
+            end
+            injected && break
+        end
+        injected || error("no retained nonzero spectral mode found on rank $rank")
+    end
+    nonfinite_simulation = Simulation(
+        nonfinite_model;
+        Δt=ΔT,
+        stop_iteration=1,
+        output=false,
+        diagnostics=false,
+        verbose=false,
+    )
+    @testset "Collective non-finite termination" begin
+        @test_throws ErrorException run!(nonfinite_simulation)
+        @test nonfinite_simulation.state == Failed
+    end
 finally
     lazy_model === nothing || finalize_model!(lazy_model)
     preallocated_model === nothing || finalize_model!(preallocated_model)
+    normal_model === nothing || finalize_model!(normal_model)
+    nonfinite_model === nothing || finalize_model!(nonfinite_model)
     MPI.Barrier(comm)
     MPI.Finalize()
 end

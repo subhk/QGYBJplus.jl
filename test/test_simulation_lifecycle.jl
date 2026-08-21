@@ -2,20 +2,25 @@ using Test
 using QGYBJplus
 
 @testset "Simulation clock and lifecycle" begin
-    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
-    model = QGYBJModel(
-        grid=grid,
-        coriolis=FPlane(f=1.0),
-        stratification=ConstantStratification(N²=1.0),
-        closure=HorizontalHyperdiffusivity(
-            flow=0, flow2=0, waves=0, waves2=0),
-        flow=FixedFlow(),
-        formulation=PassiveWave(),
-        linear=LinearDynamics(),
-        no_dispersion=NoDispersion(),
-        topology=(1, 1),
-        verbose=false,
-    )
+    function lifecycle_model(; flow=FixedFlow())
+        grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+        return QGYBJModel(
+            grid=grid,
+            coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0),
+            closure=HorizontalHyperdiffusivity(
+                flow=0, flow2=0, waves=0, waves2=0),
+            flow=flow,
+            feedback=NoFeedback(),
+            formulation=PassiveWave(),
+            linear=LinearDynamics(),
+            no_dispersion=NoDispersion(),
+            topology=(1, 1),
+            verbose=false,
+        )
+    end
+
+    model = lifecycle_model()
     model.fields.B[2, 2, 1] = 1 + 0im
 
     simulation = Simulation(model;
@@ -63,6 +68,47 @@ using QGYBJplus
             time_limited; amplitude=0.1, kx=1, ky=1, sigma_k=0.5)
     end
     time_limited.state = Stopped
+
+    @test_throws ArgumentError Simulation(
+        model; Δt=0.1, stop_time=Inf, output=false, verbose=false)
+    invalid_override = Simulation(
+        model; Δt=0.1, stop_iteration=1, output=false, verbose=false)
+    @test_throws ArgumentError run!(invalid_override; Δt=Inf)
+    @test invalid_override.state == Ready
+
+    nonfinite_model = lifecycle_model()
+    try
+        nonfinite_model.fields.B[2, 2, 1] = complex(NaN)
+        nonfinite_simulation = Simulation(
+            nonfinite_model;
+            Δt=0.1,
+            stop_iteration=1,
+            output=false,
+            diagnostics=false,
+            verbose=false,
+        )
+        @test_throws ErrorException run!(nonfinite_simulation)
+        @test nonfinite_simulation.state == Failed
+    finally
+        finalize_model!(nonfinite_model)
+    end
+
+    blowup_model = lifecycle_model(flow=EvolvingFlow())
+    try
+        blowup_model.fields.q[2, 2, 1] = 1e14 + 0im
+        blowup_simulation = Simulation(
+            blowup_model;
+            Δt=0.1,
+            stop_iteration=1,
+            output=false,
+            diagnostics=false,
+            verbose=false,
+        )
+        @test_throws ErrorException run!(blowup_simulation)
+        @test blowup_simulation.state == Failed
+    finally
+        finalize_model!(blowup_model)
+    end
 
     finalize_simulation!(simulation)
     finalize_simulation!(simulation)

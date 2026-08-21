@@ -18,12 +18,14 @@ The result is reduced across the model communicator.
 ## Wave energy
 
 ```julia
-invert_B_to_A!(model)
 B_energy, A_energy = wave_energy(model)
 ```
 
 The returned tuple reports the global squared norms of the prognostic wave
-envelope and diagnosed wave amplitude.
+envelope and diagnosed wave amplitude. `wave_energy` reconstructs amplitude
+and vertical-derivative fields with the model's selected `YBJ`, `YBJPlus`, or
+`PassiveWave` formulation, including no-dispersion runs whose timestep does
+not otherwise retain those diagnostic fields.
 
 ## Runtime inspection
 

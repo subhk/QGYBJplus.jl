@@ -110,11 +110,7 @@ function _refresh_output_diagnostics!(model::QGYBJModel,
                        :velocities in specification.fields
 
     (write_psi || write_velocities) && invert_q_to_psi!(model)
-    if write_waves &&
-       (model.physics.formulation isa YBJPlus ||
-        model.physics.formulation isa PassiveWave)
-        invert_B_to_A!(model)
-    end
+    write_waves && _refresh_wave_diagnostics!(model)
     write_velocities && compute_velocities!(model; compute_w=true)
     return model
 end
@@ -401,13 +397,7 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
         rho_u=density.rho_u,
         rho_s=density.rho_s,
         workspace=runtime.workspace)
-    if model.physics.formulation isa YBJPlus ||
-       model.physics.formulation isa PassiveWave
-        invert_B_to_A!(fields, runtime.geometry, coefficients.a_ell;
-            rho_u=density.rho_u,
-            rho_s=density.rho_s,
-            workspace=runtime.workspace)
-    end
+    _refresh_wave_diagnostics!(fields, model)
     values = _energy_components(model, fields)
     T = eltype(manager.time)
     push!(manager.time, T(simulation.clock.time))
@@ -576,11 +566,8 @@ function restore!(model::QGYBJModel, path::AbstractString)
     copyto!(parent(model.fields.q), parent(q))
     copyto!(parent(model.fields.B), parent(B))
     invert_q_to_psi!(model)
-    if model.physics.formulation isa YBJPlus ||
-       model.physics.formulation isa PassiveWave
-        invert_B_to_A!(model)
-    end
     compute_velocities!(model; compute_w=false)
+    _refresh_wave_diagnostics!(model)
     return model
 end
 
@@ -599,10 +586,7 @@ end
 
 """Return globally reduced envelope and amplitude energies for `model`."""
 function Diagnostics.wave_energy(model::QGYBJModel)
-    if model.physics.formulation isa YBJPlus ||
-       model.physics.formulation isa PassiveWave
-        invert_B_to_A!(model)
-    end
+    _refresh_wave_diagnostics!(model)
     return Diagnostics.wave_energy_global(
         model.fields.B, model.fields.A, model.runtime.mpi)
 end

@@ -22,6 +22,25 @@ function _before_stop_time(simulation::Simulation)
     return time < stop_time - tolerance
 end
 
+function _check_termination_conditions!(simulation::Simulation)
+    model = simulation.model
+    runtime = model.runtime
+    fields = model.fields
+    local_bad = any(value -> !isfinite(value), parent(fields.q)) ||
+                any(value -> !isfinite(value), parent(fields.B)) ||
+                any(value -> !isfinite(value), parent(fields.psi))
+    bad_count = MPI.Allreduce(local_bad ? 1 : 0, +, runtime.mpi.comm)
+    bad_count == 0 || error("non-finite value detected in the model state")
+
+    psi_physical = allocate_fft_backward_dst(fields.psi, runtime)
+    fft_backward!(psi_physical, fields.psi, runtime)
+    local_maximum = maximum(abs, parent(psi_physical))
+    global_maximum = MPI.Allreduce(local_maximum, MPI.MAX, runtime.mpi.comm)
+    global_maximum <= 1e10 || error(
+        "solution appears to be blowing up (max |psi| = $global_maximum)")
+    return simulation
+end
+
 function _assert_mutable(owner::QGYBJModel)
     owner.runtime.finalized && error("cannot modify a finalized model")
     return owner
@@ -49,8 +68,10 @@ function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
 
     if Δt !== nothing
-        Δt > 0 || throw(ArgumentError("Δt must be positive (got $Δt)"))
-        simulation.timestepper.Δt = typeof(_time_step(simulation))(Δt)
+        value = typeof(_time_step(simulation))(Δt)
+        isfinite(value) && value > zero(value) ||
+            throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
+        simulation.timestepper.Δt = value
     end
 
     if stop_iteration !== nothing
@@ -58,8 +79,11 @@ function _configure_time_stepping!(simulation::Simulation;
         simulation.stop_iteration = Int(stop_iteration)
         simulation.stop_time = nothing
     elseif stop_time !== nothing
-        stop_time > 0 || throw(ArgumentError("stop_time must be positive"))
-        simulation.stop_time = typeof(_time_step(simulation))(stop_time)
+        value = typeof(_time_step(simulation))(stop_time)
+        isfinite(value) && value > zero(value) ||
+            throw(ArgumentError(
+                "stop_time must be finite and positive (got $stop_time)"))
+        simulation.stop_time = value
         simulation.stop_iteration = nothing
     elseif simulation.stop_iteration === nothing && simulation.stop_time === nothing
         simulation.stop_iteration = 1000
@@ -334,11 +358,66 @@ function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
     return model
 end
 
-function _refresh_wave_diagnostics!(model::QGYBJModel)
-    if model.physics.formulation isa YBJPlus ||
-       model.physics.formulation isa PassiveWave
-        invert_B_to_A!(model)
+function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
+    model::QGYBJModel)
+
+    context = _operator_context(model)
+    options = ETDModelOptions(model.physics, model.numerics)
+    mask = context.mask
+    sumB!(fields.B, context.grid;
+          Lmask=mask, workspace=context.workspace)
+    compute_velocities!(fields, context.grid;
+        plans=context.plans,
+        f=context.f,
+        N2=first(context.N2),
+        N2_profile=context.N2,
+        rho_u=context.rho_u,
+        rho_s=context.rho_s,
+        compute_w=false,
+        workspace=context.workspace,
+        dealias_mask=mask)
+
+    arrays = _etdrk2_arrays(fields, nothing)
+    split_B_to_real_imag!(arrays.BRk, arrays.BIk, fields.B)
+    if _linear(options)
+        fill!(parent(arrays.nBRk), zero(eltype(parent(arrays.nBRk))))
+        fill!(parent(arrays.nBIk), zero(eltype(parent(arrays.nBIk))))
+    else
+        convol_waqg!(arrays.nqk, arrays.nBRk, arrays.nBIk,
+            fields.u, fields.v, fields.q, arrays.BRk, arrays.BIk,
+            context.grid, context.plans; Lmask=mask)
     end
+    refraction_waqg!(arrays.rBRk, arrays.rBIk,
+        arrays.BRk, arrays.BIk, fields.psi,
+        context.grid, context.plans; Lmask=mask)
+    sigma = compute_sigma(context.f, context.grid,
+        arrays.nBRk, arrays.nBIk, arrays.rBRk, arrays.rBIk;
+        Lmask=mask, workspace=context.workspace,
+        N2_profile=context.N2)
+    compute_A!(fields.A, fields.C, arrays.BRk, arrays.BIk,
+        sigma, context.grid;
+        Lmask=mask, workspace=context.workspace,
+        N2_profile=context.N2)
+    return fields
+end
+
+function _refresh_wave_diagnostics!(fields::ModelFields,
+    model::QGYBJModel)
+
+    if model.physics.formulation isa YBJ
+        _refresh_normal_ybj_diagnostics!(fields, model)
+    else
+        context = _operator_context(model)
+        invert_B_to_A!(fields, context.grid, context.a;
+            rho_u=context.rho_u,
+            rho_s=context.rho_s,
+            workspace=context.workspace)
+    end
+    return fields
+end
+
+function _refresh_wave_diagnostics!(model::QGYBJModel)
+    _refresh_wave_diagnostics!(model.fields, model)
     return model
 end
 
@@ -511,6 +590,7 @@ function run!(simulation::Simulation;
                                      simulation.clock.time)
             simulation.clock.iteration += 1
             simulation.clock.time += _time_step(simulation)
+            _check_termination_conditions!(simulation)
             _maybe_write_simulation_output!(simulation)
             _maybe_record_simulation_diagnostics!(simulation)
             _maybe_write_particle_output!(simulation)

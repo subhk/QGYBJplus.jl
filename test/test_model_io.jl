@@ -190,6 +190,89 @@ using QGYBJplus
                 @test ds["wave_KE"][:] ≈ fill(first(ds["wave_KE"][:]), 3)
             end
 
+            for dispersion in (Dispersive(), NoDispersion())
+                tag = string(nameof(typeof(dispersion)))
+                ybj_model = QGYBJModel(
+                    grid=grid,
+                    coriolis=FPlane(f=2.0),
+                    stratification=stratification,
+                    closure=HorizontalHyperdiffusivity(
+                        flow=0, flow2=0, waves=0, waves2=0),
+                    flow=FixedFlow(),
+                    feedback=NoFeedback(),
+                    formulation=YBJ(),
+                    linear=LinearDynamics(),
+                    no_dispersion=dispersion,
+                    topology=(1, 1),
+                    verbose=false,
+                )
+                try
+                    B = zeros(ComplexF64, 4, 8, 8)
+                    B[:, 2, 1] .= (1, -1, 1, -1)
+                    set!(ybj_model;
+                        B=FieldArray(B; space=:spectral), verbose=false)
+                    @test sum(abs2, parent(ybj_model.fields.A)) > 0
+                    @test sum(abs2, parent(ybj_model.fields.C)) > 0
+
+                    fill!(parent(ybj_model.fields.A), 0)
+                    fill!(parent(ybj_model.fields.C), 0)
+                    envelope_energy, amplitude_energy = wave_energy(ybj_model)
+                    @test envelope_energy > 0
+                    @test amplitude_energy > 0
+
+                    state_path = joinpath(output_dir, "normal_ybj_state_$tag")
+                    state_simulation = Simulation(
+                        ybj_model;
+                        Δt=0.1,
+                        stop_iteration=1,
+                        output=NetCDFOutput(
+                            path=state_path,
+                            schedule=IterationInterval(1),
+                            fields=(:waves,),
+                        ),
+                        diagnostics=false,
+                        verbose=false,
+                    )
+                    run!(state_simulation)
+                    initial_state = joinpath(state_path, "state0001.nc")
+                    NCDataset(initial_state, "r") do ds
+                        @test sum(abs2, ds["LAr"][:]) +
+                              sum(abs2, ds["LAi"][:]) > 0
+                    end
+
+                    fill!(parent(ybj_model.fields.A), 0)
+                    fill!(parent(ybj_model.fields.C), 0)
+                    restore!(ybj_model, initial_state)
+                    @test sum(abs2, parent(ybj_model.fields.A)) > 0
+                    @test sum(abs2, parent(ybj_model.fields.C)) > 0
+
+                    fill!(parent(ybj_model.fields.A), 0)
+                    fill!(parent(ybj_model.fields.C), 0)
+                    ybj_diagnostic_path = joinpath(
+                        output_dir, "normal_ybj_diagnostic_$tag")
+                    diagnostic_simulation = Simulation(
+                        ybj_model;
+                        Δt=0.1,
+                        stop_iteration=1,
+                        output=false,
+                        diagnostics=EnergyDiagnosticsOutput(
+                            path=ybj_diagnostic_path,
+                            schedule=IterationInterval(1),
+                        ),
+                        verbose=false,
+                    )
+                    run!(diagnostic_simulation)
+                    NCDataset(joinpath(
+                        ybj_diagnostic_path, "total_energy.nc"), "r") do ds
+                        @test ds["time"][:] ≈ [0.0, 0.1]
+                        @test all(>(0), ds["wave_KE"][:])
+                        @test all(isfinite, ds["total_energy"][:])
+                    end
+                finally
+                    finalize_model!(ybj_model)
+                end
+            end
+
             failure_path = joinpath(output_dir, "forced_failure")
             mkpath(joinpath(failure_path, "state0001.nc"))
             failing_simulation = Simulation(
