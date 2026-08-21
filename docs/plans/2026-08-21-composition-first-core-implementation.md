@@ -49,7 +49,9 @@ using QGYBJplus
 end
 ```
 
-Include this file first in `test/runtests.jl`.
+Do not include this file in `test/runtests.jl` yet. It spans the grid, fields,
+model, runtime, and simulation ownership tasks and becomes part of the main
+suite in Task 4 when the complete contract can turn green.
 
 **Step 2: Run the contract test to verify it fails**
 
@@ -59,9 +61,9 @@ Expected: FAIL because `RectilinearGrid` returns `RectilinearGridSpec`, `QGYBJMo
 
 **Step 3: Keep the verified-red contract uncommitted**
 
-Carry the failing test directly into Task 2. Do not commit a knowingly broken
-branch; commit the contract together with the first implementation that makes
-it green.
+Keep the verified-red contract untracked through Tasks 2 and 3. Do not commit a
+knowingly broken branch; Task 4 adds it to `test/runtests.jl` and commits it with
+the implementation that makes the complete contract green.
 
 ---
 
@@ -160,7 +162,7 @@ expected `RectilinearGridSpec`; do not leave the main branch test suite red.
 **Step 6: Commit**
 
 ```bash
-git add src/core src/QGYBJplus.jl src/simulation.jl test/test_core_architecture.jl test/test_core_components.jl test/runtests.jl
+git add src/core src/QGYBJplus.jl src/simulation.jl test/test_core_components.jl test/runtests.jl
 git commit -m "feat: add typed components and computational grid"
 ```
 
@@ -298,10 +300,16 @@ Run: `julia --project=. test/test_mpi_extension.jl`
 
 Expected: PASS.
 
-**Step 7: Commit**
+**Step 7: Add the architecture contract to the main suite**
+
+Include `test_core_architecture.jl` from `test/runtests.jl`, run it directly,
+and then run the full suite. Both must pass now that grid, fields, model,
+runtime, and simulation have distinct identities.
+
+**Step 8: Commit**
 
 ```bash
-git add src test
+git add src test/test_core_architecture.jl test/test_model_ownership.jl test/runtests.jl
 git commit -m "feat: make QGYBJModel own runtime and fields"
 ```
 
