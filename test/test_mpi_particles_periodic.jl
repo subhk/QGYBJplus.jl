@@ -27,19 +27,14 @@ Checks:
      x and in y, so check 2 genuinely exercises the periodic seam.
 
 RUN:
-    mpiexec -n 4 julia --project test/test_mpi_particles_periodic.jl
+    mpiexec -n 2 julia --project test/test_mpi_particles_periodic.jl
 ================================================================================
 =#
 
 using Test
 using MPI
-using PencilArrays
+using FFTW
 using QGYBJplus
-using QGYBJplus: setup_model, setup_mpi_environment, init_mpi_grid,
-                 plan_mpi_transforms, init_mpi_state, scatter_from_root,
-                 fft_forward!, compute_velocities!
-
-const UPA = QGYBJplus.UnifiedParticleAdvection
 
 const Lx = 500e3
 const Ly = 500e3
@@ -53,54 +48,70 @@ const V0 = 0.8                # m/s
 
 ψ_phys(x, y) = -U0 * Ly / (2π) * sin(2π * y / Ly) + V0 * Lx / (2π) * sin(2π * x / Lx)
 
-MPI.Init()
+MPI.Initialized() || MPI.Init()
 comm = MPI.COMM_WORLD
 rank = MPI.Comm_rank(comm)
+nprocs = MPI.Comm_size(comm)
 
-par = default_params(nx=NX, ny=NY, nz=NZ, Lx=Lx, Ly=Ly, Lz=Lz)
 z_mid = -Lz / 2
-
-mpi_config = setup_mpi_environment()
-gridp = init_mpi_grid(par, mpi_config)
-plansp = plan_mpi_transforms(gridp, mpi_config)
-Sp = init_mpi_state(gridp, plansp, mpi_config)
+grid = RectilinearGrid(size=(NX, NY, NZ), extent=(Lx, Ly, Lz))
+model = QGYBJModel(
+    grid=grid,
+    coriolis=FPlane(f=1e-4),
+    stratification=ConstantStratification(N²=1e-5),
+    closure=HorizontalHyperdiffusivity(
+        flow=0, flow2=0, waves=0, waves2=0),
+    flow=FixedFlow(),
+    formulation=PassiveWave(),
+    linear=LinearDynamics(),
+    no_dispersion=NoDispersion(),
+    topology=(nprocs, 1),
+    verbose=false,
+)
 
 # ---- Root: global spectral ψ plus the serial reference velocity fields ----
 glob_psik = nothing
 u_ref = v_ref = w_ref = nothing
-dz1 = 0.0
 if rank == 0
-    Gs, Ss, planss, _ = setup_model(par)
     phys = zeros(ComplexF64, NZ, NX, NY)
+    u_ref = zeros(Float64, NZ, NX, NY)
+    v_ref = zeros(Float64, NZ, NX, NY)
     for j in 1:NY, i in 1:NX, k in 1:NZ
-        phys[k, i, j] = ψ_phys((i - 1) * Lx / NX, (j - 1) * Ly / NY)
+        x = (i - 1) * Lx / NX
+        y = (j - 1) * Ly / NY
+        phys[k, i, j] = ψ_phys(x, y)
+        u_ref[k, i, j] = U0 * cos(2π * y / Ly)
+        v_ref[k, i, j] = V0 * cos(2π * x / Lx)
     end
-    glob_psik = similar(phys)
-    fft_forward!(glob_psik, phys, planss)
-    parent(Ss.psi) .= glob_psik
-    compute_velocities!(Ss, Gs; plans=planss, f=par.f₀, N2=par.N², compute_w=false)
-    u_ref = copy(parent(Ss.u))
-    v_ref = copy(parent(Ss.v))
+    glob_psik = fft(phys, (2, 3))
     w_ref = zeros(size(u_ref))
-    dz1 = Gs.dz[1]
 end
 
-parent(Sp.psi) .= parent(scatter_from_root(glob_psik, gridp, mpi_config; plans=plansp))
+runtime = model.runtime
+model.fields.psi .= scatter_from_root(
+    glob_psik,
+    runtime.computational_grid,
+    runtime.mpi;
+    plans=runtime.plans,
+)
 
 # ---- Parallel tracker: particles distributed by position, global ids ----
 cfg = ParticleConfig{Float64}(x_max=Lx, y_max=Ly, z_level=z_mid,
                               nx_particles=NP, ny_particles=NP,
                               use_3d_advection=false,
                               interpolation_method=QGYBJplus.TRILINEAR)
-tracker = ParticleTracker(cfg, gridp, mpi_config; plans=plansp)
-initialize_particles!(tracker, cfg)
+initialize_particles!(model, cfg)
+tracker = model.particles
+
+@test tracker.model === model
+@test tracker.plans === model.runtime.plans
 
 NPtot = NP * NP
 np_global_init = MPI.Allreduce(tracker.particles.np, MPI.SUM, comm)
 
 count_ok = true
 for _ in 1:NSTEPS
-    advect_particles!(tracker, Sp, gridp, DT; params=par)
+    advect_particles!(model, DT)
     np_global = MPI.Allreduce(tracker.particles.np, MPI.SUM, comm)
     global count_ok = count_ok && (np_global == NPtot)
 end
@@ -122,8 +133,9 @@ MPI.Allreduce!(cnt, +, comm)
 
 if rank == 0
     # ---- Serial reference: same trilinear scheme on the global fields ----
-    grid_info = (dx=Lx / NX, dy=Ly / NY, dz=dz1, Lx=Lx, Ly=Ly, Lz=Lz,
-                 z_min=-Lz, z_max=0.0, z0=-Lz + dz1 / 2)
+    grid_info = (dx=Lx / NX, dy=Ly / NY, dz=grid.dz,
+                 Lx=Lx, Ly=Ly, Lz=Lz,
+                 z_min=-Lz, z_max=0.0, z0=-Lz + grid.dz / 2)
     bcs = (periodic_x=true, periodic_y=true, periodic_z=false)
 
     dxp = Lx / NP; dyp = Ly / NP
@@ -150,7 +162,6 @@ if rank == 0
     perid_dist(a, b, L) = abs(mod(a - b + L / 2, L) - L / 2)
     max_dx = maximum(perid_dist(xs_par[n], xs[n], Lx) for n in 1:NPtot)
     max_dy = maximum(perid_dist(ys_par[n], ys[n], Ly) for n in 1:NPtot)
-
     println("PARTICLES init np=", np_global_init, "/", NPtot,
             " | seam crossings: x=", crossed_x, " y=", crossed_y)
     println("MAX serial↔parallel mismatch (periodic metric, m): dx=", max_dx, " dy=", max_dy)
@@ -177,4 +188,5 @@ if rank == 0
 end
 
 MPI.Barrier(comm)
+finalize_model!(model)
 MPI.Finalize()

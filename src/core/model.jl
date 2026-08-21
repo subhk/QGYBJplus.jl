@@ -28,6 +28,7 @@ mutable struct QGYBJModel{G, F, P, N, R}
     physics::P
     numerics::N
     runtime::R
+    particles::Any
 end
 
 _coriolis_component(coriolis::AbstractCoriolis) = coriolis
@@ -112,7 +113,7 @@ function QGYBJModel(; grid::RectilinearGrid,
         runtime = build_runtime(grid, physics, numerics;
                                 topology, parallel_io, verbose)
         fields = allocate_fields(grid, runtime)
-        return QGYBJModel(grid, fields, physics, numerics, runtime)
+        return QGYBJModel(grid, fields, physics, numerics, runtime, nothing)
     catch
         runtime === nothing || finalize_runtime!(runtime; synchronize=false)
         rethrow()

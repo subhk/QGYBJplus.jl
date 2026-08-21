@@ -1168,6 +1168,7 @@ function compute_wave_velocities!(S::ModelFields, G::Grid; plans=nothing,
 
     # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
     f₀ = f
+    f₀² = f₀^2
 
     # Get N² profile, falling back to the explicitly supplied scalar N².
     N2_profile_local = _coerce_N2_profile(N2_profile, N2, nz, G)
@@ -1367,7 +1368,6 @@ function compute_wave_velocities!(S::ModelFields, G::Grid; plans=nothing,
     #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
     #   This expands to: w^S = -2·Im(K₀)/f₀
     inv_f₀ = 1.0 / f₀
-    f₀² = f₀^2
 
     # Add wave velocity and Stokes drift to existing QG velocities in physical space
     nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)

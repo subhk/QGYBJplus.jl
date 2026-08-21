@@ -13,6 +13,7 @@ _parameters(model::QGYBJModel) = model.runtime.parameters
 is_root(simulation::Simulation) = is_root(simulation.model)
 nprocs(simulation::Simulation) = nprocs(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
+_advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
 
 function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
@@ -296,8 +297,10 @@ function set!(owner::Union{QGYBJModel, Simulation};
     ψ=nothing, psi=nothing, mean_flow=nothing,
     pv_method::Symbol=:qg,
     waves=nothing, B=nothing,
+    particles=nothing,
     verbose::Bool=false)
 
+    model = _model(owner)
     flow = _first_notnothing(mean_flow, ψ, psi)
     wave = _first_notnothing(waves, B)
     if flow !== nothing
@@ -318,6 +321,7 @@ function set!(owner::Union{QGYBJModel, Simulation};
                            surface_depth=wave.scale,
                            profile=wave.profile, verbose)
     end
+    particles !== nothing && initialize_particles!(model, particles)
     return owner
 end
 
@@ -396,6 +400,9 @@ function run!(simulation::Simulation;
               (simulation.stop_time === nothing ||
                simulation.clock.time < simulation.stop_time)
             step!(model, simulation.timestepper)
+            _advect_model_particles!(model.particles, model,
+                                     _time_step(simulation),
+                                     simulation.clock.time)
             simulation.clock.iteration += 1
             simulation.clock.time += _time_step(simulation)
             _maybe_write_simulation_output!(simulation)

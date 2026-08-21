@@ -292,6 +292,7 @@ include("core/io.jl")           # Simulation-owned output and model restart
 # Particle advection system (for Lagrangian tracking)
 include("particles/particle_advection.jl")  # Particle tracking core
 include("particles/particle_io.jl")                  # Particle trajectory I/O
+include("core/particles.jl")        # Model-owned particle state and advection
 
 # Pretty printing (must be after all struct definitions)
 include("pretty_printing.jl")

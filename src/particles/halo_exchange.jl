@@ -36,6 +36,11 @@ export HaloInfo, setup_halo_exchange!, exchange_velocity_halos!,
        interpolate_velocity_with_halos,
        compute_process_grid, compute_local_size, compute_start_index, compute_neighbors_2d
 
+@inline function _periodic_coordinate(value::T, origin::T, extent::T) where T
+    offset = mod(value - origin, extent)
+    return origin + (offset >= extent ? zero(T) : offset)
+end
+
 # Direction indices for neighbors array
 const DIR_W  = 1  # West  (left,  -x)
 const DIR_E  = 2  # East  (right, +x)
@@ -763,8 +768,10 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
                                        tracker, halo_info::HaloInfo{T}) where T
 
     # Handle periodic boundaries using GLOBAL domain lengths
-    x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
-    y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
+    x_periodic = halo_info.periodic_x ?
+                 _periodic_coordinate(x, tracker.x0, tracker.Lx) : x
+    y_periodic = halo_info.periodic_y ?
+                 _periodic_coordinate(y, tracker.y0, tracker.Ly) : y
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)

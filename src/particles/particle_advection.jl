@@ -243,6 +243,7 @@ Main particle tracker that handles both serial and parallel execution.
 mutable struct ParticleTracker{T<:AbstractFloat}
     config::ParticleConfig{T}
     particles::ParticleState{T}
+    model::Any
     
     # Grid information
     nx::Int; ny::Int; nz::Int
@@ -287,7 +288,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     base_output_filename::String       # Base filename for automatic file splitting
     auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid,
+                                parallel_config=nothing;
+                                plans=nothing, model=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
@@ -298,7 +301,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
                 comm = parallel_config.comm
                 rank = M.Comm_rank(comm)
                 nprocs = M.Comm_size(comm)
-                is_parallel = true
+                is_parallel = nprocs > 1
             catch
                 comm, rank, nprocs, is_parallel = detect_parallel_environment()
             end
@@ -331,7 +334,8 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         end
 
         # Set up transform plans (using unified interface)
-        plans = plan_transforms!(grid, parallel_config)
+        transform_plans = plans === nothing ?
+                          plan_transforms!(grid, parallel_config) : plans
 
         # Defer halo exchange setup until first velocity update
         # This allows us to get actual local dimensions from ModelFields arrays
@@ -339,12 +343,12 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         halo_info = nothing  # Will be set up lazily in update_velocity_fields!
 
         new{T}(
-            config, particles,
+            config, particles, model,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.x0, grid.y0,
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
-            u_field, v_field, w_field, plans,
+            u_field, v_field, w_field, transform_plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
@@ -356,7 +360,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
+ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing;
+                kwargs...) where T =
+    ParticleTracker{T}(config, grid, parallel_config; kwargs...)
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, process_grid=nothing,
@@ -418,6 +424,11 @@ function detect_parallel_environment()
     end
 
     return comm, rank, nprocs, is_parallel
+end
+
+@inline function _periodic_offset(value::T, origin::T, extent::T) where T
+    offset = mod(value - origin, extent)
+    return offset >= extent ? zero(T) : offset
 end
 
 """
@@ -686,13 +697,14 @@ function advect_particles!(tracker::ParticleTracker{T},
         error("Unknown integration method: $(tracker.config.integration_method)")
     end
     
-    # Handle particle migration in parallel
+    # Apply boundary conditions
+    apply_boundary_conditions!(tracker)
+
+    # Migrate canonical, in-domain coordinates so rank ownership and
+    # interpolation use the same representation at periodic seams.
     if tracker.is_parallel
         migrate_particles!(tracker)
     end
-    
-    # Apply boundary conditions
-    apply_boundary_conditions!(tracker)
     
     # Update time (use simulation time if provided)
     if current_time !== nothing
@@ -921,8 +933,8 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
 
         # Convert global positions to extended array coordinates
         # Step 1: Apply periodic wrapping to global coordinates
-        x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
-        y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
+        x_periodic = halo_info.periodic_x ? tracker.x0 + _periodic_offset(x, tracker.x0, tracker.Lx) : x
+        y_periodic = halo_info.periodic_y ? tracker.y0 + _periodic_offset(y, tracker.y0, tracker.Ly) : y
 
         # Step 2: Compute local domain start positions (using HaloExchange functions)
         x_start = tracker.x0 + compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
@@ -961,8 +973,8 @@ function interpolate_velocity_local(x::T, y::T, z::T,
                                   tracker::ParticleTracker{T}) where T
     
     # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ? _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)
@@ -1218,8 +1230,10 @@ Uses the same domain decomposition logic as compute_local_domain to ensure consi
 Handles uneven division where first `remainder` ranks get one extra grid point.
 """
 function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ?
+            _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ?
+            _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
 
     # Grid parameters
     nx = tracker.nx
@@ -1253,7 +1267,8 @@ Find which rank should own a particle at position x (1D decomposition fallback).
 """
 function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
     # Fallback for 1D decomposition in x
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    x_rel = tracker.config.periodic_x ?
+            _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
     nx = tracker.nx
     dx = tracker.dx
     ix = floor(Int, x_rel / dx)
@@ -1402,13 +1417,17 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
     @inbounds for i in 1:particles.np
         # Horizontal boundaries
         if config.periodic_x
-            particles.x[i] = tracker.x0 + mod(particles.x[i] - tracker.x0, tracker.Lx)
+            particles.x[i] = tracker.x0 +
+                             _periodic_offset(
+                                 particles.x[i], tracker.x0, tracker.Lx)
         else
             particles.x[i] = clamp(particles.x[i], tracker.x0, tracker.x0 + tracker.Lx)
         end
         
         if config.periodic_y
-            particles.y[i] = tracker.y0 + mod(particles.y[i] - tracker.y0, tracker.Ly)
+            particles.y[i] = tracker.y0 +
+                             _periodic_offset(
+                                 particles.y[i], tracker.y0, tracker.Ly)
         else
             particles.y[i] = clamp(particles.y[i], tracker.y0, tracker.y0 + tracker.Ly)
         end
