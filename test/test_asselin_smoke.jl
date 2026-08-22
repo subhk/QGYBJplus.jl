@@ -80,7 +80,8 @@ const ASSELIN_EXAMPLE = joinpath(
             @test dataset.attrib["iteration"] == 1
             @test dataset["time"][1] ≈ 2.0
             @test size(dataset["psi"]) == (4, 4, 2)
-            @test size(dataset["B_real"]) == (4, 4, 2)
+            @test size(dataset["B_hat_real"]) == (4, 4, 2)
+            @test size(dataset["LA_real"]) == (4, 4, 2)
         end
     end
 end

@@ -10,6 +10,7 @@ Provide `size=(nx, ny, nz)` together with either `extent=(Lx, Ly, Lz)` or
 explicit bounds `x=(x₁, x₂)`, `y=(y₁, y₂)`, and `z=(z₁, z₂)`.
 When only `extent` is supplied, the horizontal origin is zero (or centered
 when `centered=true`) and the vertical interval is `(-Lz, 0)`.
+The `kx` and `ky` properties use FFTW's spectral ordering.
 """
 struct RectilinearGrid{T}
     size::NTuple{3, Int}

@@ -23,7 +23,8 @@ hyperdiffusion.
 ## Output
 
 Snapshots are written below `output_asselin/`. Use `examples/compute_energy.jl`
-for post-processing.
+for spatial kinetic energy, or see [I/O and restart](@ref io-output) for direct
+FFTW analysis with `grid.kx` and `grid.ky`.
 
 ## Reference
 

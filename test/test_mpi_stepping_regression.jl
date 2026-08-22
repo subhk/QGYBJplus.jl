@@ -15,6 +15,7 @@ using Test
 using MPI
 using NCDatasets
 using QGYBJplus
+using FFTW
 
 const NX = 8
 const NY = 8
@@ -149,11 +150,12 @@ try
     end
 
     diagnostic_dir = mktempdir()
+    state_dir = mktempdir()
     lazy = Simulation(
         lazy_model;
         Δt=ΔT,
         stop_iteration=NSTEPS,
-        output=false,
+        output=NetCDFOutput(path=state_dir, fields=(:waves,)),
         diagnostics=EnergyDiagnosticsOutput(
             path=diagnostic_dir,
             schedule=IterationInterval(1),
@@ -256,6 +258,22 @@ try
             NCDataset(diagnostic_file, "r") do dataset
                 @test dataset["time"][:] ≈ collect(0:NSTEPS) .* ΔT
                 @test all(isfinite, dataset["total_energy"][:])
+            end
+
+            state_file = joinpath(state_dir, "state0002.nc")
+            @test isfile(state_file)
+            NCDataset(state_file, "r") do dataset
+                A = dataset["A_real"][:, :, :] .+
+                    im .* dataset["A_imag"][:, :, :]
+                LA = dataset["LA_real"][:, :, :] .+
+                     im .* dataset["LA_imag"][:, :, :]
+                B_hat = dataset["B_hat_real"][:, :, :] .+
+                        im .* dataset["B_hat_imag"][:, :, :]
+                kh² = reshape(grid.kx .^ 2, :, 1, 1) .+
+                     reshape(grid.ky .^ 2, 1, :, 1)
+                forward = FFTW.plan_fft(A, (1, 2))
+                @test forward * LA ≈
+                      B_hat .+ 0.25 .* kh² .* (forward * A)
             end
         end
     end

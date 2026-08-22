@@ -2,6 +2,11 @@ using Test
 using NCDatasets
 using QGYBJplus
 using Random
+using FFTW
+
+module EnergyExample
+include(joinpath(@__DIR__, "..", "examples", "compute_energy.jl"))
+end
 
 @testset "Simulation-owned NetCDF output and restart" begin
     mktempdir() do output_dir
@@ -47,13 +52,51 @@ using Random
             NCDataset(last_file, "r") do ds
                 @test ds.attrib["iteration"] == 2
                 @test ds["time"][1] ≈ 0.2
+                @test collect((ds.attrib["Lx"], ds.attrib["Ly"],
+                               ds.attrib["Lz"])) ≈ collect(grid.extent)
+                @test ds.attrib["wave_formulation"] == "PassiveWave"
                 @test ds["N2"][:] ≈ model.runtime.coefficients.N²
                 @test !all(==(first(ds["N2"][:])), ds["N2"][:])
                 @test ds["a_ell"][:] ≈
                       model.physics.coriolis.f^2 ./ ds["N2"][:]
                 @test all(name -> haskey(ds, name),
-                    ("psi", "LAr", "LAi", "q_real", "q_imag",
-                     "B_real", "B_imag", "u", "v", "w"))
+                    ("psi", "A_real", "A_imag", "LA_real", "LA_imag",
+                     "q_hat_real", "q_hat_imag", "B_hat_real",
+                     "B_hat_imag", "u", "v", "w"))
+
+                A = ds["A_real"][:, :, :] .+
+                    im .* ds["A_imag"][:, :, :]
+                LA = ds["LA_real"][:, :, :] .+
+                     im .* ds["LA_imag"][:, :, :]
+                B_hat = ds["B_hat_real"][:, :, :] .+
+                        im .* ds["B_hat_imag"][:, :, :]
+                kh² = reshape(grid.kx .^ 2, :, 1, 1) .+
+                     reshape(grid.ky .^ 2, 1, :, 1)
+                forward = FFTW.plan_fft(A, (1, 2))
+                @test forward * LA ≈
+                      B_hat .+ 0.25 .* kh² .* (forward * A)
+
+                for old_name in ("LAr", "LAi", "Ar", "Ai",
+                                 "q_real", "q_imag", "B_real", "B_imag")
+                    @test !haskey(ds, old_name)
+                end
+            end
+
+            analysis_grid = EnergyExample.grid_from_snapshot(last_file)
+            @test analysis_grid.size == grid.size
+            @test collect(analysis_grid.extent) ≈ collect(grid.extent)
+            @test analysis_grid.kx ≈ grid.kx
+            @test analysis_grid.ky ≈ grid.ky
+
+            energy_file = joinpath(output_dir, "energy0003.nc")
+            EnergyExample.write_energy_snapshot(
+                last_file, energy_file, analysis_grid)
+            NCDataset(energy_file, "r") do ds
+                @test size(ds["flow_KE"]) == grid.size
+                @test size(ds["wave_KE"]) == grid.size
+                @test ds["total_KE"][:, :, :] ≈
+                      ds["flow_KE"][:, :, :] .+ ds["wave_KE"][:, :, :]
+                @test all(isfinite, ds["total_KE"][:, :, :])
             end
 
             q_saved = copy(parent(model.fields.q))
@@ -95,8 +138,8 @@ using Random
             NCDataset(joinpath(selected_path, "state0003.nc"), "r") do ds
                 @test ds.attrib["iteration"] == 3
                 @test haskey(ds, "psi")
-                @test haskey(ds, "B_real")
-                @test !haskey(ds, "LAr")
+                @test haskey(ds, "B_hat_real")
+                @test !haskey(ds, "LA_real")
                 @test !haskey(ds, "u")
             end
 
@@ -148,7 +191,7 @@ using Random
                   ["state0001.nc", "state0002.nc"]
             NCDataset(joinpath(effective_override_path, "state0002.nc"), "r") do ds
                 @test !haskey(ds, "psi")
-                @test haskey(ds, "LAr")
+                @test haskey(ds, "LA_real")
                 @test haskey(ds, "u")
             end
 
@@ -237,8 +280,12 @@ using Random
                     run!(state_simulation)
                     initial_state = joinpath(state_path, "state0001.nc")
                     NCDataset(initial_state, "r") do ds
-                        @test sum(abs2, ds["LAr"][:]) +
-                              sum(abs2, ds["LAi"][:]) > 0
+                        LA = ds["LA_real"][:, :, :] .+
+                             im .* ds["LA_imag"][:, :, :]
+                        B_hat = ds["B_hat_real"][:, :, :] .+
+                                im .* ds["B_hat_imag"][:, :, :]
+                        @test sum(abs2, LA) > 0
+                        @test fft(LA, (1, 2)) ≈ B_hat
                     end
 
                     fill!(parent(ybj_model.fields.A), 0)
