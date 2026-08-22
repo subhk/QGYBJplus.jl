@@ -1,142 +1,75 @@
-# [Key Concepts](@id concepts)
+# [Key concepts](@id concepts)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-Core concepts for understanding QGYBJ+.jl — no code, just ideas.
+## Ownership
 
----
+QGYBJ+.jl separates immutable geometry, model state, and run orchestration:
 
-## What We Simulate
-
-The ocean has two interacting components at very different scales:
-
-```@raw html
-<div class="feature-grid">
-<div class="feature-card">
-    <h3>Mesoscale Eddies</h3>
-    <p><strong>Scale:</strong> ~100 km<br>
-    <strong>Timescale:</strong> Weeks to months<br>
-    <strong>Description:</strong> Slow spinning vortices that contain most of the ocean's kinetic energy</p>
-</div>
-<div class="feature-card">
-    <h3>Near-Inertial Waves</h3>
-    <p><strong>Scale:</strong> ~10 km<br>
-    <strong>Timescale:</strong> ~17 hours<br>
-    <strong>Description:</strong> Fast oscillations driven by wind, crucial for ocean mixing</p>
-</div>
-</div>
+```text
+RectilinearGrid → QGYBJModel → Simulation
 ```
 
-QGYBJ+.jl simulates both components and their interactions: **eddies refract waves, and waves feed energy back to the eddies**.
+- [`RectilinearGrid`](@ref) defines global coordinates and wavenumbers.
+- [`QGYBJModel`](@ref) owns physical choices, numerical choices, distributed
+  fields, FFT resources, and optional particles.
+- [`Simulation`](@ref) owns time, ETD-RK2, stopping criteria, output, and
+  diagnostics.
 
----
+Finalize a simulation when the run ends. This closes its output services and
+releases runtime resources owned by the model.
 
-## The Two Main Variables
+## Model fields
 
-### Streamfunction (ψ) — Eddies
+All model arrays use `(z, x, y)` ordering.
 
-The streamfunction describes the balanced (geostrophic) eddy flow:
+| Field | Role |
+|:--|:--|
+| `q` | prognostic generalized PV; with feedback it contains balanced and wave contributions |
+| `B` | prognostic complex near-inertial-wave envelope |
+| `psi` | balanced streamfunction diagnosed from PV |
+| `A`, `C` | wave amplitude and its vertical derivative |
+| `u`, `v`, `w` | physical-space velocity components |
 
-- High ψ = anticyclone (clockwise in Northern Hemisphere)
-- Low ψ = cyclone (counter-clockwise in Northern Hemisphere)
-- Velocities derived as: `u = -∂ψ/∂y`, `v = ∂ψ/∂x`
-- Vorticity: `ζ = ∇²ψ` (positive = cyclonic, negative = anticyclonic)
+The horizontal velocity follows
+``u=-\partial_y\psi`` and ``v=\partial_x\psi``. The relative vorticity is
+``\zeta=\nabla_h^2\psi``.
 
-### Wave Envelope (B) — Waves
+## Wave formulations
 
-The wave envelope captures wave energy without tracking fast oscillations:
+| Component | Meaning |
+|:--|:--|
+| [`YBJPlus`](@ref) | regularized YBJ⁺ wave dynamics |
+| [`YBJ`](@ref) | original Young–Ben Jelloul relation |
+| [`PassiveWave`](@ref) | wave-envelope advection without refraction or dispersion |
 
-- Complex-valued: `B = Bᵣ + i·Bᵢ`
-- Magnitude `|B|` represents wave amplitude
-- Phase `arg(B)` represents wave phase
-- Evolves on the slow (eddy) timescale
+The model advances `B` and diagnoses `A`. See [YBJ⁺ wave model](@ref ybj-plus)
+for the relation between them.
 
----
+## Flow and feedback choices
 
-## Wave-Eddy Interaction
+The common configurations are:
 
-Three key processes govern how waves and eddies interact:
+| Use case | Flow | Feedback |
+|:--|:--|:--|
+| prescribed flow acting on waves | `FixedFlow()` | `NoFeedback()` |
+| evolving flow acting on waves | `EvolvingFlow()` | `NoWaveFeedback()` |
+| two-way wave–mean coupling | `EvolvingFlow()` | `WaveMeanFeedback()` |
 
-| Process | What Happens | Physical Effect |
-|:--------|:-------------|:----------------|
-| **Advection** | `J(ψ, B)` | Waves are carried by the eddy velocity field |
-| **Refraction** | `½ζB` | Waves bend toward regions of negative vorticity |
-| **Dispersion** | `ik²A` | Waves spread horizontally over time |
+With two-way coupling, wave PV modifies streamfunction inversion. In all
+cases, advection and refraction depend on the selected flow and wave
+formulation.
 
-!!! tip "Wave Trapping"
-    The effective wave frequency is `f_eff = f₀ + ζ/2`. In anticyclones where ζ < 0, waves slow down and get **trapped** — this is a key mechanism for wave energy concentration.
+## Coordinates and transforms
 
----
+- Horizontal boundaries are periodic.
+- The vertical coordinate increases from the bottom to `z=0` at the surface.
+- Vertical nodes are cell centered.
+- Spectral fields are complex; diagnosed velocities are real.
+- Horizontal derivatives are spectral, while nonlinear products are formed
+  in physical space.
 
-## B vs A: Why Two Wave Variables?
-
-We evolve **B** (mathematically convenient) but diagnose **A** (physically meaningful):
-
-```math
-B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right] - \frac{k^2}{4}A
-```
-
-| Variable | Role | Why We Need It |
-|:---------|:-----|:---------------|
-| **B** | Prognostic (evolved) | Simpler time-stepping equations |
-| **A** | Diagnostic (computed) | Represents physical wave amplitude |
-
----
-
-## Coordinate System
-
-### Spatial Coordinates
-- **Horizontal**: x (east), y (north) — doubly periodic domain
-- **Vertical**: z = 0 at surface, z = -Lz at bottom
-
-### Spectral vs Physical Space
-- **Derivatives** computed in spectral space (fast, accurate)
-- **Nonlinear products** computed in physical space (avoid aliasing)
-- Transform between spaces using FFT
-
----
-
-## Time Stepping
-
-The model uses second-order ETD-RK2. Horizontal hyperdiffusion is integrated
-exactly, while advection, refraction, dispersion, and vertical diffusion use
-two explicit Runge–Kutta stages.
-
----
-
-## Quick Glossary
-
-| Symbol | Name | Meaning |
-|:-------|:-----|:--------|
-| ψ | Streamfunction | Describes eddy flow |
-| q | Potential vorticity | Conserved quantity for eddies |
-| B | Wave envelope | Evolved wave variable |
-| A | Wave amplitude | Physical wave amplitude |
-| ζ | Relative vorticity | ∇²ψ, measures rotation |
-| f₀ | Coriolis parameter | Earth's rotation effect |
-| N | Buoyancy frequency | Stratification strength |
-| Lx, Ly | Domain size | Horizontal extent |
-| Lz | Domain depth | Vertical extent |
-
----
-
-## Next Steps
-
-```@raw html
-<div class="learning-path">
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../quickstart/">Quick Start</a></strong> — Run your first simulation
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../physics/overview/">Physics Overview</a></strong> — See the full equations
-    </div>
-</div>
-</div>
-```
+Continue with [configuration](@ref configuration) or the [physics
+overview](@ref physics-overview).

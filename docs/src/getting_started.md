@@ -1,65 +1,45 @@
-# [Installation and setup](@id getting_started)
+# [Installation](@id getting_started)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-## Install
+## Install the package
 
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
 ```
 
-For a local checkout:
+Verify that Julia can load it:
+
+```bash
+julia -e 'using QGYBJplus'
+```
+
+## Work from a checkout
 
 ```bash
 git clone https://github.com/subhk/QGYBJplus.jl
 cd QGYBJplus.jl
-julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 ```
 
-MPI.jl, PencilArrays.jl, and PencilFFTs.jl are package dependencies. Use the
-MPI.jl launcher so the configured MPI implementation is selected correctly:
+## Run with MPI
+
+Install MPI.jl's launcher once for the selected Julia environment:
 
 ```bash
 julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
+```
+
+Then launch the same Julia program on multiple ranks:
+
+```bash
 mpiexecjl -n 4 julia --project=. examples/asselin_jpo2020.jl
 ```
 
-## Verify the installation
+Application code does not need a separate MPI construction path. See [MPI
+parallel execution](@ref parallel) for topology and distributed-array details.
 
-```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
-```
-
-## Minimal construction
-
-```julia
-using QGYBJplus
-
-grid = RectilinearGrid(size=(32, 32, 16),
-                       extent=(100e3, 100e3, 1000.0),
-                       centered=true)
-model = QGYBJModel(grid=grid,
-                   coriolis=FPlane(f=1e-4),
-                   stratification=ConstantStratification(N²=1e-5),
-                   verbose=false)
-simulation = Simulation(model; Δt=10.0, stop_iteration=1, output=false)
-
-try
-    run!(simulation)
-finally
-    finalize_simulation!(simulation)
-end
-```
-
-Model construction initializes MPI when necessary and records that ownership.
-Finalization only closes MPI when the model initialized it; an MPI session
-created by an application or test runner remains externally owned.
-
-## Next steps
-
-- [Quick start](@ref quickstart)
-- [Configuration](@ref configuration)
-- [Asselin dipole walkthrough](@ref worked_example)
+Next, follow the [quick start](@ref quickstart).

@@ -98,6 +98,20 @@ struct AnalyticalProfile{T, F} <: StratificationProfile{T}
 end
 
 """
+    AnalyticalProfile(func; returns=:N², precision=Float64)
+
+Create a stratification profile from a function of vertical coordinate `z`.
+Set `returns=:N²` when `func(z)` returns buoyancy frequency squared, or
+`returns=:N` when it returns buoyancy frequency.
+"""
+function AnalyticalProfile(func::F; returns::Symbol=:N²,
+                           precision::Type{T}=Float64) where {F, T<:AbstractFloat}
+    returns in (:N, :N²) ||
+        throw(ArgumentError("returns must be :N or :N²"))
+    return AnalyticalProfile{T, F}(func, returns === :N²)
+end
+
+"""
     create_stratification_profile(config)
 
 Create stratification profile from configuration.

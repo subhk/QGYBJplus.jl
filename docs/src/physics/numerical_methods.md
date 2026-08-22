@@ -76,7 +76,8 @@ timestepper = ExponentialRungeKutta2(Δt=10.0)
 step!(model, timestepper)
 ```
 
-There is one production integrator and one reusable workspace path.
+Manual `step!` calls do not update a simulation clock, particles, output, or
+diagnostic schedules. Use `run!` for ordinary simulations.
 
 ## Stability
 
@@ -86,7 +87,7 @@ and vertical-diffusion constraints. Dimensional helper functions can target an
 e-folding time at a selected horizontal scale:
 
 ```julia
-parameters = compute_hyperdiff_params(
+hyperdiffusion = compute_hyperdiff_params(
     nx=128,
     ny=128,
     Lx=70e3,

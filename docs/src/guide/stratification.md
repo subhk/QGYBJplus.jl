@@ -19,12 +19,12 @@ model = QGYBJModel(grid=grid, stratification=stratification)
 
 ```julia
 N²_function = z -> 1e-5 + 4e-5 * exp(-((z + 100.0) / 40.0)^2)
-profile = AnalyticalProfile{Float64, typeof(N²_function)}(N²_function, true)
+profile = AnalyticalProfile(N²_function; returns=:N²)
 model = QGYBJModel(grid=grid, stratification=profile)
 ```
 
-The second constructor value declares whether the function returns `N²`
-(`true`) or `N` (`false`).
+Use `returns=:N` when the function returns buoyancy frequency instead of its
+square. `precision=Float32` selects a different profile precision.
 
 ## Built-in profiles
 
@@ -44,12 +44,12 @@ profile = load_stratification_from_file("stratification.nc")
 model = QGYBJModel(grid=grid, stratification=profile)
 ```
 
-Validate external data before model construction:
+Inspect external values before model construction:
 
 ```julia
 errors, warnings = validate_stratification(values)
 isempty(errors) || error(join(errors, "\n"))
 ```
 
-All values must be finite and positive. The operator coefficient helper
-[`a_ell_from_N2`](@ref) applies the same validation.
+Model construction requires finite, positive values. The validation helper
+also reports unusually weak or strong stratification.

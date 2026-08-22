@@ -1,68 +1,64 @@
-# [Model Overview](@id physics-overview)
+# [Physics overview](@id physics-overview)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-QGYBJ+.jl simulates the interaction between mesoscale eddies and near-inertial waves.
+QGYBJ+.jl couples quasigeostrophic balanced flow to a phase-averaged
+near-inertial-wave envelope.
 
-## The Two Components
+## State variables
 
-| Component | Variable | Scale | Dynamics |
-|:----------|:---------|:------|:---------|
-| **Eddies** | ψ (streamfunction) | 50-200 km, weeks | Advection of PV |
-| **Waves** | B (wave envelope) | 10-50 km, hours | Advection + refraction |
+| Field | Space | Meaning |
+|:--|:--|:--|
+| `q` | spectral | prognostic generalized potential vorticity |
+| `B` | spectral | prognostic complex wave envelope |
+| `psi` | spectral | streamfunction diagnosed from balanced PV |
+| `A`, `C` | spectral | diagnosed wave amplitude and vertical derivative |
+| `u`, `v`, `w` | physical | diagnosed velocity components |
 
-**Interactions**: Eddies refract waves (focusing in anticyclones); waves feed energy back to eddies.
+With two-way feedback, `q` contains balanced and wave contributions:
 
-## Governing Equations
-
-### QG Potential Vorticity
 ```math
-\frac{\partial q}{\partial t} + J(\psi, q) = \text{dissipation}
+q = q^g + q^w,
+\qquad
+q^g = \nabla_h^2\psi
+    + \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z\psi\right).
 ```
-where the prognostic total PV is
-``q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2} + q^w``.
-The wave contribution is diagnosed from ``B`` and removed from ``q`` only for
-streamfunction inversion.
 
-### YBJ+ Wave Envelope
+The total PV evolves as
+
 ```math
-\frac{\partial B}{\partial t} + J(\psi, B)
-= -\frac{i}{2}\zeta B - \frac{if_0}{2}\nabla_h^2 A
-+ \text{dissipation}
+\partial_t q + J(\psi,q) = \mathcal D_q.
 ```
-where ``B = L^+ A`` and A is recovered via elliptic inversion.
 
-### Physical Processes
+The wave equation is
 
-| Process | Term | Effect |
-|:--------|:-----|:-------|
-| Advection | ``J(\psi, B)`` | Waves carried by flow |
-| Refraction | ``-(i/2)\zeta B`` | Waves focus in anticyclones |
-| Dispersion | ``-(if_0/2)\nabla_h^2 A`` | Horizontal spreading |
+```math
+\partial_t B + J(\psi,B)
+= -\frac{i}{2}\zeta B
+  -\frac{i f_0}{2}\nabla_h^2 A
+  + \mathcal D_B,
+\qquad \zeta=\nabla_h^2\psi.
+```
 
-!!! tip "Wave Trapping"
-    Effective frequency ``f_{\text{eff}} = f_0 + \zeta/2``. In anticyclones (ζ < 0), waves slow and accumulate.
+See [QG equations](@ref qg-equations), [YBJ⁺ wave model](@ref ybj-plus), and
+[wave–mean interaction](@ref wave-mean) for definitions and coupling details.
 
-## Variables
+## Configurable dynamics
 
-| Type | Variables |
-|:-----|:----------|
-| **Prognostic** | q (potential vorticity), B (wave envelope) |
-| **Diagnostic** | ψ (from q), A (from B), u, v (from ψ) |
+- `FixedFlow()` or `EvolvingFlow()` controls balanced-flow evolution.
+- `YBJPlus()`, `YBJ()`, or `PassiveWave()` selects wave dynamics.
+- `WaveMeanFeedback()` includes wave PV in balanced inversion;
+  `NoWaveFeedback()` omits it.
+- `NonlinearDynamics()` or `LinearDynamics()` controls nonlinear
+  advection.
+- `Dispersive()` or `NoDispersion()` controls wave dispersion.
+- `Dissipative()` or `Inviscid()` controls configured closures.
 
-## Boundary Conditions
+## Domain and boundary conditions
 
-- **Horizontal**: Doubly periodic
-- **Vertical**: Rigid lid (w=0 at z=0, z=-Lz), no-flux (∂ψ/∂z=0)
-
-!!! warning "Coordinate Convention"
-    z = 0 at surface, z = -Lz at bottom.
-
-## See Also
-
-- [QG Equations](@ref qg-equations)
-- [YBJ+ Wave Model](@ref ybj-plus)
-- [Wave-Mean Interaction](@ref wave-mean)
-- [Numerical Methods](@ref numerical-methods)
+Horizontal directions are periodic. Vertical nodes are cell centered between
+a rigid bottom and surface, with `z=0` at the surface. The balanced
+streamfunction uses homogeneous Neumann conditions at top and bottom; vertical
+velocity vanishes at those boundaries.

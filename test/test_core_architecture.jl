@@ -37,6 +37,14 @@ using QGYBJplus
     @test typeof(model) !== typeof(simulation)
 
     @testset "legacy API is absent" begin
+        removed_particle_aliases = (
+            :create_particle_config,
+            :create_particle_config_3d,
+            :create_uniform_3d_grid,
+            :create_layered_distribution,
+            :create_random_3d_distribution,
+            :create_custom_distribution,
+        )
         forbidden_symbols = (
             :Grid,
             :State,
@@ -52,9 +60,17 @@ using QGYBJplus
             :run_simple_simulation,
             :DomainConfig,
             :ModelConfig,
+            removed_particle_aliases...,
         )
         for symbol in forbidden_symbols
             @test !isdefined(QGYBJplus, symbol)
+        end
+
+        for symbol in removed_particle_aliases
+            @test !isdefined(QGYBJplus.UnifiedParticleAdvection, symbol)
+        end
+        for symbol in (:copy_local_to_extended!, :pack_halo_data!, :unpack_halo_data!)
+            @test !isdefined(QGYBJplus.UnifiedParticleAdvection.HaloExchange, symbol)
         end
 
         @test !hasproperty(model.runtime, :parameters)

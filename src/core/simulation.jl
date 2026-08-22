@@ -6,6 +6,7 @@ end
 
 Clock(::Type{T}=Float64) where T = Clock(zero(T), 0)
 
+"""Lifecycle states for a [`Simulation`](@ref)."""
 @enum SimulationState begin
     Ready
     Running

@@ -6,7 +6,8 @@ CurrentModule = QGYBJplus
 
 The repository's primary worked example is
 `examples/asselin_jpo2020.jl`. It follows the barotropic dipole setup of
-Asselin et al. (2020) and is written entirely with the composition-first API.
+Asselin, Thomas, Young, and Rainville (2020) and uses only the
+composition-first API.
 
 ## Run the published-resolution setup
 
@@ -52,26 +53,9 @@ simulation = run_asselin_example(
 The function returns a finalized [`Simulation`](@ref). This makes it suitable
 for tests and notebooks while guaranteeing runtime cleanup.
 
-## Ownership in the example
-
-- `RectilinearGrid` owns the dimensional coordinate system.
-- `QGYBJModel` owns the fixed-flow YBJ+ equations and their arrays.
-- `Simulation` owns ETD-RK2, the clock, stopping criteria, NetCDF output, and
-  scheduled energy diagnostics.
-- `set!` initializes the barotropic dipole and Gaussian surface wave.
-
-The closure explicitly disables unused coefficients, avoiding dependence on
-constructor defaults:
-
-```julia
-HorizontalHyperdiffusivity(
-    flow=0,
-    flow2=0,
-    waves=1e5,
-    waves2=0,
-    wave_laplacian_order=2,
-)
-```
+The example uses a fixed barotropic flow, YBJ⁺ waves, no wave feedback, and
+explicit wave hyperdiffusion. `set!` initializes the dipole and Gaussian
+surface wave; `Simulation` owns output and energy-diagnostic schedules.
 
 ## Output
 
@@ -79,3 +63,10 @@ Snapshots contain coordinates, time, iteration, physical `psi`, `LAr`,
 `LAi`, `Ar`, and `Ai`, spectral real/imaginary parts of `q` and `B`, and the
 vertical `N2` and `a_ell` profiles. Use `examples/compute_energy.jl` for the
 post-processing workflow.
+
+## Reference
+
+Asselin, O., Thomas, L. N., Young, W. R., & Rainville, L. (2020),
+[“Refraction and Straining of Near-Inertial Waves by Barotropic
+Eddies”](https://doi.org/10.1175/JPO-D-20-0109.1), *Journal of Physical
+Oceanography*, 50, 3439–3454.

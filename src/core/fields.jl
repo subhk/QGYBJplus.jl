@@ -54,9 +54,8 @@ end
 """
     allocate_field(T, grid; complex=false)
 
-Allocate an uninitialized serial field using the legacy computational grid.
-Distributed allocation is handled by the MPI runtime until that ownership is
-moved into `ModelRuntime`.
+Allocate an uninitialized field from an internal `RuntimeGeometry`.
+Distributed allocation is handled by `ModelRuntime`.
 """
 function allocate_field(::Type{T}, grid::RuntimeGeometry; complex::Bool=false) where {T}
     dimensions = (grid.nz, grid.nx, grid.ny)

@@ -5,7 +5,11 @@ QG-YBJ+ Model
 [![Documentation (stable)](https://img.shields.io/badge/docs-stable-blue.svg)](https://subhk.github.io/QGYBJplus.jl/stable/)
 [![Documentation (dev)](https://img.shields.io/badge/docs-dev-blue.svg)](https://subhk.github.io/QGYBJplus.jl/dev/)
 
-This numerical model simulates the coupling between near-inertial waves and (Lagrangian-mean) balanced eddies. Wave dynamics follow the YBJ+ equation (Asselin & Young 2019), while potential vorticity evolution is governed by the quasigeostrophic equation, incorporating the wave feedback formulation of Xie & Vanneste (2015). The model employs pseudo-spectral methods horizontally, second-order finite differences vertically, and second-order exponential Runge–Kutta (ETD-RK2) time integration.
+This numerical model simulates interactions between near-inertial waves and
+(Lagrangian-mean) balanced flow. It combines the YBJ⁺ equation of Asselin &
+Young (2019), the wave-feedback formulation of Xie & Vanneste (2015),
+horizontal pseudo-spectral methods, second-order vertical differences, and
+ETD-RK2 time integration.
 
 ```julia
 using QGYBJplus
@@ -36,5 +40,5 @@ end
 
 ## References
 
-- Asselin, O., & Young, W. R. (2019). Penetration of wind-generated near-inertial waves into a turbulent ocean. *J. Phys. Oceanogr.*, 49, 1699-1717.
+- Asselin, O., & Young, W. R. (2019). An improved model of near-inertial wave dynamics. *J. Fluid Mech.*, 876, 428–448. https://doi.org/10.1017/jfm.2019.557
 - Xie, J.-H., & Vanneste, J. (2015). A generalised-Lagrangian-mean model of the interactions between near-inertial waves and mean flow. *J. Fluid Mech.*, 774, 143-169.

@@ -1,5 +1,3 @@
-"""Vertical and horizontal coefficients used by the spectral kernels."""
-
 """Compute `a(z) = f² / N²(z)` with a stable lower bound on `N²`."""
 function a_ell_from_N2(N2_profile::AbstractVector, f::Real)
     isempty(N2_profile) &&

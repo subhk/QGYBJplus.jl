@@ -33,9 +33,7 @@ exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
 Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
 construct a new simulation around the same model to continue from the current
 fields. This prevents closed output managers from overwriting earlier files.
-After every ETD-RK2 step, non-finite fields and excessive streamfunction
-growth are checked collectively, so all MPI ranks transition to `Failed`
-before particle advection or scheduled output is attempted.
+Termination checks are collective, so all MPI ranks enter `Failed` together.
 
 ```julia
 try
@@ -74,5 +72,6 @@ inertial_period(simulation)
 ## Manual model stepping
 
 Low-level applications may construct [`ExponentialRungeKutta2`](@ref) and call
-`step!(model, timestepper)`. Ordinary runs should use `Simulation` so clock,
-particle, output, and failure lifecycles stay synchronized.
+`step!(model, timestepper)`. That call advances model fields only; it does not
+update a clock, particles, output, or diagnostics. Ordinary runs should use
+`Simulation`.

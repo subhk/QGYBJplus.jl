@@ -26,7 +26,8 @@ step!(model, timestepper)
 ```
 
 The first step allocates an [`ExponentialRungeKutta2Workspace`](@ref); later
-steps reuse it.
+steps reuse it. Manual stepping advances fields only; [`run!`](@ref) also
+manages time, particles, output, diagnostics, and failure handling.
 
 ```@docs
 ExponentialRungeKutta2

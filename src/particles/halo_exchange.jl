@@ -858,11 +858,6 @@ function interpolate_velocity_with_halos(x::T, y::T, z::T,
     return u_interp, v_interp, w_interp
 end
 
-# Legacy compatibility: alias for old function names
-const copy_local_to_extended! = copy_local_to_extended_2d!
-const pack_halo_data! = nothing  # Removed, now integrated into exchange functions
-const unpack_halo_data! = nothing  # Removed, now integrated into exchange functions
-
 end # module HaloExchange
 
 using .HaloExchange

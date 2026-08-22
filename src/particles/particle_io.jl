@@ -156,32 +156,19 @@ Creates a dedicated `particles/` subdirectory for organized output.
 =#
 
 """
-    ParticleOutputManager{T}
+    ParticleOutputManager(output_dir; save_interval_iter=0,
+                          save_interval_time=0.1,
+                          output_mode=:trajectory,
+                          file_prefix="particles")
 
-Manages particle output to NetCDF files in a dedicated `particles/` directory.
+Schedule particle NetCDF output under `output_dir/particles`. Set the unused
+iteration- or time-based interval to zero. `output_mode` may be `:snapshots`,
+`:trajectory`, or `:streaming`.
 
-# Features
-- Automatic directory creation (`output_dir/particles/`)
-- Configurable save interval (by iteration or time)
-- Multiple output modes: snapshots, trajectories, or streaming
-- Handles both serial and parallel execution
-- Accumulates trajectory data in memory or streams to disk
-
-# Fields
-- `output_dir`: Base output directory
-- `particle_dir`: Particle output subdirectory (`output_dir/particles/`)
-- `save_interval_iter`: Save every N iterations (0 = disabled)
-- `save_interval_time`: Save every T time units (0.0 = disabled)
-- `output_mode`: `:snapshots`, `:trajectory`, or `:streaming`
-- `file_prefix`: Prefix for output files (default: "particles")
-- `current_file`: Path to current output file (for streaming mode)
-- `save_count`: Number of saves performed
-- `last_save_iter`: Last iteration when particles were saved
-- `last_save_time`: Last time when particles were saved
-- `time_series`: Accumulated time values
-- `x_series`, `y_series`, `z_series`: Accumulated position data
-- `u_series`, `v_series`, `w_series`: Accumulated velocity data
-- `initialized`: Whether manager has been initialized
+Pass the manager as `particle_output` when constructing a
+[`QGYBJplus.Simulation`](@ref).
+The simulation writes initial, scheduled, and final particle states and closes
+the manager during finalization.
 """
 mutable struct ParticleOutputManager{T<:AbstractFloat}
     # Directory configuration
@@ -818,11 +805,7 @@ function write_snapshot_summary!(manager::ParticleOutputManager, tracker::Partic
     return manager
 end
 
-#=
-================================================================================
-                    ORIGINAL FUNCTIONS (preserved for compatibility)
-================================================================================
-=#
+# Complete-trajectory output
 
 """
     write_particle_trajectories(filename, tracker; metadata=Dict())
@@ -996,28 +979,13 @@ end
 """
     read_particle_trajectories(filename) -> NamedTuple
 
-Read particle trajectory history from NetCDF file.
+Read a trajectory file written by [`write_particle_trajectories`](@ref).
+The returned named tuple contains `x`, `y`, and `z` matrices in
+`(particle, time)` order, plus `time`, `particle_ids`, and file `attributes`.
 
-Returns a NamedTuple with fields:
-- `x`: Matrix of x positions (np × ntime)
-- `y`: Matrix of y positions (np × ntime)
-- `z`: Matrix of z positions (np × ntime)
-- `time`: Vector of time values (ntime)
-- `particle_ids`: Vector of particle identifiers (np)
-- `attributes`: Dict of global attributes from the file
-
-This is the inverse of `write_particle_trajectories`.
-
-# Example
 ```julia
-# Write trajectories
-write_particle_trajectories("particles.nc", tracker)
-
-# Read them back
-traj = read_particle_trajectories("particles.nc")
-println("Number of particles: ", size(traj.x, 1))
-println("Number of time steps: ", length(traj.time))
-println("Initial x positions: ", traj.x[:, 1])
+trajectories = read_particle_trajectories("particles.nc")
+initial_x = trajectories.x[:, 1]
 ```
 """
 function read_particle_trajectories(filename::String)
@@ -1322,15 +1290,20 @@ Returns: Dictionary mapping z-levels to filenames
 
 Example:
 ```julia
-# Initialize particles at multiple z-levels
-config = create_layered_distribution(0.0, 2π, 0.0, 2π, [π/4, π/2, 3π/4], 4, 4)
-tracker = ParticleTracker(config, grid, parallel_config)
+# Initialize particles at multiple depths
+config = particles_in_layers(
+    [-250.0, -500.0, -750.0];
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    nx=4, ny=4,
+)
+tracker = initialize_particles!(model, config)
 
 # Run simulation...
 
 # Save each z-level to separate file
 files = write_particle_trajectories_by_zlevel("particles", tracker)
-# Creates: particles_z0.785.nc, particles_z1.571.nc, particles_z2.356.nc
+# Creates one file for each initial depth.
 ```
 """
 function write_particle_trajectories_by_zlevel(base_filename::String, tracker::ParticleTracker;

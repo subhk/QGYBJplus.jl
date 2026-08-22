@@ -4,8 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-Configuration is expressed by composing focused Julia values. There is no
-catch-all parameter record or secondary builder layer.
+Build a model by composing typed physical and numerical choices.
 
 ## Geometry
 
@@ -34,19 +33,19 @@ model = QGYBJModel(
 )
 ```
 
-Available focused choices include:
+Available choices include:
 
-| Concern | Values |
+| Constructor keyword | Values |
 |:--|:--|
-| balanced flow | `FixedFlow()`, `EvolvingFlow()` |
-| coupling | `NoFeedback()`, `NoWaveFeedback()`, `WaveMeanFeedback()` |
-| waves | `YBJPlus()`, `YBJ()`, `PassiveWave()` |
-| nonlinear terms | `NonlinearDynamics()`, `LinearDynamics()` |
-| dispersion | `Dispersive()`, `NoDispersion()` |
-| dissipation | `Dissipative()`, `Inviscid()` |
+| `flow` | `FixedFlow()`, `EvolvingFlow()` |
+| `feedback` | `NoFeedback()`, `NoWaveFeedback()`, `WaveMeanFeedback()` |
+| `formulation` | `YBJPlus()`, `YBJ()`, `PassiveWave()` |
+| `linear` | `NonlinearDynamics()`, `LinearDynamics()` |
+| `no_dispersion` | `Dispersive()`, `NoDispersion()` |
+| `inviscid` | `Dissipative()`, `Inviscid()` |
 
-Constructor shorthands such as `flow=:fixed` remain accepted at the public
-boundary, but typed values make intent and ownership clearest.
+See [key concepts](@ref concepts) for the recommended flow and feedback
+combinations.
 
 ## Numerical choices
 

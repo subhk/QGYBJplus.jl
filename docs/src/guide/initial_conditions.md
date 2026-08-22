@@ -18,7 +18,7 @@ set!(
 ```
 
 Use `pv_method=:barotropic` for an imposed vertically uniform flow, as in the
-Asselin dipole example. Use `:none` only when `q` will be assigned separately.
+Asselin dipole example.
 
 ## Deterministic random mean flow
 
@@ -84,6 +84,4 @@ file-oriented `(x, y, z)` ordering:
 set!(model; B=FieldFile("initial.nc", "B"))
 ```
 
-All public setters rebuild dependent `q`, `A`, `C`, and velocity diagnostics.
-Advanced applications may still assign distributed prognostic arrays directly,
-but then must refresh diagnostic operators themselves.
+Public setters rebuild dependent `q`, `A`, `C`, and velocity diagnostics.

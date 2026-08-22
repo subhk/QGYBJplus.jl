@@ -6,25 +6,20 @@ CurrentModule = QGYBJplus
 
 QGYBJ+.jl simulates interactions between quasigeostrophic balanced flow and
 near-inertial waves. It combines horizontally pseudo-spectral operators,
-second-order vertical differences, MPI pencil decomposition, and a
-second-order exponential Runge–Kutta integrator.
+second-order vertical differences, MPI pencil decomposition, and ETD-RK2 time
+integration.
 
-## Composition-first interface
+Start with [installation](@ref getting_started), then run the
+[quick-start example](@ref quickstart). The [Asselin dipole walkthrough](@ref
+worked_example) is the complete research-scale example.
 
-Four objects have distinct ownership:
-
-1. [`RectilinearGrid`](@ref) stores immutable global geometry.
-2. [`QGYBJModel`](@ref) owns typed physics, numerics, fields, runtime
-   resources, and optional particles.
-3. [`Simulation`](@ref) owns the clock, ETD-RK2 timestepper, stopping rules,
-   schedules, output, and lifecycle.
-4. [`NetCDFOutput`](@ref) describes snapshot output without owning model data.
+## Minimal workflow
 
 ```julia
 using QGYBJplus
 
 grid = RectilinearGrid(
-    size=(64, 64, 32),
+    size=(32, 32, 16),
     extent=(500e3, 500e3, 4000.0),
     centered=true,
 )
@@ -32,8 +27,10 @@ model = QGYBJModel(
     grid=grid,
     coriolis=FPlane(f=1e-4),
     stratification=ConstantStratification(N²=1e-5),
+    closure=HorizontalHyperdiffusivity(
+        flow=0, flow2=0, waves=0, waves2=0),
     flow=EvolvingFlow(),
-    feedback=WaveMeanFeedback(),
+    feedback=NoWaveFeedback(),
     formulation=YBJPlus(),
 )
 set!(
@@ -45,10 +42,10 @@ set!(
 simulation = Simulation(
     model;
     Δt=20.0,
-    stop_time=86400.0,
+    stop_iteration=10,
     output=NetCDFOutput(
         path="output",
-        schedule=TimeInterval(3600.0),
+        schedule=IterationInterval(5),
     ),
 )
 try
@@ -58,22 +55,25 @@ finally
 end
 ```
 
-ETD-RK2 is the sole stepping scheme. The same model construction works in a
-single Julia process and under `mpiexecjl`.
+The same script works in one Julia process and under `mpiexecjl`. ETD-RK2 is
+the sole production stepping scheme.
+
+## What owns what
+
+1. [`RectilinearGrid`](@ref) stores immutable global geometry.
+2. [`QGYBJModel`](@ref) owns physics, numerics, fields, runtime resources, and
+   optional particles.
+3. [`Simulation`](@ref) owns the clock, timestepper, stopping rules, output,
+   diagnostics, and lifecycle.
 
 ## Documentation map
 
-- [Key concepts](@ref concepts)
 - [Installation](@ref getting_started)
 - [Quick start](@ref quickstart)
+- [Key concepts](@ref concepts)
 - [Asselin dipole walkthrough](@ref worked_example)
 - [Configuration](@ref configuration)
+- [Physics overview](@ref physics-overview)
 - [MPI parallel execution](@ref parallel)
 - [Particle advection](@ref particles)
 - [Core API](@ref api-types)
-
-## References
-
-- Asselin & Young (2019), *Journal of Physical Oceanography*, 49, 1699–1717.
-- Xie & Vanneste (2015), *Journal of Fluid Mechanics*, 774, 143–169.
-- Young & Ben Jelloul (1997), *Journal of Marine Research*, 55, 735–766.

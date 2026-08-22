@@ -53,7 +53,8 @@ It restores `q` and `B`; it does not rewind an existing simulation clock.
 
 ## A run is slow
 
-- Reuse one simulation or one `ExponentialRungeKutta2` object.
+- Let one `Simulation` own the complete run instead of constructing a
+  timestepper for every step.
 - Reduce output frequency and omit unused physical fields.
 - Avoid gathers inside the time loop.
 - Measure alternative MPI topologies.

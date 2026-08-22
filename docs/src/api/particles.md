@@ -7,10 +7,17 @@ CurrentModule = QGYBJplus
 Particles are optional model-owned data. Initialize them after model
 construction:
 
+```@docs
+ParticleConfig
+ParticleConfig3D
+```
+
 ```julia
 configuration = ParticleConfig{Float64}(
-    x_max=model.grid.extent[1],
-    y_max=model.grid.extent[2],
+    x_min=first(model.grid.x_faces),
+    x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces),
+    y_max=last(model.grid.y_faces),
     z_level=-100.0,
     nx_particles=16,
     ny_particles=16,
@@ -42,6 +49,9 @@ particles_custom
 Available methods are `TRILINEAR`, `TRICUBIC`, `ADAPTIVE`, and `QUINTIC`.
 Distributed trackers obtain local domains, halo plans, and migration metadata
 from `model.runtime`.
+
+Use `ParticleConfig3D` or the distribution helpers for volumes, layers,
+random points, and explicit positions.
 
 ## Output
 

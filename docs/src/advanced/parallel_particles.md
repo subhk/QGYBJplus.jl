@@ -26,7 +26,7 @@ global seam is routed to the rank that owns its wrapped coordinate.
 | `TRILINEAR` | one cell |
 | `TRICUBIC` | two cells |
 | `QUINTIC` | three cells |
-| `ADAPTIVE` | selected from local resolution |
+| `ADAPTIVE` | three cells |
 
 ## Conservation check
 

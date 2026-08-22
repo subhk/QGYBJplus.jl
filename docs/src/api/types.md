@@ -16,6 +16,7 @@ ModelRuntime
 OperatorCoefficients
 Simulation
 Clock
+SimulationState
 ```
 
 `RectilinearGrid` is immutable. `QGYBJModel` owns model data and ephemeral
@@ -61,4 +62,5 @@ TimeInterval
 IterationInterval
 NetCDFOutput
 EnergyDiagnosticsOutput
+AnalyticalProfile
 ```

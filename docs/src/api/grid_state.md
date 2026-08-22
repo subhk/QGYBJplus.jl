@@ -12,7 +12,7 @@ grid = RectilinearGrid(size=(64, 48, 24),
 ```
 
 Useful properties are `size`, `extent`, `origin`, `z_bounds`, `x`, `y`, `z`,
-faces, scalar spacings, `kx`, `ky`, and `kh2`.
+`x_faces`, `y_faces`, `z_faces`, scalar spacings, `kx`, `ky`, and `kh2`.
 
 ## Model-owned arrays
 
@@ -20,14 +20,14 @@ faces, scalar spacings, `kx`, `ky`, and `kh2`.
 
 | Field | Space | Role |
 |:--|:--|:--|
-| `q` | complex spectral | prognostic balanced potential vorticity |
+| `q` | complex spectral | prognostic generalized potential vorticity |
 | `B` | complex spectral | prognostic wave envelope |
 | `psi` | complex spectral | diagnosed streamfunction |
 | `A`, `C` | complex spectral | diagnosed wave quantities |
 | `u`, `v`, `w` | real physical | diagnosed velocities |
 
 ```julia
-copy = copy_fields(model.fields)
+fields_copy = copy_fields(model.fields)
 ```
 
 `copy_fields` preserves distributed pencil layouts and copies every array.
@@ -42,6 +42,9 @@ get_local_range_physical(model)
 get_local_range_spectral(model)
 local_to_global(1, 2, model)
 ```
+
+`get_local_range(model)` returns the spectral range. Query physical and
+spectral layouts explicitly when a custom operation crosses transform space.
 
 Use `gather_to_root` and `scatter_from_root` for explicit
 global-array boundaries. Model-level operators generally handle distribution

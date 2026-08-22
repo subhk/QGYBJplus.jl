@@ -1,8 +1,11 @@
-# [API index](@id api-index)
+# [API map](@id api-index)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
+
+Frequently used exported entry points are grouped below. Detailed signatures
+and examples are on the linked API pages.
 
 ## Construction
 
@@ -11,7 +14,6 @@ CurrentModule = QGYBJplus
 - [`Simulation`](@ref)
 - [`NetCDFOutput`](@ref)
 - [`EnergyDiagnosticsOutput`](@ref)
-- [`ParticleOutputManager`](@ref)
 
 ## Initialization
 
@@ -38,22 +40,31 @@ CurrentModule = QGYBJplus
 - `invert_B_to_A!`
 - `compute_velocities!`
 - `compute_vertical_velocity!`
+- `compute_ybj_vertical_velocity!`
 - `compute_total_velocities!`
+- `compute_wave_velocities!`
 - `flow_kinetic_energy`
 - `wave_energy`
 
 ## Parallel helpers
 
 - `get_local_range`
+- `get_local_range_physical`
+- `get_local_range_spectral`
 - `local_to_global`
 - `gather_to_root`
 - `scatter_from_root`
 
 ## Particles
 
-- `ParticleConfig`
+- [`ParticleConfig`](@ref)
+- [`ParticleConfig3D`](@ref)
 - `initialize_particles!`
 - `advect_particles!`
+- [`particles_in_box`](@ref)
+- [`particles_in_circle`](@ref)
+- [`particles_in_grid_3d`](@ref)
 - [`particles_in_layers`](@ref)
 - [`particles_random_3d`](@ref)
+- [`particles_custom`](@ref)
 - [`ParticleOutputManager`](@ref)

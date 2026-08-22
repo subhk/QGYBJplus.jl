@@ -1112,11 +1112,6 @@ end
 ================================================================================
 =#
 
-"""
-    init_mpi_random_field!(arr::PencilArray, grid::RuntimeGeometry, amplitude, seed_offset=0; seed=0)
-
-Initialize a PencilArray with deterministic random values.
-"""
 const _U53 = 0x1.0p-53
 
 @inline function _mix64(x::UInt64)
@@ -1141,6 +1136,12 @@ end
     return sqrt(-2 * log(u1)) * cos(2 * pi * u2)
 end
 
+"""
+    init_mpi_random_field!(arr::PencilArray, grid::RuntimeGeometry,
+                           amplitude, seed_offset=0; seed=0)
+
+Initialize a distributed array with decomposition-independent random values.
+"""
 function init_mpi_random_field!(arr::PencilArray, grid::RuntimeGeometry,
                                 amplitude::Real, seed_offset::Int=0; seed::Int=0)
     local_range = range_local(pencil(arr))

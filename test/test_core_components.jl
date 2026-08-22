@@ -57,6 +57,15 @@ end
     @test_throws ArgumentError FPlane(f = 0)
     @test_throws ArgumentError ConstantStratification(N² = 0)
 
+    N²_function = z -> 1e-5 + z^2 * 1e-10
+    N²_profile = AnalyticalProfile(N²_function; returns=:N²)
+    @test evaluate_N2(N²_profile, -100.0) == N²_function(-100.0)
+    N_profile = AnalyticalProfile(z -> 1e-2; returns=:N,
+                                  precision=Float32)
+    @test N_profile isa AnalyticalProfile{Float32}
+    @test evaluate_N2(N_profile, -100.0) ≈ 1e-4
+    @test_throws ArgumentError AnalyticalProfile(N²_function; returns=:invalid)
+
     component_types = (:AbstractCoriolis, :AbstractStratification,
                        :FlowEvolution, :FixedFlow, :EvolvingFlow,
                        :FeedbackMode, :NoFeedback, :WaveMeanFeedback,

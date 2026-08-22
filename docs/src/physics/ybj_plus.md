@@ -1,75 +1,91 @@
-# [YBJ+ wave model](@id ybj-plus)
+# [YBJ⁺ wave model](@id ybj-plus)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-The Young–Ben Jelloul framework evolves a complex near-inertial wave envelope
-on the slow balanced-flow timescale. QGYBJ+.jl supports the original relation
-and the horizontally regularized YBJ+ relation of Asselin & Young (2019).
+The Young–Ben Jelloul framework evolves a complex near-inertial-wave envelope
+on the slow balanced-flow timescale.
 
-## Prognostic and diagnostic wave variables
+## Wave equation
 
-The model advances `B`. For `YBJPlus()`, the wave amplitude `A` is diagnosed
-from
+QGYBJ+.jl advances `B` according to
 
 ```math
-B = \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right)
-    - \frac{k_h^2}{4}A.
+\partial_t B + J(\psi,B)
+= -\frac{i}{2}\zeta B
+  -\frac{i f_0}{2}\nabla_h^2 A
+  + \mathcal D_B,
 ```
 
-The horizontal Helmholtz contribution regularizes short horizontal scales.
-At each `(kₓ,kᵧ)`, recovering `A` is a tridiagonal vertical solve.
+where ``\zeta=\nabla_h^2\psi``. The terms represent advection,
+refraction, dispersion, and configured dissipation.
 
-For `YBJ()`, the horizontal Helmholtz contribution is omitted:
+## YBJ⁺ relation
+
+For `YBJPlus()`,
 
 ```math
-B = \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right).
+B=L^+A
+=\partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right)
+ +\frac14\nabla_h^2A.
 ```
 
-This original-YBJ relation is recovered by vertical integration using the
-inverse coefficient ``N^2/f_0^2`` and a tendency solvability constraint.
+At horizontal wavenumber ``k_h`` this is
+
+```math
+\widehat B
+=\partial_z\!\left(\frac{f_0^2}{N^2}\partial_z\widehat A\right)
+ -\frac{k_h^2}{4}\widehat A.
+```
+
+The Helmholtz term regularizes short horizontal scales. Recovering `A`
+requires one tridiagonal vertical solve per horizontal Fourier mode.
+
+## Original YBJ relation
+
+For `YBJ()`, the Helmholtz term is omitted:
+
+```math
+B=\partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right).
+```
+
+The implementation recovers `A` by vertical integration with coefficient
+``N^2/f_0^2`` and enforces the tendency solvability condition.
 
 ```julia
 invert_B_to_A!(model)
 A = model.fields.A
 ```
 
-## Formulation choice
+## Select a formulation
 
 ```julia
 plus_model = QGYBJModel(grid=grid, formulation=YBJPlus())
-normal_model = QGYBJModel(grid=grid, formulation=YBJ())
+ybj_model = QGYBJModel(grid=grid, formulation=YBJ())
 passive_model = QGYBJModel(grid=grid, formulation=PassiveWave())
 ```
 
-`PassiveWave()` retains wave advection while disabling refraction and
-dispersion. [`NoDispersion`](@ref) disables dispersion for the selected wave
-formulation without changing the ownership model.
+`PassiveWave()` retains envelope advection but omits refraction and
+dispersion. `NoDispersion()` disables dispersion while retaining the other
+processes of the selected YBJ formulation.
 
-## Processes
-
-The wave tendency combines:
-
-- advection by the balanced horizontal velocity;
-- refraction by balanced vorticity;
-- YBJ/YBJ+ dispersion through the diagnosed amplitude;
-- configured horizontal hyperdiffusion.
-
-ETD-RK2 evaluates all explicit processes at both stages and integrates the
-horizontal dissipative factor exactly.
-
-## Initialization and energy
+## Initialize and diagnose waves
 
 ```julia
-set!(model; waves=SurfaceWave(amplitude=0.1,
-                              scale=30.0,
-                              profile=:gaussian))
-invert_B_to_A!(model)
+set!(model; waves=SurfaceWave(amplitude=0.1, scale=30.0))
 B_energy, A_energy = wave_energy(model)
 ```
 
+ETD-RK2 evaluates the explicit wave tendency at both stages and integrates
+horizontal hyperdiffusion with its exponential factor.
+
 ## References
 
-- Young & Ben Jelloul (1997), *Journal of Marine Research*, 55, 735–766.
-- Asselin & Young (2019), *Journal of Physical Oceanography*, 49, 1699–1717.
+- Young, W. R. & Ben Jelloul, M. (1997), “Propagation of near-inertial
+  oscillations through a geostrophic flow,” *Journal of Marine Research*, 55,
+  735–766.
+- Asselin, O. & Young, W. R. (2019),
+  [“An improved model of near-inertial wave
+  dynamics”](https://doi.org/10.1017/jfm.2019.557), *Journal of Fluid
+  Mechanics*, 876, 428–448.

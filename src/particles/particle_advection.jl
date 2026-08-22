@@ -49,15 +49,14 @@ const compute_total_velocities! = _PARENT.compute_total_velocities!
 const ParallelConfig = _PARENT.ParallelConfig
 
 export ParticleConfig, ParticleState, ParticleTracker,
-       create_particle_config, initialize_particles!,
+       initialize_particles!,
        advect_particles!, interpolate_velocity_at_position,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        interpolate_velocity_advanced,
        # 3D particle distributions
-       ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
+       ParticleConfig3D, ParticleDistribution,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
-       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution,
        # Simplified particle initialization
        particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom,
@@ -76,30 +75,20 @@ using .HaloExchange
 # because it needs to access ParticleConfig from this module
 
 """
-Configuration for particle initialization and advection.
+    ParticleConfig{T}(; x_min=0, x_max, y_min=0, y_max, z_level, kwargs...)
 
-Key parameters:
-- Spatial domain: x_min/max, y_min/max, z_level for initial particle placement
-- Particle count: nx_particles × ny_particles 
-- Physics options: use_ybj_w (vertical velocity), use_3d_advection
-- Timing control: particle_advec_time - when to start advecting particles
-- Integration: method (:euler, :rk2, :rk4) and interpolation scheme
-- Boundaries: periodic_x/y, reflect_z for boundary conditions
-- I/O: save_interval and max_save_points for trajectory output
-
-Advanced timing control:
-- particle_advec_time=0.0: Start advecting immediately (default)
-- particle_advec_time>0.0: Keep particles stationary until this time
-- Useful for letting flow field develop before particle release
-- Enables study of transient vs established flow patterns
+Configure a regular horizontal particle grid at `z_level`. `nx_particles` and
+`ny_particles` default to 10. Select trajectory integration with
+`integration_method` (`:euler`, `:rk2`, or `:rk4`) and interpolation with
+`interpolation_method`. A positive `particle_advec_time` delays release.
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
-    # Spatial domain for particle initialization (x_max, y_max, z_level are REQUIRED)
+    # Spatial domain for particle initialization (x_max, y_max, z_level are required)
     x_min::T = 0.0
-    x_max::T           # REQUIRED - use G.Lx
+    x_max::T
     y_min::T = 0.0
-    y_max::T           # REQUIRED - use G.Ly
-    z_level::T         # REQUIRED - depth for particle initialization
+    y_max::T
+    z_level::T
     
     # Number of particles
     nx_particles::Int = 10
@@ -130,24 +119,20 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
 end
 
 """
-    particles_in_box([T=Float32], z_level; x_max, y_max, x_min=0, y_min=0, nx=10, ny=10, kwargs...)
+    particles_in_box([T=Float32], z_level;
+                     x_min=0, x_max, y_min=0, y_max, nx=10, ny=10, kwargs...)
 
-Create 2D particle distribution at a fixed z-level. Default precision is Float32 for memory efficiency.
+Create an `nx` by `ny` particle grid at the coordinate `z_level`. The default
+storage type is `Float32`; pass `Float64` as the first argument when needed.
 
-# Arguments
-- `T`: Optional type parameter (Float32 or Float64). Default: Float32
-- `z_level`: The z-level (depth) for all particles
-- `x_max, y_max`: Maximum domain bounds (REQUIRED)
-- `x_min, y_min`: Minimum bounds (default: 0.0)
-- `nx, ny`: Number of particles in each direction (default: 10 each)
-
-# Examples
 ```julia
-# Default Float32 precision (recommended for memory efficiency)
-config = particles_in_box(500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
-
-# Explicit Float64 if higher precision needed
-config = particles_in_box(Float64, 500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
+config = particles_in_box(
+    Float64,
+    -500.0;
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    nx=20, ny=20,
+)
 ```
 """
 function particles_in_box(::Type{T}, z_level::Real;
@@ -172,36 +157,10 @@ function particles_in_box(z_level::Real;
         nx=nx, ny=ny, kwargs...)
 end
 
-# Legacy alias for backwards compatibility (default is now Float32 for memory efficiency)
-create_particle_config(::Type{T}=Float32; kwargs...) where T = ParticleConfig{T}(; kwargs...)
-
 # Include 3D particle configuration AFTER ParticleConfig is defined
 # (particle_config.jl needs to access ParticleConfig from this module)
 include("particle_config.jl")
 using .EnhancedParticleConfig
-
-create_particle_config_3d(::Type{T}=Float32; kwargs...) where {T<:AbstractFloat} =
-    ParticleConfig3D{T}(; kwargs...)
-
-create_uniform_3d_grid(; kwargs...) = particles_in_grid_3d(; kwargs...)
-create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                       z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
-    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                         z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
-create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                       z_min::Real, z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
-    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                         z_min=z_min, z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
-
-create_layered_distribution(z_levels::Vector{<:Real}; kwargs...) =
-    particles_in_layers(z_levels; kwargs...)
-create_layered_distribution(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                            z_levels::Vector{<:Real}, nx::Int, ny::Int; kwargs...) =
-    particles_in_layers(z_levels; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                        nx=nx, ny=ny, kwargs...)
-
-create_random_3d_distribution(n::Int; kwargs...) = particles_random_3d(n; kwargs...)
-create_custom_distribution(positions; kwargs...) = particles_custom(positions; kwargs...)
 
 """
 Particle state including positions, global IDs, velocities, and trajectory history.
@@ -968,7 +927,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
 end
 
 """
-Local velocity interpolation (fallback for compatibility).
+Interpolate locally when no halo exchange is required.
 """
 function interpolate_velocity_local(x::T, y::T, z::T, 
                                   tracker::ParticleTracker{T}) where T

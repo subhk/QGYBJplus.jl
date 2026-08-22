@@ -45,13 +45,13 @@ struct FixedFlow <: FlowEvolution end
 """Evolve the balanced flow together with the wave field."""
 struct EvolvingFlow <: FlowEvolution end
 
-"""Disable all wave–mean-flow coupling."""
+"""Omit wave potential-vorticity feedback from the balanced-flow inversion."""
 struct NoFeedback <: FeedbackMode end
 
 """Enable bidirectional wave–mean-flow coupling."""
 struct WaveMeanFeedback <: FeedbackMode end
 
-"""Let the flow affect waves without wave feedback on potential vorticity."""
+"""Express one-way flow-to-wave coupling without wave PV feedback."""
 struct NoWaveFeedback <: FeedbackMode end
 
 """Use the elliptically regularized YBJ⁺ wave formulation."""

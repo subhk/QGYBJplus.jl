@@ -4,74 +4,59 @@
 CurrentModule = QGYBJplus
 ```
 
-Balanced flow advects and refracts near-inertial waves. In the coupled model,
-wave potential vorticity also modifies the balanced inversion, providing a
-two-way exchange pathway.
+Balanced flow advects and refracts near-inertial waves. Two-way coupling adds
+the wave contribution to generalized PV.
 
-## Coupling modes
+## Choose the coupling
+
+| Use case | Components |
+|:--|:--|
+| prescribed flow acting on waves | `FixedFlow()`, `NoFeedback()` |
+| evolving flow acting on waves | `EvolvingFlow()`, `NoWaveFeedback()` |
+| two-way coupling | `EvolvingFlow()`, `WaveMeanFeedback()` |
+
+For example:
 
 ```julia
-coupled = QGYBJModel(
+model = QGYBJModel(
     grid=grid,
     flow=EvolvingFlow(),
     feedback=WaveMeanFeedback(),
-)
-
-one_way = QGYBJModel(
-    grid=grid,
-    flow=EvolvingFlow(),
-    feedback=NoWaveFeedback(),
-)
-
-uncoupled = QGYBJModel(
-    grid=grid,
-    feedback=NoFeedback(),
+    formulation=YBJPlus(),
 )
 ```
 
-- `WaveMeanFeedback()` enables bidirectional coupling.
-- `NoWaveFeedback()` lets the flow act on waves without the reverse term.
-- `NoFeedback()` disables wave–mean coupling.
-- `FixedFlow()` prevents balanced-flow evolution regardless of feedback mode.
+`FixedFlow()` always prevents balanced-flow evolution. Both no-feedback
+components omit wave PV from the inversion; `NoWaveFeedback()` makes the
+one-way evolving-flow intent explicit.
 
-## Effective potential vorticity
+## Wave PV
 
-For bidirectional coupling, inversion uses the balanced component obtained by
-removing the diagnosed wave contribution from total potential vorticity. The
-ETD-RK2 kernel restores the prognostic quantity after inversion, so model
-ownership does not change during a stage.
-
-For the dimensional wave envelope ``B``, the diagnosed contribution is
+For two-way coupling,
 
 ```math
-q^w = \frac{i}{2f_0}J(B^*, B)
-    + \frac{1}{4f_0}\nabla_h^2 |B|^2.
+q^w = \frac{i}{2f_0}J(B^*,B)
+    + \frac{1}{4f_0}\nabla_h^2|B|^2.
 ```
 
-Both ETD-RK2 stages diagnose this contribution from the stage-local complex
-wave field.
+Each ETD-RK2 stage diagnoses ``q^w`` from its stage-local complex wave
+field. Streamfunction inversion uses ``q-q^w``, after which the solver
+restores the prognostic total `q`.
 
-## Energy pathway
+## Compare coupled and uncoupled runs
 
-In the inviscid continuous system, work exchanged through the feedback term is
-internal to the combined wave–mean system. Dissipation and numerical
-resolution determine how closely a discrete run preserves that budget.
+Construct separate models with identical geometry and initial conditions but
+different feedback components. Each model owns independent arrays and runtime
+resources, so finalize each simulation independently.
 
 ```julia
 flow_energy = flow_kinetic_energy(model)
-wave_components = wave_energy(model)
+B_energy, A_energy = wave_energy(model)
 ```
 
-For controlled comparisons, construct separate models with identical geometry
-and initial conditions but distinct feedback components. Each model owns its
-own runtime and arrays and must be finalized independently.
+In the inviscid continuous system, wave–mean exchange is internal to the
+combined energy budget. Dissipation, timestep, and spatial resolution control
+the corresponding discrete error.
 
-## Practical guidance
-
-- Use `NoWaveFeedback()` to isolate refraction and wave capture by a prescribed
-  or evolving flow.
-- Use `WaveMeanFeedback()` for coupled energy-exchange studies.
-- Use `FixedFlow()` for published imposed-flow experiments such as the Asselin
-  dipole example.
-
-See Xie & Vanneste (2015) for the generalized-Lagrangian-mean derivation.
+See Xie & Vanneste (2015) for the generalized-Lagrangian-mean derivation and
+the [QG equations](@ref qg-equations) for inversion details.

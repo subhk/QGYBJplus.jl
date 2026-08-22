@@ -50,19 +50,21 @@ Available particle distribution patterns.
 end
 
 """
-Enhanced particle configuration supporting 3D distributions.
+    ParticleConfig3D{T}(; x_min, x_max, y_min, y_max,
+                        z_min, z_max, kwargs...)
 
-Domain bounds (x_max, y_max, z_max) are REQUIRED - no defaults.
-Use model geometry to choose `x_max`, `y_max`, and `z_max`.
-If you pass `z_min`, then `z_max` is treated as a coordinate (typically ≤ 0).
-Single-level distributions can use `z_min == z_max`.
+Configure a volume, layered distribution, random cloud, or explicit particle
+positions using explicit coordinate bounds. Prefer
+[`particles_in_grid_3d`](@ref), [`particles_in_layers`](@ref),
+[`particles_random_3d`](@ref), or [`particles_custom`](@ref), which populate
+the bounds and distribution-specific fields.
 """
 Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
-    # Spatial domain for particle initialization (x_max, y_max, z_max are REQUIRED)
+    # Spatial domain for particle initialization (x_max, y_max, z_max are required)
     x_min::T = 0.0
-    x_max::T           # REQUIRED - use G.Lx
+    x_max::T
     y_min::T = 0.0
-    y_max::T           # REQUIRED - use G.Ly
+    y_max::T
     z_min::T = 0.0
     z_max::T           # REQUIRED - pass depth if z_min omitted, else coordinate
     
@@ -154,21 +156,19 @@ end
 """
     particles_in_grid_3d(; x_max, y_max, z_max, nx, ny, nz, x_min=0, y_min=0, z_min=nothing, kwargs...)
 
-Create particles uniformly distributed in a 3D rectangular grid.
+Create an `nx` by `ny` by `nz` regular particle grid.
 
-# Arguments
-- `x_max, y_max, z_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly, G.Lz)
-- `x_min, y_min`: Minimum bounds (default: 0.0)
-- `z_min`: Minimum z (default: nothing → uses full depth with z ∈ [-z_max, 0])
-- `nx, ny, nz`: Number of particles in each direction
+When `z_min` is supplied, `z_min` and `z_max` are coordinates. When it is
+omitted, `z_max` is interpreted as a positive depth and the vertical interval
+is `[-z_max, 0]`.
 
-# Example
 ```julia
-# 1000 particles in a 10×10×10 3D grid
-config = particles_in_grid_3d(x_max=G.Lx, y_max=G.Ly, z_max=G.Lz, nx=10, ny=10, nz=10)
-
-# Custom subdomain
-config = particles_in_grid_3d(x_max=250e3, y_max=250e3, z_max=-500.0, z_min=-2000.0, nx=8, ny=8, nz=5)
+config = particles_in_grid_3d(
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    z_min=first(model.grid.z_faces), z_max=last(model.grid.z_faces),
+    nx=10, ny=10, nz=10, precision=Float64,
+)
 ```
 """
 function particles_in_grid_3d(; x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
@@ -190,21 +190,15 @@ end
 """
     particles_in_layers(z_levels; x_max, y_max, nx, ny, x_min=0, y_min=0, kwargs...)
 
-Create particles distributed in 2D grids at multiple z-levels.
+Create an `nx` by `ny` particle grid at every coordinate in `z_levels`.
 
-# Arguments
-- `z_levels`: Vector of z-levels where particles are placed
-- `x_max, y_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly)
-- `x_min, y_min`: Minimum bounds (default: 0.0)
-- `nx, ny`: Number of particles per level in x and y (default: 10 each)
-
-# Example
 ```julia
-# 3 layers at depths 1000m, 2000m, 3000m with 10×10 particles each
-config = particles_in_layers([-1000.0, -2000.0, -3000.0]; x_max=G.Lx, y_max=G.Ly, nx=10, ny=10)
-
-# Custom subdomain with 5 particles per side at each layer
-config = particles_in_layers([-500.0, -1000.0, -1500.0]; x_max=250e3, y_max=250e3, nx=5, ny=5)
+config = particles_in_layers(
+    [-500.0, -1000.0, -1500.0];
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    nx=10, ny=10, precision=Float64,
+)
 ```
 """
 function particles_in_layers(z_levels::Vector{<:Real};
@@ -238,22 +232,17 @@ end
 """
     particles_random_3d(n; x_max, y_max, z_max, x_min=0, y_min=0, z_min=nothing, seed=1234, kwargs...)
 
-Create randomly distributed particles in a 3D volume.
+Create `n` uniformly random particles in a rectangular volume. `seed` defaults
+to `1234`. The `z_min`/`z_max` convention matches [`particles_in_grid_3d`](@ref).
 
-# Arguments
-- `n`: Number of particles
-- `x_max, y_max, z_max`: Domain bounds (REQUIRED - use G.Lx, G.Ly, G.Lz)
-- `x_min, y_min`: Minimum bounds (default: 0.0)
-- `z_min`: Minimum z (default: nothing → uses full depth with z ∈ [-z_max, 0])
-- `seed`: Random seed for reproducibility (default: 1234)
-
-# Example
 ```julia
-# 500 random particles in the full domain
-config = particles_random_3d(500; x_max=G.Lx, y_max=G.Ly, z_max=G.Lz)
-
-# 1000 random particles in a subdomain
-config = particles_random_3d(1000; x_max=250e3, y_max=250e3, z_max=-500.0, z_min=-2000.0)
+config = particles_random_3d(
+    500;
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    z_min=first(model.grid.z_faces), z_max=last(model.grid.z_faces),
+    precision=Float64,
+)
 ```
 """
 function particles_random_3d(n::Int;
@@ -277,15 +266,14 @@ end
 """
     particles_custom(positions; kwargs...)
 
-Create particles at user-specified positions.
+Create particles at the supplied `(x, y, z)` coordinates.
 
-# Arguments
-- `positions`: Vector of (x, y, z) tuples
-
-# Example
 ```julia
-# 4 particles at specific locations
-config = particles_custom([(1.0, 1.0, 0.5), (2.0, 2.0, 1.0), (3.0, 1.5, 0.75), (1.5, 3.0, 1.25)])
+config = particles_custom([
+    (1.0, 1.0, -50.0),
+    (2.0, 2.0, -100.0),
+    (3.0, 1.5, -150.0),
+]; precision=Float64)
 ```
 """
 function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}};
@@ -847,7 +835,7 @@ end
 """
     convert_to_basic_config(config3d)
 
-Convert enhanced 3D config to basic ParticleConfig for compatibility.
+Create the basic configuration used to initialize a 3D tracker.
 """
 function convert_to_basic_config(config::ParticleConfig3D{T}) where T
     
