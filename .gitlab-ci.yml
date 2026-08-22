@@ -1,0 +1,71 @@
+# GitLab CI for QGYBJplus.jl
+# Mirrors .github/workflows/ci.yml (Linux only -- GitLab shared runners are Linux).
+
+stages:
+  - test
+
+default:
+  interruptible: true
+
+variables:
+  # Keep the depot inside the project dir so it can be cached between jobs.
+  JULIA_DEPOT_PATH: "$CI_PROJECT_DIR/.julia"
+
+cache:
+  key:
+    files:
+      - Project.toml
+  paths:
+    - .julia/artifacts
+    - .julia/packages
+    - .julia/compiled
+
+.julia_test:
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - julia --project=. -e 'using Pkg; Pkg.instantiate()'
+    - julia --project=. -e 'using Pkg; Pkg.test(coverage=true)'
+
+test:julia-1.10:
+  extends: .julia_test
+  image: julia:1.10
+  # Coverage report is produced by this job only, to avoid duplicate uploads.
+  after_script:
+    - |
+      julia --project=. -e '
+        using Pkg; Pkg.add(["Coverage", "CoverageTools"]);
+        using Coverage;
+        cov = process_folder();
+        LCOV.writefile("lcov.info", cov);
+        covered, total = get_summary(cov);
+        println("Test coverage: ", round(100 * covered / total, digits = 2), "%")
+      '
+  coverage: '/Test coverage: (\d+\.\d+)%/'
+  artifacts:
+    when: always
+    paths:
+      - lcov.info
+    expire_in: 1 week
+
+test:julia-1.11:
+  extends: .julia_test
+  image: julia:1.11
+
+test:julia-1.12:
+  extends: .julia_test
+  image: julia:1.12
+
+mpi-test:
+  stage: test
+  image: julia:1.10
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - julia --project=. -e 'using Pkg; Pkg.instantiate()'
+    - >-
+      julia --project=. -e
+      'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'
