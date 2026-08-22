@@ -60,6 +60,21 @@ until the clock first reaches or crosses that time. Output-path, interval, and
 field-selection overrides rebuild the effective `NetCDFOutput` configuration
 before its manager opens.
 
+Set `progress=true` to print global maximum wave and flow speeds at the
+`diagnostics_interval` cadence:
+
+```julia
+run!(simulation; progress=true, diagnostics_interval=100)
+```
+
+```text
+iteration=100 | time=200.0 s | max_wave_speed=9.998e-02 m/s | max_flow_speed=3.349e-01 m/s
+```
+
+Here the wave speed is ``\max |LA|`` and the flow speed is
+``\max \sqrt{u^2+v^2}``. In MPI runs, the maxima are global and only rank zero
+prints.
+
 ## Clock access
 
 ```julia

@@ -15,6 +15,9 @@ const ASSELIN_EXAMPLE = joinpath(
                 "Simulation", "run!", "finalize_simulation!")
         @test occursin(api, source)
     end
+    @test occursin("stop_time=10 * inertial_period", source)
+    @test occursin("progress=true", source)
+    @test occursin("diagnostics_interval=1000", source)
 
     mktempdir() do output_dir
         L = 70.0e3

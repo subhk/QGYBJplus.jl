@@ -2,7 +2,7 @@ using Test
 using QGYBJplus
 
 @testset "Simulation clock and lifecycle" begin
-    function lifecycle_model(; flow=FixedFlow())
+    function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave())
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
         return QGYBJModel(
             grid=grid,
@@ -13,7 +13,7 @@ using QGYBJplus
                 wave=WaveHyperdiffusivity(coefficient=0)),
             flow=flow,
             feedback=NoFeedback(),
-            formulation=PassiveWave(),
+            formulation=formulation,
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
             topology=(1, 1),
@@ -56,6 +56,74 @@ using QGYBJplus
     run!(decimal_limited)
     @test decimal_limited.clock.iteration == 10
     @test decimal_limited.clock.time ≈ 1.0
+
+    progress_model = lifecycle_model()
+    try
+        set!(progress_model;
+            ψ=(x, y, _) -> 3sin(x) + 4sin(y),
+            pv_method=:none,
+        )
+        progress_model.fields.B[1, 1, 1] = 1 + 0im
+        progress_simulation = Simulation(progress_model;
+            Δt=0.25,
+            stop_time=0.5,
+            output=false,
+            diagnostics=false,
+            verbose=false,
+        )
+        progress_text = mktemp() do _, io
+            redirect_stdout(io) do
+                run!(progress_simulation;
+                    progress=true,
+                    diagnostics_interval=1,
+                )
+            end
+            flush(io)
+            seekstart(io)
+            read(io, String)
+        end
+
+        progress_lines = filter(!isempty, split(progress_text, '\n'))
+        @test length(progress_lines) == 2
+        @test occursin("iteration=1 | time=0.25 s | ", progress_text)
+        @test occursin("iteration=2 | time=0.5 s | ", progress_text)
+        @test all(occursin("max_wave_speed=", line) for line in progress_lines)
+        @test all(occursin("max_flow_speed=", line) for line in progress_lines)
+        wave_matches = collect(eachmatch(
+            r"max_wave_speed=([0-9.eE+-]+)", progress_text))
+        flow_matches = collect(eachmatch(
+            r"max_flow_speed=([0-9.eE+-]+)", progress_text))
+        @test length(wave_matches) == 2
+        @test length(flow_matches) == 2
+        @test all(parse(Float64, match.captures[1]) > 0 for match in wave_matches)
+        @test all(isapprox(parse(Float64, match.captures[1]), 5.0;
+                           rtol=1e-3) for match in flow_matches)
+        @test progress_simulation.clock.iteration == 2
+        @test progress_simulation.clock.time ≈ 0.5
+        @test progress_simulation.stop_iteration === nothing
+    finally
+        finalize_model!(progress_model)
+    end
+
+    ybj_plus_model = lifecycle_model(formulation=YBJPlus())
+    try
+        ybj_plus_model.fields.B[1, 2, 1] = 1 + 0im
+        ybj_plus_model.fields.A[1, 2, 1] = 4 + 0im
+        maxima = QGYBJplus._progress_maxima(ybj_plus_model)
+        @test maxima.wave_speed ≈ 2 / 64
+    finally
+        finalize_model!(ybj_plus_model)
+    end
+
+    ybj_model = lifecycle_model(formulation=YBJ())
+    try
+        ybj_model.fields.B[1, 2, 1] = 2 + 0im
+        ybj_model.fields.A[1, 2, 1] = 100 + 0im
+        maxima = QGYBJplus._progress_maxima(ybj_model)
+        @test maxima.wave_speed ≈ 2 / 64
+    finally
+        finalize_model!(ybj_model)
+    end
 
     for state in (Running, Failed)
         time_limited.state = state
