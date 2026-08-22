@@ -50,14 +50,7 @@ combinations.
 ## Numerical choices
 
 ```julia
-closure = HorizontalHyperdiffusivity(
-    flow=1e7,
-    flow2=0,
-    flow_laplacian_order=2,
-    waves=1e5,
-    waves2=0,
-    wave_laplacian_order=2,
-)
+closure = WaveHyperdiffusivity(coefficient=1e5)
 
 model = QGYBJModel(
     grid=grid,
@@ -66,7 +59,9 @@ model = QGYBJModel(
 )
 ```
 
-Set unused closure coefficients explicitly to zero in dimensional examples.
+This applies a single fourth-order damping term to waves. Use
+[`HorizontalHyperdiffusivity`](@ref) when an evolving flow or two damping
+orders need separate coefficients.
 
 ## Execution choices
 

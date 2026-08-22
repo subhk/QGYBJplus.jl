@@ -10,7 +10,7 @@ const ASSELIN_EXAMPLE = joinpath(
     @test Meta.parse("begin\n" * source * "\nend") isa Expr
     @test !occursin(r"(?m)^\s*function\b", source)
     @test !occursin("QGYBJ_ASSELIN", source)
-    for api in ("RectilinearGrid", "QGYBJModel", "YBJPlus",
+    for api in ("RectilinearGrid", "QGYBJModel", "WaveHyperdiffusivity", "YBJPlus",
                 "Simulation", "run!", "finalize_simulation!")
         @test occursin(api, source)
     end

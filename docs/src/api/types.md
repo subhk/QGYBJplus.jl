@@ -41,6 +41,7 @@ PassiveWave
 
 ```@docs
 HorizontalHyperdiffusivity
+WaveHyperdiffusivity
 VerticalDiffusivity
 Dissipative
 Inviscid

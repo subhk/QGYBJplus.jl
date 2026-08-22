@@ -128,6 +128,28 @@ function HorizontalHyperdiffusivity(; flow::Real=0.01, flow2::Real=10.0,
         T(waves), T(waves2), wave_laplacian_order, wave_laplacian_order2)
 end
 
+"""
+    WaveHyperdiffusivity(; coefficient, order=4)
+
+Construct horizontal damping for the wave field only. `order` is the total
+derivative order and must be positive and even. For example, `order=4`
+applies a single biharmonic term and disables flow and secondary wave damping.
+"""
+function WaveHyperdiffusivity(; coefficient::Real, order::Int=4)
+    order > 0 && iseven(order) || throw(ArgumentError(
+        "wave hyperdiffusion order must be positive and even"))
+    return HorizontalHyperdiffusivity(
+        flow=0,
+        flow2=0,
+        waves=coefficient,
+        waves2=0,
+        wave_laplacian_order=order ÷ 2,
+    )
+end
+
+WaveHyperdiffusivity(coefficient::Real; order::Int=4) =
+    WaveHyperdiffusivity(; coefficient, order)
+
 """Horizontally uniform, surface-confined wave initial condition."""
 struct SurfaceWave{T}
     amplitude::T

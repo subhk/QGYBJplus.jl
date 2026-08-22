@@ -66,6 +66,16 @@ end
     @test evaluate_N2(N_profile, -100.0) ≈ 1e-4
     @test_throws ArgumentError AnalyticalProfile(N²_function; returns=:invalid)
 
+    wave_closure = WaveHyperdiffusivity(coefficient=1e5)
+    @test wave_closure isa HorizontalHyperdiffusivity
+    @test wave_closure.flow == 0
+    @test wave_closure.flow2 == 0
+    @test wave_closure.waves == 1e5
+    @test wave_closure.waves2 == 0
+    @test wave_closure.wave_laplacian_order == 2
+    @test_throws ArgumentError WaveHyperdiffusivity(
+        coefficient=1e5, order=3)
+
     component_types = (:AbstractCoriolis, :AbstractStratification,
                        :FlowEvolution, :FixedFlow, :EvolvingFlow,
                        :FeedbackMode, :NoFeedback, :WaveMeanFeedback,
