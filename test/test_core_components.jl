@@ -67,12 +67,11 @@ end
     @test_throws ArgumentError AnalyticalProfile(N²_function; returns=:invalid)
 
     wave_closure = WaveHyperdiffusivity(coefficient=1e5)
-    @test wave_closure isa HorizontalHyperdiffusivity
-    @test wave_closure.flow == 0
-    @test wave_closure.flow2 == 0
-    @test wave_closure.waves == 1e5
-    @test wave_closure.waves2 == 0
-    @test wave_closure.wave_laplacian_order == 2
+    @test wave_closure isa WaveHyperdiffusivity{Float64}
+    @test wave_closure.coefficient == 1e5
+    @test wave_closure.order == 4
+    @test WaveHyperdiffusivity(2; order=6).order == 6
+    @test_throws ArgumentError WaveHyperdiffusivity(coefficient=-1)
     @test_throws ArgumentError WaveHyperdiffusivity(
         coefficient=1e5, order=3)
 

@@ -131,24 +131,26 @@ end
 """
     WaveHyperdiffusivity(; coefficient, order=4)
 
-Construct horizontal damping for the wave field only. `order` is the total
-derivative order and must be positive and even. For example, `order=4`
-applies a single biharmonic term and disables flow and secondary wave damping.
+Horizontal damping for the wave field only. `order` is the total derivative
+order and must be positive and even. The default applies one biharmonic term;
+the balanced flow is not damped by this closure.
 """
-function WaveHyperdiffusivity(; coefficient::Real, order::Int=4)
-    order > 0 && iseven(order) || throw(ArgumentError(
-        "wave hyperdiffusion order must be positive and even"))
-    return HorizontalHyperdiffusivity(
-        flow=0,
-        flow2=0,
-        waves=coefficient,
-        waves2=0,
-        wave_laplacian_order=order ÷ 2,
-    )
+struct WaveHyperdiffusivity{T} <: AbstractClosure
+    coefficient::T
+    order::Int
 end
 
-WaveHyperdiffusivity(coefficient::Real; order::Int=4) =
-    WaveHyperdiffusivity(; coefficient, order)
+function WaveHyperdiffusivity(coefficient::Real; order::Int=4)
+    value = float(coefficient)
+    isfinite(value) && value >= 0 || throw(ArgumentError(
+        "wave hyperdiffusion coefficient must be finite and non-negative"))
+    order > 0 && iseven(order) || throw(ArgumentError(
+        "wave hyperdiffusion order must be positive and even"))
+    return WaveHyperdiffusivity{typeof(value)}(value, order)
+end
+
+WaveHyperdiffusivity(; coefficient::Real, order::Int=4) =
+    WaveHyperdiffusivity(coefficient; order)
 
 """Horizontally uniform, surface-confined wave initial condition."""
 struct SurfaceWave{T}

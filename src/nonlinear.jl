@@ -45,7 +45,8 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep.
 
 module Nonlinear
 
-using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity, local_to_global, z_is_local
+using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity,
+                   WaveHyperdiffusivity, local_to_global, z_is_local
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
@@ -1171,6 +1172,15 @@ function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
         ν₂ = closure.flow2; n₂ = closure.flow_laplacian_order2
         return Δt * ( ν₁ * kₕ²^n₁ + ν₂ * kₕ²^n₂ )
     end
+end
+
+function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
+    closure::WaveHyperdiffusivity; waves::Bool=false,
+    inviscid::Bool=false)
+
+    (inviscid || !waves) && return 0.0
+    kₕ² = kₓ^2 + kᵧ^2
+    return Δt * closure.coefficient * kₕ²^(closure.order ÷ 2)
 end
 
 end # module
