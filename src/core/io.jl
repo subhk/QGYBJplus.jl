@@ -94,6 +94,21 @@ function _physical_field(field, runtime::ModelRuntime)
     return physical
 end
 
+function _spectral_LA(model::QGYBJModel)
+    fields = model.fields
+    LA = copyto!(similar(fields.B), fields.B)
+    model.physics.formulation isa YBJ && return LA
+
+    LA_data = parent(LA)
+    A_data = parent(fields.A)
+    # B = L⁺A = LA - kₕ²A/4 for each horizontal Fourier mode.
+    @inbounds for j in axes(LA_data, 3), i in axes(LA_data, 2), k in axes(LA_data, 1)
+        LA_data[k, i, j] +=
+            0.25 * get_kh2(i, j, k, fields.B, model) * A_data[k, i, j]
+    end
+    return LA
+end
+
 function _gather_array(field, model::QGYBJModel)
     runtime = model.runtime
     gathered = gather_to_root(
@@ -137,13 +152,14 @@ function _write_model_state_file!(manager::ModelOutputManager,
     _refresh_output_diagnostics!(model, specification)
 
     psi_physical = write_psi ? _physical_field(fields.psi, runtime) : nothing
-    B_physical = write_waves ? _physical_field(fields.B, runtime) : nothing
+    LA_spectral = write_waves ? _spectral_LA(model) : nothing
+    LA_physical = write_waves ? _physical_field(LA_spectral, runtime) : nothing
     A_physical = write_waves ? _physical_field(fields.A, runtime) : nothing
 
     q_global = _gather_array(fields.q, model)
     B_global = _gather_array(fields.B, model)
     psi_global = write_psi ? _gather_array(psi_physical, model) : nothing
-    B_physical_global = write_waves ? _gather_array(B_physical, model) : nothing
+    LA_physical_global = write_waves ? _gather_array(LA_physical, model) : nothing
     A_physical_global = write_waves ? _gather_array(A_physical, model) : nothing
     u_global = write_velocities ? _gather_array(fields.u, model) : nothing
     v_global = write_velocities ? _gather_array(fields.v, model) : nothing
@@ -172,16 +188,16 @@ function _write_model_state_file!(manager::ModelOutputManager,
                 _define_field!(dataset, "psi", real.(psi_global))
             end
             if write_waves
-                _define_field!(dataset, "LAr", real.(B_physical_global))
-                _define_field!(dataset, "LAi", imag.(B_physical_global))
-                _define_field!(dataset, "Ar", real.(A_physical_global))
-                _define_field!(dataset, "Ai", imag.(A_physical_global))
+                _define_field!(dataset, "A_real", real.(A_physical_global))
+                _define_field!(dataset, "A_imag", imag.(A_physical_global))
+                _define_field!(dataset, "LA_real", real.(LA_physical_global))
+                _define_field!(dataset, "LA_imag", imag.(LA_physical_global))
             end
 
-            _define_field!(dataset, "q_real", real.(q_global))
-            _define_field!(dataset, "q_imag", imag.(q_global))
-            _define_field!(dataset, "B_real", real.(B_global))
-            _define_field!(dataset, "B_imag", imag.(B_global))
+            _define_field!(dataset, "q_hat_real", real.(q_global))
+            _define_field!(dataset, "q_hat_imag", imag.(q_global))
+            _define_field!(dataset, "B_hat_real", real.(B_global))
+            _define_field!(dataset, "B_hat_imag", imag.(B_global))
 
             if write_velocities
                 _define_field!(dataset, "u", u_global)
@@ -198,6 +214,11 @@ function _write_model_state_file!(manager::ModelOutputManager,
             dataset.attrib["model_time"] = simulation.clock.time
             dataset.attrib["iteration"] = simulation.clock.iteration
             dataset.attrib["f0"] = model.physics.coriolis.f
+            dataset.attrib["Lx"] = grid.extent[1]
+            dataset.attrib["Ly"] = grid.extent[2]
+            dataset.attrib["Lz"] = grid.extent[3]
+            dataset.attrib["wave_formulation"] =
+                string(nameof(typeof(model.physics.formulation)))
         end
         filepath
     end
@@ -528,13 +549,14 @@ end
 function _read_restart_on_root(model::QGYBJModel, path::AbstractString)
     return _run_on_root(model) do
         NCDataset(path, "r") do dataset
-            required = ("q_real", "q_imag", "B_real", "B_imag")
+            required = ("q_hat_real", "q_hat_imag",
+                        "B_hat_real", "B_hat_imag")
             all(name -> haskey(dataset, name), required) ||
                 throw(ArgumentError("restart file is missing prognostic fields"))
-            q = _from_xyz(dataset["q_real"][:, :, :] .+
-                          im .* dataset["q_imag"][:, :, :])
-            B = _from_xyz(dataset["B_real"][:, :, :] .+
-                          im .* dataset["B_imag"][:, :, :])
+            q = _from_xyz(dataset["q_hat_real"][:, :, :] .+
+                          im .* dataset["q_hat_imag"][:, :, :])
+            B = _from_xyz(dataset["B_hat_real"][:, :, :] .+
+                          im .* dataset["B_hat_imag"][:, :, :])
             size(q) == (model.grid.size[3], model.grid.size[1], model.grid.size[2]) ||
                 throw(DimensionMismatch("restart q dimensions do not match model grid"))
             size(B) == size(q) ||

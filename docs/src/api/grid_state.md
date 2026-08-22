@@ -9,10 +9,12 @@ CurrentModule = QGYBJplus
 ```julia
 grid = RectilinearGrid(size=(64, 48, 24),
                        x=(-π, π), y=(-2π, 2π), z=(-1.0, 0.0))
+kx, ky = grid.kx, grid.ky
 ```
 
 Useful properties are `size`, `extent`, `origin`, `z_bounds`, `x`, `y`, `z`,
 `x_faces`, `y_faces`, `z_faces`, scalar spacings, `kx`, `ky`, and `kh2`.
+The wavenumbers follow FFTW ordering and can be used directly with `fft`.
 
 ## Model-owned arrays
 

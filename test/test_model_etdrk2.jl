@@ -8,11 +8,8 @@ using QGYBJplus
         coriolis=FPlane(f=1.0),
         stratification=ConstantStratification(N²=1.0),
         closure=HorizontalHyperdiffusivity(
-            flow=0.0,
-            flow2=0.0,
-            waves=0.3,
-            waves2=0.0,
-            wave_laplacian_order=1,
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0.3, order=2),
         ),
         flow=FixedFlow(),
         formulation=PassiveWave(),

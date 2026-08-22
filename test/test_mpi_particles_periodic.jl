@@ -61,7 +61,8 @@ model = QGYBJModel(
     coriolis=FPlane(f=1e-4),
     stratification=ConstantStratification(N²=1e-5),
     closure=HorizontalHyperdiffusivity(
-        flow=0, flow2=0, waves=0, waves2=0),
+        flow=FlowHyperdiffusivity(coefficient=0),
+        wave=WaveHyperdiffusivity(coefficient=0)),
     flow=FixedFlow(),
     formulation=PassiveWave(),
     linear=LinearDynamics(),

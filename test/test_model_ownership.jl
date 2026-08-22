@@ -14,10 +14,9 @@ using QGYBJplus
     model = QGYBJModel(grid = grid,
                        coriolis = FPlane(f = 1),
                        stratification = ConstantStratification(N² = 1),
-                       closure = HorizontalHyperdiffusivity(flow = 0,
-                                                             flow2 = 0,
-                                                             waves = 0,
-                                                             waves2 = 0),
+                       closure = HorizontalHyperdiffusivity(
+                           flow = FlowHyperdiffusivity(coefficient = 0),
+                           wave = WaveHyperdiffusivity(coefficient = 0)),
                        flow = :fixed,
                        feedback = :none,
                        ybj_plus = true,

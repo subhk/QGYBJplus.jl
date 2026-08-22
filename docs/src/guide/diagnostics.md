@@ -40,5 +40,5 @@ at the corresponding approximate iteration cadence.
 
 For scheduled component time series, configure
 [`EnergyDiagnosticsOutput`](@ref). See [I/O and restart](@ref io-output) for
-the files written and `examples/compute_energy.jl` for spatial
-post-processing.
+the saved operator fields and FFTW analysis, or run
+`examples/compute_energy.jl output/` to write spatial kinetic-energy fields.

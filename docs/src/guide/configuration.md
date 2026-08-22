@@ -51,12 +51,8 @@ combinations.
 
 ```julia
 closure = HorizontalHyperdiffusivity(
-    flow=1e7,
-    flow2=0,
-    flow_laplacian_order=2,
-    waves=1e5,
-    waves2=0,
-    wave_laplacian_order=2,
+    flow=FlowHyperdiffusivity(coefficient=0),
+    wave=WaveHyperdiffusivity(coefficient=1e5),
 )
 
 model = QGYBJModel(
@@ -66,7 +62,8 @@ model = QGYBJModel(
 )
 ```
 
-Set unused closure coefficients explicitly to zero in dimensional examples.
+This leaves the balanced flow undamped and applies one fourth-order damping
+term to waves. Each `order` is the total derivative order.
 
 ## Execution choices
 

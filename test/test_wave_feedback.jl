@@ -7,7 +7,8 @@ function wave_feedback_test_model(grid, formulation; f=2e-4, linear=NonlinearDyn
         coriolis=FPlane(f=f),
         stratification=ConstantStratification(N²=1e-4),
         closure=HorizontalHyperdiffusivity(
-            flow=0, flow2=0, waves=0, waves2=0),
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0)),
         flow=FixedFlow(),
         feedback=NoFeedback(),
         formulation=formulation,
