@@ -29,3 +29,6 @@ JuliaLocalPreferences.toml
 
 # Project-local Git worktrees
 .worktrees/
+
+# macOS
+.DS_Store
