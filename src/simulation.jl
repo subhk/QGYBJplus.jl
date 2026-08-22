@@ -43,6 +43,56 @@ function _check_termination_conditions!(simulation::Simulation)
     return simulation
 end
 
+function _progress_maxima(model::QGYBJModel)
+    fields = model.fields
+    runtime = model.runtime
+
+    # Reuse the runtime FFT buffers to recover the physical wave velocity LA.
+    # For YBJ+, B = L⁺A = LA - kₕ²A/4 in horizontal spectral space.
+    LA_spectral = runtime.transform_destinations.output
+    LA_physical = runtime.transform_destinations.input
+    LA_spectral_data = parent(LA_spectral)
+    copyto!(LA_spectral_data, parent(fields.B))
+    if !(model.physics.formulation isa YBJ)
+        A_data = parent(fields.A)
+        @inbounds for j in axes(LA_spectral_data, 3),
+                      i in axes(LA_spectral_data, 2),
+                      k in axes(LA_spectral_data, 1)
+            LA_spectral_data[k, i, j] +=
+                0.25 * get_kh2(i, j, k, fields.B, model) * A_data[k, i, j]
+        end
+    end
+    fft_backward!(LA_physical, LA_spectral, runtime)
+    local_wave_speed = maximum(abs, parent(LA_physical))
+
+    u = parent(fields.u)
+    v = parent(fields.v)
+    local_flow_speed = zero(promote_type(eltype(u), eltype(v)))
+    @inbounds for index in eachindex(u, v)
+        local_flow_speed = max(local_flow_speed, hypot(u[index], v[index]))
+    end
+
+    comm = runtime.mpi.comm
+    return (
+        wave_speed=MPI.Allreduce(local_wave_speed, MPI.MAX, comm),
+        flow_speed=MPI.Allreduce(local_flow_speed, MPI.MAX, comm),
+    )
+end
+
+function _print_detailed_progress(simulation::Simulation)
+    maxima = _progress_maxima(simulation.model)
+    simulation.model.runtime.mpi.is_root || return simulation
+    @printf(stdout,
+        "iteration=%d | time=%s s | max_wave_speed=%.3e m/s | max_flow_speed=%.3e m/s\n",
+        simulation.clock.iteration,
+        string(simulation.clock.time),
+        maxima.wave_speed,
+        maxima.flow_speed,
+    )
+    flush(stdout)
+    return simulation
+end
+
 function _assert_mutable(owner::QGYBJModel)
     owner.runtime.finalized && error("cannot modify a finalized model")
     return owner
@@ -551,6 +601,7 @@ function run!(simulation::Simulation;
     _apply_output_overrides!(simulation;
         output_dir, save_interval, save_psi, save_waves, save_velocities)
 
+    detailed_progress = progress === true
     options = simulation.run_options
     progress !== nothing && (options.verbose = progress)
     diagnostics_interval !== nothing &&
@@ -581,9 +632,15 @@ function run!(simulation::Simulation;
             _maybe_record_simulation_diagnostics!(simulation)
             _maybe_write_particle_output!(simulation)
 
-            if options.verbose && runtime.mpi.is_root &&
+            if options.verbose &&
                simulation.clock.iteration % options.diagnostics_interval == 0
-                @info "Simulation progress" iteration=simulation.clock.iteration time=simulation.clock.time
+                if detailed_progress
+                    # All ranks participate in the global maxima reductions;
+                    # only the root rank writes the resulting line.
+                    _print_detailed_progress(simulation)
+                elseif runtime.mpi.is_root
+                    @info "Simulation progress" iteration=simulation.clock.iteration time=simulation.clock.time
+                end
             end
         end
         simulation.state = Stopped

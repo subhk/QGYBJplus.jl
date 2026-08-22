@@ -111,7 +111,7 @@ if rank == 0
     end
 end
 
-let lazy_model=nothing, preallocated_model=nothing,
+let lazy_model=nothing, preallocated_model=nothing, progress_model=nothing,
     normal_model=nothing, nonfinite_model=nothing
 try
     lazy_model = stepping_model(grid)
@@ -214,8 +214,54 @@ try
         @test lazy_plan_buffer !== preallocated_plan_buffer
     end
 
+    progress_model = stepping_model(grid)
+    wave_physical_global = nothing
+    if rank == 0
+        wave_physical_global = zeros(ComplexF64, NZ, NX, NY)
+        wave_physical_global[1, end, end] = 7
+    end
+    wave_physical = scatter_from_root(
+        wave_physical_global,
+        progress_model.runtime.geometry,
+        progress_model.runtime.mpi;
+        pencil=progress_model.runtime.plans.input_pencil,
+    )
+    fft_forward!(
+        progress_model.fields.B,
+        wave_physical,
+        progress_model.runtime,
+    )
+    fill!(parent(progress_model.fields.u), rank + 1)
+    fill!(parent(progress_model.fields.v), 0)
+    distributed_maxima = QGYBJplus._progress_maxima(progress_model)
+
+    @testset "Rank-dependent progress maxima" begin
+        @test distributed_maxima.wave_speed ≈ 7
+        @test distributed_maxima.flow_speed ≈ MPI.Comm_size(comm)
+    end
+
     run!(lazy)
-    run!(preallocated)
+    progress_text = mktemp() do _, io
+        redirect_stdout(io) do
+            run!(preallocated;
+                progress=true,
+                diagnostics_interval=NSTEPS,
+            )
+        end
+        flush(io)
+        seekstart(io)
+        read(io, String)
+    end
+
+    @testset "Collective progress maxima" begin
+        if rank == 0
+            @test occursin("iteration=$NSTEPS | time=", progress_text)
+            @test occursin("max_wave_speed=", progress_text)
+            @test occursin("max_flow_speed=", progress_text)
+        else
+            @test isempty(progress_text)
+        end
+    end
 
     @testset "MPI ETD-RK2 stepping" begin
         @test lazy.clock.iteration == NSTEPS
@@ -421,6 +467,7 @@ try
 finally
     lazy_model === nothing || finalize_model!(lazy_model)
     preallocated_model === nothing || finalize_model!(preallocated_model)
+    progress_model === nothing || finalize_model!(progress_model)
     normal_model === nothing || finalize_model!(normal_model)
     nonfinite_model === nothing || finalize_model!(nonfinite_model)
     MPI.Barrier(comm)
