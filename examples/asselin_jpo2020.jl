@@ -12,46 +12,34 @@ inertial_period = 2π / f
 
 κ = sqrt(2) * π / L
 ψ_scale = U / κ
-ψ₀ = (X, Y, _) -> ψ_scale *
-    sin(κ * (X - Y) / sqrt(2)) * cos(κ * (X + Y) / sqrt(2))
 
-grid = RectilinearGrid(
-    size=(256, 256, 128),
-    extent=(L, L, H),
-    centered=true,
-)
+# dipole
+ψ₀ = (X, Y, _) -> ψ_scale * sin(κ * (X - Y) / sqrt(2)) * cos(κ * (X + Y) / sqrt(2))
 
-model = QGYBJModel(
-    grid=grid,
-    coriolis=FPlane(f=f),
-    stratification=ConstantStratification(N²=N²),
-    closure=HorizontalHyperdiffusivity(
-        flow=0,
-        flow2=0,
-        waves=1.0e5,
-        waves2=0,
-    ),
-    flow=FixedFlow(),
-    feedback=NoFeedback(),
-    formulation=YBJPlus(),
-)
+grid = RectilinearGrid(size=(256, 256, 128), extent=(L, L, H), centered=true,)
 
-set!(
-    model;
+model = QGYBJModel(grid=grid,
+                coriolis=FPlane(f=f),
+                stratification=ConstantStratification(N²=N²),
+                closure=HorizontalHyperdiffusivity(flow=0,
+                                                flow2=0,
+                                                waves=1.0e5,
+                                                waves2=0,),
+                flow=FixedFlow(),
+                feedback=NoFeedback(),
+                formulation=YBJPlus(),)
+
+set!(model;
     ψ=ψ₀,
     pv_method=:barotropic,
-    waves=SurfaceWave(amplitude=0.10, scale=30.0),
-)
+    waves=SurfaceWave(amplitude=0.10, scale=30.0),)
 
-simulation = Simulation(
-    model;
-    Δt=2.0,
-    stop_time=15 * inertial_period,
-    output=NetCDFOutput(
-        path="output_asselin",
-        schedule=TimeInterval(5 * inertial_period),
-    ),
-)
+simulation = Simulation(model;
+                    Δt=2.0,
+                    stop_time=15 * inertial_period,
+                    output=NetCDFOutput(
+                        path="output_asselin",
+                        schedule=TimeInterval(5 * inertial_period),),)
 
 try
     run!(simulation)
