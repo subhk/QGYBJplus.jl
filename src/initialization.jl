@@ -523,7 +523,7 @@ function create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Rea
 end
 
 """
-    add_balanced_component!(S, G, a_ell, rho_u, rho_s)
+    add_balanced_component!(S, G, a_ell)
 
 Add balanced component to the flow by computing geostrophically consistent fields.
 
@@ -538,37 +538,33 @@ Based on init_psi_generic and init_q from the Fortran implementation.
 - `S::ModelFields`: Model state with streamfunction psi
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `a_ell`: Model-owned f²/N² coefficient profile
-- `rho_u`, `rho_s`: Model-owned density weights
 
 # Example
 ```julia
 # With constant stratification
-add_balanced_component!(fields, grid, coefficients.a_ell,
-                        coefficients.rho_u, coefficients.rho_s)
+add_balanced_component!(fields, grid, coefficients.a_ell)
 
 # With variable stratification
 N2 = compute_stratification_profile(strat_profile, grid)
-add_balanced_component!(fields, grid, a_ell, rho_u, rho_s)
+add_balanced_component!(fields, grid, a_ell)
 ```
 """
 function add_balanced_component!(S::ModelFields, G::RuntimeGeometry,
-    a_ell::AbstractVector, rho_u::AbstractVector, rho_s::AbstractVector)
+    a_ell::AbstractVector)
     @info "Adding balanced component to initial state"
 
     nz = G.nz
     dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
     length(a_ell) == nz || throw(DimensionMismatch("a_ell must have length $nz"))
-    length(rho_u) == nz || throw(DimensionMismatch("rho_u must have length $nz"))
-    length(rho_s) == nz || throw(DimensionMismatch("rho_s must have length $nz"))
 
     # Get underlying arrays
     psi_arr = parent(S.psi)
     nz_local, nx_local, ny_local = size(psi_arr)
 
     # Compute potential vorticity q from ψ
-    # q = -kh² ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
+    # q = -kh² ψ + ∂/∂z (a_ell ∂ψ/∂z)
     if hasfield(typeof(S), :q)
-        compute_q_from_psi!(S.q, S.psi, G, a_ell, rho_u, rho_s, dz)
+        compute_q_from_psi!(S.q, S.psi, G, a_ell, dz)
         @info "Computed potential vorticity q from streamfunction"
     end
 
@@ -586,19 +582,19 @@ function add_balanced_component!(S::ModelFields, G::RuntimeGeometry,
 end
 
 """
-    compute_q_from_psi!(q, psi, G, a_ell, rho_u, rho_s, dz)
+    compute_q_from_psi!(q, psi, G, a_ell, dz)
 
 Compute QG potential vorticity from streamfunction.
 
-The PV-streamfunction relationship is:
-    q = ∇²ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
+The Boussinesq PV-streamfunction relationship is:
+    q = ∇²ψ + ∂/∂z (a_ell ∂ψ/∂z)
 
 In spectral space with finite differences in z:
-    q = -kh² ψ + (1/dz²) [(ρ_u a_ell ρ_s⁻¹) (ψ[k+1] - 2ψ[k] + ψ[k-1])]
+    q = -kh² ψ + (1/dz²) ∂z[a_ell ∂zψ]
 
 with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
 """
-function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, r_ut, r_st, dz)
+function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, dz)
     nz = G.nz
     dz2 = dz^2
 
@@ -619,8 +615,8 @@ function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, r_ut, r_st, dz)
 
         # Interior points (k = 2, ..., nz-1)
         for k in 2:nz-1
-            coeff_up = (r_ut[k] * a_ell[k]) / r_st[k]
-            coeff_down = (r_ut[k-1] * a_ell[k-1]) / r_st[k]
+            coeff_up = a_ell[k]
+            coeff_down = a_ell[k-1]
 
             vert_term = coeff_up * psi_arr[k+1, i_local, j_local] -
                        (coeff_up + coeff_down) * psi_arr[k, i_local, j_local] +
@@ -635,12 +631,12 @@ function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, r_ut, r_st, dz)
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local]
         else
             # Bottom boundary (k=1): Neumann BC ψ_z = 0 ⟹ ψ[0] = ψ[1]
-            coeff_up = (r_ut[1] * a_ell[1]) / r_st[1]
+            coeff_up = a_ell[1]
             vert_term = coeff_up * (psi_arr[2, i_local, j_local] - psi_arr[1, i_local, j_local])
             q_arr[1, i_local, j_local] = -kh2 * psi_arr[1, i_local, j_local] + vert_term / dz2
 
             # Top boundary (k=nz): Neumann BC ψ_z = 0 ⟹ ψ[nz+1] = ψ[nz]
-            coeff_down = (r_ut[nz-1] * a_ell[nz-1]) / r_st[nz]
+            coeff_down = a_ell[nz-1]
             vert_term = coeff_down * (psi_arr[nz-1, i_local, j_local] - psi_arr[nz, i_local, j_local])
             q_arr[nz, i_local, j_local] = -kh2 * psi_arr[nz, i_local, j_local] + vert_term / dz2
         end

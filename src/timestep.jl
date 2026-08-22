@@ -192,7 +192,6 @@ end
 function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
                          options::ETDModelOptions, plans, a, L;
                          workspace=nothing, N2_profile=nothing,
-                         rho_u=nothing, rho_s=nothing,
                          timestep_workspace=nothing, compute_w=false,
                          use_wave_feedback=true)
     if !_fixed_flow(options)
@@ -205,14 +204,13 @@ function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
             )
         end
 
-        invert_q_to_psi!(S, G; a, rho_u, rho_s, workspace)
+        invert_q_to_psi!(S, G; a, workspace)
         q_base === nothing || restore_prognostic_q!(S, q_base)
     end
 
     N2 = N2_profile === nothing ? 1.0 : first(N2_profile)
     compute_velocities!(S, G; plans, f=options.f, N2, compute_w,
-        N2_profile, rho_u, rho_s,
-        workspace, dealias_mask=L)
+        N2_profile, workspace, dealias_mask=L)
     return S
 end
 
@@ -232,13 +230,12 @@ end
 function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
                               options::ETDModelOptions, plans;
                               a, dealias_mask=nothing, workspace=nothing,
-                              N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+                              N2_profile=nothing,
                               timestep_workspace=nothing)
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
     _ybj_plus(options) || sumB!(S.B, G; Lmask=L, workspace=workspace)
     _diagnose_flow!(S, G, options, plans, a, L;
                     workspace=workspace, N2_profile=N2_profile,
-                    rho_u=rho_u, rho_s=rho_s,
                     timestep_workspace=timestep_workspace,
                     compute_w=false, use_wave_feedback=true)
 
@@ -264,7 +261,7 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
         fill!(parent(S.A), zero(eltype(parent(S.A))))
         fill!(parent(S.C), zero(eltype(parent(S.C))))
     elseif _ybj_plus(options)
-        invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
+        invert_B_to_A!(S, G, a; workspace)
     else
         sigma = compute_sigma(options.f, G, nBk, rBk;
                               Lmask=L, workspace)
@@ -303,12 +300,10 @@ end
 function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
                                  options::ETDModelOptions, plans, a, L;
                                  workspace=nothing, N2_profile=nothing,
-                                 rho_u=nothing, rho_s=nothing,
                                  timestep_workspace=nothing)
     _ybj_plus(options) || sumB!(S.B, G; Lmask=L, workspace=workspace)
     _diagnose_flow!(S, G, options, plans, a, L;
                     workspace=workspace, N2_profile=N2_profile,
-                    rho_u=rho_u, rho_s=rho_s,
                     timestep_workspace=timestep_workspace,
                     compute_w=true, use_wave_feedback=true)
 
@@ -316,7 +311,7 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
         fill!(parent(S.A), zero(eltype(parent(S.A))))
         fill!(parent(S.C), zero(eltype(parent(S.C))))
     elseif _ybj_plus(options)
-        invert_B_to_A!(S, G, a; rho_u, rho_s, workspace)
+        invert_B_to_A!(S, G, a; workspace)
     else
         arrays = _etdrk2_arrays(S, timestep_workspace)
         if _linear(options)
@@ -340,7 +335,7 @@ end
 function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry,
                           options::ETDModelOptions, plans;
                           Δt::Real, a, dealias_mask=nothing, workspace=nothing,
-                          N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+                          N2_profile=nothing,
                           particle_tracker=nothing, particle_context=nothing,
                           current_time=nothing, timestep_workspace=nothing)
     L = isnothing(dealias_mask) ? trues(G.nx, G.ny) : dealias_mask
@@ -357,7 +352,7 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
 
     _compute_etdrk2_rhs!(rhsq0, rhsB0, Sn, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
-                         N2_profile=N2_profile, rho_u=rho_u, rho_s=rho_s,
+                         N2_profile=N2_profile,
                          timestep_workspace=timestep_workspace)
 
     qn_arr, Bn_arr = parent(Sn.q), parent(Sn.B)
@@ -382,7 +377,7 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
 
     _compute_etdrk2_rhs!(rhsq1, rhsB1, Sstage, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
-                         N2_profile=N2_profile, rho_u=rho_u, rho_s=rho_s,
+                         N2_profile=N2_profile,
                          timestep_workspace=timestep_workspace)
 
     qnp1_arr, Bnp1_arr = parent(Snp1.q), parent(Snp1.B)
@@ -410,7 +405,6 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
 
     _finalize_etdrk2_state!(Snp1, G, options, plans, a, L;
                             workspace=workspace, N2_profile=N2_profile,
-                            rho_u=rho_u, rho_s=rho_s,
                             timestep_workspace=timestep_workspace)
 
     if particle_tracker !== nothing

@@ -24,6 +24,7 @@ using QGYBJplus
     @test hasproperty(model, :fields)
     @test hasproperty(model, :physics)
     @test hasproperty(model, :runtime)
+    @test !hasproperty(model.runtime.coefficients, :stratification)
 
     simulation = Simulation(model;
                             Δt = 0.01,
@@ -91,5 +92,8 @@ end
     for legacy_name in ("Grid", "State", "QGParams",
                         "RectilinearGridSpec", "QGYBJSimulation")
         @test isnothing(match(Regex("\\b$(legacy_name)\\b"), source))
+    end
+    for obsolete_density_name in ("rho_u", "rho_s", "rho_ut", "rho_st")
+        @test isnothing(match(Regex("\\b$(obsolete_density_name)\\b"), source))
     end
 end

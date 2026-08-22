@@ -142,8 +142,6 @@ end
                 dealias_mask=context.mask,
                 workspace=context.workspace,
                 N2_profile=context.N2,
-                rho_u=context.rho_u,
-                rho_s=context.rho_s,
             )
             return copy(parent(rhsB))
         end

@@ -391,11 +391,8 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     fields = copy_fields(model.fields)
     runtime = model.runtime
     coefficients = runtime.coefficients
-    density = coefficients.stratification
     invert_q_to_psi!(fields, runtime.geometry;
         a=coefficients.a_ell,
-        rho_u=density.rho_u,
-        rho_s=density.rho_s,
         workspace=runtime.workspace)
     _refresh_wave_diagnostics!(fields, model)
     values = _energy_components(model, fields)

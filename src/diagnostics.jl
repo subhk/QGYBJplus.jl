@@ -355,7 +355,7 @@ Total kinetic energy (domain sum, not mean) in nondimensional units.
 # Note
 - This is NOT normalized by volume. For energy density, divide by nx×ny×nz.
 - In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
-- For physically accurate energy with dealiasing and density weighting,
+- For energy with spectral dealiasing,
   use `flow_kinetic_energy_spectral` instead.
 """
 function flow_kinetic_energy(u, v)
@@ -372,9 +372,9 @@ function flow_kinetic_energy(u, v)
 end
 
 """
-    flow_kinetic_energy_spectral(uk, vk, G, par; Lmask=nothing) -> KE
+    flow_kinetic_energy_spectral(uk, vk, G; Lmask=nothing) -> KE
 
-Compute kinetic energy in spectral space with dealiasing and density weighting.
+Compute Boussinesq kinetic energy in spectral space with dealiasing.
 
 # Physical Background (matches Fortran diag_zentrum/energy_linear)
 The kinetic energy is computed as:
@@ -384,24 +384,23 @@ The kinetic energy is computed as:
 The dealiasing correction subtracts half the kh=0 mode because:
 - With 2/3 dealiasing: Σₖ (1/2)|u|² = Σₖ L|u|² - 0.5|u(0,0)|²
 
-The total KE integrates over z with density weighting:
+The total KE averages over the vertical levels:
 
-    KE_total = (1/nz) Σᵢ ρₛ(zᵢ) × KE(zᵢ)
+    KE_total = (1/nz) Σᵢ KE(zᵢ)
 
 # Algorithm
 1. Loop over all spectral modes (kₓ, kᵧ, z) with dealiasing mask L
 2. Accumulate |u|² + |v|² at each level
 3. Apply dealiasing correction: subtract half the kh=0 mode
-4. Weight by density ρₛ(z) and integrate (divide by nz)
+4. Average over vertical levels (divide by nz)
 
 # Arguments
 - `uk, vk`: Spectral velocity fields (complex)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider for density profiles
 - `Lmask`: Optional dealiasing mask (default: all modes included)
 
 # Returns
-Total kinetic energy, normalized by nz, with density weighting.
+Total kinetic energy per unit reference mass, normalized by nz.
 
 # Fortran Correspondence
 Matches the kinetic energy computation in `diag_zentrum` (diagnostics.f90:127-161)
@@ -410,7 +409,7 @@ and `energy_linear` (diagnostics.f90:3024-3107).
 # Note
 In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global total.
 """
-function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry, par; Lmask=nothing)
+function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
 
@@ -419,20 +418,9 @@ function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry, par; Lmask=not
     vk_arr = parent(vk)
     nz_local, nx_local, ny_local = size(uk_arr)
 
-    # Get density profile for weighting (ρₛ at staggered points)
-    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     KE_total = 0.0
 
     @inbounds for k in 1:nz_local
-        # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, uk)
-        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
-
         ke_k = 0.0
 
         # Sum over horizontal wavenumbers with dealiasing
@@ -453,8 +441,7 @@ function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry, par; Lmask=not
             ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         end
 
-        # Weight by density and accumulate
-        KE_total += ρₛₖ * ke_k
+        KE_total += ke_k
     end
 
     # Normalize by nz (vertical integration)
@@ -466,12 +453,12 @@ end
 """
     flow_potential_energy_spectral(bk, G, par; Lmask=nothing) -> PE
 
-Compute potential energy in spectral space with dealiasing and density weighting.
+Compute Boussinesq potential energy in spectral space with dealiasing.
 
 # Physical Background
 The potential energy from buoyancy variance:
 
-    PE(z) = Σₖ L(kₓ,kᵧ) × (a_ell × ρ₁/ρ₂) × |bₖ|² - 0.5 × correction
+    PE(z) = Σₖ L(kₓ,kᵧ) × a_ell × |bₖ|² - 0.5 × correction
 
 where a_ell = f²/N² is the elliptic coefficient.
 
@@ -480,11 +467,11 @@ For QG: b = ψ_z, so PE represents available potential energy from isopycnal til
 # Arguments
 - `bk`: Spectral buoyancy field (complex)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider for Coriolis, stratification, and density
+- `par`: Coefficient provider for Coriolis and stratification
 - `Lmask`: Optional dealiasing mask
 
 # Returns
-Total potential energy, normalized by nz, with density weighting.
+Total potential energy per unit reference mass, normalized by nz.
 
 # Fortran Correspondence
 Matches the potential energy computation in `diag_zentrum` (ps term).
@@ -505,34 +492,12 @@ function flow_potential_energy_spectral(bk, G::RuntimeGeometry, par; Lmask=nothi
     bk_arr = parent(bk)
     nz_local, nx_local, ny_local = size(bk_arr)
 
-    # Get density profiles
-    ρ₁ = if isdefined(PARENT, :rho_ut) && par !== nothing
-        PARENT.rho_ut(par, G)
-    else
-        ones(Float64, nz)
-    end
-
-    ρ₂ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
-    ρₛ = if isdefined(PARENT, :rho_st) && par !== nothing
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     PE_total = 0.0
 
     @inbounds for k in 1:nz_local
         # Use global z-index for correct profile lookup in 2D decomposition
         k_global = local_to_global(k, 1, bk)
         a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-        ρ₁ₖ = k_global <= length(ρ₁) ? ρ₁[k_global] : 1.0
-        ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
-        ρₛₖ = k_global <= length(ρₛ) ? ρₛ[k_global] : 1.0
 
         pe_k = 0.0
 
@@ -541,18 +506,16 @@ function flow_potential_energy_spectral(bk, G::RuntimeGeometry, par; Lmask=nothi
             j_global = local_to_global(j, 3, bk)
 
             if L[i_global, j_global]
-                # PE contribution: (a_ell(z) × ρ₁/ρ₂) × |b|²
-                pe_k += (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, i, j])
+                pe_k += a_ell_k * abs2(bk_arr[k, i, j])
             end
         end
 
         # Dealiasing correction
         if local_to_global(1, 2, bk) == 1 && local_to_global(1, 3, bk) == 1
-            pe_k -= 0.5 * (a_ell_k * ρ₁ₖ / ρ₂ₖ) * abs2(bk_arr[k, 1, 1])
+            pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
         end
 
-        # Weight by density and accumulate
-        PE_total += ρₛₖ * pe_k
+        PE_total += pe_k
     end
 
     # Normalize by nz
@@ -753,7 +716,7 @@ Tuple (E_B, E_A) of domain-summed squared magnitudes.
 # Note
 - These are domain SUMS, not means. For energy density, divide by grid volume.
 - In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
-- For physically accurate wave energies with dealiasing and density weighting,
+- For wave energies with spectral dealiasing,
   use `wave_energy_spectral` instead.
 """
 function wave_energy(B, A)
@@ -784,7 +747,7 @@ Three components of wave energy:
    This is discretized as: LA[k] = (a[k]×C[k] - a[k-1]×C[k-1]) / Δz
 
 2. **Wave Potential Energy (WPE)**:
-   WPE = Σₖ (0.5/(ρ₂×a_ell)) × kh² × (|CRₖ|² + |CIₖ|²)
+   WPE = Σₖ (0.5/a_ell) × kh² × (|CRₖ|² + |CIₖ|²)
 
    where C = ∂A/∂z and a_ell = f²/N². This represents the potential energy from vertical wave structure.
 
@@ -796,7 +759,7 @@ Three components of wave energy:
 # Algorithm
 1. Loop over all spectral modes with dealiasing mask L
 2. Compute LA = ∂_z(a×C) using finite differences for each (i,j) mode
-3. Accumulate |LA|², kh²|C|²/(ρ₂×a_ell), kh⁴|A|²/(8×a_ell²)
+3. Accumulate |LA|², kh²|C|²/a_ell, kh⁴|A|²/(8×a_ell²)
 4. Apply dealiasing correction: subtract half the kh=0 mode from WKE
 5. Integrate over z (sum local, divide by nz)
 
@@ -839,14 +802,6 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; L
 
     nz_local, nx_local, ny_local = size(BR_arr)
 
-    # Get density profile if available (for variable stratification)
-    # r_2 corresponds to rho at staggered points for potential energy
-    ρ₂ = if isdefined(PARENT, :rho_st)
-        PARENT.rho_st(par, G)
-    else
-        ones(Float64, nz)
-    end
-
     # RuntimeGeometry spacing for vertical derivative
     Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
 
@@ -877,7 +832,6 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; L
         for k in 1:nz_local
             k_global = local_to_global(k, 1, BR)
             a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-            ρ₂ₖ = k_global <= length(ρ₂) ? ρ₂[k_global] : 1.0
 
             # Compute LA = ∂_z(a × C) using finite differences
             # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
@@ -908,8 +862,8 @@ function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; L
             # WKE per equation (4.7): (1/2)|LA|²
             WKE_local += 0.5 * (abs2(LA_r) + abs2(LA_i))
 
-            # WPE: (0.5/(ρ₂×a_ell(z))) × kh² × (|CR|² + |CI|²)
-            WPE_local += (0.5 / (ρ₂ₖ * a_ell_k)) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
+            # WPE: (0.5/a_ell(z)) × kh² × (|CR|² + |CI|²)
+            WPE_local += (0.5 / a_ell_k) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
 
             # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
             WCE_local += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
@@ -1031,22 +985,22 @@ function wave_energy_global(B, A, mpi_config=nothing)
 end
 
 """
-    flow_kinetic_energy_spectral_global(uk, vk, G, par; Lmask=nothing, mpi_config=nothing) -> KE
+    flow_kinetic_energy_spectral_global(uk, vk, G; Lmask=nothing, mpi_config=nothing) -> KE
 
 Compute GLOBAL kinetic energy in spectral space across all MPI processes.
 
 # Arguments
 - `uk, vk`: Spectral velocity fields (local portion in MPI mode)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider
 - `Lmask`: Optional dealiasing mask
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
-Global kinetic energy with dealiasing and density weighting.
+Global Boussinesq kinetic energy with dealiasing.
 """
-function flow_kinetic_energy_spectral_global(uk, vk, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
-    KE_local = flow_kinetic_energy_spectral(uk, vk, G, par; Lmask=Lmask)
+function flow_kinetic_energy_spectral_global(uk, vk, G::RuntimeGeometry;
+    Lmask=nothing, mpi_config=nothing)
+    KE_local = flow_kinetic_energy_spectral(uk, vk, G; Lmask=Lmask)
 
     if mpi_config === nothing
         return KE_local
@@ -1068,7 +1022,7 @@ Compute GLOBAL potential energy in spectral space across all MPI processes.
 - `mpi_config`: MPI configuration (nothing for serial mode)
 
 # Returns
-Global potential energy with dealiasing and density weighting.
+Global Boussinesq potential energy with dealiasing.
 """
 function flow_potential_energy_spectral_global(bk, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
     PE_local = flow_potential_energy_spectral(bk, G, par; Lmask=Lmask)

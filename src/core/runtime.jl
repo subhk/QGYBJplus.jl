@@ -1,8 +1,7 @@
 """Precomputed vertical coefficients used by model operators."""
-struct OperatorCoefficients{T, C}
+struct OperatorCoefficients{T}
     N²::Vector{T}
     a_ell::Vector{T}
-    stratification::C
 end
 
 """
@@ -47,9 +46,7 @@ function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
         profile = _runtime_profile(physics.stratification)
         N² = Float64.(compute_stratification_profile(profile, grid))
         a_ell = a_ell_from_N2(N², physics.coriolis)
-        stratification = compute_stratification_coefficients(
-            N², grid; f0_sq=physics.coriolis.f^2)
-        coefficients = OperatorCoefficients(N², a_ell, stratification)
+        coefficients = OperatorCoefficients(N², a_ell)
         mask = dealias_mask(grid)
         destinations = hasproperty(plans, :work_arrays) ? plans.work_arrays : nothing
 
@@ -157,7 +154,6 @@ function _operator_context(model::QGYBJModel)
     runtime = model.runtime
     runtime.finalized && error("cannot use operators after model finalization")
     coefficients = runtime.coefficients
-    stratification = coefficients.stratification
     return (
         fields=model.fields,
         grid=runtime.geometry,
@@ -167,23 +163,19 @@ function _operator_context(model::QGYBJModel)
         f=model.physics.coriolis.f,
         N2=coefficients.N²,
         a=coefficients.a_ell,
-        rho_u=stratification.rho_u,
-        rho_s=stratification.rho_s,
     )
 end
 
 function Elliptic.invert_q_to_psi!(model::QGYBJModel)
     context = _operator_context(model)
     invert_q_to_psi!(context.fields, context.grid;
-        a=context.a, rho_u=context.rho_u, rho_s=context.rho_s,
-        workspace=context.workspace)
+        a=context.a, workspace=context.workspace)
     return model
 end
 
 function Elliptic.invert_B_to_A!(model::QGYBJModel)
     context = _operator_context(model)
     invert_B_to_A!(context.fields, context.grid, context.a;
-        rho_u=context.rho_u, rho_s=context.rho_s,
         workspace=context.workspace)
     return model
 end
@@ -200,8 +192,7 @@ function Operators.compute_velocities!(model::QGYBJModel;
     context = _operator_context(model)
     compute_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, rho_u=context.rho_u, rho_s=context.rho_s,
-        compute_w, use_ybj_w, workspace=context.workspace,
+        N2_profile=context.N2, compute_w, use_ybj_w, workspace=context.workspace,
         dealias_mask=context.mask)
     return model
 end
@@ -220,7 +211,6 @@ function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     context = _operator_context(model)
     compute_ybj_vertical_velocity!(context.fields, context.grid, context.plans;
         f=context.f, N2=first(context.N2), N2_profile=context.N2,
-        rho_u=context.rho_u, rho_s=context.rho_s,
         workspace=context.workspace, skip_inversion, t)
     return model
 end
@@ -231,8 +221,7 @@ function Operators.compute_total_velocities!(model::QGYBJModel;
     context = _operator_context(model)
     compute_total_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, rho_u=context.rho_u, rho_s=context.rho_s,
-        compute_w, use_ybj_w, include_wave_velocity,
+        N2_profile=context.N2, compute_w, use_ybj_w, include_wave_velocity,
         workspace=context.workspace, dealias_mask=context.mask)
     return model
 end
@@ -265,8 +254,6 @@ function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
         dealias_mask=context.mask,
         workspace=context.workspace,
         N2_profile=context.N2,
-        rho_u=context.rho_u,
-        rho_s=context.rho_s,
         timestep_workspace=timestep_workspace)
 
     previous_fields = model.fields

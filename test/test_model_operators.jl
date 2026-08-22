@@ -29,7 +29,6 @@ using QGYBJplus
         fields = model.fields
         runtime = model.runtime
         coefficients = runtime.coefficients
-        density = coefficients.stratification
 
         @test length(coefficients.N²) == grid.size[3]
         @test !all(==(first(coefficients.N²)), coefficients.N²)
@@ -42,8 +41,6 @@ using QGYBJplus
             q_reference,
             runtime.geometry;
             a=coefficients.a_ell,
-            rho_u=density.rho_u,
-            rho_s=density.rho_s,
             workspace=runtime.workspace,
         )
         @test parent(fields.psi) ≈ parent(q_reference.psi)
@@ -56,8 +53,6 @@ using QGYBJplus
             B_reference,
             runtime.geometry,
             coefficients.a_ell;
-            rho_u=density.rho_u,
-            rho_s=density.rho_s,
             workspace=runtime.workspace,
         )
         @test parent(fields.A) ≈ parent(B_reference.A)

@@ -228,9 +228,7 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
 
     if pv_method in (:qg, :balanced)
         coefficients = runtime.coefficients
-        density = coefficients.stratification
-        add_balanced_component!(fields, grid, coefficients.a_ell,
-            density.rho_u, density.rho_s)
+        add_balanced_component!(fields, grid, coefficients.a_ell)
     elseif pv_method in (:barotropic, :asselin)
         compute_barotropic_q_from_psi!(fields.q, fields.psi, grid)
     elseif pv_method !== :none
@@ -348,9 +346,7 @@ function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
     runtime = model.runtime
     if pv_method in (:qg, :balanced)
         coefficients = runtime.coefficients
-        density = coefficients.stratification
-        add_balanced_component!(fields, runtime.geometry, coefficients.a_ell,
-            density.rho_u, density.rho_s)
+        add_balanced_component!(fields, runtime.geometry, coefficients.a_ell)
     elseif pv_method in (:barotropic, :asselin)
         compute_barotropic_q_from_psi!(fields.q, fields.psi, runtime.geometry)
     elseif pv_method !== :none
@@ -372,8 +368,6 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
         context.a, mask;
         workspace=context.workspace,
         N2_profile=context.N2,
-        rho_u=context.rho_u,
-        rho_s=context.rho_s,
         compute_w=false,
         use_wave_feedback=true)
 
@@ -403,8 +397,6 @@ function _refresh_wave_diagnostics!(fields::ModelFields,
     else
         context = _operator_context(model)
         invert_B_to_A!(fields, context.grid, context.a;
-            rho_u=context.rho_u,
-            rho_s=context.rho_s,
             workspace=context.workspace)
     end
     return fields

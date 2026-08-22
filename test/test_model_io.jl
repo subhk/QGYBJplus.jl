@@ -310,8 +310,6 @@ using Random
                     context.a, context.mask;
                     workspace=context.workspace,
                     N2_profile=context.N2,
-                    rho_u=context.rho_u,
-                    rho_s=context.rho_s,
                 )
                 @test maximum(abs,
                     parent(expected.psi) .- baseline_psi) > 1e-10
