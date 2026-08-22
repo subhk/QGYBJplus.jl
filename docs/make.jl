@@ -11,7 +11,6 @@ makedocs(
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", "") == "true",
         canonical = "https://subhk.github.io/QGYBJplus.jl/stable/",
-        assets = ["assets/custom.css"],
         sidebar_sitename = true,
         collapselevel = 2,
         size_threshold = 500_000,
