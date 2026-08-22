@@ -66,14 +66,48 @@ end
     @test evaluate_N2(N_profile, -100.0) ≈ 1e-4
     @test_throws ArgumentError AnalyticalProfile(N²_function; returns=:invalid)
 
+    flow_closure = FlowHyperdiffusivity(coefficient=0)
     wave_closure = WaveHyperdiffusivity(coefficient=1e5)
-    @test wave_closure isa WaveHyperdiffusivity{Float64}
-    @test wave_closure.coefficient == 1e5
-    @test wave_closure.order == 4
-    @test WaveHyperdiffusivity(2; order=6).order == 6
+    closure = HorizontalHyperdiffusivity(
+        flow=flow_closure,
+        wave=wave_closure,
+    )
+
+    @test flow_closure isa FlowHyperdiffusivity
+    @test flow_closure.coefficients == (0.0,)
+    @test flow_closure.orders == (4,)
+    @test wave_closure isa WaveHyperdiffusivity
+    @test wave_closure.coefficients == (1e5,)
+    @test wave_closure.orders == (4,)
+    @test closure.flow === flow_closure
+    @test closure.wave === wave_closure
+
+    defaults = HorizontalHyperdiffusivity()
+    @test defaults.flow.coefficients == (0.01, 10.0)
+    @test defaults.flow.orders == (4, 12)
+    @test defaults.wave.coefficients == (0.0, 10.0)
+    @test defaults.wave.orders == (4, 12)
+
+    @test FlowHyperdiffusivity(2; order=6).orders == (6,)
+    @test WaveHyperdiffusivity(2; order=6).orders == (6,)
+    @test_throws ArgumentError FlowHyperdiffusivity(coefficient=-1)
+    @test_throws ArgumentError FlowHyperdiffusivity(
+        coefficient=1e5, order=3)
     @test_throws ArgumentError WaveHyperdiffusivity(coefficient=-1)
     @test_throws ArgumentError WaveHyperdiffusivity(
         coefficient=1e5, order=3)
+
+    kx, ky, dt = 3.0, 4.0, 2.0
+    @test QGYBJplus.int_factor(kx, ky, dt, closure) == 0
+    @test QGYBJplus.int_factor(kx, ky, dt, closure; waves=true) ==
+          dt * 1e5 * (kx^2 + ky^2)^2
+    @test QGYBJplus.int_factor(
+        kx,
+        ky,
+        dt,
+        FlowHyperdiffusivity(coefficient=0.25),
+    ) == dt * 0.25 * (kx^2 + ky^2)^2
+    @test QGYBJplus.int_factor(kx, ky, dt, wave_closure) == 0
 
     component_types = (:AbstractCoriolis, :AbstractStratification,
                        :FlowEvolution, :FixedFlow, :EvolvingFlow,

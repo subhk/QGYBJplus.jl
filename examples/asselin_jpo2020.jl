@@ -22,7 +22,10 @@ model = QGYBJModel(
     grid=grid,
     coriolis=FPlane(f=f),
     stratification=ConstantStratification(N²=N²),
-    closure=WaveHyperdiffusivity(coefficient=1.0e5),
+    closure=HorizontalHyperdiffusivity(
+        flow=FlowHyperdiffusivity(coefficient=0),
+        wave=WaveHyperdiffusivity(coefficient=1.0e5),
+    ),
     flow=FixedFlow(),
     feedback=NoFeedback(),
     formulation=YBJPlus(),

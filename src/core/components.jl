@@ -95,62 +95,117 @@ end
 
 VerticalDiffusivity(; coefficient::Real=0) = VerticalDiffusivity(coefficient)
 
-"""Horizontal hyperdiffusion coefficients for the balanced flow and waves."""
-struct HorizontalHyperdiffusivity{T} <: AbstractClosure
-    flow::T
-    flow2::T
-    flow_laplacian_order::Int
-    flow_laplacian_order2::Int
-    waves::T
-    waves2::T
-    wave_laplacian_order::Int
-    wave_laplacian_order2::Int
+"""
+    FlowHyperdiffusivity(; coefficient, order=4)
+
+Horizontal damping for the balanced flow only. `order` is the total derivative
+order and must be positive and even. The wave field is not damped by this
+closure.
+"""
+struct FlowHyperdiffusivity{T, N} <: AbstractClosure
+    coefficients::NTuple{N, T}
+    orders::NTuple{N, Int}
+
+    function FlowHyperdiffusivity{T, N}(
+        coefficients::NTuple{N, T},
+        orders::NTuple{N, Int},
+    ) where {T, N}
+        return new{T, N}(coefficients, orders)
+    end
 end
 
-function HorizontalHyperdiffusivity(; flow::Real=0.01, flow2::Real=10.0,
-    flow_laplacian_order::Int=2, flow_laplacian_order2::Int=6,
-    waves::Real=0.0, waves2::Real=10.0,
-    wave_laplacian_order::Int=2, wave_laplacian_order2::Int=6)
+function _hyperdiffusivity_terms(field::Symbol, coefficients::Tuple, orders::Tuple)
+    isempty(coefficients) && throw(ArgumentError(
+        "$field hyperdiffusivity requires at least one term"))
+    length(coefficients) == length(orders) || throw(ArgumentError(
+        "$field hyperdiffusivity coefficients and orders must have equal lengths"))
+    all(coefficient -> coefficient isa Real, coefficients) || throw(ArgumentError(
+        "$field hyperdiffusivity coefficients must be real"))
+    all(order -> order isa Integer, orders) || throw(ArgumentError(
+        "$field hyperdiffusivity orders must be integers"))
 
-    coefficients = float.((flow, flow2, waves, waves2))
-    all(isfinite, coefficients) ||
-        throw(ArgumentError("hyperdiffusion coefficients must be finite"))
-    all(>=(0), coefficients) ||
-        throw(ArgumentError("hyperdiffusion coefficients must be non-negative"))
+    values = float.(coefficients)
+    all(value -> isfinite(value) && value >= 0, values) || throw(ArgumentError(
+        "$field hyperdiffusivity coefficients must be finite and non-negative"))
 
-    orders = (flow_laplacian_order, flow_laplacian_order2,
-              wave_laplacian_order, wave_laplacian_order2)
-    all(>(0), orders) || throw(ArgumentError("Laplacian orders must be positive"))
+    derivative_orders = Int.(orders)
+    all(order -> order > 0 && iseven(order), derivative_orders) ||
+        throw(ArgumentError(
+            "$field hyperdiffusivity orders must be positive and even"))
 
-    T = promote_type(map(typeof, coefficients)...)
-    return HorizontalHyperdiffusivity{T}(
-        T(flow), T(flow2), flow_laplacian_order, flow_laplacian_order2,
-        T(waves), T(waves2), wave_laplacian_order, wave_laplacian_order2)
+    T = promote_type(map(typeof, values)...)
+    N = length(values)
+    return ntuple(index -> T(values[index]), N), derivative_orders
 end
+
+function FlowHyperdiffusivity(coefficients::Tuple, orders::Tuple)
+    values, derivative_orders =
+        _hyperdiffusivity_terms(:flow, coefficients, orders)
+    T = typeof(first(values))
+    N = length(values)
+    return FlowHyperdiffusivity{T, N}(values, derivative_orders)
+end
+
+FlowHyperdiffusivity(coefficient::Real; order::Int=4) =
+    FlowHyperdiffusivity((coefficient,), (order,))
+
+FlowHyperdiffusivity(; coefficient::Real, order::Int=4) =
+    FlowHyperdiffusivity(coefficient; order)
 
 """
     WaveHyperdiffusivity(; coefficient, order=4)
 
 Horizontal damping for the wave field only. `order` is the total derivative
-order and must be positive and even. The default applies one biharmonic term;
-the balanced flow is not damped by this closure.
+order and must be positive and even. The balanced flow is not damped by this
+closure.
 """
-struct WaveHyperdiffusivity{T} <: AbstractClosure
-    coefficient::T
-    order::Int
+struct WaveHyperdiffusivity{T, N} <: AbstractClosure
+    coefficients::NTuple{N, T}
+    orders::NTuple{N, Int}
+
+    function WaveHyperdiffusivity{T, N}(
+        coefficients::NTuple{N, T},
+        orders::NTuple{N, Int},
+    ) where {T, N}
+        return new{T, N}(coefficients, orders)
+    end
 end
 
-function WaveHyperdiffusivity(coefficient::Real; order::Int=4)
-    value = float(coefficient)
-    isfinite(value) && value >= 0 || throw(ArgumentError(
-        "wave hyperdiffusion coefficient must be finite and non-negative"))
-    order > 0 && iseven(order) || throw(ArgumentError(
-        "wave hyperdiffusion order must be positive and even"))
-    return WaveHyperdiffusivity{typeof(value)}(value, order)
+function WaveHyperdiffusivity(coefficients::Tuple, orders::Tuple)
+    values, derivative_orders =
+        _hyperdiffusivity_terms(:wave, coefficients, orders)
+    T = typeof(first(values))
+    N = length(values)
+    return WaveHyperdiffusivity{T, N}(values, derivative_orders)
 end
+
+WaveHyperdiffusivity(coefficient::Real; order::Int=4) =
+    WaveHyperdiffusivity((coefficient,), (order,))
 
 WaveHyperdiffusivity(; coefficient::Real, order::Int=4) =
     WaveHyperdiffusivity(coefficient; order)
+
+"""
+    HorizontalHyperdiffusivity(; flow, wave)
+
+Horizontal damping composed from explicit balanced-flow and wave components.
+The no-argument constructor retains the model's standard fourth- and
+twelfth-order damping terms.
+"""
+struct HorizontalHyperdiffusivity{F<:FlowHyperdiffusivity,
+                                  W<:WaveHyperdiffusivity} <: AbstractClosure
+    flow::F
+    wave::W
+end
+
+function HorizontalHyperdiffusivity(;
+    flow::FlowHyperdiffusivity=FlowHyperdiffusivity(
+        (0.01, 10.0), (4, 12)),
+    wave::WaveHyperdiffusivity=WaveHyperdiffusivity(
+        (0.0, 10.0), (4, 12)))
+
+    return HorizontalHyperdiffusivity(flow, wave)
+end
 
 """Horizontally uniform, surface-confined wave initial condition."""
 struct SurfaceWave{T}

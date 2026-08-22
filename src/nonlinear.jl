@@ -46,7 +46,8 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep.
 module Nonlinear
 
 using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity,
-                   WaveHyperdiffusivity, local_to_global, z_is_local
+                   FlowHyperdiffusivity, WaveHyperdiffusivity,
+                   local_to_global, z_is_local
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
@@ -86,6 +87,14 @@ derived from φ. In QG, φ = ψ (streamfunction) gives the geostrophic flow.
 The Jacobian conserves both φ and χ integrals (energy and enstrophy).
 ================================================================================
 =#
+
+function _component_int_factor(kₓ::Real, kᵧ::Real, Δt::Real, closure)
+    kₕ² = kₓ^2 + kᵧ^2
+    return Δt * sum(
+        coefficient * kₕ²^(order ÷ 2)
+        for (coefficient, order) in zip(closure.coefficients, closure.orders)
+    )
+end
 
 """
     jacobian_spectral!(dstk, phik, chik, G, plans; Lmask=nothing)
@@ -1122,7 +1131,7 @@ For efficiency, we return just λ×dt (the exponent).
 # Arguments
 - `kx, ky`: Horizontal wavenumber components
 - `Δt`: Time-step length
-- `closure`: [`HorizontalHyperdiffusivity`](@ref) coefficients and orders
+- `closure`: a horizontal hyperdiffusivity component
 - `inviscid`: Disable the integrating factor when true
 - `waves::Bool`: If true, use wave hyperdiffusion (nuh1w, ilap1w, etc.)
 
@@ -1151,27 +1160,18 @@ factor = exp(-lambda_dt)  # Multiply solution by this
 function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
     closure::HorizontalHyperdiffusivity; waves::Bool=false,
     inviscid::Bool=false)
-    # When inviscid=true, disable ALL dissipation including hyperdiffusion
-    # Return 0 so that exp(-0) = 1 (no damping)
-    if inviscid
-        return 0.0
-    end
-    # Use isotropic form: ν * (kx² + ky²)^n = ν * kh^{2n}
-    # This is the standard (-∇²)^n hyperdiffusion operator.
-    # Previous form ν*(|kx|^{2n} + |ky|^{2n}) under-damped diagonal modes.
-    kₕ² = kₓ^2 + kᵧ^2
 
-    if waves
-        # Wave field hyperdiffusion (often smaller or zero)
-        ν₁ʷ = closure.waves; n₁ʷ = closure.wave_laplacian_order
-        ν₂ʷ = closure.waves2; n₂ʷ = closure.wave_laplacian_order2
-        return Δt * ( ν₁ʷ * kₕ²^n₁ʷ + ν₂ʷ * kₕ²^n₂ʷ )
-    else
-        # Mean flow hyperdiffusion
-        ν₁ = closure.flow; n₁ = closure.flow_laplacian_order
-        ν₂ = closure.flow2; n₂ = closure.flow_laplacian_order2
-        return Δt * ( ν₁ * kₕ²^n₁ + ν₂ * kₕ²^n₂ )
-    end
+    inviscid && return 0.0
+    component = waves ? closure.wave : closure.flow
+    return _component_int_factor(kₓ, kᵧ, Δt, component)
+end
+
+function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
+    closure::FlowHyperdiffusivity; waves::Bool=false,
+    inviscid::Bool=false)
+
+    (inviscid || waves) && return 0.0
+    return _component_int_factor(kₓ, kᵧ, Δt, closure)
 end
 
 function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
@@ -1179,8 +1179,7 @@ function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
     inviscid::Bool=false)
 
     (inviscid || !waves) && return 0.0
-    kₕ² = kₓ^2 + kᵧ^2
-    return Δt * closure.coefficient * kₕ²^(closure.order ÷ 2)
+    return _component_int_factor(kₓ, kᵧ, Δt, closure)
 end
 
 end # module

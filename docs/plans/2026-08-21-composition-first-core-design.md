@@ -105,7 +105,9 @@ The `QGParams` bag is replaced by focused immutable components:
 - `ConstantStratification`, `SkewedGaussianStratification`,
   `TanhStratification`, `AnalyticalStratification`, and
   `TabulatedStratification`;
-- `HorizontalHyperdiffusivity` and vertical diffusion configuration;
+- `HorizontalHyperdiffusivity`, composed from explicit
+  `FlowHyperdiffusivity` and `WaveHyperdiffusivity` components, and vertical
+  diffusion configuration;
 - `FixedFlow` or `EvolvingFlow`;
 - `NoFeedback`, `WaveMeanFeedback`, or `NoWaveFeedback`;
 - `YBJPlus`, `YBJ`, `PassiveWave`, and dispersion/nonlinearity options;

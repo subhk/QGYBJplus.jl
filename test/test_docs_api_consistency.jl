@@ -1,4 +1,5 @@
 using Test
+using QGYBJplus
 
 @testset "Published documentation uses the composition-first API" begin
     documentation_root = joinpath(@__DIR__, "..", "docs", "src")
@@ -34,4 +35,11 @@ using Test
     for name in ("RectilinearGrid", "QGYBJModel", "Simulation", "run!")
         @test occursin(name, published_documentation)
     end
+
+    int_factor_doc = sprint(
+        show,
+        MIME("text/plain"),
+        Base.Docs.doc(QGYBJplus.int_factor),
+    )
+    @test occursin("Compute hyperdiffusion integrating factor", int_factor_doc)
 end

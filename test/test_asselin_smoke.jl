@@ -10,7 +10,8 @@ const ASSELIN_EXAMPLE = joinpath(
     @test Meta.parse("begin\n" * source * "\nend") isa Expr
     @test !occursin(r"(?m)^\s*function\b", source)
     @test !occursin("QGYBJ_ASSELIN", source)
-    for api in ("RectilinearGrid", "QGYBJModel", "WaveHyperdiffusivity", "YBJPlus",
+    for api in ("RectilinearGrid", "QGYBJModel", "HorizontalHyperdiffusivity",
+                "FlowHyperdiffusivity", "WaveHyperdiffusivity", "YBJPlus",
                 "Simulation", "run!", "finalize_simulation!")
         @test occursin(api, source)
     end
@@ -33,7 +34,10 @@ const ASSELIN_EXAMPLE = joinpath(
             grid=grid,
             coriolis=FPlane(f=f),
             stratification=ConstantStratification(N²=1.0e-5),
-            closure=WaveHyperdiffusivity(coefficient=1.0e5),
+            closure=HorizontalHyperdiffusivity(
+                flow=FlowHyperdiffusivity(coefficient=0),
+                wave=WaveHyperdiffusivity(coefficient=1.0e5),
+            ),
             flow=FixedFlow(),
             feedback=NoFeedback(),
             formulation=YBJPlus(),

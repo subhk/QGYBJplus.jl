@@ -19,7 +19,8 @@ end
             coriolis=FPlane(f=2.0),
             stratification=stratification,
             closure=HorizontalHyperdiffusivity(
-                flow=0, flow2=0, waves=0, waves2=0),
+                flow=FlowHyperdiffusivity(coefficient=0),
+                wave=WaveHyperdiffusivity(coefficient=0)),
             flow=FixedFlow(),
             formulation=PassiveWave(),
             linear=LinearDynamics(),
@@ -241,7 +242,8 @@ end
                     coriolis=FPlane(f=2.0),
                     stratification=stratification,
                     closure=HorizontalHyperdiffusivity(
-                        flow=0, flow2=0, waves=0, waves2=0),
+                        flow=FlowHyperdiffusivity(coefficient=0),
+                        wave=WaveHyperdiffusivity(coefficient=0)),
                     flow=FixedFlow(),
                     feedback=NoFeedback(),
                     formulation=YBJ(),
@@ -326,7 +328,8 @@ end
                 coriolis=FPlane(f=2.0),
                 stratification=stratification,
                 closure=HorizontalHyperdiffusivity(
-                    flow=0, flow2=0, waves=0, waves2=0),
+                    flow=FlowHyperdiffusivity(coefficient=0),
+                    wave=WaveHyperdiffusivity(coefficient=0)),
                 flow=EvolvingFlow(),
                 feedback=WaveMeanFeedback(),
                 formulation=YBJ(),
