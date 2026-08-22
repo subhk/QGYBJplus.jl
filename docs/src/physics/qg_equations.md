@@ -1,208 +1,112 @@
-# [QG Equations](@id qg-equations)
+# [QG equations](@id qg-equations)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-## Potential Vorticity Evolution
+## Generalized potential vorticity
 
-The core QG equation is the conservation of potential vorticity:
-
-```math
-\frac{\partial q}{\partial t} + J(\psi, q) = \mathcal{D}_q + \mathcal{F}_q
-```
-
-where ``\mathcal{D}_q`` is dissipation and ``\mathcal{F}_q`` is forcing.
-
-### Potential Vorticity Definition
+The prognostic field is the total generalized PV,
 
 ```math
-q = \underbrace{\nabla^2\psi}_{\text{relative vorticity}} + \underbrace{\frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right)}_{\text{stretching term}}
+q = q^g + q^w,
 ```
 
-For uniform stratification (``N^2 = \text{const}``):
-```math
-q = \nabla^2\psi + \frac{f_0^2}{N^2}\frac{\partial^2\psi}{\partial z^2}
-```
-
-### Physical Interpretation
-
-| Term | Physical Meaning |
-|:-----|:-----------------|
-| ``\nabla^2\psi`` | Relative vorticity ``\zeta`` |
-| ``(f_0^2/N^2)\partial_z^2\psi`` | Vortex stretching due to vertical motion |
-| ``J(\psi, q)`` | Advection of PV by geostrophic flow |
-
-## Streamfunction Inversion
-
-Given ``q``, we solve for ``\psi`` via the elliptic equation:
+with balanced component
 
 ```math
-\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q
+q^g = \nabla_h^2\psi
+    + \partial_z\!\left(\frac{f_0^2}{N^2(z)}\partial_z\psi\right).
 ```
 
-### Spectral Representation
-
-In spectral space (horizontal) with vertical finite differences:
+For constant stratification this becomes
 
 ```math
--k_h^2 \hat{\psi} + \frac{\partial}{\partial z}\left(a(z)\frac{\partial\hat{\psi}}{\partial z}\right) = \hat{q}
+q^g = \nabla_h^2\psi
+    + \frac{f_0^2}{N^2}\partial_z^2\psi.
 ```
 
-where:
-- ``k_h^2 = k_x^2 + k_y^2`` (horizontal wavenumber squared)
-- ``a(z) = f_0^2/N^2(z)`` (stretching coefficient)
-
-### Tridiagonal System
-
-For each horizontal wavenumber ``(k_x, k_y)``, the vertical discretization gives:
+When the flow evolves,
 
 ```math
-a_k \hat{\psi}_{k-1} + b_k \hat{\psi}_k + c_k \hat{\psi}_{k+1} = \hat{q}_k
+\partial_t q + J(\psi,q) = \mathcal D_q,
+\qquad
+J(a,b)=\partial_xa\,\partial_yb-\partial_ya\,\partial_xb.
 ```
 
-This is solved efficiently with the Thomas algorithm in O(nz) operations.
+``\mathcal D_q`` denotes the configured horizontal and vertical
+dissipation. A `FixedFlow()` model holds the balanced flow fixed instead of
+advancing this equation.
 
-### Boundary Conditions
+## Wave contribution
 
-- **Top and Bottom**: ``\frac{\partial\psi}{\partial z} = 0`` (no buoyancy flux)
+With `WaveMeanFeedback()`, the dimensional wave envelope contributes
 
-In the code:
+```math
+q^w = \frac{i}{2f_0}J(B^*,B)
+    + \frac{1}{4f_0}\nabla_h^2|B|^2.
+```
+
+The factors of ``1/f_0`` are part of the dimensional equation. With
+`NoFeedback()` or `NoWaveFeedback()`, the solver uses ``q^w=0``.
+
+## Streamfunction inversion
+
+The streamfunction is diagnosed from balanced PV:
+
+```math
+\nabla_h^2\psi
++ \partial_z\!\left(\frac{f_0^2}{N^2}\partial_z\psi\right)
+= q-q^w.
+```
+
+Wave PV is subtracted only for inversion. The prognostic total `q` is
+restored before each ETD-RK2 stage continues.
+
+After horizontal Fourier transformation, every ``(k_x,k_y)`` mode is a
+tridiagonal vertical problem,
+
+```math
+-k_h^2\widehat\psi
++ \partial_z\!\left(a(z)\partial_z\widehat\psi\right)
+= \widehat{q-q^w},
+\qquad a(z)=\frac{f_0^2}{N^2(z)}.
+```
+
+The public inversion entry point is:
+
 ```julia
-# Called for each time step
-invert_q_to_psi!(state, grid, params, a_ell)
+invert_q_to_psi!(model)
 ```
 
-## Velocity Fields
+## Velocity
 
-### Geostrophic Velocities
-
-From geostrophic balance:
-```math
-u = -\frac{\partial\psi}{\partial y}, \quad v = \frac{\partial\psi}{\partial x}
-```
-
-In spectral space:
-```math
-\hat{u} = -ik_y\hat{\psi}, \quad \hat{v} = ik_x\hat{\psi}
-```
-
-### Vertical Velocity
-
-The QG omega equation gives the ageostrophic vertical velocity:
+Balanced horizontal velocity and relative vorticity follow from
 
 ```math
-N^2 \nabla^2 w + f_0^2\frac{\partial^2 w}{\partial z^2} = 2f_0 J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
+u=-\partial_y\psi,
+\qquad
+v=\partial_x\psi,
+\qquad
+\zeta=\nabla_h^2\psi.
 ```
 
-or equivalently (dividing by ``N^2``):
+Use model-level operators so transforms and distributed layouts are selected
+from the owning runtime:
 
-```math
-\nabla^2 w + \frac{f_0^2}{N^2}\frac{\partial^2 w}{\partial z^2} = \frac{2f_0}{N^2}J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)
+```julia
+compute_velocities!(model)
+compute_vertical_velocity!(model)
 ```
 
-The coefficient ``f_0^2/N^2 \ll 1`` in typical oceanic conditions, reflecting that stratification strongly suppresses vertical motion relative to horizontal. The RHS represents frontogenesis/frontolysis forcing through the interaction of vertical shear (thermal wind) with relative vorticity gradients.
-
-## Jacobian Operator
-
-The Jacobian ``J(a, b)`` is computed pseudo-spectrally:
-
-```math
-J(a, b) = \frac{\partial a}{\partial x}\frac{\partial b}{\partial y} - \frac{\partial a}{\partial y}\frac{\partial b}{\partial x}
-```
-
-### Algorithm
-1. Compute ``\partial a/\partial x``, ``\partial a/\partial y`` in spectral space
-2. Transform to physical space
-3. Multiply in physical space
-4. Transform back to spectral space
-5. Apply dealiasing (2/3 rule)
-
-### Conservation Properties
-
-The Jacobian satisfies:
-- ``\int J(a, b) \, dA = 0`` (integral vanishes)
-- ``J(a, a) = 0`` (anti-symmetry)
-
-These ensure energy and enstrophy conservation in the inviscid limit.
-
-## Dissipation
-
-### Hyperdiffusion
-
-The model uses scale-selective hyperdiffusion:
-
-```math
-\mathcal{D}_q = -\nu_{h1}(-\nabla^2)^{p_1} q - \nu_{h2}(-\nabla^2)^{p_2} q - \nu_z\frac{\partial^2 q}{\partial z^2}
-```
-
-where:
-- ``\nu_{h1}, p_1``: Large-scale dissipation (drag)
-- ``\nu_{h2}, p_2``: Small-scale dissipation (hyperviscosity)
-- ``\nu_z``: Vertical diffusion
-
-### Integrating Factor Method
-
-To handle stiff diffusion, we use integrating factors:
-
-```math
-\tilde{q} = q \cdot e^{\nu k^{2p} \Delta t}
-```
-
-This allows larger time steps while maintaining stability.
-
-## Wave Feedback
-
-When waves are present, the QG equation includes a feedback term through a modified effective PV.
-
-### The Wave Feedback Mechanism
-
-The wave-induced PV ``q^w`` is computed from the wave envelope ``B``:
-
-```math
-q^w = \frac{i}{2} J(B^*, B) + \frac{1}{4} \nabla_h^2 |B|^2
-```
-
-where ``B = B_R + i B_I`` is the complex wave envelope with units of velocity (m/s).
-
-!!! note "Dimensional Equations"
-    The model solves dimensional equations where ``B`` has actual velocity amplitude.
-    No additional scaling factors are needed.
-
-### Effective PV for Inversion
-
-The streamfunction is obtained by inverting the **effective** PV:
-
-```math
-q^* = q - q^w
-```
-
-```math
-\nabla^2\psi + \frac{\partial}{\partial z}\left(\frac{f_0^2}{N^2}\frac{\partial\psi}{\partial z}\right) = q^*
-```
-
-This means the wave feedback **modifies the inversion** rather than appearing as an explicit advection term.
-
-See [Wave-Mean Interaction](@ref wave-mean) for detailed formulas and implementation.
-
-## Implementation
-
-### Key Functions
-
-The QG equation implementation uses these core functions:
-- `invert_q_to_psi!` - Solve elliptic equation for streamfunction
-- `jacobian_spectral!` - Compute Jacobian pseudo-spectrally
-- `compute_velocities!` - Get (u, v) from streamfunction
-
-See the [Physics API Reference](../api/physics.md) for detailed documentation.
-
-### Code Location
-
-- `elliptic.jl`: Streamfunction inversion (`invert_q_to_psi!`)
-- `nonlinear.jl`: Jacobian computation (`jacobian_spectral!`)
-- `operators.jl`: Velocity computation (`compute_velocities!`)
+Horizontal derivatives and Jacobians are pseudo-spectral and use radial
+two-thirds dealiasing. Vertical operators use second-order differences. See
+[numerical methods](@ref numerical-methods).
 
 ## References
 
-- Vallis, G. K. (2017). *Atmospheric and Oceanic Fluid Dynamics*. Cambridge University Press.
-- Pedlosky, J. (1987). *Geophysical Fluid Dynamics*. Springer.
+- Xie, J.-H. & Vanneste, J. (2015),
+  [“A generalised-Lagrangian-mean model of the interactions between
+  near-inertial waves and mean flow”](https://arxiv.org/abs/1411.3748),
+  *Journal of Fluid Mechanics*, 774, 143–169.
+- Vallis, G. K. (2017), *Atmospheric and Oceanic Fluid Dynamics*.

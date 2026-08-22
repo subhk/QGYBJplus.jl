@@ -27,7 +27,7 @@ TRANSFORM CONVENTION:
 
 module Transforms
 
-using ..QGYBJplus: Grid
+using ..QGYBJplus: RuntimeGeometry
 using LinearAlgebra
 import FFTW
 
@@ -60,7 +60,7 @@ so explicit pre-planning is not critical for performance. The reserved fields
 are kept for potential future optimization with explicit FFTW plan objects.
 
 # Note
-When MPI/PencilArrays/PencilFFTs are loaded, use `plan_mpi_transforms()` instead,
+Distributed runtimes use `plan_distributed_transforms()` instead,
 which returns `MPIPlans`.
 """
 Base.@kwdef mutable struct Plans
@@ -80,7 +80,7 @@ end
 =#
 
 """
-    plan_transforms!(G::Grid, parallel_config=nothing) -> Plans
+    plan_transforms!(G::RuntimeGeometry, parallel_config=nothing) -> Plans
 
 Create forward/backward FFT plans appropriate to the environment.
 
@@ -92,7 +92,7 @@ If `parallel_config` indicates MPI is active and the grid has decomposition,
 attempts to use PencilFFTs via the MPI support.
 
 # Arguments
-- `G::Grid`: Grid structure (determines array sizes)
+- `G::RuntimeGeometry`: RuntimeGeometry structure (determines array sizes)
 - `parallel_config`: Optional parallel configuration
 
 # Returns
@@ -104,10 +104,10 @@ G = init_grid(par)
 plans = plan_transforms!(G)  # Serial FFTW
 ```
 """
-function plan_transforms!(G::Grid, parallel_config=nothing)
+function plan_transforms!(G::RuntimeGeometry, parallel_config=nothing)
     # If parallel_config indicates MPI is active, try parallel setup
     if parallel_config !== nothing
-        if hasproperty(parallel_config, :use_mpi) && parallel_config.use_mpi && G.decomp !== nothing
+        if hasproperty(parallel_config, :use_mpi) && parallel_config.use_mpi && G.decomposition !== nothing
             # Parallel mode requested
             return setup_parallel_transforms(G, parallel_config)
         end
@@ -123,17 +123,17 @@ function plan_transforms!(G::Grid, parallel_config=nothing)
 end
 
 """
-    setup_parallel_transforms(grid::Grid, pconfig) -> Plans
+    setup_parallel_transforms(grid::RuntimeGeometry, pconfig) -> Plans
 
 Set up FFT plans for parallel execution.
 
-This delegates to `plan_mpi_transforms` from the MPI support when available,
+This delegates to the distributed planner from the MPI support when available,
 and falls back to FFTW plans otherwise.
 """
-function setup_parallel_transforms(grid::Grid, pconfig)
+function setup_parallel_transforms(grid::RuntimeGeometry, pconfig)
     PARENT = Base.parentmodule(@__MODULE__)
-    if isdefined(PARENT, :plan_mpi_transforms)
-        return PARENT.plan_mpi_transforms(grid, pconfig)
+    if isdefined(PARENT, :plan_distributed_transforms)
+        return PARENT.plan_distributed_transforms(grid, pconfig)
     end
     @warn "Parallel transforms requested but MPI plan setup not available. Falling back to FFTW."
     return Plans(backend=:fftw)
@@ -174,6 +174,12 @@ function fft_forward!(dst, src, P::Plans)
     return dst
 end
 
+function fft_forward!(dst, src, runtime)
+    hasproperty(runtime, :plans) ||
+        throw(ArgumentError("third argument must be transform plans or a model runtime"))
+    return fft_forward!(dst, src, runtime.plans)
+end
+
 """
     fft_backward!(dst, src, P::Plans)
 
@@ -203,6 +209,12 @@ function fft_backward!(dst, src, P::Plans)
         dst[k, :, :] .= FFTW.ifft(src[k, :, :])
     end
     return dst
+end
+
+function fft_backward!(dst, src, runtime)
+    hasproperty(runtime, :plans) ||
+        throw(ArgumentError("third argument must be transform plans or a model runtime"))
+    return fft_backward!(dst, src, runtime.plans)
 end
 
 end # module Transforms

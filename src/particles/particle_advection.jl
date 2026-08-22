@@ -42,23 +42,21 @@ module UnifiedParticleAdvection
 
 # Bind names from parent module (QGYBJplus) without using/import
 const _PARENT = Base.parentmodule(@__MODULE__)
-const Grid = _PARENT.Grid
-const State = _PARENT.State
+const RuntimeGeometry = _PARENT.RuntimeGeometry
+const ModelFields = _PARENT.ModelFields
 const plan_transforms! = _PARENT.plan_transforms!
 const compute_total_velocities! = _PARENT.compute_total_velocities!
 const ParallelConfig = _PARENT.ParallelConfig
-const Simulation = _PARENT.Simulation
 
 export ParticleConfig, ParticleState, ParticleTracker,
-       create_particle_config, initialize_particles!,
+       initialize_particles!,
        advect_particles!, interpolate_velocity_at_position,
        # Advanced interpolation methods
        InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
        interpolate_velocity_advanced,
        # 3D particle distributions
-       ParticleConfig3D, ParticleDistribution, create_particle_config_3d,
+       ParticleConfig3D, ParticleDistribution,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
-       create_uniform_3d_grid, create_layered_distribution, create_random_3d_distribution, create_custom_distribution,
        # Simplified particle initialization
        particles_in_box, particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom,
@@ -77,30 +75,20 @@ using .HaloExchange
 # because it needs to access ParticleConfig from this module
 
 """
-Configuration for particle initialization and advection.
+    ParticleConfig{T}(; x_min=0, x_max, y_min=0, y_max, z_level, kwargs...)
 
-Key parameters:
-- Spatial domain: x_min/max, y_min/max, z_level for initial particle placement
-- Particle count: nx_particles × ny_particles 
-- Physics options: use_ybj_w (vertical velocity), use_3d_advection
-- Timing control: particle_advec_time - when to start advecting particles
-- Integration: method (:euler, :rk2, :rk4) and interpolation scheme
-- Boundaries: periodic_x/y, reflect_z for boundary conditions
-- I/O: save_interval and max_save_points for trajectory output
-
-Advanced timing control:
-- particle_advec_time=0.0: Start advecting immediately (default)
-- particle_advec_time>0.0: Keep particles stationary until this time
-- Useful for letting flow field develop before particle release
-- Enables study of transient vs established flow patterns
+Configure a regular horizontal particle grid at `z_level`. `nx_particles` and
+`ny_particles` default to 10. Select trajectory integration with
+`integration_method` (`:euler`, `:rk2`, or `:rk4`) and interpolation with
+`interpolation_method`. A positive `particle_advec_time` delays release.
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
-    # Spatial domain for particle initialization (x_max, y_max, z_level are REQUIRED)
+    # Spatial domain for particle initialization (x_max, y_max, z_level are required)
     x_min::T = 0.0
-    x_max::T           # REQUIRED - use G.Lx
+    x_max::T
     y_min::T = 0.0
-    y_max::T           # REQUIRED - use G.Ly
-    z_level::T         # REQUIRED - depth for particle initialization
+    y_max::T
+    z_level::T
     
     # Number of particles
     nx_particles::Int = 10
@@ -131,24 +119,20 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
 end
 
 """
-    particles_in_box([T=Float32], z_level; x_max, y_max, x_min=0, y_min=0, nx=10, ny=10, kwargs...)
+    particles_in_box([T=Float32], z_level;
+                     x_min=0, x_max, y_min=0, y_max, nx=10, ny=10, kwargs...)
 
-Create 2D particle distribution at a fixed z-level. Default precision is Float32 for memory efficiency.
+Create an `nx` by `ny` particle grid at the coordinate `z_level`. The default
+storage type is `Float32`; pass `Float64` as the first argument when needed.
 
-# Arguments
-- `T`: Optional type parameter (Float32 or Float64). Default: Float32
-- `z_level`: The z-level (depth) for all particles
-- `x_max, y_max`: Maximum domain bounds (REQUIRED)
-- `x_min, y_min`: Minimum bounds (default: 0.0)
-- `nx, ny`: Number of particles in each direction (default: 10 each)
-
-# Examples
 ```julia
-# Default Float32 precision (recommended for memory efficiency)
-config = particles_in_box(500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
-
-# Explicit Float64 if higher precision needed
-config = particles_in_box(Float64, 500.0; x_max=G.Lx, y_max=G.Ly, nx=20, ny=20)
+config = particles_in_box(
+    Float64,
+    -500.0;
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    nx=20, ny=20,
+)
 ```
 """
 function particles_in_box(::Type{T}, z_level::Real;
@@ -173,36 +157,10 @@ function particles_in_box(z_level::Real;
         nx=nx, ny=ny, kwargs...)
 end
 
-# Legacy alias for backwards compatibility (default is now Float32 for memory efficiency)
-create_particle_config(::Type{T}=Float32; kwargs...) where T = ParticleConfig{T}(; kwargs...)
-
 # Include 3D particle configuration AFTER ParticleConfig is defined
 # (particle_config.jl needs to access ParticleConfig from this module)
 include("particle_config.jl")
 using .EnhancedParticleConfig
-
-create_particle_config_3d(::Type{T}=Float32; kwargs...) where {T<:AbstractFloat} =
-    ParticleConfig3D{T}(; kwargs...)
-
-create_uniform_3d_grid(; kwargs...) = particles_in_grid_3d(; kwargs...)
-create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                       z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
-    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                         z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
-create_uniform_3d_grid(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                       z_min::Real, z_max::Real, nx::Int, ny::Int, nz::Int; kwargs...) =
-    particles_in_grid_3d(; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                         z_min=z_min, z_max=z_max, nx=nx, ny=ny, nz=nz, kwargs...)
-
-create_layered_distribution(z_levels::Vector{<:Real}; kwargs...) =
-    particles_in_layers(z_levels; kwargs...)
-create_layered_distribution(x_min::Real, x_max::Real, y_min::Real, y_max::Real,
-                            z_levels::Vector{<:Real}, nx::Int, ny::Int; kwargs...) =
-    particles_in_layers(z_levels; x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-                        nx=nx, ny=ny, kwargs...)
-
-create_random_3d_distribution(n::Int; kwargs...) = particles_random_3d(n; kwargs...)
-create_custom_distribution(positions; kwargs...) = particles_custom(positions; kwargs...)
 
 """
 Particle state including positions, global IDs, velocities, and trajectory history.
@@ -244,8 +202,9 @@ Main particle tracker that handles both serial and parallel execution.
 mutable struct ParticleTracker{T<:AbstractFloat}
     config::ParticleConfig{T}
     particles::ParticleState{T}
+    model::Any
     
-    # Grid information
+    # RuntimeGeometry information
     nx::Int; ny::Int; nz::Int
     Lx::T; Ly::T; Lz::T
     x0::T; y0::T
@@ -288,8 +247,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     base_output_filename::String       # Base filename for automatic file splitting
     auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing;
-                                plans=nothing) where T
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::RuntimeGeometry,
+                                parallel_config=nothing;
+                                plans=nothing, model=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
@@ -300,7 +260,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
                 comm = parallel_config.comm
                 rank = M.Comm_rank(comm)
                 nprocs = M.Comm_size(comm)
-                is_parallel = true
+                is_parallel = nprocs > 1
             catch
                 comm, rank, nprocs, is_parallel = detect_parallel_environment()
             end
@@ -332,25 +292,22 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             w_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
-        # Transform plans. Reuse the caller's plans whenever they are given:
-        # PencilFFTs compares pencils by identity, so a second plan set built for
-        # the same grid rejects arrays allocated from the first one.
-        if plans === nothing
-            plans = plan_transforms!(grid, parallel_config)
-        end
+        # Set up transform plans (using unified interface)
+        transform_plans = plans === nothing ?
+                          plan_transforms!(grid, parallel_config) : plans
 
         # Defer halo exchange setup until first velocity update
-        # This allows us to get actual local dimensions from State arrays
+        # This allows us to get actual local dimensions from ModelFields arrays
         # (which may differ from 1D decomposition assumption in 2D pencil decomposition)
         halo_info = nothing  # Will be set up lazily in update_velocity_fields!
 
         new{T}(
-            config, particles,
+            config, particles, model,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.x0, grid.y0,
-            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz[1],
-            u_field, v_field, w_field, plans,
+            grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz,
+            u_field, v_field, w_field, transform_plans,
             comm, rank, nprocs, is_parallel,
             local_domain,
             send_buffers, recv_buffers,
@@ -362,18 +319,9 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing; plans=nothing) where T =
-    ParticleTracker{T}(config, grid, parallel_config; plans=plans)
-
-"""
-    ParticleTracker(config, model::QGYBJModel)
-
-Build a tracker for `model`, reusing the model's grid, MPI configuration, and FFT
-plans. Pass the tracker to `Simulation(model; particles=tracker)` or to
-`run!(sim; particles=tracker)` to advect particles along with the flow.
-"""
-ParticleTracker(config::ParticleConfig{T}, model::Simulation) where T =
-    ParticleTracker{T}(config, model.grid, model.mpi_config; plans=model.plans)
+ParticleTracker(config::ParticleConfig{T}, grid::RuntimeGeometry, parallel_config=nothing;
+                kwargs...) where T =
+    ParticleTracker{T}(config, grid, parallel_config; kwargs...)
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, process_grid=nothing,
@@ -392,7 +340,7 @@ Helper function to set up halo exchange system.
                           - QUINTIC:   3 halo cells
                           - ADAPTIVE:  3 halo cells (supports all schemes)
 """
-function setup_halo_exchange_for_grid(grid::Grid, rank::Int, nprocs::Int, comm, ::Type{T};
+function setup_halo_exchange_for_grid(grid::RuntimeGeometry, rank::Int, nprocs::Int, comm, ::Type{T};
                                      local_dims::Union{Nothing,Tuple{Int,Int,Int}}=nothing,
                                      process_grid::Union{Nothing,Tuple{Int,Int}}=nothing,
                                      periodic_x::Bool=true,
@@ -437,17 +385,22 @@ function detect_parallel_environment()
     return comm, rank, nprocs, is_parallel
 end
 
+@inline function _periodic_offset(value::T, origin::T, extent::T) where T
+    offset = mod(value - origin, extent)
+    return offset >= extent ? zero(T) : offset
+end
+
 """
     compute_local_domain(grid, rank, nprocs; topology=nothing)
 
 Compute local domain bounds for MPI rank (1D or 2D decomposition).
 """
-function compute_local_domain(grid::Grid, rank::Int, nprocs::Int; topology=nothing)
+function compute_local_domain(grid::RuntimeGeometry, rank::Int, nprocs::Int; topology=nothing)
     # Determine process grid (px × py)
     px, py = if topology !== nothing
         topology
-    elseif grid.decomp !== nothing && hasfield(typeof(grid.decomp), :topology)
-        grid.decomp.topology
+    elseif grid.decomposition !== nothing && hasfield(typeof(grid.decomposition), :topology)
+        grid.decomposition.topology
     else
         (nprocs, 1)
     end
@@ -581,10 +534,7 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     end
     
     # Compute exact index ranges from the global particle grid
-    # x_rel_* below are measured in particle-index units, so the tolerance has to
-    # be index-scaled too. Scaling it by the physical extent (metres) made a
-    # Float32 tracker on an ocean-sized domain discard every particle.
-    tol = sqrt(eps(T)) * max(one(T), T(config.nx_particles), T(config.ny_particles))
+    tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
     x_rel_min = (x_min - config.x_min) / dxp
     x_rel_max = (x_max - config.x_min) / dxp
     y_rel_min = (y_min - config.y_min) / dyp
@@ -646,10 +596,10 @@ Respects the particle_advec_time setting - particles remain stationary until thi
 Parameters:
 - tracker: ParticleTracker instance
 - state: Current fluid state
-- grid: Grid information
+- grid: RuntimeGeometry information
 - dt: Time step
 - current_time: Current simulation time (if not provided, uses tracker's internal time)
-- params: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
+- `f`, `N2`: Physical coefficients used by the velocity diagnostic.
 - N2_profile: Optional N²(z) profile for nonuniform stratification. If not provided and
   `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
   simulation's actual stratification.
@@ -660,13 +610,11 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function advect_particles!(tracker::ParticleTracker{T},
-                          state::State, grid::Grid, dt::Real, current_time=nothing;
-                          params=nothing, N2_profile=nothing) where T
-
-    # Trackers default to Float32 while the model runs in Float64, so accept any
-    # real time step and convert it to the tracker's precision here.
-    dt = T(dt)
-
+                          state::ModelFields, grid::RuntimeGeometry, dt::T,
+                          current_time=nothing;
+                          f::Real=1, N2::Real=1,
+                          N2_profile=nothing) where T
+    
     # Use simulation time if provided, otherwise use tracker's internal time
     if current_time !== nothing
         sim_time = T(current_time)
@@ -695,9 +643,8 @@ function advect_particles!(tracker::ParticleTracker{T},
         return tracker
     end
     
-    # Normal advection process starts here
-    # Update velocity fields (pass params and N2_profile for consistent YBJ vertical velocity)
-    update_velocity_fields!(tracker, state, grid; params=params, N2_profile=N2_profile)
+    # Normal advection process starts here.
+    update_velocity_fields!(tracker, state, grid; f, N2, N2_profile)
     
     # Advect particles using chosen integration method
     if tracker.config.integration_method == :euler
@@ -710,13 +657,14 @@ function advect_particles!(tracker::ParticleTracker{T},
         error("Unknown integration method: $(tracker.config.integration_method)")
     end
     
-    # Handle particle migration in parallel
+    # Apply boundary conditions
+    apply_boundary_conditions!(tracker)
+
+    # Migrate canonical, in-domain coordinates so rank ownership and
+    # interpolation use the same representation at periodic seams.
     if tracker.is_parallel
         migrate_particles!(tracker)
     end
-    
-    # Apply boundary conditions
-    apply_boundary_conditions!(tracker)
     
     # Update time (use simulation time if provided)
     if current_time !== nothing
@@ -739,10 +687,10 @@ end
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
 
-Handles 2D pencil decomposition by getting actual local dimensions from State arrays.
+Handles 2D pencil decomposition by getting actual local dimensions from ModelFields arrays.
 
 # Arguments
-- `params`: Model parameters (QGParams). Required for YBJ vertical velocity to get correct f₀, N².
+- `f`, `N2`: Physical coefficients used by the velocity diagnostic.
 - `N2_profile`: Optional N²(z) profile for nonuniform stratification. If not provided and
   `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
   simulation's actual stratification.
@@ -753,18 +701,19 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
-                                state::State, grid::Grid;
-                                params=nothing, N2_profile=nothing) where T
-    # Compute TOTAL velocities (QG + wave) with chosen vertical velocity formulation
-    # Pass params and N2_profile to ensure consistent stratification handling
+                                state::ModelFields, grid::RuntimeGeometry;
+                                f::Real=1, N2::Real=1,
+                                N2_profile=nothing) where T
+    # Compute total velocities with the model's physical coefficients.
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
-                              params=params,
+                              f,
+                              N2,
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w,
                               N2_profile=N2_profile)
 
-    # Get actual local dimensions from State arrays
+    # Get actual local dimensions from ModelFields arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
     u_data = parent(state.u)
     v_data = parent(state.v)
@@ -931,7 +880,7 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         Lx_ext = nx_ext * tracker.dx
         Ly_ext = ny_ext * tracker.dy
 
-        # Grid info uses extended domain lengths since we're interpolating in extended arrays
+        # RuntimeGeometry info uses extended domain lengths since we're interpolating in extended arrays
         z_min = -tracker.Lz
         grid_info = (dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                     Lx=Lx_ext, Ly=Ly_ext, Lz=tracker.Lz,
@@ -944,8 +893,8 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
 
         # Convert global positions to extended array coordinates
         # Step 1: Apply periodic wrapping to global coordinates
-        x_periodic = halo_info.periodic_x ? tracker.x0 + mod(x - tracker.x0, tracker.Lx) : x
-        y_periodic = halo_info.periodic_y ? tracker.y0 + mod(y - tracker.y0, tracker.Ly) : y
+        x_periodic = halo_info.periodic_x ? tracker.x0 + _periodic_offset(x, tracker.x0, tracker.Lx) : x
+        y_periodic = halo_info.periodic_y ? tracker.y0 + _periodic_offset(y, tracker.y0, tracker.Ly) : y
 
         # Step 2: Compute local domain start positions (using HaloExchange functions)
         x_start = tracker.x0 + compute_start_index(halo_info.nx_global, halo_info.px, halo_info.rank_x) * tracker.dx
@@ -978,14 +927,14 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
 end
 
 """
-Local velocity interpolation (fallback for compatibility).
+Interpolate locally when no halo exchange is required.
 """
 function interpolate_velocity_local(x::T, y::T, z::T, 
                                   tracker::ParticleTracker{T}) where T
     
     # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ? _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ? _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
     z_min = -tracker.Lz
     z0 = z_min + tracker.dz / 2
     z_max = zero(T)
@@ -1241,10 +1190,12 @@ Uses the same domain decomposition logic as compute_local_domain to ensure consi
 Handles uneven division where first `remainder` ranks get one extra grid point.
 """
 function find_target_rank(x::T, y::T, tracker::ParticleTracker{T}) where T
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? mod(y - tracker.y0, tracker.Ly) : y - tracker.y0
+    x_rel = tracker.config.periodic_x ?
+            _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
+    y_rel = tracker.config.periodic_y ?
+            _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
 
-    # Grid parameters
+    # RuntimeGeometry parameters
     nx = tracker.nx
     ny = tracker.ny
     dx = tracker.dx
@@ -1276,7 +1227,8 @@ Find which rank should own a particle at position x (1D decomposition fallback).
 """
 function find_target_rank(x::T, tracker::ParticleTracker{T}) where T
     # Fallback for 1D decomposition in x
-    x_rel = tracker.config.periodic_x ? mod(x - tracker.x0, tracker.Lx) : x - tracker.x0
+    x_rel = tracker.config.periodic_x ?
+            _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
     nx = tracker.nx
     dx = tracker.dx
     ix = floor(Int, x_rel / dx)
@@ -1425,13 +1377,17 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
     @inbounds for i in 1:particles.np
         # Horizontal boundaries
         if config.periodic_x
-            particles.x[i] = tracker.x0 + mod(particles.x[i] - tracker.x0, tracker.Lx)
+            particles.x[i] = tracker.x0 +
+                             _periodic_offset(
+                                 particles.x[i], tracker.x0, tracker.Lx)
         else
             particles.x[i] = clamp(particles.x[i], tracker.x0, tracker.x0 + tracker.Lx)
         end
         
         if config.periodic_y
-            particles.y[i] = tracker.y0 + mod(particles.y[i] - tracker.y0, tracker.Ly)
+            particles.y[i] = tracker.y0 +
+                             _periodic_offset(
+                                 particles.y[i], tracker.y0, tracker.Ly)
         else
             particles.y[i] = clamp(particles.y[i], tracker.y0, tracker.y0 + tracker.Ly)
         end

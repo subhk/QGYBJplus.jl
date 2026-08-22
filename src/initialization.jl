@@ -1,139 +1,26 @@
-"""
-Model initialization module for QG-YBJ model.
-
-Provides functions for initializing fields from various sources:
-- Analytical expressions
-- Random fields with specified spectra
-- NetCDF files
-- Combinations of the above
-"""
-
 using Random
 using LinearAlgebra
-using ..QGYBJplus: Grid, State, QGParams
-using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!, compute_wavenumbers!
+using ..QGYBJplus: RuntimeGeometry, ModelFields
+using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
 using ..QGYBJplus: local_to_global
-using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+using ..QGYBJplus: allocate_fft_backward_dst
 import PencilArrays: PencilArray
 
-# Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
 """
-    initialize_from_config(config::ModelConfig, G::Grid, S::State, plans;
-                           params=nothing, N2_profile=nothing, parallel_config=nothing)
-
-Initialize model state from configuration.
-
-This function initializes the streamfunction (ψ) and wave field (B), then computes
-consistent potential vorticity (q) from ψ to ensure the first timestep doesn't
-wipe out the user-provided initial conditions.
-
-# Arguments
-- `config`: Model configuration with initial condition settings
-- `G::Grid`: Grid structure
-- `S::State`: Model state to initialize
-- `plans`: FFT plans
-- `params`: QGParams (optional). If provided, q is computed from ψ for consistency.
-- `N2_profile`: Optional N²(z) profile for variable stratification.
-- `parallel_config`: MPIConfig for parallel file I/O when using `:from_file`.
-"""
-function initialize_from_config(config, G::Grid, S::State, plans;
-                                params=nothing, N2_profile=nothing, parallel_config=nothing)
-    @info "Initializing model fields from configuration"
-
-    if G.decomp !== nothing
-        parallel_config !== nothing || error("initialize_from_config requires parallel_config for MPI grids. " *
-                                             "Use parallel_initialize_fields! or pass the MPIConfig used to create the grid.")
-        parallel_initialize_fields!(S, G, plans, config, parallel_config; params=params, N2_profile=N2_profile)
-        return
-    end
-
-    # Set random seed for reproducibility
-    Random.seed!(config.initial_conditions.random_seed)
-
-    # Initialize stream function
-    if config.initial_conditions.psi_type == :analytical
-        init_analytical_psi!(S.psi, G, config.initial_conditions.psi_amplitude, plans)
-    elseif config.initial_conditions.psi_type == :random
-        init_random_psi!(S.psi, G, config.initial_conditions.psi_amplitude)
-    elseif config.initial_conditions.psi_type == :from_file
-        S.psi .= read_initial_psi(config.initial_conditions.psi_filename, G, plans;
-                                  parallel_config=parallel_config)
-    else
-        # Zero initialization (type-safe)
-        fill!(S.psi, zero(eltype(S.psi)))
-    end
-
-    # Initialize wave field
-    if config.initial_conditions.wave_type == :analytical
-        init_analytical_waves!(S.B, G, config.initial_conditions.wave_amplitude, plans)
-    elseif config.initial_conditions.wave_type == :random
-        init_random_waves!(S.B, G, config.initial_conditions.wave_amplitude)
-    elseif config.initial_conditions.wave_type == :from_file
-        S.B .= read_initial_waves(config.initial_conditions.wave_filename, G, plans;
-                                  parallel_config=parallel_config)
-    elseif config.initial_conditions.wave_type == :surface_waves
-        init_surface_waves!(
-            S.B, G,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=config.initial_conditions.wave_profile
-        )
-    elseif config.initial_conditions.wave_type == :surface_exponential
-        init_surface_waves!(
-            S.B, G,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=:exponential
-        )
-    elseif config.initial_conditions.wave_type == :surface_gaussian
-        init_surface_waves!(
-            S.B, G,
-            config.initial_conditions.wave_amplitude,
-            config.initial_conditions.wave_surface_depth,
-            plans;
-            uniform=config.initial_conditions.wave_uniform,
-            profile=:gaussian
-        )
-    else
-        # Zero initialization (type-safe)
-        fill!(S.B, zero(eltype(S.B)))
-    end
-
-    # Compute q from ψ to ensure consistency
-    # Without this, the first timestep's invert_q_to_psi! would recompute ψ from
-    # the zero q field, wiping out the user's initial streamfunction.
-    if params !== nothing && hasfield(typeof(S), :q)
-        @info "Computing potential vorticity q from initialized streamfunction"
-        add_balanced_component!(S, G, params, plans; N2_profile=N2_profile)
-    elseif config.initial_conditions.psi_type != :zero && params === nothing
-        @warn "params not provided to initialize_from_config. " *
-              "Potential vorticity q will remain zero, and the first timestep " *
-              "will recompute ψ from q=0, potentially wiping the initial ψ. " *
-              "Pass params to compute consistent q from ψ." maxlog=1
-    end
-
-    @info "Model initialization complete"
-end
-
-"""
-    init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
+    init_analytical_psi!(psik, G::RuntimeGeometry, amplitude::Real, plans)
 
 Initialize stream function with analytical expression.
 Based on the generate_fields_stag routine from Fortran code.
 
 # Arguments
 - `psik`: Spectral field to populate (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `amplitude::Real`: Amplitude of the initial field
 - `plans`: FFT plans for forward transform
 """
-function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
+function init_analytical_psi!(psik, G::RuntimeGeometry, amplitude::Real, plans)
     @info "Initializing analytical stream function (amplitude=$amplitude)"
 
     # Initialize in real space with LOCAL dimensions (input pencil for MPI)
@@ -182,7 +69,7 @@ function init_analytical_psi!(psik, G::Grid, amplitude::Real, plans)
 end
 
 """
-    init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
+    init_random_psi!(psik, G::RuntimeGeometry, amplitude::Real; slope::Real=-3.0)
 
 Initialize stream function with random field having specified spectral slope.
 
@@ -196,12 +83,12 @@ this requires explicitly setting conjugate pairs:
 
 This function enforces these constraints to ensure IFFT produces real output.
 """
-function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
+function init_random_psi!(psik, G::RuntimeGeometry, amplitude::Real; slope::Real=-3.0)
     @info "Initializing random stream function (amplitude=$amplitude, slope=$slope)"
 
     if psik isa PencilArray
-        error("init_random_psi! does not support PencilArray. " *
-              "Use init_mpi_random_psi! or parallel_initialize_fields! for MPI runs.")
+        error("init_random_psi! does not support PencilArray; " *
+              "use set_mean_flow!(model; method=:random) for model fields.")
     end
 
     nx, ny, nz = G.nx, G.ny, G.nz
@@ -295,17 +182,17 @@ function init_random_psi!(psik, G::Grid, amplitude::Real; slope::Real=-3.0)
 end
 
 """
-    init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
+    init_analytical_waves!(Bk, G::RuntimeGeometry, amplitude::Real, plans)
 
 Initialize wave field (L+A) with analytical expression.
 
 # Arguments
 - `Bk`: Spectral field to populate (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `amplitude::Real`: Amplitude of the initial field
 - `plans`: FFT plans for forward transform
 """
-function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
+function init_analytical_waves!(Bk, G::RuntimeGeometry, amplitude::Real, plans)
     @info "Initializing analytical wave field (amplitude=$amplitude)"
 
     # Initialize in real space with LOCAL dimensions (input pencil for MPI)
@@ -369,20 +256,20 @@ function init_analytical_waves!(Bk, G::Grid, amplitude::Real, plans)
 end
 
 """
-    init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans; uniform=true, profile=:gaussian)
+    init_surface_waves!(Bk, G::RuntimeGeometry, amplitude::Real, surface_depth::Real, plans; uniform=true, profile=:gaussian)
 
 Initialize horizontally uniform surface waves with a specified vertical decay profile.
 
 # Arguments
 - `Bk`: Spectral field to populate (output)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `amplitude::Real`: Wave velocity amplitude
 - `surface_depth::Real`: E-folding depth [m]
 - `plans`: FFT plans for forward transform
 - `uniform`: Horizontally uniform waves (default: true)
 - `profile`: Vertical decay profile (:gaussian or :exponential)
 """
-function init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, plans;
+function init_surface_waves!(Bk, G::RuntimeGeometry, amplitude::Real, surface_depth::Real, plans;
                              uniform::Bool=true, profile::Symbol=:gaussian)
     surface_depth > 0 || throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
 
@@ -418,16 +305,16 @@ function init_surface_waves!(Bk, G::Grid, amplitude::Real, surface_depth::Real, 
 end
 
 """
-    init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
+    init_random_waves!(Bk, G::RuntimeGeometry, amplitude::Real; slope::Real=-2.0)
 
 Initialize wave field with random amplitudes and phases.
 """
-function init_random_waves!(Bk, G::Grid, amplitude::Real; slope::Real=-2.0)
+function init_random_waves!(Bk, G::RuntimeGeometry, amplitude::Real; slope::Real=-2.0)
     @info "Initializing random wave field (amplitude=$amplitude, slope=$slope)"
     
     if Bk isa PencilArray
-        error("init_random_waves! does not support PencilArray. " *
-              "Use parallel_initialize_fields! for MPI runs.")
+        error("init_random_waves! does not support PencilArray; " *
+              "initialize waves through the model-level set! API.")
     end
 
     # Generate random phases for real and imaginary parts
@@ -486,7 +373,7 @@ function init_zero_mean_flow!(psik)
 end
 
 """
-    apply_dealiasing_mask!(field, G::Grid)
+    apply_dealiasing_mask!(field, G::RuntimeGeometry)
 
 Apply 2/3 dealiasing mask to spectral field using radial cutoff.
 Handles both serial (Array) and parallel (PencilArray) cases.
@@ -495,7 +382,7 @@ Uses the same radial 2/3 rule as `dealias_mask()`:
 - Keep wavenumbers with |k| ≤ (2/3) × k_Nyquist = N/3
 - Radial cutoff ensures isotropic dealiasing
 """
-function apply_dealiasing_mask!(field, G::Grid)
+function apply_dealiasing_mask!(field, G::RuntimeGeometry)
     # Radial 2/3 cutoff: k_max = min(nx, ny) / 3
     kmax = floor(Int, min(G.nx, G.ny) / 3)
     kmax_sq = kmax^2
@@ -525,13 +412,13 @@ function apply_dealiasing_mask!(field, G::Grid)
 end
 
 """
-    compute_energy_spectrum(field, G::Grid)
+    compute_energy_spectrum(field, G::RuntimeGeometry)
 
 Compute horizontal energy spectrum E(k) from a spectral field.
 
 In MPI mode, this computes the local contribution only (no MPI reduction).
 """
-function compute_energy_spectrum(field, G::Grid)
+function compute_energy_spectrum(field, G::RuntimeGeometry)
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
     k_max = min(kx_max, ky_max)
@@ -569,11 +456,11 @@ function compute_energy_spectrum(field, G::Grid)
 end
 
 """
-    normalize_field_energy!(field, G::Grid, target_energy::Real, plans)
+    normalize_field_energy!(field, G::RuntimeGeometry, target_energy::Real, plans)
 
 Normalize field to have specified total energy.
 """
-function normalize_field_energy!(field, G::Grid, target_energy::Real, plans)
+function normalize_field_energy!(field, G::RuntimeGeometry, target_energy::Real, plans)
     # Convert to real space to compute energy
     field_r = _allocate_fft_dst(field, plans)
     fft_backward!(field_r, field, plans)
@@ -591,14 +478,14 @@ function normalize_field_energy!(field, G::Grid, target_energy::Real, plans)
 end
 
 """
-    create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
+    create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
                        z_center=G.Lz/2, z_width=G.Lz/4)
 
 Create a horizontally localized wave packet in spectral space with a Gaussian
 vertical envelope. `z_center` and `z_width` are depths measured positively
 downward from the surface.
 """
-function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
+function create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
                             z_center::Real=G.Lz / 2,
                             z_width::Real=G.Lz / 4)
     sigma_k > 0 || throw(ArgumentError("sigma_k must be positive"))
@@ -636,7 +523,7 @@ function create_wave_packet(G::Grid, kx0::Int, ky0::Int, sigma_k::Real, amplitud
 end
 
 """
-    add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_profile=nothing)
+    add_balanced_component!(S, G, a_ell, rho_u, rho_s)
 
 Add balanced component to the flow by computing geostrophically consistent fields.
 
@@ -648,61 +535,31 @@ This function:
 Based on init_psi_generic and init_q from the Fortran implementation.
 
 # Arguments
-- `S::State`: Model state with streamfunction psi
-- `G::Grid`: Grid structure
-- `params::QGParams`: Model parameters (includes f0, N2)
-- `plans`: FFT plans
-- `N2_profile::Vector`: Optional N²(z) profile. If not provided, uses constant N²=1.
+- `S::ModelFields`: Model state with streamfunction psi
+- `G::RuntimeGeometry`: RuntimeGeometry structure
+- `a_ell`: Model-owned f²/N² coefficient profile
+- `rho_u`, `rho_s`: Model-owned density weights
 
 # Example
 ```julia
 # With constant stratification
-add_balanced_component!(state, grid, params, plans)
+add_balanced_component!(fields, grid, coefficients.a_ell,
+                        coefficients.rho_u, coefficients.rho_s)
 
 # With variable stratification
 N2 = compute_stratification_profile(strat_profile, grid)
-add_balanced_component!(state, grid, params, plans; N2_profile=N2)
+add_balanced_component!(fields, grid, a_ell, rho_u, rho_s)
 ```
 """
-function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_profile=nothing)
+function add_balanced_component!(S::ModelFields, G::RuntimeGeometry,
+    a_ell::AbstractVector, rho_u::AbstractVector, rho_s::AbstractVector)
     @info "Adding balanced component to initial state"
 
     nz = G.nz
     dz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    dz2 = dz^2
-
-    # Get elliptic coefficient a_ell = f²/N²
-    # For constant N², a_ell = f₀²/N²
-    # For variable N², a_ell[k] = f₀²/N²[k]
-    f₀_sq = params.f₀^2
-    if N2_profile === nothing || isempty(N2_profile)
-        # Constant stratification N² = params.N²
-        a_ell = fill(Float64(f₀_sq / params.N²), nz)
-        @info "Using constant stratification (N² = $(params.N²))"
-    else
-        # Variable stratification from profile
-        if length(N2_profile) != nz
-            @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), interpolating..."
-            # Simple linear interpolation if sizes don't match
-            N2_interp = zeros(Float64, nz)
-            for k in 1:nz
-                # Map k to position in N2_profile
-                pos = (k - 1) / (nz - 1) * (length(N2_profile) - 1) + 1
-                k_low = max(1, floor(Int, pos))
-                k_high = min(length(N2_profile), k_low + 1)
-                w = pos - k_low
-                N2_interp[k] = (1 - w) * N2_profile[k_low] + w * N2_profile[k_high]
-            end
-            a_ell = [f₀_sq / max(N2_interp[k], eps(Float64)) for k in 1:nz]
-        else
-            a_ell = [f₀_sq / max(N2_profile[k], eps(Float64)) for k in 1:nz]
-        end
-        @info "Using variable stratification from N² profile"
-    end
-
-    # Density weights (unity for Boussinesq)
-    r_ut = ones(Float64, nz)  # rho at unstaggered (u) points
-    r_st = ones(Float64, nz)  # rho at staggered (s) points
+    length(a_ell) == nz || throw(DimensionMismatch("a_ell must have length $nz"))
+    length(rho_u) == nz || throw(DimensionMismatch("rho_u must have length $nz"))
+    length(rho_s) == nz || throw(DimensionMismatch("rho_s must have length $nz"))
 
     # Get underlying arrays
     psi_arr = parent(S.psi)
@@ -711,12 +568,12 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
     # Compute potential vorticity q from ψ
     # q = -kh² ψ + (1/ρ) ∂/∂z (ρ a_ell ∂ψ/∂z)
     if hasfield(typeof(S), :q)
-        compute_q_from_psi!(S.q, S.psi, G, params, a_ell, r_ut, r_st, dz)
+        compute_q_from_psi!(S.q, S.psi, G, a_ell, rho_u, rho_s, dz)
         @info "Computed potential vorticity q from streamfunction"
     end
 
     # Note: Geostrophic velocities (u, v) are NOT computed here.
-    # The State struct has u, v as real-space arrays, and proper velocity computation
+    # The ModelFields struct has u, v as real-space arrays, and proper velocity computation
     # requires FFT plans and workspace. Velocities will be computed consistently by
     # compute_velocities! during the first ETD-RK2 stage.
 
@@ -729,7 +586,7 @@ function add_balanced_component!(S::State, G::Grid, params::QGParams, plans; N2_
 end
 
 """
-    compute_q_from_psi!(q, psi, G, params, a_ell, r_ut, r_st, dz)
+    compute_q_from_psi!(q, psi, G, a_ell, rho_u, rho_s, dz)
 
 Compute QG potential vorticity from streamfunction.
 
@@ -741,7 +598,7 @@ In spectral space with finite differences in z:
 
 with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
 """
-function compute_q_from_psi!(q, psi, G::Grid, params, a_ell, r_ut, r_st, dz)
+function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, r_ut, r_st, dz)
     nz = G.nz
     dz2 = dz^2
 
@@ -797,7 +654,7 @@ Set potential vorticity from a vertically uniform spectral streamfunction using
 `q̂ = -kₕ² ψ̂`. This is useful for prescribed barotropic flows, such as the
 Asselin et al. (2020) dipole.
 """
-function compute_barotropic_q_from_psi!(q, psi, G::Grid)
+function compute_barotropic_q_from_psi!(q, psi, G::RuntimeGeometry)
     q_arr = parent(q)
     psi_arr = parent(psi)
     size(q_arr) == size(psi_arr) ||
@@ -830,14 +687,14 @@ Geostrophic balance:
 - `u`: Zonal velocity output (real-space, real array)
 - `v`: Meridional velocity output (real-space, real array)
 - `psi`: Streamfunction (spectral space, complex array)
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans for inverse transform
 
 # Note
 For typical use, velocities are computed by `compute_velocities!` in the main
 timestepping loop. This function is provided for initialization or diagnostics.
 """
-function compute_geostrophic_velocities!(u, v, psi, G::Grid, plans)
+function compute_geostrophic_velocities!(u, v, psi, G::RuntimeGeometry, plans)
     psi_arr = parent(psi)
     nz_local, nx_local, ny_local = size(psi_arr)
 
@@ -878,7 +735,7 @@ For simplicity (and matching Fortran convention), we compute:
 
 at staggered (cell-face) points.
 """
-function compute_buoyancy_from_psi!(b, psi, G::Grid, dz)
+function compute_buoyancy_from_psi!(b, psi, G::RuntimeGeometry, dz)
     b_arr = parent(b)
     psi_arr = parent(psi)
 
@@ -900,11 +757,11 @@ function compute_buoyancy_from_psi!(b, psi, G::Grid, dz)
 end
 
 """
-    check_initial_conditions(S::State, G::Grid, plans)
+    check_initial_conditions(S::ModelFields, G::RuntimeGeometry, plans)
 
 Perform basic checks on initial conditions.
 """
-function check_initial_conditions(S::State, G::Grid, plans)
+function check_initial_conditions(S::ModelFields, G::RuntimeGeometry, plans)
     @info "Checking initial conditions..."
     
     # Check for NaNs or Infs

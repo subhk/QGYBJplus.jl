@@ -18,10 +18,10 @@ Note: FFT plans are created internally for each call. For efficiency in repeated
 initialization, consider using the initialization routines in initialization.jl
 which accept pre-computed plans.
 """
-function init_random_psi!(S::State, G::Grid; initial_k=5, amp_width=2.0, linear_vert_structure=0)
+function init_random_psi!(S::ModelFields, G::RuntimeGeometry; initial_k=5, amp_width=2.0, linear_vert_structure=0)
     nx, ny, nz = G.nx, G.ny, G.nz
     # Build ψ in real space then FFT to spectral
-    # Use element type from State for type consistency
+    # Use element type from ModelFields for type consistency
     T = real(eltype(S.psi))
     ψᵣ = zeros(T, nz, nx, ny)
     # Deterministic pseudo-random phases based on integer hash (no Random dependency)

@@ -1,131 +1,179 @@
 #=
 ================================================================================
-    Asselin et al. (2020) JPO Dipole Example - MPI Parallel Version
+    Asselin et al. (2020) JPO Dipole Example
 ================================================================================
 
-MPI-parallel version of the barotropic dipole simulation from:
+MPI-parallel barotropic dipole simulation based on:
 
     Asselin, O., L. N. Thomas, W. R. Young, and L. Rainville (2020)
     "Refraction and Straining of Near-Inertial Waves by Barotropic Eddies"
-    Journal of Physical Oceanography, 50, 3439-3454
+    Journal of Physical Oceanography, 50, 3439–3454
 
-USAGE:
-------
-    mpirun -n 4 julia --project examples/asselin_jpo2020.jl
-    mpirun -n 16 julia --project examples/asselin_jpo2020.jl
+Run the published-resolution defaults with:
 
-The model uses a second-order exponential Runge-Kutta time stepper. Equations
-and parameters are kept in dimensional form.
+    mpiexec -n 4 julia --project=. examples/asselin_jpo2020.jl
 
+For a quick check, override the size and number of steps through the
+environment:
+
+    QGYBJ_ASSELIN_NX=32 QGYBJ_ASSELIN_NY=32 QGYBJ_ASSELIN_NZ=16 \
+    QGYBJ_ASSELIN_STEPS=2 julia --project=. examples/asselin_jpo2020.jl
+
+The model uses the composition-first API and ETD-RK2 exclusively.
 ================================================================================
 =#
 
 using QGYBJplus
 using Printf
 
-# ============================================================================
-#                       SIMULATION PARAMETERS
-# ============================================================================
-
-nx = 256
-ny = 256
-nz = 128
-
-# Physical parameters from Asselin et al. (2020)
-f₀ = 1.24e-4           # Coriolis parameter [s⁻¹] (mid-latitude)
-N² = 1.0e-5            # Buoyancy frequency squared [s⁻²]
-
-# Domain size [m] (Asselin et al. 2020)
-# Grid is in cardinal (X,Y) coordinates with 70 km periodic domain
-# Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
-Lx = 70.0e3            # 70 km horizontal domain in (X,Y)
-Ly = 70.0e3            # 70 km horizontal domain in (X,Y)
-Lz = 2.0e3             # H = 2 km depth, surface at z = 0
-
-# Time stepping
-n_inertial_periods = 10.0
-T_inertial = 2π / f₀                    # Inertial period = 2π/f [s] ≈ 14 hours
-dt = 2.0                                # [s]
-nt = round(Int, n_inertial_periods * T_inertial / dt)
-
-# Wave parameters
-u0_wave = 0.10                                  # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
-surface_layer_depth = 30.0                      # Surface layer depth [m] (s = 30 m)
-
-# Flow parameters
-U0_flow = 0.335                                 # Flow velocity scale [m/s] (U = 33.5 cm/s)
-k_dipole = sqrt(2) * π / Lx                     # κ = √2π/(70 km) per Asselin et al. (2020)
-psi0 = U0_flow / k_dipole                       # Streamfunction amplitude [m²/s]
-vorticity_gradient = 2 * k_dipole^2 * U0_flow   # γ = 2κ²U ≈ 2.7e-9 m⁻¹ s⁻¹
-rossby_rms = k_dipole * U0_flow / f₀            # κU/f ≈ 0.17
-
-# Output settings
-output_dir = "output_asselin"
-save_interval_IP = 5.0  # Paper figures use 5, 10, and 15 inertial periods
-diag_interval_IP = 0.5  # Print diagnostics every 0.5 inertial periods
+_environment_int(name, fallback) = parse(Int, get(ENV, name, string(fallback)))
+_environment_float(name, fallback) = parse(Float64, get(ENV, name, string(fallback)))
+function _environment_optional_int(name)
+    value = get(ENV, name, "")
+    return isempty(value) ? nothing : parse(Int, value)
+end
 
 """
-    asselin_dipole_streamfunction(X, Y, z)
+    asselin_dipole_streamfunction(X, Y, z, amplitude, wavenumber)
 
-Dimensional streamfunction from Asselin et al. (2020), Eq. (2).
-
-The code grid uses cardinal coordinates `(X, Y)`. The paper's dipole formula is
-written in coordinates rotated by 45 degrees:
-
-    x = (X - Y) / √2,   y = (X + Y) / √2.
+Dimensional streamfunction from Asselin et al. (2020), equation (2). The model
+grid uses cardinal coordinates `(X, Y)` while the paper's dipole coordinates
+are rotated by 45 degrees.
 """
-function asselin_dipole_streamfunction(X, Y, z)
+function asselin_dipole_streamfunction(X, Y, z, amplitude, wavenumber)
     x = (X - Y) / sqrt(2)
     y = (X + Y) / sqrt(2)
-    return psi0 * sin(k_dipole * x) * cos(k_dipole * y)
+    return amplitude * sin(wavenumber * x) * cos(wavenumber * y)
 end
 
-# The paper specifies weak horizontal wave hyperdiffusion but not a coefficient.
-# This value keeps the damping confined to the grid scale.
-νₕ₁ʷ_wave = 1.0e5  # [m⁴/s]
+"""
+    run_asselin_example(; kwargs...) -> Simulation
 
-grid = RectilinearGrid(size = (nx, ny, nz),
-                       x = (-Lx/2, Lx/2),
-                       y = (-Ly/2, Ly/2),
-                       z = (-Lz, 0))
+Build, initialize, run, and finalize the Asselin et al. dipole example. The
+returned simulation is finalized and can be inspected safely. Production
+defaults reproduce the 256×256×128, 15-inertial-period setup; `size`,
+`stop_iteration`, and output schedules can be reduced for tests or tutorials.
+"""
+function run_asselin_example(;
+    size=(
+        _environment_int("QGYBJ_ASSELIN_NX", 256),
+        _environment_int("QGYBJ_ASSELIN_NY", 256),
+        _environment_int("QGYBJ_ASSELIN_NZ", 128),
+    ),
+    extent=(70.0e3, 70.0e3, 3.0e3),
+    coriolis_frequency=1.24e-4,
+    buoyancy_frequency_squared=1.0e-5,
+    inertial_periods=_environment_float("QGYBJ_ASSELIN_INERTIAL_PERIODS", 15.0),
+    Δt=_environment_float("QGYBJ_ASSELIN_DT", 2.0),
+    stop_iteration=_environment_optional_int("QGYBJ_ASSELIN_STEPS"),
+    wave_velocity=0.10,
+    surface_layer_depth=30.0,
+    flow_velocity=0.335,
+    wave_hyperdiffusivity=1.0e5,
+    output_dir=get(ENV, "QGYBJ_ASSELIN_OUTPUT", "output_asselin"),
+    output_schedule=nothing,
+    diagnostics=nothing,
+    verbose::Bool=true,
+)
+    nx, ny, nz = size
+    Lx, Ly, Lz = extent
+    inertial_period = 2π / coriolis_frequency
 
-model = QGYBJModel(grid = grid,
-                   coriolis = FPlane(f = f₀),
-                   stratification = ConstantStratification(N² = N²),
-                   closure = HorizontalHyperdiffusivity(waves = νₕ₁ʷ_wave,
-                                                         wave_laplacian_order = 2),
-                   flow = :fixed,
-                   feedback = :none,
-                   ybj_plus = true,
-                   parallel_io = false,
-                   verbose = false)
+    # Paper coordinates are rotated relative to the cardinal model grid.
+    dipole_wavenumber = sqrt(2) * π / Lx
+    streamfunction_amplitude = flow_velocity / dipole_wavenumber
+    vorticity_gradient = 2 * dipole_wavenumber^2 * flow_velocity
+    rossby_rms = dipole_wavenumber * flow_velocity / coriolis_frequency
+    streamfunction = (X, Y, z) -> asselin_dipole_streamfunction(
+        X, Y, z, streamfunction_amplitude, dipole_wavenumber)
 
-set!(model;
-     ψ = asselin_dipole_streamfunction,
-     pv_method = :barotropic,
-     waves = SurfaceWave(amplitude = u0_wave,
-                         scale = surface_layer_depth,
-                         profile = :gaussian))
+    grid = RectilinearGrid(
+        size=size,
+        x=(-Lx / 2, Lx / 2),
+        y=(-Ly / 2, Ly / 2),
+        z=(-Lz, 0),
+    )
+    model = QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=coriolis_frequency),
+        stratification=ConstantStratification(
+            N²=buoyancy_frequency_squared),
+        closure=HorizontalHyperdiffusivity(
+            flow=0,
+            flow2=0,
+            waves=wave_hyperdiffusivity,
+            waves2=0,
+            wave_laplacian_order=2,
+        ),
+        flow=FixedFlow(),
+        feedback=NoFeedback(),
+        formulation=YBJPlus(),
+        parallel_io=false,
+        verbose=verbose,
+    )
 
-simulation = Simulation(model;
-                        Δt = dt,
-                        stop_time = n_inertial_periods * inertial_period(model),
-                        output = NetCDFOutput(path = output_dir,
-                                              schedule = TimeInterval(save_interval_IP * inertial_period(model)),
-                                              fields = (:ψ, :waves)),
-                        diagnostics = IterationInterval(max(1, round(Int, diag_interval_IP * inertial_period(model) / dt))),
-                        verbose = true)
+    simulation = nothing
+    try
+        set!(
+            model;
+            ψ=streamfunction,
+            pv_method=:barotropic,
+            waves=SurfaceWave(
+                amplitude=wave_velocity,
+                scale=surface_layer_depth,
+                profile=:gaussian,
+            ),
+            verbose=verbose,
+        )
 
-if is_root(simulation)
-    println("="^70)
-    println("Asselin et al. (2020) Dipole")
-    println("="^70)
-    @printf("Resolution: %d × %d × %d, Duration: %.1f IP\n", nx, ny, nz, n_inertial_periods)
-    @printf("Domain: %.1f km × %.1f km × %.1f km\n", Lx/1e3, Ly/1e3, Lz/1e3)
-    @printf("Timestepper: exponential RK2, dt = %.1f s\n", dt)
-    @printf("Dipole checks: γ = %.3e m⁻¹ s⁻¹, κU/f = %.3f\n", vorticity_gradient, rossby_rms)
-    println("Output directory: $output_dir")
+        resolved_output_schedule = output_schedule === nothing ?
+            TimeInterval(5.0 * inertial_period) : output_schedule
+        resolved_diagnostics = diagnostics === nothing ?
+            IterationInterval(max(1, round(Int,
+                0.5 * inertial_period / Δt))) : diagnostics
+        stop = stop_iteration === nothing ?
+            (; stop_time=inertial_periods * inertial_period) :
+            (; stop_iteration=Int(stop_iteration))
+
+        simulation = Simulation(
+            model;
+            Δt=Δt,
+            stop...,
+            output=NetCDFOutput(
+                path=output_dir,
+                schedule=resolved_output_schedule,
+                fields=(:ψ, :waves),
+            ),
+            diagnostics=resolved_diagnostics,
+            verbose=verbose,
+        )
+
+        if is_root(simulation) && verbose
+            println("="^70)
+            println("Asselin et al. (2020) Dipole")
+            println("="^70)
+            @printf("Resolution: %d × %d × %d\n", nx, ny, nz)
+            if stop_iteration === nothing
+                @printf("Duration: %.1f inertial periods\n", inertial_periods)
+            else
+                @printf("Duration: %d ETD-RK2 steps\n", stop_iteration)
+            end
+            @printf("Domain: %.1f km × %.1f km × %.1f km\n",
+                    Lx / 1e3, Ly / 1e3, Lz / 1e3)
+            @printf("Timestepper: ETD-RK2, Δt = %.1f s\n", Δt)
+            @printf("Dipole checks: γ = %.3e m⁻¹ s⁻¹, κU/f = %.3f\n",
+                    vorticity_gradient, rossby_rms)
+            println("Output directory: $output_dir")
+        end
+
+        run!(simulation)
+    finally
+        simulation === nothing ? finalize_model!(model) :
+                                 finalize_simulation!(simulation)
+    end
+    return simulation
 end
 
-run!(simulation)
-finalize_simulation!(simulation)
+if abspath(PROGRAM_FILE) == @__FILE__
+    run_asselin_example()
+end

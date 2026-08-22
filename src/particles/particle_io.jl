@@ -126,6 +126,26 @@ function _gather_particle_positions(tracker::ParticleTracker{T},
     )
 end
 
+function _run_particle_io_on_root(operation,
+                                  manager,
+                                  tracker::ParticleTracker)
+    parallel = tracker.is_parallel && tracker.comm !== nothing
+    failure = nothing
+    result = nothing
+    if manager.is_io_rank
+        try
+            result = operation()
+        catch exception
+            failure = sprint(showerror, exception, catch_backtrace())
+        end
+    end
+    if parallel
+        failure = MPI.bcast(failure, 0, tracker.comm)
+    end
+    failure === nothing || error(failure)
+    return result
+end
+
 #=
 ================================================================================
                     PARTICLE OUTPUT MANAGER
@@ -136,32 +156,19 @@ Creates a dedicated `particles/` subdirectory for organized output.
 =#
 
 """
-    ParticleOutputManager{T}
+    ParticleOutputManager(output_dir; save_interval_iter=0,
+                          save_interval_time=0.1,
+                          output_mode=:trajectory,
+                          file_prefix="particles")
 
-Manages particle output to NetCDF files in a dedicated `particles/` directory.
+Schedule particle NetCDF output under `output_dir/particles`. Set the unused
+iteration- or time-based interval to zero. `output_mode` may be `:snapshots`,
+`:trajectory`, or `:streaming`.
 
-# Features
-- Automatic directory creation (`output_dir/particles/`)
-- Configurable save interval (by iteration or time)
-- Multiple output modes: snapshots, trajectories, or streaming
-- Handles both serial and parallel execution
-- Accumulates trajectory data in memory or streams to disk
-
-# Fields
-- `output_dir`: Base output directory
-- `particle_dir`: Particle output subdirectory (`output_dir/particles/`)
-- `save_interval_iter`: Save every N iterations (0 = disabled)
-- `save_interval_time`: Save every T time units (0.0 = disabled)
-- `output_mode`: `:snapshots`, `:trajectory`, or `:streaming`
-- `file_prefix`: Prefix for output files (default: "particles")
-- `current_file`: Path to current output file (for streaming mode)
-- `save_count`: Number of saves performed
-- `last_save_iter`: Last iteration when particles were saved
-- `last_save_time`: Last time when particles were saved
-- `time_series`: Accumulated time values
-- `x_series`, `y_series`, `z_series`: Accumulated position data
-- `u_series`, `v_series`, `w_series`: Accumulated velocity data
-- `initialized`: Whether manager has been initialized
+Pass the manager as `particle_output` when constructing a
+[`QGYBJplus.Simulation`](@ref).
+The simulation writes initial, scheduled, and final particle states and closes
+the manager during finalization.
 """
 mutable struct ParticleOutputManager{T<:AbstractFloat}
     # Directory configuration
@@ -181,6 +188,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     save_count::Int                  # Number of saves performed
     last_save_iter::Int              # Last iteration saved
     last_save_time::T                # Last time saved
+    next_save_time::T                # Next nominal time-based deadline
 
     # Accumulated data (for trajectory mode)
     time_series::Vector{T}
@@ -192,15 +200,28 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     w_series::Vector{Vector{T}}
     particle_ids::Vector{Int}
 
-    # State flags
+    # ModelFields flags
     initialized::Bool
     is_io_rank::Bool                 # Only rank 0 writes in parallel
+    global_particle_count::Int
+    closed::Bool
 
     function ParticleOutputManager{T}(output_dir::String;
                                       save_interval_iter::Int=0,
                                       save_interval_time::T=T(0.1),
                                       output_mode::Symbol=:trajectory,
                                       file_prefix::String="particles") where T
+        save_interval_iter >= 0 ||
+            throw(ArgumentError("save_interval_iter must be non-negative"))
+        isfinite(save_interval_time) && save_interval_time >= zero(T) ||
+            throw(ArgumentError("save_interval_time must be finite and non-negative"))
+        output_mode in (:snapshots, :trajectory, :streaming) ||
+            throw(ArgumentError(
+                "output_mode must be :snapshots, :trajectory, or :streaming"))
+        isempty(output_dir) &&
+            throw(ArgumentError("particle output directory cannot be empty"))
+        isempty(file_prefix) &&
+            throw(ArgumentError("particle output prefix cannot be empty"))
         # Create particles subdirectory
         particle_dir = joinpath(output_dir, "particles")
 
@@ -215,6 +236,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
             0,                       # save_count
             0,                       # last_save_iter
             T(0),                    # last_save_time
+            save_interval_time,      # next_save_time
             T[],                     # time_series
             Vector{T}[],             # x_series
             Vector{T}[],             # y_series
@@ -224,7 +246,9 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
             Vector{T}[],             # w_series
             Int[],                   # particle_ids
             false,                   # initialized
-            true                     # is_io_rank (default true for serial)
+            true,                    # is_io_rank (default true for serial)
+            0,                       # global_particle_count
+            false                    # closed
         )
     end
 end
@@ -247,12 +271,17 @@ function setup_particle_output!(manager::ParticleOutputManager{T},
                                 tracker::ParticleTracker{T};
                                 rank::Int=0) where T
 
-    manager.is_io_rank = (rank == 0)
-    np_global = tracker.is_parallel && tracker.comm !== nothing ?
+    manager.closed && error("cannot reuse a finalized particle output manager")
+    manager.initialized && return manager
+    parallel = tracker.is_parallel && tracker.comm !== nothing
+    actual_rank = parallel ? MPI.Comm_rank(tracker.comm) : rank
+    manager.is_io_rank = (actual_rank == 0)
+    np_global = parallel ?
                 MPI.Allreduce(tracker.particles.np, +, tracker.comm) :
                 tracker.particles.np
+    manager.global_particle_count = np_global
 
-    if manager.is_io_rank
+    _run_particle_io_on_root(manager, tracker) do
         # Create particles directory
         if !isdir(manager.particle_dir)
             mkpath(manager.particle_dir)
@@ -287,6 +316,7 @@ function should_save_particles(manager::ParticleOutputManager{T},
     if !manager.initialized
         return false
     end
+    manager.closed && return false
 
     # Check iteration-based interval
     if manager.save_interval_iter > 0
@@ -295,7 +325,8 @@ function should_save_particles(manager::ParticleOutputManager{T},
 
     # Check time-based interval
     if manager.save_interval_time > 0
-        return (time - manager.last_save_time) >= manager.save_interval_time
+        tolerance = 8eps(max(abs(time), abs(manager.save_interval_time), one(T)))
+        return time >= manager.next_save_time - tolerance
     end
 
     return false
@@ -316,43 +347,46 @@ function save_particle_positions!(manager::ParticleOutputManager{T},
                                   tracker::ParticleTracker{T},
                                   iteration::Int, time::T) where T
     data = _gather_particle_snapshot(tracker)
-    if !manager.is_io_rank
-        return manager
-    end
-    if data === nothing
-        return manager
-    end
+    _run_particle_io_on_root(manager, tracker) do
+        data === nothing && error("particle gather returned no data on the I/O rank")
 
-    if isempty(manager.particle_ids)
-        manager.particle_ids = data.ids
-    elseif manager.particle_ids != data.ids
-        @warn "Particle ID ordering changed between saves; updating output ordering"
-        manager.particle_ids = data.ids
-    end
+        if isempty(manager.particle_ids)
+            manager.particle_ids = data.ids
+        elseif manager.particle_ids != data.ids
+            @warn "Particle ID ordering changed between saves; updating output ordering"
+            manager.particle_ids = data.ids
+        end
 
-    if manager.output_mode == :snapshots
-        # Save individual snapshot file
-        save_particle_snapshot!(manager, tracker, iteration, time; data=data)
+        if manager.output_mode == :snapshots
+            # Save individual snapshot file
+            save_particle_snapshot!(manager, tracker, iteration, time; data=data)
 
-    elseif manager.output_mode == :trajectory
-        # Accumulate in memory
-        push!(manager.time_series, time)
-        push!(manager.x_series, data.x)
-        push!(manager.y_series, data.y)
-        push!(manager.z_series, data.z)
-        push!(manager.u_series, data.u)
-        push!(manager.v_series, data.v)
-        push!(manager.w_series, data.w)
+        elseif manager.output_mode == :trajectory
+            # Accumulate in memory
+            push!(manager.time_series, time)
+            push!(manager.x_series, data.x)
+            push!(manager.y_series, data.y)
+            push!(manager.z_series, data.z)
+            push!(manager.u_series, data.u)
+            push!(manager.v_series, data.v)
+            push!(manager.w_series, data.w)
 
-    elseif manager.output_mode == :streaming
-        # Append to streaming file
-        append_to_streaming_file!(manager, tracker, time; data=data)
+        elseif manager.output_mode == :streaming
+            # Append to streaming file
+            append_to_streaming_file!(manager, tracker, time; data=data)
+        end
     end
 
-    # Update counters
+    # Keep scheduling state consistent on every rank; only the I/O rank stores data.
     manager.save_count += 1
     manager.last_save_iter = iteration
     manager.last_save_time = time
+    if manager.save_interval_iter == 0 && manager.save_interval_time > 0
+        tolerance = 8eps(max(abs(time), abs(manager.save_interval_time), one(T)))
+        while manager.next_save_time <= time + tolerance
+            manager.next_save_time += manager.save_interval_time
+        end
+    end
 
     return manager
 end
@@ -389,58 +423,53 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
     filename = joinpath(manager.particle_dir,
                        "$(manager.file_prefix)_$(lpad(iteration, 6, '0')).nc")
 
-    try
-        HAS_NCDS || error("NCDatasets not available")
+    HAS_NCDS || error("NCDatasets not available")
 
-        NCDatasets.Dataset(filename, "c") do ds
-            # Define dimensions
-            ds.dim["particle"] = length(ids)
+    NCDatasets.Dataset(filename, "c") do ds
+        # Define dimensions
+        ds.dim["particle"] = length(ids)
 
-            # Create variables
-            defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
-            defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle",))
-            defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle",))
-            defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle",))
-            defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle",))
-            defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle",))
-            defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle",))
+        # Create variables
+        defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
+        defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle",))
+        defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle",))
+        defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle",))
+        defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle",))
+        defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle",))
+        defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle",))
 
-            # Fill data
-            defVar_particle[:] = ids
-            defVar_x[:] = x
-            defVar_y[:] = y
-            defVar_z[:] = z
-            defVar_u[:] = u
-            defVar_v[:] = v
-            defVar_w[:] = w
+        # Fill data
+        defVar_particle[:] = ids
+        defVar_x[:] = x
+        defVar_y[:] = y
+        defVar_z[:] = z
+        defVar_u[:] = u
+        defVar_v[:] = v
+        defVar_w[:] = w
 
-            # Set variable attributes
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
+        # Set variable attributes
+        defVar_x.attrib["units"] = "nondimensional"
+        defVar_x.attrib["long_name"] = "x position"
+        defVar_y.attrib["units"] = "nondimensional"
+        defVar_y.attrib["long_name"] = "y position"
+        defVar_z.attrib["units"] = "nondimensional"
+        defVar_z.attrib["long_name"] = "z position"
+        defVar_u.attrib["units"] = "nondimensional/time"
+        defVar_u.attrib["long_name"] = "x velocity"
+        defVar_v.attrib["units"] = "nondimensional/time"
+        defVar_v.attrib["long_name"] = "y velocity"
+        defVar_w.attrib["units"] = "nondimensional/time"
+        defVar_w.attrib["long_name"] = "z velocity"
 
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Snapshot"
-            ds.attrib["created_at"] = string(now())
-            ds.attrib["time"] = time
-            ds.attrib["iteration"] = iteration
-            ds.attrib["number_of_particles"] = length(ids)
-            ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
-            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
-        end
-
-    catch e
-        @warn "Cannot write particle snapshot: $e"
+        # Global attributes
+        ds.attrib["title"] = "QG-YBJ Particle Snapshot"
+        ds.attrib["created_at"] = string(now())
+        ds.attrib["time"] = time
+        ds.attrib["iteration"] = iteration
+        ds.attrib["number_of_particles"] = length(ids)
+        ds.attrib["integration_method"] = string(tracker.config.integration_method)
+        ds.attrib["use_ybj_w"] = Int(tracker.config.use_ybj_w)
+        ds.attrib["use_3d_advection"] = Int(tracker.config.use_3d_advection)
     end
 
     return filename
@@ -464,62 +493,57 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
         manager.particle_ids = collect(1:np_global)
     end
 
-    try
-        HAS_NCDS || error("NCDatasets not available")
+    HAS_NCDS || error("NCDatasets not available")
 
-        NCDatasets.Dataset(filename, "c") do ds
-            # Define dimensions (time is unlimited)
-            ds.dim["particle"] = np_global
-            ds.dim["time"] = NCDatasets.Unlimited()
+    NCDatasets.Dataset(filename, "c") do ds
+        # Define dimensions (time is unlimited)
+        ds.dim["particle"] = np_global
+        ds.dim["time"] = NCDatasets.Unlimited()
 
-            # Create coordinate variables
-            defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
-            defVar_time = NCDatasets.defVar(ds, "time", Float64, ("time",))
+        # Create coordinate variables
+        defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
+        defVar_time = NCDatasets.defVar(ds, "time", Float64, ("time",))
 
-            # Create trajectory variables
-            defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle", "time"))
-            defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle", "time"))
-            defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle", "time"))
-            defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle", "time"))
-            defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle", "time"))
-            defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
+        # Create trajectory variables
+        defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle", "time"))
+        defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle", "time"))
+        defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle", "time"))
+        defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle", "time"))
+        defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle", "time"))
+        defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
 
-            # Fill particle IDs
-            defVar_particle[:] = manager.particle_ids
+        # Fill particle IDs
+        defVar_particle[:] = manager.particle_ids
 
-            # Set variable attributes
-            defVar_particle.attrib["long_name"] = "particle identifier"
-            defVar_time.attrib["units"] = "model time units"
-            defVar_time.attrib["long_name"] = "time"
+        # Set variable attributes
+        defVar_particle.attrib["long_name"] = "particle identifier"
+        defVar_time.attrib["units"] = "model time units"
+        defVar_time.attrib["long_name"] = "time"
 
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
+        defVar_x.attrib["units"] = "nondimensional"
+        defVar_x.attrib["long_name"] = "x position"
+        defVar_y.attrib["units"] = "nondimensional"
+        defVar_y.attrib["long_name"] = "y position"
+        defVar_z.attrib["units"] = "nondimensional"
+        defVar_z.attrib["long_name"] = "z position"
+        defVar_u.attrib["units"] = "nondimensional/time"
+        defVar_u.attrib["long_name"] = "x velocity"
+        defVar_v.attrib["units"] = "nondimensional/time"
+        defVar_v.attrib["long_name"] = "y velocity"
+        defVar_w.attrib["units"] = "nondimensional/time"
+        defVar_w.attrib["long_name"] = "z velocity"
 
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Trajectories (Streaming)"
-            ds.attrib["created_at"] = string(now())
-            ds.attrib["number_of_particles"] = np_global
-            ds.attrib["output_mode"] = "streaming"
-            ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
-            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
-        end
-
-        println("Created streaming particle file: $filename")
-
-    catch e
-        @warn "Cannot create streaming particle file: $e"
+        # Global attributes
+        ds.attrib["title"] = "QG-YBJ Particle Trajectories (Streaming)"
+        ds.attrib["created_at"] = string(now())
+        ds.attrib["number_of_particles"] = np_global
+        ds.attrib["output_mode"] = "streaming"
+        ds.attrib["integration_method"] = string(tracker.config.integration_method)
+        ds.attrib["use_ybj_w"] = Int(tracker.config.use_ybj_w)
+        ds.attrib["use_3d_advection"] = Int(tracker.config.use_3d_advection)
     end
+
+    println("Created streaming particle file: $filename")
 
     return filename
 end
@@ -555,29 +579,24 @@ function append_to_streaming_file!(manager::ParticleOutputManager{T},
     end
     filename = manager.current_file
 
-    try
-        HAS_NCDS || error("NCDatasets not available")
+    HAS_NCDS || error("NCDatasets not available")
 
-        NCDatasets.Dataset(filename, "a") do ds
-            # Get current time index
-            current_size = length(ds["time"])
-            new_idx = current_size + 1
+    NCDatasets.Dataset(filename, "a") do ds
+        # Get current time index
+        current_size = length(ds["time"])
+        new_idx = current_size + 1
 
-            # Append data
-            ds["time"][new_idx] = time
-            if haskey(ds, "particle")
-                ds["particle"][:] = manager.particle_ids
-            end
-            ds["x"][:, new_idx] = x
-            ds["y"][:, new_idx] = y
-            ds["z"][:, new_idx] = z
-            ds["u"][:, new_idx] = u
-            ds["v"][:, new_idx] = v
-            ds["w"][:, new_idx] = w
+        # Append data
+        ds["time"][new_idx] = time
+        if haskey(ds, "particle")
+            ds["particle"][:] = manager.particle_ids
         end
-
-    catch e
-        @warn "Cannot append to streaming file: $e"
+        ds["x"][:, new_idx] = x
+        ds["y"][:, new_idx] = y
+        ds["z"][:, new_idx] = z
+        ds["u"][:, new_idx] = u
+        ds["v"][:, new_idx] = v
+        ds["w"][:, new_idx] = w
     end
 
     return manager
@@ -595,29 +614,37 @@ For snapshot mode, writes a summary file.
 function finalize_particle_output!(manager::ParticleOutputManager{T},
                                    tracker::ParticleTracker{T};
                                    metadata::Dict=Dict()) where T
-    if !manager.is_io_rank || !manager.initialized
+    manager.closed && return manager
+    if !manager.initialized
+        manager.closed = true
         return manager
     end
 
-    println("\nFinalizing particle output...")
-    println("  Output directory: $(manager.particle_dir)")
-    println("  Output mode: $(manager.output_mode)")
-    println("  Total saves: $(manager.save_count)")
+    try
+        _run_particle_io_on_root(manager, tracker) do
+            println("\nFinalizing particle output...")
+            println("  Output directory: $(manager.particle_dir)")
+            println("  Output mode: $(manager.output_mode)")
+            println("  Total saves: $(manager.save_count)")
 
-    if manager.output_mode == :trajectory && !isempty(manager.time_series)
-        # Write accumulated trajectory data
-        write_accumulated_trajectories!(manager, tracker; metadata=metadata)
+            if manager.output_mode == :trajectory && !isempty(manager.time_series)
+                # Write accumulated trajectory data
+                write_accumulated_trajectories!(manager, tracker; metadata=metadata)
 
-    elseif manager.output_mode == :streaming
-        # Update streaming file metadata
-        update_streaming_metadata!(manager)
+            elseif manager.output_mode == :streaming
+                # Update streaming file metadata
+                update_streaming_metadata!(manager)
 
-    elseif manager.output_mode == :snapshots
-        # Write summary file for snapshots
-        write_snapshot_summary!(manager, tracker)
+            elseif manager.output_mode == :snapshots
+                # Write summary file for snapshots
+                write_snapshot_summary!(manager, tracker)
+            end
+
+            println("Particle output finalized successfully")
+        end
+    finally
+        manager.closed = true
     end
-
-    println("Particle output finalized successfully")
 
     return manager
 end
@@ -641,81 +668,76 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
 
     println("  Writing $(nt) time points for $(np) particles...")
 
-    try
-        HAS_NCDS || error("NCDatasets not available")
+    HAS_NCDS || error("NCDatasets not available")
 
-        NCDatasets.Dataset(filename, "c") do ds
-            # Define dimensions
-            ds.dim["particle"] = np
-            ds.dim["time"] = nt
+    NCDatasets.Dataset(filename, "c") do ds
+        # Define dimensions
+        ds.dim["particle"] = np
+        ds.dim["time"] = nt
 
-            # Create coordinate variables
-            defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
-            defVar_time = NCDatasets.defVar(ds, "time", Float64, ("time",))
+        # Create coordinate variables
+        defVar_particle = NCDatasets.defVar(ds, "particle", Int, ("particle",))
+        defVar_time = NCDatasets.defVar(ds, "time", Float64, ("time",))
 
-            # Create trajectory variables
-            defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle", "time"))
-            defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle", "time"))
-            defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle", "time"))
-            defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle", "time"))
-            defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle", "time"))
-            defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
+        # Create trajectory variables
+        defVar_x = NCDatasets.defVar(ds, "x", Float64, ("particle", "time"))
+        defVar_y = NCDatasets.defVar(ds, "y", Float64, ("particle", "time"))
+        defVar_z = NCDatasets.defVar(ds, "z", Float64, ("particle", "time"))
+        defVar_u = NCDatasets.defVar(ds, "u", Float64, ("particle", "time"))
+        defVar_v = NCDatasets.defVar(ds, "v", Float64, ("particle", "time"))
+        defVar_w = NCDatasets.defVar(ds, "w", Float64, ("particle", "time"))
 
-            # Fill coordinate data
-            defVar_particle[:] = ids
-            defVar_time[:] = manager.time_series
+        # Fill coordinate data
+        defVar_particle[:] = ids
+        defVar_time[:] = manager.time_series
 
-            # Fill trajectory data
-            for (t_idx, _) in enumerate(manager.time_series)
-                defVar_x[:, t_idx] = manager.x_series[t_idx]
-                defVar_y[:, t_idx] = manager.y_series[t_idx]
-                defVar_z[:, t_idx] = manager.z_series[t_idx]
-                defVar_u[:, t_idx] = manager.u_series[t_idx]
-                defVar_v[:, t_idx] = manager.v_series[t_idx]
-                defVar_w[:, t_idx] = manager.w_series[t_idx]
-            end
-
-            # Set variable attributes
-            defVar_particle.attrib["long_name"] = "particle identifier"
-            defVar_time.attrib["units"] = "model time units"
-            defVar_time.attrib["long_name"] = "time"
-
-            defVar_x.attrib["units"] = "nondimensional"
-            defVar_x.attrib["long_name"] = "x position"
-            defVar_y.attrib["units"] = "nondimensional"
-            defVar_y.attrib["long_name"] = "y position"
-            defVar_z.attrib["units"] = "nondimensional"
-            defVar_z.attrib["long_name"] = "z position"
-            defVar_u.attrib["units"] = "nondimensional/time"
-            defVar_u.attrib["long_name"] = "x velocity"
-            defVar_v.attrib["units"] = "nondimensional/time"
-            defVar_v.attrib["long_name"] = "y velocity"
-            defVar_w.attrib["units"] = "nondimensional/time"
-            defVar_w.attrib["long_name"] = "z velocity"
-
-            # Global attributes
-            ds.attrib["title"] = "QG-YBJ Particle Trajectories"
-            ds.attrib["created_at"] = string(now())
-            ds.attrib["number_of_particles"] = np
-            ds.attrib["number_of_timesteps"] = nt
-            ds.attrib["start_time"] = manager.time_series[1]
-            ds.attrib["end_time"] = manager.time_series[end]
-            ds.attrib["output_mode"] = "trajectory"
-            ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
-            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
-
-            # Add user metadata
-            for (key, value) in metadata
-                ds.attrib[string(key)] = value
-            end
+        # Fill trajectory data
+        for (t_idx, _) in enumerate(manager.time_series)
+            defVar_x[:, t_idx] = manager.x_series[t_idx]
+            defVar_y[:, t_idx] = manager.y_series[t_idx]
+            defVar_z[:, t_idx] = manager.z_series[t_idx]
+            defVar_u[:, t_idx] = manager.u_series[t_idx]
+            defVar_v[:, t_idx] = manager.v_series[t_idx]
+            defVar_w[:, t_idx] = manager.w_series[t_idx]
         end
 
-        println("  Trajectory file written: $filename")
+        # Set variable attributes
+        defVar_particle.attrib["long_name"] = "particle identifier"
+        defVar_time.attrib["units"] = "model time units"
+        defVar_time.attrib["long_name"] = "time"
 
-    catch e
-        @warn "Cannot write accumulated trajectories: $e"
+        defVar_x.attrib["units"] = "nondimensional"
+        defVar_x.attrib["long_name"] = "x position"
+        defVar_y.attrib["units"] = "nondimensional"
+        defVar_y.attrib["long_name"] = "y position"
+        defVar_z.attrib["units"] = "nondimensional"
+        defVar_z.attrib["long_name"] = "z position"
+        defVar_u.attrib["units"] = "nondimensional/time"
+        defVar_u.attrib["long_name"] = "x velocity"
+        defVar_v.attrib["units"] = "nondimensional/time"
+        defVar_v.attrib["long_name"] = "y velocity"
+        defVar_w.attrib["units"] = "nondimensional/time"
+        defVar_w.attrib["long_name"] = "z velocity"
+
+        # Global attributes
+        ds.attrib["title"] = "QG-YBJ Particle Trajectories"
+        ds.attrib["created_at"] = string(now())
+        ds.attrib["number_of_particles"] = np
+        ds.attrib["number_of_timesteps"] = nt
+        ds.attrib["start_time"] = manager.time_series[1]
+        ds.attrib["end_time"] = manager.time_series[end]
+        ds.attrib["output_mode"] = "trajectory"
+        ds.attrib["integration_method"] = string(tracker.config.integration_method)
+        ds.attrib["use_ybj_w"] = Int(tracker.config.use_ybj_w)
+        ds.attrib["use_3d_advection"] = Int(tracker.config.use_3d_advection)
+
+        # Add user metadata
+        for (key, value) in metadata
+            ds.attrib[string(key)] = value
+        end
     end
+
+    println("  Trajectory file written: $filename")
 
     return manager
 end
@@ -728,26 +750,21 @@ Update metadata in streaming file after simulation.
 function update_streaming_metadata!(manager::ParticleOutputManager)
     filename = manager.current_file
 
-    try
-        HAS_NCDS || error("NCDatasets not available")
+    HAS_NCDS || error("NCDatasets not available")
 
-        NCDatasets.Dataset(filename, "a") do ds
-            nt = length(ds["time"])
-            times = Array(ds["time"][:])
+    NCDatasets.Dataset(filename, "a") do ds
+        nt = length(ds["time"])
+        times = Array(ds["time"][:])
 
-            ds.attrib["finalized_at"] = string(now())
-            ds.attrib["number_of_timesteps"] = nt
-            if nt > 0
-                ds.attrib["start_time"] = times[1]
-                ds.attrib["end_time"] = times[end]
-            end
+        ds.attrib["finalized_at"] = string(now())
+        ds.attrib["number_of_timesteps"] = nt
+        if nt > 0
+            ds.attrib["start_time"] = times[1]
+            ds.attrib["end_time"] = times[end]
         end
-
-        println("  Streaming file metadata updated: $filename")
-
-    catch e
-        @warn "Cannot update streaming metadata: $e"
     end
+
+    println("  Streaming file metadata updated: $filename")
 
     return manager
 end
@@ -759,47 +776,36 @@ Write summary file listing all snapshot files.
 """
 function write_snapshot_summary!(manager::ParticleOutputManager, tracker::ParticleTracker)
     summary_file = joinpath(manager.particle_dir, "$(manager.file_prefix)_summary.txt")
-    np_global = tracker.is_parallel && tracker.comm !== nothing ?
-                MPI.Allreduce(tracker.particles.np, +, tracker.comm) :
-                tracker.particles.np
+    np_global = manager.global_particle_count
 
-    try
-        open(summary_file, "w") do f
-            println(f, "QG-YBJ Particle Snapshot Summary")
-            println(f, "================================")
-            println(f, "Created: $(now())")
-            println(f, "Number of particles: $np_global")
-            println(f, "Number of snapshots: $(manager.save_count)")
-            println(f, "Output directory: $(manager.particle_dir)")
-            println(f, "")
-            println(f, "Integration method: $(tracker.config.integration_method)")
-            println(f, "Use YBJ w: $(tracker.config.use_ybj_w)")
-            println(f, "Use 3D advection: $(tracker.config.use_3d_advection)")
-            println(f, "")
-            println(f, "Files:")
+    open(summary_file, "w") do f
+        println(f, "QG-YBJ Particle Snapshot Summary")
+        println(f, "================================")
+        println(f, "Created: $(now())")
+        println(f, "Number of particles: $np_global")
+        println(f, "Number of snapshots: $(manager.save_count)")
+        println(f, "Output directory: $(manager.particle_dir)")
+        println(f, "")
+        println(f, "Integration method: $(tracker.config.integration_method)")
+        println(f, "Use YBJ w: $(tracker.config.use_ybj_w)")
+        println(f, "Use 3D advection: $(tracker.config.use_3d_advection)")
+        println(f, "")
+        println(f, "Files:")
 
-            # List snapshot files
-            files = filter(f -> startswith(f, manager.file_prefix) && endswith(f, ".nc"),
-                          readdir(manager.particle_dir))
-            for file in sort(files)
-                println(f, "  $file")
-            end
+        # List snapshot files
+        files = filter(f -> startswith(f, manager.file_prefix) && endswith(f, ".nc"),
+                       readdir(manager.particle_dir))
+        for file in sort(files)
+            println(f, "  $file")
         end
-
-        println("  Snapshot summary written: $summary_file")
-
-    catch e
-        @warn "Cannot write snapshot summary: $e"
     end
+
+    println("  Snapshot summary written: $summary_file")
 
     return manager
 end
 
-#=
-================================================================================
-                    ORIGINAL FUNCTIONS (preserved for compatibility)
-================================================================================
-=#
+# Complete-trajectory output
 
 """
     write_particle_trajectories(filename, tracker; metadata=Dict())
@@ -949,12 +955,11 @@ function _write_particle_trajectories_arrays(filename::String,
             ds.attrib["created_at"] = string(now())
             ds.attrib["number_of_particles"] = np
             ds.attrib["integration_method"] = string(config.integration_method)
-            # NetCDF has no boolean attribute type; store flags as 0/1.
-            ds.attrib["use_ybj_w"] = Int32(config.use_ybj_w)
-            ds.attrib["use_3d_advection"] = Int32(config.use_3d_advection)
-            ds.attrib["periodic_x"] = Int32(config.periodic_x)
-            ds.attrib["periodic_y"] = Int32(config.periodic_y)
-            ds.attrib["reflect_z"] = Int32(config.reflect_z)
+            ds.attrib["use_ybj_w"] = Int(config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int(config.use_3d_advection)
+            ds.attrib["periodic_x"] = config.periodic_x
+            ds.attrib["periodic_y"] = config.periodic_y
+            ds.attrib["reflect_z"] = config.reflect_z
 
             # Add user metadata
             for (key, value) in metadata
@@ -965,7 +970,7 @@ function _write_particle_trajectories_arrays(filename::String,
         @info "Particle trajectories written to: $filename"
 
     catch e
-        @warn "Failed to write particle trajectories to $filename" exception=(e, catch_backtrace())
+        @warn "NCDatasets not available, cannot write particle trajectories: $e"
     end
 
     return filename
@@ -974,28 +979,13 @@ end
 """
     read_particle_trajectories(filename) -> NamedTuple
 
-Read particle trajectory history from NetCDF file.
+Read a trajectory file written by [`write_particle_trajectories`](@ref).
+The returned named tuple contains `x`, `y`, and `z` matrices in
+`(particle, time)` order, plus `time`, `particle_ids`, and file `attributes`.
 
-Returns a NamedTuple with fields:
-- `x`: Matrix of x positions (np × ntime)
-- `y`: Matrix of y positions (np × ntime)
-- `z`: Matrix of z positions (np × ntime)
-- `time`: Vector of time values (ntime)
-- `particle_ids`: Vector of particle identifiers (np)
-- `attributes`: Dict of global attributes from the file
-
-This is the inverse of `write_particle_trajectories`.
-
-# Example
 ```julia
-# Write trajectories
-write_particle_trajectories("particles.nc", tracker)
-
-# Read them back
-traj = read_particle_trajectories("particles.nc")
-println("Number of particles: ", size(traj.x, 1))
-println("Number of time steps: ", length(traj.time))
-println("Initial x positions: ", traj.x[:, 1])
+trajectories = read_particle_trajectories("particles.nc")
+initial_x = trajectories.x[:, 1]
 ```
 """
 function read_particle_trajectories(filename::String)
@@ -1138,8 +1128,8 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             ds.attrib["created_at"] = string(now())
             ds.attrib["time"] = time
             ds.attrib["number_of_particles"] = length(data.ids)
-            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
-            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
+            ds.attrib["use_ybj_w"] = Int(tracker.config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int(tracker.config.use_3d_advection)
         end
 
     catch e
@@ -1213,8 +1203,8 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 ds.attrib["created_at"] = string(now())
                 ds.attrib["number_of_particles"] = np_global
                 ds.attrib["integration_method"] = string(tracker.config.integration_method)
-                ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
-                ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
+                ds.attrib["use_ybj_w"] = Int(tracker.config.use_ybj_w)
+                ds.attrib["use_3d_advection"] = Int(tracker.config.use_3d_advection)
             end
         end
 
@@ -1300,15 +1290,20 @@ Returns: Dictionary mapping z-levels to filenames
 
 Example:
 ```julia
-# Initialize particles at multiple z-levels
-config = create_layered_distribution(0.0, 2π, 0.0, 2π, [π/4, π/2, 3π/4], 4, 4)
-tracker = ParticleTracker(config, grid, parallel_config)
+# Initialize particles at multiple depths
+config = particles_in_layers(
+    [-250.0, -500.0, -750.0];
+    x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
+    y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
+    nx=4, ny=4,
+)
+tracker = initialize_particles!(model, config)
 
 # Run simulation...
 
 # Save each z-level to separate file
 files = write_particle_trajectories_by_zlevel("particles", tracker)
-# Creates: particles_z0.785.nc, particles_z1.571.nc, particles_z2.356.nc
+# Creates one file for each initial depth.
 ```
 """
 function write_particle_trajectories_by_zlevel(base_filename::String, tracker::ParticleTracker;

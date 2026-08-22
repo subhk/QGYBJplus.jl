@@ -1,111 +1,73 @@
-# [Troubleshooting](@id troubleshooting)
+# Troubleshooting
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-## Quick Diagnostic
+## Construction fails
 
-| Symptom | Check First |
-|:--------|:------------|
-| Won't run | Are `Lx`, `Ly`, `Lz` provided? (required) |
-| Blows up (NaN) | Is `dt` small enough? Try `dt/2` |
-| Wrong results | Check `ybj_plus=true` vs `false` |
-| Too slow | Reuse `ExpRK2Workspace` and reduce output frequency |
-| Out of memory | Reduce grid size or use MPI |
+- All resolution and extent values must be positive.
+- `FPlane(f=...)` requires a finite, nonzero Coriolis frequency.
+- Stratification values must be finite and positive.
+- Explicit topology factors must divide the distributed dimensions.
 
-## Installation
+Start with a small model and `verbose=true` to see MPI topology information.
 
-**Package not found**: Install from GitHub:
-```julia
-Pkg.add(url="https://github.com/subhk/QGYBJplus.jl")
-```
+## A second model fails after finalization
 
-**MPI fails**: Install system MPI first:
-- macOS: `brew install open-mpi`
-- Ubuntu: `sudo apt install libopenmpi-dev openmpi-bin`
-- HPC: `module load openmpi`
-
-Then: `Pkg.build("MPI")`
-
-## Runtime Errors
-
-### Missing Domain Size
-```julia
-# Wrong - MethodError
-par = default_params(nx=64, ny=64, nz=32)
-
-# Correct
-par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)
-```
-
-### Simulation Blows Up (NaN)
-
-1. **Reduce time step**: `dt = dt / 2`
-2. **Increase dissipation**: `νₕ₁ = 1e8, ilap1 = 2`
-3. **Check the explicit wave-dispersion limit** used by ETD-RK2
-4. **Debug with linear mode**: `par = default_params(..., linear=true)`
-
-!!! tip "Wave CFL"
-    For YBJ+: `dt ≤ 2f₀/N²`. For ocean values: `dt ≤ 20s`.
-
-### Out of Memory
-
-- Reduce grid: `nx, ny, nz = 128, 128, 64`
-- Use MPI: `mpiexec -n 16 julia script.jl`
-- Use Float32: `par = default_params(..., T=Float32)`
-
-Memory: 256³ complex array ≈ 1 GB. Full simulation needs 5-10× this.
-
-## MPI Issues
-
-**Pencil topology mismatch**: Use `copy_state(S)` not `deepcopy(S)`:
-```julia
-Snm1 = copy_state(S)  # Correct
-```
-
-**Deadlock**: Ensure all ranks call collective operations. Debug with:
-```julia
-MPI.Barrier(comm)
-println("Rank $(MPI.Comm_rank(comm)) reached checkpoint")
-```
-
-**Segfaults**: Use actual array dimensions, not grid dimensions:
-```julia
-nz_phys, nx_phys, ny_phys = size(parent(phys_arr))
-```
-
-## Unicode Characters
-
-Type LaTeX + Tab in Julia REPL:
-
-| Type | Get |
-|:-----|:----|
-| `f\_0<tab>` | `f₀` |
-| `\nu<tab>` | `ν` |
-| `N\^2<tab>` | `N²` |
-
-## Performance
-
-1. Reuse `ExpRK2Workspace` in the time loop
-2. Run with threads: `julia -t auto script.jl`
-3. Use MPI for large grids
-4. Reduce output frequency
-
-## Stability: Hyperdiffusion
+When a model initializes MPI itself, finalizing it closes that MPI session.
+Applications that create multiple models should initialize MPI externally:
 
 ```julia
-par = default_params(
-    ...,
-    νₕ₁ʷ = 1e7, ilap1w = 2   # Biharmonic wave damping
-)
+using MPI
+MPI.Init()
+try
+    # construct and finalize any number of models
+finally
+    MPI.Finalize()
+end
 ```
 
-Higher `ilap` = more scale-selective: `ilap=1` (∇²), `ilap=2` (∇⁴), `ilap=4` (∇⁸)
+## Distributed array mismatch
 
-## Still Stuck?
+Use `copy_fields(model.fields)` to preserve pencil layouts. Physical and
+spectral local ranges differ; query them explicitly instead of reusing array
+axes across transform spaces.
 
-[Open an issue](https://github.com/subhk/QGYBJplus.jl/issues) with:
-- Julia version, package versions
-- Minimal reproducible example
-- Full error message
+## Output is missing a field
+
+Choose fields in [`NetCDFOutput`](@ref):
+
+```julia
+NetCDFOutput(path="output",
+             fields=(:ψ, :waves),
+             velocities=true)
+```
+
+The prognostic spectral arrays and vertical coefficients are always written.
+
+## A run cannot be restarted
+
+`restore!` requires a fresh compatible model and matching global dimensions.
+It restores `q` and `B`; it does not rewind an existing simulation clock.
+
+## A run is slow
+
+- Let one `Simulation` own the complete run instead of constructing a
+  timestepper for every step.
+- Reduce output frequency and omit unused physical fields.
+- Avoid gathers inside the time loop.
+- Measure alternative MPI topologies.
+- Ensure local domains remain large enough for particle halos.
+
+## Particles disappear near a periodic seam
+
+Run `test/test_mpi_particles_periodic.jl` under the same rank count. The test
+checks global identifier conservation, wrapped coordinates, and agreement with
+a serial interpolation reference.
+
+## Report a reproducible issue
+
+Include Julia and package versions, global resolution, topology, rank count,
+the focused component choices, `Δt`, and the smallest script that reproduces
+the problem.

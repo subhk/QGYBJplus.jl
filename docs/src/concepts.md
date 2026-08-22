@@ -1,89 +1,75 @@
-# [Key Concepts](@id concepts)
+# [Key concepts](@id concepts)
 
 ```@meta
 CurrentModule = QGYBJplus
 ```
 
-Core ideas behind QGYBJ+.jl, without code.
+## Ownership
 
-## The Two Main Variables
+QGYBJ+.jl separates immutable geometry, model state, and run orchestration:
 
-### Streamfunction (ψ) — Eddies
-
-The streamfunction describes the balanced (geostrophic) eddy flow:
-
-- High ψ = anticyclone (clockwise in Northern Hemisphere)
-- Low ψ = cyclone (counter-clockwise in Northern Hemisphere)
-- Velocities derived as: `u = -∂ψ/∂y`, `v = ∂ψ/∂x`
-- Vorticity: `ζ = ∇²ψ` (positive = cyclonic, negative = anticyclonic)
-
-### Wave Envelope (B) — Waves
-
-The wave envelope captures wave energy without tracking fast oscillations:
-
-- Complex-valued: `B = Bᵣ + i·Bᵢ`
-- Magnitude `|B|` represents wave amplitude
-- Phase `arg(B)` represents wave phase
-- Evolves on the slow (eddy) timescale
-
-## Wave-Eddy Interaction
-
-Three key processes govern how waves and eddies interact:
-
-| Process | What Happens | Physical Effect |
-|:--------|:-------------|:----------------|
-| **Advection** | `J(ψ, B)` | Waves are carried by the eddy velocity field |
-| **Refraction** | `½ζB` | Waves bend toward regions of negative vorticity |
-| **Dispersion** | `ik²A` | Waves spread horizontally over time |
-
-!!! tip "Wave Trapping"
-    The effective wave frequency is `f_eff = f₀ + ζ/2`. In anticyclones where ζ < 0, waves slow down and get **trapped** — this is a key mechanism for wave energy concentration.
-
-## B vs A: Why Two Wave Variables?
-
-We evolve **B** (mathematically convenient) but diagnose **A** (physically meaningful):
-
-```math
-B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}{\partial z}\right] - \frac{k^2}{4}A
+```text
+RectilinearGrid → QGYBJModel → Simulation
 ```
 
-| Variable | Role | Why We Need It |
-|:---------|:-----|:---------------|
-| **B** | Prognostic (evolved) | Simpler time-stepping equations |
-| **A** | Diagnostic (computed) | Represents physical wave amplitude |
+- [`RectilinearGrid`](@ref) defines global coordinates and wavenumbers.
+- [`QGYBJModel`](@ref) owns physical choices, numerical choices, distributed
+  fields, FFT resources, and optional particles.
+- [`Simulation`](@ref) owns time, ETD-RK2, stopping criteria, output, and
+  diagnostics.
 
-## Coordinate System
+Finalize a simulation when the run ends. This closes its output services and
+releases runtime resources owned by the model.
 
-### Spatial Coordinates
-- **Horizontal**: x (east), y (north) — doubly periodic domain
-- **Vertical**: z = 0 at surface, z = -Lz at bottom
+## Model fields
 
-### Spectral vs Physical Space
-- **Derivatives** computed in spectral space (fast, accurate)
-- **Nonlinear products** computed in physical space (avoid aliasing)
-- Transform between spaces using FFT
+All model arrays use `(z, x, y)` ordering.
 
-## Time Stepping
+| Field | Role |
+|:--|:--|
+| `q` | prognostic generalized PV; with feedback it contains balanced and wave contributions |
+| `B` | prognostic complex near-inertial-wave envelope |
+| `psi` | balanced streamfunction diagnosed from PV |
+| `A`, `C` | wave amplitude and its vertical derivative |
+| `u`, `v`, `w` | physical-space velocity components |
 
-The model uses second-order ETD-RK2. Horizontal hyperdiffusion is integrated
-exactly, while advection, refraction, dispersion, and vertical diffusion use
-two explicit Runge–Kutta stages.
+The horizontal velocity follows
+``u=-\partial_y\psi`` and ``v=\partial_x\psi``. The relative vorticity is
+``\zeta=\nabla_h^2\psi``.
 
-## Quick Glossary
+## Wave formulations
 
-| Symbol | Name | Meaning |
-|:-------|:-----|:--------|
-| ψ | Streamfunction | Describes eddy flow |
-| q | Potential vorticity | Conserved quantity for eddies |
-| B | Wave envelope | Evolved wave variable |
-| A | Wave amplitude | Physical wave amplitude |
-| ζ | Relative vorticity | ∇²ψ, measures rotation |
-| f₀ | Coriolis parameter | Earth's rotation effect |
-| N | Buoyancy frequency | Stratification strength |
-| Lx, Ly | Domain size | Horizontal extent |
-| Lz | Domain depth | Vertical extent |
+| Component | Meaning |
+|:--|:--|
+| [`YBJPlus`](@ref) | regularized YBJ⁺ wave dynamics |
+| [`YBJ`](@ref) | original Young–Ben Jelloul relation |
+| [`PassiveWave`](@ref) | wave-envelope advection without refraction or dispersion |
 
-## Next Steps
+The model advances `B` and diagnoses `A`. See [YBJ⁺ wave model](@ref ybj-plus)
+for the relation between them.
 
-- [Quick Start](@ref quickstart) — run your first simulation
-- [Physics Overview](@ref physics-overview) — the full equations
+## Flow and feedback choices
+
+The common configurations are:
+
+| Use case | Flow | Feedback |
+|:--|:--|:--|
+| prescribed flow acting on waves | `FixedFlow()` | `NoFeedback()` |
+| evolving flow acting on waves | `EvolvingFlow()` | `NoWaveFeedback()` |
+| two-way wave–mean coupling | `EvolvingFlow()` | `WaveMeanFeedback()` |
+
+With two-way coupling, wave PV modifies streamfunction inversion. In all
+cases, advection and refraction depend on the selected flow and wave
+formulation.
+
+## Coordinates and transforms
+
+- Horizontal boundaries are periodic.
+- The vertical coordinate increases from the bottom to `z=0` at the surface.
+- Vertical nodes are cell centered.
+- Spectral fields are complex; diagnosed velocities are real.
+- Horizontal derivatives are spectral, while nonlinear products are formed
+  in physical space.
+
+Continue with [configuration](@ref configuration) or the [physics
+overview](@ref physics-overview).

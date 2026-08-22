@@ -12,7 +12,7 @@ Provides various stratification profiles including:
 """
 
 using SpecialFunctions: erf
-using ..QGYBJplus: Grid, read_stratification_raw
+using NCDatasets
 
 """
     StratificationProfile{T}
@@ -95,6 +95,20 @@ Analytical stratification profile from a user-provided function.
 struct AnalyticalProfile{T, F} <: StratificationProfile{T}
     N_func::F
     is_N2::Bool
+end
+
+"""
+    AnalyticalProfile(func; returns=:N², precision=Float64)
+
+Create a stratification profile from a function of vertical coordinate `z`.
+Set `returns=:N²` when `func(z)` returns buoyancy frequency squared, or
+`returns=:N` when it returns buoyancy frequency.
+"""
+function AnalyticalProfile(func::F; returns::Symbol=:N²,
+                           precision::Type{T}=Float64) where {F, T<:AbstractFloat}
+    returns in (:N, :N²) ||
+        throw(ArgumentError("returns must be :N or :N²"))
+    return AnalyticalProfile{T, F}(func, returns === :N²)
 end
 
 """
@@ -284,19 +298,22 @@ function evaluate_N2(profile::FileProfile{T}, z::Real) where T
 end
 
 """
-    compute_stratification_profile(profile::StratificationProfile, G::Grid)
+    compute_stratification_profile(profile::StratificationProfile, G::RuntimeGeometry)
 
 Compute N² profile on model grid.
 
 The profile is evaluated on unstaggered (face) levels at `z = G.z - dz/2`
 to match the Fortran coefficient grid.
 """
-function compute_stratification_profile(profile::StratificationProfile{T}, G::Grid) where T
-    N2_profile = zeros(T, G.nz)
-    dz = G.Lz / G.nz
+function compute_stratification_profile(
+    profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
 
-    for k in 1:G.nz
-        z_unstag = G.z[k] - dz / 2
+    nz = geometry.size[3]
+    N2_profile = zeros(T, nz)
+    dz = geometry.dz
+
+    for k in 1:nz
+        z_unstag = geometry.z[k] - dz / 2
         N2_profile[k] = evaluate_N2(profile, z_unstag)
     end
 
@@ -304,7 +321,7 @@ function compute_stratification_profile(profile::StratificationProfile{T}, G::Gr
 end
 
 """
-    compute_stratification_coefficients(N2_profile::Vector, G::Grid; f0_sq::Real=1.0)
+    compute_stratification_coefficients(N2_profile::Vector, G::RuntimeGeometry; f0_sq::Real=1.0)
 
 Compute stratification-dependent coefficients for the model.
 
@@ -317,7 +334,7 @@ Following the Fortran init_base_state routine:
 
 # Arguments
 - `N2_profile::Vector`: Buoyancy frequency squared N²(z) on unstaggered (face) levels
-- `G::Grid`: Grid structure
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `f0_sq::Real`: Coriolis parameter squared f² (default 1.0)
 
 # Returns
@@ -330,12 +347,13 @@ Named tuple with coefficients:
 - `r_1`, `r_2`, `r_3`, `a_ell`: Legacy aliases (equal to `*_u` versions)
 - `b_ell`: Zero array (length nz, reserved for future use)
 """
-function compute_stratification_coefficients(N2_profile::Vector{T}, G::Grid; f0_sq::Real=T(1.0)) where T
+function compute_stratification_coefficients(
+    N2_profile::Vector{T}, geometry::RectilinearGrid;
+    f0_sq::Real=T(1.0)) where T
     # Check for empty profile
     length(N2_profile) > 0 || error("Empty N2_profile: cannot compute stratification coefficients")
 
-    nz = G.nz
-    dz = nz > 1 ? (G.z[2] - G.z[1]) : T(G.Lz / nz)
+    nz = geometry.size[3]
 
     # Initialize coefficient arrays (following Fortran init_base_state)
     # Unstaggered (cell faces at z = G.z - dz/2)
@@ -403,8 +421,19 @@ at any z (depth = -z) using linear interpolation.
 function load_stratification_from_file(filename::String)
     T = Float64
 
-    # Use read_stratification_raw which returns (z_data, N2_data) tuple
-    z_data, N2_data = read_stratification_raw(filename)
+    z_data, N2_data = NCDataset(filename, "r") do dataset
+        z_names = ("z", "depth")
+        N2_names = ("N2", "N²", "n2")
+        z_index = findfirst(name -> haskey(dataset, name), z_names)
+        N2_index = findfirst(name -> haskey(dataset, name), N2_names)
+        z_name = z_index === nothing ? nothing : z_names[z_index]
+        N2_name = N2_index === nothing ? nothing : N2_names[N2_index]
+        z_name === nothing &&
+            throw(ArgumentError("stratification file must contain z or depth"))
+        N2_name === nothing &&
+            throw(ArgumentError("stratification file must contain N2"))
+        (vec(dataset[z_name][:]), vec(dataset[N2_name][:]))
+    end
 
     return FileProfile{T}(filename, Vector{T}(z_data), Vector{T}(N2_data))
 end

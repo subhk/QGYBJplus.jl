@@ -351,7 +351,7 @@ function process_output_directory(output_dir::String)
     Lx = x[end] - x[1] + (x[2] - x[1])
     Ly = y[end] - y[1] + (y[2] - y[1])
 
-    println("Grid: $nx × $ny, Domain: Lx = $(round(Lx, digits=4)), Ly = $(round(Ly, digits=4))")
+    println("Resolution: $nx × $ny, Domain: Lx = $(round(Lx, digits=4)), Ly = $(round(Ly, digits=4))")
 
     # Compute wavenumbers
     kx, ky = compute_wavenumbers(nx, ny, Lx, Ly)

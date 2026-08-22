@@ -97,7 +97,7 @@ Vertical derivatives use second-order finite differences.
 module Operators
 
 using LinearAlgebra
-using ..QGYBJplus: Grid, State, local_to_global, z_is_local
+using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
@@ -113,7 +113,7 @@ const _allocate_fft_dst = allocate_fft_backward_dst
 # (Direct import via `using ..QGYBJplus: invert_B_to_A!` can fail in some loading contexts)
 # @inline invert_B_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_B_to_A!(args...; kwargs...)
 
-function _coerce_N2_profile(N2_profile, N2_const, nz, G::Grid)
+function _coerce_N2_profile(N2_profile, N2_const, nz, G::RuntimeGeometry)
     N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
     N2_const_T = N2_type(N2_const)
 
@@ -145,7 +145,7 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Compute geostrophic velocities from the spectral streamfunction ψ̂.
 
@@ -171,10 +171,10 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 3. Optionally solve omega equation or use YBJ formula for w
 
 # Arguments
-- `S::State`: State with ψ (input) and u, v, w (output)
-- `G::Grid`: Grid with wavenumbers kx, ky
+- `S::ModelFields`: ModelFields with ψ (input) and u, v, w (output)
+- `G::RuntimeGeometry`: RuntimeGeometry with wavenumbers kx, ky
 - `plans`: FFT plans (auto-generated if nothing)
-- `params`: Model parameters (for f₀, N²)
+- `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula instead of omega equation
 - `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
@@ -183,7 +183,7 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
 
 # Returns
-Modified State with updated u, v, w fields.
+Modified ModelFields with updated u, v, w fields.
 
 # Note
 This computes ONLY QG velocities. For Lagrangian advection including wave
@@ -192,7 +192,10 @@ effects, use `compute_total_velocities!` instead.
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
-function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
+    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+    N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+    workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -254,12 +257,13 @@ function compute_velocities!(S::State, G::Grid; plans=nothing, params=nothing, c
     if compute_w
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
-            compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, workspace=workspace)
+            compute_ybj_vertical_velocity!(S, G, plans; f, N2,
+                N2_profile, rho_u, rho_s, workspace)
         else
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
-            compute_vertical_velocity!(S, G, plans, params; N2_profile=N2_profile, 
-                                workspace=workspace, dealias_mask=dealias_mask)
+            compute_vertical_velocity!(S, G, plans; f, N2, N2_profile,
+                workspace, dealias_mask)
         end
     else
         # Set w to zero (leading-order QG approximation)
@@ -280,7 +284,7 @@ This is a 3D elliptic problem solved via tridiagonal systems.
 =#
 
 """
-    compute_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Solve the QG omega equation for ageostrophic vertical velocity.
 
@@ -324,10 +328,10 @@ Strong w occurs at:
 w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 
 # Arguments
-- `S::State`: State with ψ (input) and w (output)
-- `G::Grid`: Grid structure
+- `S::ModelFields`: ModelFields with ψ (input) and w (output)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `params`: Model parameters (f₀)
+- `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: 2D dealiasing mask for omega equation RHS. If `nothing` (default),
@@ -337,8 +341,9 @@ w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 # Fortran Correspondence
 Matches omega equation solver in the Fortran implementation.
 """
-function compute_vertical_velocity!(S::State, G::Grid, plans, params; 
-                            N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+function compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
+    f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
+    workspace=nothing, dealias_mask=nothing)
     # Compute default dealiasing mask if not provided
     # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
     if dealias_mask === nothing
@@ -346,18 +351,20 @@ function compute_vertical_velocity!(S::State, G::Grid, plans, params;
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.psi, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.psi, G)
 
+    profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     if need_transpose
-        _compute_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, dealias_mask)
+        _compute_vertical_velocity_2d!(S, G, plans, f, profile, workspace, dealias_mask)
     else
-        _compute_vertical_velocity_direct!(S, G, plans, params, N2_profile, dealias_mask)
+        _compute_vertical_velocity_direct!(S, G, plans, f, profile, dealias_mask)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, dealias_mask)
+function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
+    f, N2_profile, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -372,23 +379,6 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
     rhsk = similar(S.psi)
     PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
     rhsk_arr = parent(rhsk)
-
-    # Get stratification parameters
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0  # Default
-    end
-
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     # Solve the full omega equation: ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
     # Note: The RHS from omega_eqn_rhs! is 2 J(ψ_z, ∇²ψ), so we multiply by f/N² below
@@ -497,31 +487,16 @@ function _compute_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2
 
     # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
     # No additional normalization needed here
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
+    nz_phys, nx_phys, ny_phys = size(tmpw_arr)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
     end
 end
 
 # 2D decomposition version with transposes
-function _compute_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, dealias_mask)
+function _compute_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
+    f, N2_profile, workspace, dealias_mask)
     nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get stratification parameters
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0
-    end
-
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     # Allocate z-pencil workspace
     work_z = workspace !== nothing && hasfield(typeof(workspace), :work_z) ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
@@ -665,7 +640,7 @@ Wave-induced vertical motion from the YBJ+ formulation.
 =#
 
 """
-    compute_ybj_vertical_velocity!(S, G, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
+    compute_ybj_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
 
 Compute vertical velocity from near-inertial wave envelope using YBJ+ formulation.
 
@@ -709,10 +684,10 @@ This represents vertical motion induced by:
 4. **Combine**: Apply equation (2.10) with oscillating e^{-ift} factor
 
 # Arguments
-- `S::State`: State with B (input) and w (output)
-- `G::Grid`: Grid structure
+- `S::ModelFields`: ModelFields with B (input) and w (output)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `params`: Model parameters (f₀)
+- `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
@@ -735,7 +710,10 @@ either:
 # References
 - Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
 """
-function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
+function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
+    f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
+    rho_u=nothing, rho_s=nothing, workspace=nothing,
+    skip_inversion=false, t=nothing)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
@@ -746,39 +724,26 @@ function compute_ybj_vertical_velocity!(S::State, G::Grid, plans, params; N2_pro
     end
 
     # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(S.A, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.A, G)
 
+    profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     if need_transpose
-        _compute_ybj_vertical_velocity_2d!(S, G, plans, params, N2_profile, workspace, skip_inversion, t)
+        _compute_ybj_vertical_velocity_2d!(S, G, plans, f, profile,
+            rho_u, rho_s, workspace, skip_inversion, t)
     else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, params, N2_profile, skip_inversion, t)
+        _compute_ybj_vertical_velocity_direct!(S, G, plans, f, profile,
+            rho_u, rho_s, skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params, N2_profile, skip_inversion, t)
+function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
+    f, N2_profile, rho_u, rho_s, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
     w_arr = parent(S.w)
-
-    # Get parameters - need f and N² profile
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0  # Default
-    end
-
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -800,7 +765,7 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
-        invert_B_to_A!(S, G, params, a_vec)
+        invert_B_to_A!(S, G, a_vec; rho_u, rho_s)
     end
     # Step 2: Compute vertical derivative A_z using finite differences
     Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
@@ -897,25 +862,9 @@ function _compute_ybj_vertical_velocity_direct!(S::State, G::Grid, plans, params
 end
 
 # 2D decomposition version with transposes
-function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2_profile, workspace, skip_inversion, t)
+function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
+    f, N2_profile, rho_u, rho_s, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get parameters
-    if params !== nothing && hasfield(typeof(params), :f₀)
-        f = params.f₀
-    else
-        f = 1.0
-    end
-
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile = _coerce_N2_profile(N2_profile, N2_const, nz, G)
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
@@ -937,7 +886,7 @@ function _compute_ybj_vertical_velocity_2d!(S::State, G::Grid, plans, params, N2
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
         # Pass workspace if available
-        invert_B_to_A!(S, G, params, a_vec; workspace=workspace)
+        invert_B_to_A!(S, G, a_vec; rho_u, rho_s, workspace)
     end
 
     # Now A and C (A_z) are in xy-pencil form.
@@ -1039,7 +988,7 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+    compute_total_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
 
 Compute the TOTAL velocity field for Lagrangian particle advection.
 
@@ -1083,10 +1032,10 @@ For Lagrangian particle advection, always use this function rather than
 `compute_velocities!` to include wave effects.
 
 # Arguments
-- `S::State`: State with ψ, A, B (input) and u, v, w (output)
-- `G::Grid`: Grid structure
+- `S::ModelFields`: ModelFields with ψ, A, B (input) and u, v, w (output)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `params`: Model parameters
+- `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula for w
 - `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
@@ -1095,15 +1044,20 @@ For Lagrangian particle advection, always use this function rather than
 - `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
 
 # Returns
-Modified State with total velocity fields u, v, w.
+Modified ModelFields with total velocity fields u, v, w.
 """
-function compute_total_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
+    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+    N2_profile=nothing, rho_u=nothing, rho_s=nothing,
+    workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
     # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
-    compute_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, use_ybj_w=use_ybj_w, N2_profile=N2_profile, workspace=workspace, dealias_mask=dealias_mask)
+    compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
+        N2_profile, rho_u, rho_s, workspace, dealias_mask)
 
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
-    compute_wave_velocities!(S, G; plans=plans, params=params, compute_w=compute_w, include_wave_velocity=include_wave_velocity, N2_profile=N2_profile)
+    compute_wave_velocities!(S, G; plans, f, N2, compute_w,
+        include_wave_velocity, N2_profile)
 
     return S
 end
@@ -1118,7 +1072,7 @@ propagation. This is the Stokes drift correction.
 =#
 
 """
-    compute_wave_velocities!(S, G; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
+    compute_wave_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
 
 Compute wave velocities and Stokes drift, adding them to existing QG velocities.
 
@@ -1182,13 +1136,13 @@ Near-inertial waves contribute to particle advection through two mechanisms:
 11. Add contributions to existing u, v, w fields (in-place modification)
 
 # Arguments
-- `S::State`: State with A, B, C (input) and u, v, w modified (output)
-- `G::Grid`: Grid structure
+- `S::ModelFields`: ModelFields with A, B, C (input) and u, v, w modified (output)
+- `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `params`: Model parameters (requires f₀ for Stokes drift normalization, N² for stratification)
+- `f`, `N2`: Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true (default), compute and add vertical wave Stokes drift
 - `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
-- `N2_profile::Vector`: Optional N²(z) profile for Jacobian second term (default: constant from params)
+- `N2_profile::Vector`: Optional N²(z) profile for the Jacobian second term
 
 # Note
 This function modifies u, v, w in-place by adding wave contributions.
@@ -1199,7 +1153,9 @@ Call after compute_velocities! to get total velocity.
 - Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothing, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
+function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
+    f::Real=1.0, N2::Real=1.0, compute_w=true,
+    include_wave_velocity=true, N2_profile=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1212,22 +1168,11 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     nz_local, nx_local, ny_local = size(Aₖ_arr)
 
     # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
-    f₀ = if params !== nothing && hasfield(typeof(params), :f₀)
-        params.f₀
-    else
-        1.0  # Default fallback
-    end
+    f₀ = f
     f₀² = f₀^2
 
-    # Get N² value from params (default to 1.0 if not available)
-    N2_const = if params !== nothing && hasfield(typeof(params), :N²)
-        params.N²
-    else
-        1.0
-    end
-
-    # Get N² profile - use provided profile, or create constant profile from params.N²
-    N2_profile_local = _coerce_N2_profile(N2_profile, N2_const, nz, G)
+    # Get N² profile, falling back to the explicitly supplied scalar N².
+    N2_profile_local = _coerce_N2_profile(N2_profile, N2, nz, G)
 
     # Set up plans if needed
     if plans === nothing

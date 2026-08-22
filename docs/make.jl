@@ -1,6 +1,4 @@
 using Pkg
-# Ensure the package in this repo is available in the docs environment
-# Use @__DIR__ for robust path resolution regardless of working directory
 Pkg.develop(PackageSpec(path=dirname(@__DIR__)))
 Pkg.instantiate()
 
@@ -13,17 +11,16 @@ makedocs(
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", "") == "true",
         canonical = "https://subhk.github.io/QGYBJplus.jl/stable/",
-        assets = ["assets/custom.css"],
         sidebar_sitename = true,
         collapselevel = 2,
-        size_threshold = 500_000,  # 500KB limit for individual pages
+        size_threshold = 500_000,
     ),
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
-            "Key Concepts" => "concepts.md",
             "Installation" => "getting_started.md",
             "Quick Start" => "quickstart.md",
+            "Key Concepts" => "concepts.md",
             "Worked Example" => "worked_example.md",
         ],
         "Physics & Theory" => [
@@ -50,17 +47,17 @@ makedocs(
         ],
         "API Reference" => [
             "Core Types" => "api/types.md",
-            "Grid & State" => "api/grid_state.md",
+            "Geometry & Fields" => "api/grid_state.md",
             "Physics Functions" => "api/physics.md",
             "Time Stepping" => "api/timestepping.md",
             "Particles" => "api/particles.md",
-            "Full Index" => "api/index.md",
+            "API Map" => "api/index.md",
         ],
         "Troubleshooting" => "troubleshooting.md",
     ],
     doctest = false,
-    # Allow doc coverage warnings (e.g., docstrings not referenced in pages) without failing the build.
-    warnonly = [:missing_docs, :cross_references, :autodocs_block, :docs_block],
+    # Internal kernels are intentionally omitted from the user-facing API.
+    warnonly = [:missing_docs],
 )
 
 deploydocs(

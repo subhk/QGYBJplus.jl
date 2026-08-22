@@ -203,7 +203,7 @@ function tricubic_interpolation(x::T, y::T, z::T,
     # For ix (0-based), P_0 is at array index ix+1 (1-based)
     # So stencil indices are: ix (P_{-1}), ix+1 (P_0), ix+2 (P_1), ix+3 (P_2)
     for k in 0:3, j in 0:3, i in 0:3
-        # Grid indices with boundary handling (convert 0-based ix to 1-based)
+        # Mesh indices with boundary handling (convert 0-based ix to 1-based)
         gx = get_grid_index(ix + i, nx, boundary_conditions.periodic_x)
         gy = get_grid_index(iy + j, ny, boundary_conditions.periodic_y)
         gz = get_grid_index(iz + k, nz, false)  # Z never periodic
@@ -522,7 +522,7 @@ function quintic_interpolation(x::T, y::T, z::T,
     # For ix (0-based), P_0 is at array index ix+1 (1-based)
     # So stencil indices are: ix-1, ix, ix+1, ix+2, ix+3, ix+4 (1-based)
     for k in 0:5, j in 0:5, i in 0:5
-        # Grid indices with boundary handling (convert 0-based ix to 1-based)
+        # Mesh indices with boundary handling (convert 0-based ix to 1-based)
         gx = get_grid_index(ix + i - 1, nx, boundary_conditions.periodic_x)
         gy = get_grid_index(iy + j - 1, ny, boundary_conditions.periodic_y)
         gz = get_grid_index(iz + k - 1, nz, false)  # Z never periodic

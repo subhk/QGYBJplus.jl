@@ -18,7 +18,7 @@ The nonlinear terms represent:
    - Waves are refracted by gradients in relative vorticity ζ = ∇²ψ
    - This causes wave focusing in anticyclones, defocusing in cyclones
 
-3. WAVE FEEDBACK: qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+3. WAVE FEEDBACK: qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
    - Waves can modify the mean flow through nonlinear wave-wave interactions
    - This is the Xie & Vanneste (2015) wave feedback term
 
@@ -45,7 +45,7 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep.
 
 module Nonlinear
 
-using ..QGYBJplus: Grid, local_to_global, z_is_local
+using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity, local_to_global, z_is_local
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
@@ -59,7 +59,7 @@ const PARENT = Base.parentmodule(@__MODULE__)
 const _allocate_fft_dst = allocate_fft_backward_dst
 
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.
-function _prefilter_spectral!(dst, src, G::Grid, Lmask)
+function _prefilter_spectral!(dst, src, G::RuntimeGeometry, Lmask)
     nx, ny = G.nx, G.ny
     src_arr = parent(src)
     dst_arr = parent(dst)
@@ -118,7 +118,7 @@ In vector form: J(φ, χ) = ẑ · (∇φ × ∇χ)
 - `dstk`: Output array for Ĵ(φ, χ) in spectral space
 - `phik`: φ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
 - `chik`: χ̂ in spectral space (must be real field, i.e., Hermitian symmetric)
-- `G::Grid`: Grid with wavenumber arrays
+- `G::RuntimeGeometry`: RuntimeGeometry with wavenumber arrays
 - `plans`: FFT plans from plan_transforms!
 - `Lmask`: Optional 2/3 dealiasing mask (true = keep mode, false = zero)
 
@@ -133,7 +133,7 @@ so the physical derivatives are extracted via `real()`.
 jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
-function jacobian_spectral!(dstk, φₖ, χₖ, G::Grid, plans; Lmask=nothing)
+function jacobian_spectral!(dstk, φₖ, χₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -262,7 +262,7 @@ where u, v are the geostrophic velocities (in real space).
 - `nqk, nBRk, nBIk`: Output arrays (spectral)
 - `u, v`: Real-space velocity arrays (precomputed)
 - `qk, BRk, BIk`: Input fields (spectral)
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `plans`: FFT plans
 - `Lmask`: Dealiasing mask (true = keep mode, false = zero)
 
@@ -280,7 +280,7 @@ This matches `convol_waqg` in derivatives.f90.
 # Note
 The velocities u, v should be precomputed and passed in real space.
 """
-function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask=nothing)
+function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -401,7 +401,7 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::Grid, plans; Lmask
 end
 
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
-function _convol_advect!(nχk, u, v, χk, G::Grid, plans; Lmask=nothing, use_real::Bool=false)
+function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans; Lmask=nothing, use_real::Bool=false)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     u_arr = parent(u); v_arr = parent(v)
@@ -455,7 +455,7 @@ end
 
 Compute advection of q using divergence form without splitting wave fields.
 """
-function convol_waqg_q!(nqk, u, v, qk, G::Grid, plans; Lmask=nothing)
+function convol_waqg_q!(nqk, u, v, qk, G::RuntimeGeometry, plans; Lmask=nothing)
     return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask, use_real=true)
 end
 
@@ -464,7 +464,7 @@ end
 
 Compute advection of complex B directly (YBJ+ path).
 """
-function convol_waqg_B!(nBk, u, v, Bk, G::Grid, plans; Lmask=nothing)
+function convol_waqg_B!(nBk, u, v, Bk, G::RuntimeGeometry, plans; Lmask=nothing)
     return _convol_advect!(nBk, u, v, Bk, G, plans; Lmask=Lmask, use_real=false)
 end
 
@@ -521,7 +521,7 @@ refraction_waqg!(rBR, rBI, BR, BI, psi, grid, plans; Lmask=L)
 # rBR, rBI now contain the refraction tendencies
 ```
 """
-function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -605,7 +605,7 @@ end
 
 Compute wave refraction term ζ*B directly for complex B (YBJ+ path).
 """
-function refraction_waqg_B!(rBk, Bk, ψₖ, G::Grid, plans; Lmask=nothing)
+function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψₖ)
@@ -674,14 +674,14 @@ This represents the averaged effect of nonlinear wave-wave interactions
 on the balanced flow (Xie & Vanneste 2015).
 
 For dimensional equations where B has actual velocity units:
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
 
-No additional scaling is needed since B already contains the wave amplitude.
+The factor 1/f₀ converts the quadratic velocity-gradient terms to PV units.
 ================================================================================
 =#
 
 """
-    compute_qw!(qwk, BRk, BIk, par, G, plans; Lmask=nothing)
+    compute_qw!(qwk, BRk, BIk, G, plans; f, Lmask=nothing)
 
 Compute wave feedback on mean flow: qʷ from wave field B.
 
@@ -693,14 +693,15 @@ interaction in the QG-YBJ+ model.
 # Mathematical Form (Xie & Vanneste 2015)
 For dimensional equations where B has velocity units [m/s]:
 
-    qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
+    qʷ = (i/2f₀)J(B*, B) + (1/4f₀)∇²|B|²
 
 where:
 - B* is the complex conjugate of B
 - J(B*, B) = B*ₓBᵧ - B*ᵧBₓ is the Jacobian
 - |B|² = BR² + BI² is the wave energy density
 
-No W2F scaling is applied since B already has its actual dimensional amplitude.
+No separate wave-amplitude scaling is applied since B already has its actual
+dimensional amplitude. The Coriolis normalization 1/f₀ remains required.
 
 # Decomposition
 Let B = BR + i×BI. Then:
@@ -712,23 +713,27 @@ The final qʷ is real-valued after combining terms.
 # Arguments
 - `qwk`: Output array for q̂ʷ (spectral)
 - `BRk, BIk`: Wave field components (spectral)
-- `par`: QGParams
-- `G::Grid`: Grid struct
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `plans`: FFT plans
+- `f`: Coriolis frequency f₀
 - `Lmask`: Dealiasing mask
 
 # Fortran Correspondence
-This is similar to `compute_qw` in derivatives.f90, but without the W2F scaling
-since we solve dimensional equations where B has actual amplitude.
+This is the dimensional counterpart of `compute_qw` in derivatives.f90. The
+legacy nondimensional amplitude factors are absent, while 1/f₀ is retained.
 
 # Example
 ```julia
-compute_qw!(qw, BR, BI, params, grid, plans; Lmask=L)
+compute_qw!(qw, BR, BI, grid, plans; f=f₀, Lmask=L)
 # qw now contains wave feedback term
 ```
 """
-function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
+function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans;
+                     f::Real, Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
+    isfinite(f) && !iszero(f) ||
+        throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
+    inv_f = inv(float(f))
 
     # Get underlying arrays
     qʷₖ_arr = parent(qʷₖ)
@@ -776,7 +781,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     BRₓᵣ_arr = parent(BRₓᵣ); BRᵧᵣ_arr = parent(BRᵧᵣ)
     BIₓᵣ_arr = parent(BIₓᵣ); BIᵧᵣ_arr = parent(BIᵧᵣ)
 
-    #= Compute (i/2)J(B*, B) term
+    #= Compute the unscaled (i/2)J(B*, B) term
     J(B*, B) = 2i(BRₓBIᵧ - BRᵧBIₓ)  [purely imaginary]
     So (i/2)J(B*, B) = i² × (BRₓBIᵧ - BRᵧBIₓ) = -(BRₓBIᵧ - BRᵧBIₓ) = BRᵧBIₓ - BRₓBIᵧ =#
     qʷᵣ = _allocate_fft_dst(qʷₖ, plans)
@@ -808,7 +813,7 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
     tempₖ_arr = parent(tempₖ)
 
     #= Assemble qʷ in spectral space
-    qʷ = J_term + (1/4)∇²|B|²
+    qʷ = (1/f₀) [J_term + (1/4)∇²|B|²]
     where ∇² → -kₕ² in spectral space =#
     fft_forward!(qʷₖ, qʷᵣ, plans)
     qʷₖ_arr = parent(qʷₖ)
@@ -825,9 +830,9 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
         kₕ² = kₓ^2 + kᵧ^2
       
         if should_keep(i_global, j_global)
-            # qʷ = (i/2)J(B*, B) + (1/4)∇²|B|²
-            # For dimensional equations, B has actual amplitude - no W2F scaling needed
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            qʷₖ_arr[k, i_local, j_local] = inv_f *
+                (qʷₖ_arr[k, i_local, j_local] -
+                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end
@@ -837,12 +842,16 @@ function compute_qw!(qʷₖ, BRk, BIk, par, G::Grid, plans; Lmask=nothing)
 end
 
 """
-    compute_qw_complex!(qʷₖ, Bk, par, G, plans; Lmask=nothing)
+    compute_qw_complex!(qʷₖ, Bk, G, plans; f, Lmask=nothing)
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 """
-function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
+function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
+                             f::Real, Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
+    isfinite(f) && !iszero(f) ||
+        throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
+    inv_f = inv(float(f))
 
     qʷₖ_arr = parent(qʷₖ)
 
@@ -913,7 +922,9 @@ function compute_qw_complex!(qʷₖ, Bk, par, G::Grid, plans; Lmask=nothing)
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
         if should_keep(i_global, j_global)
-            qʷₖ_arr[k, i_local, j_local] = qʷₖ_arr[k, i_local, j_local] - 0.25*kₕ²*tempₖ_arr[k, i_local, j_local]
+            qʷₖ_arr[k, i_local, j_local] = inv_f *
+                (qʷₖ_arr[k, i_local, j_local] -
+                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
         else
             qʷₖ_arr[k, i_local, j_local] = 0
         end
@@ -936,7 +947,7 @@ with Neumann boundary conditions (∂q/∂z = 0 at top/bottom).
 =#
 
 """
-    dissipation_q_nv!(dqk, qok, par, G; workspace=nothing)
+    dissipation_q_nv!(dqk, qok, vertical_diffusivity, G; workspace=nothing)
 
 Compute vertical diffusion of q with Neumann boundary conditions.
 
@@ -956,8 +967,8 @@ Boundary points (Neumann):
 # Arguments
 - `dqk`: Output array for diffusion term
 - `qok`: Input q field at the current Runge-Kutta stage
-- `par`: QGParams (for nuz coefficient)
-- `G::Grid`: Grid struct
+- `vertical_diffusivity`: Scalar vertical diffusivity coefficient
+- `G::RuntimeGeometry`: RuntimeGeometry struct
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 
 # Note
@@ -967,16 +978,17 @@ so the operation is the same for each (kx, ky) mode.
 # Fortran Correspondence
 This matches `dissipation_q_nv` in derivatives.f90.
 """
-function dissipation_q_nv!(dqk, qok, par, G::Grid; workspace=nothing)
+function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::RuntimeGeometry;
+    workspace=nothing)
     nz = G.nz
 
     # Check if we need 2D decomposition transpose
-    need_transpose = G.decomp !== nothing && hasfield(typeof(G.decomp), :pencil_z) && !z_is_local(qok, G)
+    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(qok, G)
 
     if need_transpose
-        _dissipation_q_nv_2d!(dqk, qok, par, G, workspace)
+        _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G, workspace)
     else
-        _dissipation_q_nv_direct!(dqk, qok, par, G)
+        _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G)
     end
 
     return dqk
@@ -985,7 +997,7 @@ end
 """
 Direct vertical diffusion for serial or 1D decomposition (z fully local).
 """
-function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
+function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry)
     nz = G.nz
 
     # Get underlying arrays
@@ -1005,7 +1017,7 @@ function _dissipation_q_nv_direct!(dqk, qok, par, G::Grid)
     # Vertical grid spacing (safe now since nz >= 2)
     Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
-    νz = par.νz
+    νz = vertical_diffusivity
 
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
@@ -1024,7 +1036,7 @@ end
 """
 2D decomposition vertical diffusion with transposes.
 """
-function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
+function _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry, workspace)
     nz = G.nz
 
     # Handle nz=1 case: no vertical diffusion possible with single layer
@@ -1051,7 +1063,7 @@ function _dissipation_q_nv_2d!(dqk, qok, par, G::Grid, workspace)
     # Vertical grid spacing (safe now since nz >= 2)
     Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
-    νz = par.νz
+    νz = vertical_diffusivity
 
     @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
         if k == 1
@@ -1089,7 +1101,7 @@ where λ = ν₁kₕ^(2n₁) + ν₂kₕ^(2n₂)
 =#
 
 """
-    int_factor(kx, ky, par; waves=false)
+    int_factor(kx, ky, Δt, closure; waves=false, inviscid=false)
 
 Compute hyperdiffusion integrating factor for given wavenumber.
 
@@ -1108,7 +1120,9 @@ For efficiency, we return just λ×dt (the exponent).
 
 # Arguments
 - `kx, ky`: Horizontal wavenumber components
-- `par`: QGParams (contains ν₁, ν₂, n₁, n₂)
+- `Δt`: Time-step length
+- `closure`: [`HorizontalHyperdiffusivity`](@ref) coefficients and orders
+- `inviscid`: Disable the integrating factor when true
 - `waves::Bool`: If true, use wave hyperdiffusion (nuh1w, ilap1w, etc.)
 
 # Returns
@@ -1119,7 +1133,7 @@ Note: Uses isotropic form `(kx² + ky²)^n` for proper damping of diagonal modes
 # Usage in Time Stepping
 ```julia
 # After computing tendency
-factor = exp(-int_factor(kx, ky, par))
+factor = exp(-int_factor(kx, ky, Δt, closure))
 q_new = factor * q_tendency
 ```
 
@@ -1129,18 +1143,18 @@ This matches the integrating factor computation in the main loop of main_waqg.f9
 # Example
 ```julia
 # Get integrating factor for wavenumber (3, 4)
-lambda_dt = int_factor(3.0, 4.0, params)
+lambda_dt = int_factor(3.0, 4.0, Δt, closure)
 factor = exp(-lambda_dt)  # Multiply solution by this
 ```
 """
-function int_factor(kₓ::Real, kᵧ::Real, par; waves::Bool=false)
+function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
+    closure::HorizontalHyperdiffusivity; waves::Bool=false,
+    inviscid::Bool=false)
     # When inviscid=true, disable ALL dissipation including hyperdiffusion
     # Return 0 so that exp(-0) = 1 (no damping)
-    if hasfield(typeof(par), :inviscid) && par.inviscid
+    if inviscid
         return 0.0
     end
-
-    Δt = par.dt
     # Use isotropic form: ν * (kx² + ky²)^n = ν * kh^{2n}
     # This is the standard (-∇²)^n hyperdiffusion operator.
     # Previous form ν*(|kx|^{2n} + |ky|^{2n}) under-damped diagonal modes.
@@ -1148,13 +1162,13 @@ function int_factor(kₓ::Real, kᵧ::Real, par; waves::Bool=false)
 
     if waves
         # Wave field hyperdiffusion (often smaller or zero)
-        ν₁ʷ = par.νₕ₁ʷ; n₁ʷ = par.ilap1w
-        ν₂ʷ = par.νₕ₂ʷ; n₂ʷ = par.ilap2w
+        ν₁ʷ = closure.waves; n₁ʷ = closure.wave_laplacian_order
+        ν₂ʷ = closure.waves2; n₂ʷ = closure.wave_laplacian_order2
         return Δt * ( ν₁ʷ * kₕ²^n₁ʷ + ν₂ʷ * kₕ²^n₂ʷ )
     else
         # Mean flow hyperdiffusion
-        ν₁ = par.νₕ₁; n₁ = par.ilap1
-        ν₂ = par.νₕ₂; n₂ = par.ilap2
+        ν₁ = closure.flow; n₁ = closure.flow_laplacian_order
+        ν₂ = closure.flow2; n₂ = closure.flow_laplacian_order2
         return Δt * ( ν₁ * kₕ²^n₁ + ν₂ * kₕ²^n₂ )
     end
 end
