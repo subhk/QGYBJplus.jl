@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to save and load simulation data in QGYBJ+.jl.
-
 ## Output Formats
 
 QGYBJ+.jl supports multiple output formats:

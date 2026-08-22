@@ -104,10 +104,12 @@ mutable struct SimulationRunOptions{T}
     save_waves::Bool
     save_velocities::Bool
     output
+    particles
+    particle_interval::Int
 end
 
 default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
-    "output", nothing, 10, true, true, true, false, nothing)
+    "output", nothing, 10, true, true, true, false, nothing, nothing, 1)
 
 """
     RectilinearGrid(; size, extent=nothing, x=nothing, y=nothing, z=nothing,
@@ -799,6 +801,24 @@ function _schedule_in_seconds(schedule, dt)
     throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
 end
 
+function _configure_particles!(sim::Simulation; particles=nothing, particle_interval=nothing)
+    options = sim.run_options
+    if particles === false
+        options.particles = nothing
+    elseif particles !== nothing
+        options.particles = particles
+    end
+    if particle_interval !== nothing
+        interval = particle_interval isa IterationInterval ? particle_interval.interval :
+                   particle_interval isa TimeInterval ?
+                       max(1, round(Int, particle_interval.interval / sim.params.dt)) :
+                       Int(particle_interval)
+        interval > 0 || throw(ArgumentError("particle_interval must be positive"))
+        options.particle_interval = interval
+    end
+    return sim
+end
+
 function _configure_output!(sim::Simulation; output=nothing, diagnostics=nothing,
     verbose=nothing)
 
@@ -839,10 +859,12 @@ Configure the model clock, output, and diagnostics in an Oceananigans-style
 workflow. The returned object shares the model state and uses ETD-RK2.
 """
 function Simulation(model::Simulation; Δt=nothing, stop_time=nothing,
-    stop_iteration=nothing, output=nothing, diagnostics=nothing, verbose=nothing)
+    stop_iteration=nothing, output=nothing, diagnostics=nothing,
+    particles=nothing, particle_interval=nothing, verbose=nothing)
 
     _configure_time_stepping!(model; Δt=Δt, stop_time=stop_time,
                               stop_iteration=stop_iteration)
+    _configure_particles!(model; particles=particles, particle_interval=particle_interval)
     return _configure_output!(model; output=output, diagnostics=diagnostics,
                               verbose=verbose)
 end
@@ -872,6 +894,8 @@ function run!(sim::Simulation;
     stop_iteration=nothing,
     output=nothing,
     diagnostics=nothing,
+    particles=nothing,
+    particle_interval=nothing,
     save_interval::Union{Real, Nothing}=nothing,
     diagnostics_interval::Union{Int, Nothing}=nothing,
     verbose::Union{Bool, Nothing}=nothing,
@@ -883,6 +907,7 @@ function run!(sim::Simulation;
     _configure_time_stepping!(sim; Δt=Δt, stop_time=stop_time,
                               stop_iteration=stop_iteration)
     _configure_output!(sim; output=output, diagnostics=diagnostics, verbose=verbose)
+    _configure_particles!(sim; particles=particles, particle_interval=particle_interval)
     options = sim.run_options
     progress !== nothing && (options.verbose = progress)
     output_dir !== nothing && (options.output_dir = output_dir)
@@ -934,7 +959,9 @@ function run!(sim::Simulation;
         workspace = workspace,
         N2_profile = N2_profile,
         print_progress = mpi_config.is_root && options.verbose,
-        diagnostics_interval = options.diagnostics_interval
+        diagnostics_interval = options.diagnostics_interval,
+        particles = options.particles,
+        particle_interval = options.particle_interval
     )
 
     if mpi_config.is_root && options.verbose

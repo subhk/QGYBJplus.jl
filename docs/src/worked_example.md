@@ -4,28 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This comprehensive tutorial builds a complete QG-YBJ+ simulation from scratch. We'll explain every step so you understand what's happening and why.
-
-**Time required**: ~30 minutes
-
-**What you'll build**: A simulation of near-inertial waves interacting with ocean eddies, including:
-- Dipole vortex (anticyclone + cyclone pair)
-- Surface-trapped wave initial condition
-- Wave refraction and energy diagnostics
-- NetCDF output for visualization
-
----
-
-## Overview
-
-We'll simulate a 500km × 500km × 4km ocean domain with:
-- A dipole vortex (cyclone + anticyclone pair)
-- Surface-trapped near-inertial waves
-- 5 inertial periods of evolution
-
-The waves will refract toward the anticyclone, demonstrating the key wave-trapping phenomenon.
-
----
+A complete QG-YBJ+ simulation, built from scratch: a 500 km × 500 km × 4 km domain with a dipole vortex (cyclone + anticyclone), surface-trapped near-inertial waves, and 5 inertial periods of evolution. The waves refract toward the anticyclone, the key wave-trapping behaviour. Includes energy diagnostics and NetCDF output.
 
 ## Step 1: Load Packages and Set Parameters
 
@@ -68,8 +47,6 @@ println("  Time steps: $nt ($(n_inertial_periods) inertial periods)")
 - `f₀ = 1e-4 s⁻¹` is the Coriolis parameter at ~45° latitude
 - `N² = 1e-5 s⁻²` gives N ≈ 0.003 s⁻¹, typical for the ocean interior
 - The inertial period is `2π/f₀ ≈ 17.5 hours`
-
----
 
 ## Step 2: Create Parameters and Initialize
 
@@ -119,8 +96,6 @@ println("  ybj_plus = $(par.ybj_plus)")
 | `no_wave_feedback=true` | One-way coupling | Waves don't affect mean flow (simpler) |
 | `νₕ₁, ilap1` | Biharmonic | Scale-selective dissipation at grid scale |
 
----
-
 ## Step 3: Setup Grid, State, and FFT Plans
 
 ```julia
@@ -146,8 +121,6 @@ println("  dx = $(G.dx/1e3) km, dz = $(G.dz[1]) m")
 - **S (State)**: q, B (prognostic, spectral); psi, A, C (diagnostic, spectral); u, v, w (velocities, real space)
 - **plans**: FFTW plans for efficient transforms
 - **a_ell**: Coefficient array for elliptic inversions: `a(z) = f₀²/N²(z)`
-
----
 
 ## Step 4: Set Up Initial Conditions
 
@@ -249,8 +222,6 @@ println("  Vertical structure: exp(-z/$decay_depth)")
 
 This mimics wind-generated near-inertial waves that are strongest near the surface and decay with depth.
 
----
-
 ## Step 5: Run the Time-Stepping Loop
 
 ```julia
@@ -314,8 +285,6 @@ println("Simulation complete!")
 4. **Update**: φ^{n+1} = φ^{n-1} + 2·dt·F^n
 5. **Rotate** time levels: Snm1 ← Sn ← Snp1
 
----
-
 ## Step 6: Analyze Results
 
 ```julia
@@ -355,8 +324,6 @@ println("\nWave refraction check:")
 println("  If waves concentrated in anticyclone, max|A| should be")
 println("  near max(ψ) location")
 ```
-
----
 
 ## Step 7: Save Output
 
@@ -409,8 +376,6 @@ end
 println("\nOutput saved to: $output_file")
 ```
 
----
-
 ## Complete Script
 
 Here's the full script you can copy and run:
@@ -455,20 +420,6 @@ end
 println("Done! Final KE = ", flow_kinetic_energy(Sn.u, Sn.v))
 ```
 
----
-
-## What's Next?
-
-Now that you've built a complete simulation:
-
-1. **[Configuration Guide](@ref configuration)** - Customize all parameters
-2. **[Stratification](@ref stratification)** - Use realistic N²(z) profiles
-3. **[MPI Parallelization](@ref parallel)** - Scale to larger domains
-4. **[Particle Advection](@ref particles)** - Track Lagrangian trajectories
-5. **[Physics Overview](@ref physics-overview)** - Understand the equations deeply
-
----
-
 ## Common Modifications
 
 ### Add Particle Tracking
@@ -508,3 +459,11 @@ domain = create_domain_config(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz)
 strat = create_stratification_config(type=:analytical, N_func=N)
 sim = setup_simulation(domain, strat)
 ```
+
+## What's Next?
+
+- [Configuration](@ref configuration) — all parameters
+- [Stratification](@ref stratification) — realistic N²(z) profiles
+- [MPI Parallelization](@ref parallel) — larger domains
+- [Particle Advection](@ref particles) — Lagrangian trajectories
+- [Physics Overview](@ref physics-overview) — the equations

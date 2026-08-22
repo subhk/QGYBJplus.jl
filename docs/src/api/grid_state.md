@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page documents the core data structures: `Grid` and `State`.
-
 ## Grid Type
 
 The `Grid` struct contains spatial coordinates, spectral wavenumbers, and parallel decomposition information.

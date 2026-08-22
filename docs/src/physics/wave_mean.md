@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes the two-way coupling between near-inertial waves and the balanced mean flow.
+Two-way coupling between near-inertial waves and the balanced mean flow.
 
 ## Physical Motivation
 

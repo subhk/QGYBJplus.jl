@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes diagnostic quantities and analysis tools in QGYBJ+.jl.
-
 ## Energy Diagnostics
 
 ### Flow Kinetic Energy

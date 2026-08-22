@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes the numerical algorithms used in QGYBJ+.jl, including the 2D pencil decomposition strategy for parallel execution.
-
 ## Spatial Discretization
 
 ### Horizontal: Pseudo-Spectral Method

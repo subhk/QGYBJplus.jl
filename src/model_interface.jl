@@ -1058,7 +1058,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                          N2_profile=nothing,
                          print_progress::Bool=true,
                          progress_interval::Int=0,
-                         diagnostics_interval::Int=0)
+                         diagnostics_interval::Int=0,
+                         particles=nothing,
+                         particle_interval::Int=1)
 
     # Setup parallel config if not provided (for I/O)
     # MPI is required, so use the mpi_config directly
@@ -1226,6 +1228,9 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
     Snp1 = copy_state(S)
     timestep_workspace = ExpRK2Workspace(Sn, plans; G=G)
 
+    particle_interval > 0 ||
+        throw(ArgumentError("particle_interval must be positive (got $particle_interval)"))
+
     for step in 1:nt
         exp_rk2_step!(Snp1, Sn, G, par, plans;
                       a=a_ell, dealias_mask=L_mask, workspace=workspace,
@@ -1233,6 +1238,10 @@ function run_simulation!(S::State, G::Grid, par::QGParams, plans;
                       timestep_workspace=timestep_workspace,
                       current_time=(step - 1) * dt)
         Sn, Snp1 = Snp1, Sn
+        if particles !== nothing && step % particle_interval == 0
+            advect_particles!(particles, Sn, G, particle_interval * dt, (step - 1) * dt;
+                              params=par, N2_profile=N2_profile)
+        end
         report_step(Sn, step, step * dt)
     end
 

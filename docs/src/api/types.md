@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page documents the core data types in QGYBJ+.jl.
-
 ## High-level construction
 
 The recommended user-facing workflow composes a model from small configuration

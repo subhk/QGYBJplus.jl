@@ -4,34 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-Core concepts for understanding QGYBJ+.jl — no code, just ideas.
-
----
-
-## What We Simulate
-
-The ocean has two interacting components at very different scales:
-
-```@raw html
-<div class="feature-grid">
-<div class="feature-card">
-    <h3>Mesoscale Eddies</h3>
-    <p><strong>Scale:</strong> ~100 km<br>
-    <strong>Timescale:</strong> Weeks to months<br>
-    <strong>Description:</strong> Slow spinning vortices that contain most of the ocean's kinetic energy</p>
-</div>
-<div class="feature-card">
-    <h3>Near-Inertial Waves</h3>
-    <p><strong>Scale:</strong> ~10 km<br>
-    <strong>Timescale:</strong> ~17 hours<br>
-    <strong>Description:</strong> Fast oscillations driven by wind, crucial for ocean mixing</p>
-</div>
-</div>
-```
-
-QGYBJ+.jl simulates both components and their interactions: **eddies refract waves, and waves feed energy back to the eddies**.
-
----
+Core ideas behind QGYBJ+.jl, without code.
 
 ## The Two Main Variables
 
@@ -53,8 +26,6 @@ The wave envelope captures wave energy without tracking fast oscillations:
 - Phase `arg(B)` represents wave phase
 - Evolves on the slow (eddy) timescale
 
----
-
 ## Wave-Eddy Interaction
 
 Three key processes govern how waves and eddies interact:
@@ -67,8 +38,6 @@ Three key processes govern how waves and eddies interact:
 
 !!! tip "Wave Trapping"
     The effective wave frequency is `f_eff = f₀ + ζ/2`. In anticyclones where ζ < 0, waves slow down and get **trapped** — this is a key mechanism for wave energy concentration.
-
----
 
 ## B vs A: Why Two Wave Variables?
 
@@ -83,8 +52,6 @@ B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}
 | **B** | Prognostic (evolved) | Simpler time-stepping equations |
 | **A** | Diagnostic (computed) | Represents physical wave amplitude |
 
----
-
 ## Coordinate System
 
 ### Spatial Coordinates
@@ -96,15 +63,11 @@ B = L^+(A) = \frac{\partial}{\partial z}\left[\frac{f_0^2}{N^2}\frac{\partial A}
 - **Nonlinear products** computed in physical space (avoid aliasing)
 - Transform between spaces using FFT
 
----
-
 ## Time Stepping
 
 The model uses second-order ETD-RK2. Horizontal hyperdiffusion is integrated
 exactly, while advection, refraction, dispersion, and vertical diffusion use
 two explicit Runge–Kutta stages.
-
----
 
 ## Quick Glossary
 
@@ -120,23 +83,7 @@ two explicit Runge–Kutta stages.
 | Lx, Ly | Domain size | Horizontal extent |
 | Lz | Domain depth | Vertical extent |
 
----
-
 ## Next Steps
 
-```@raw html
-<div class="learning-path">
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../quickstart/">Quick Start</a></strong> — Run your first simulation
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../physics/overview/">Physics Overview</a></strong> — See the full equations
-    </div>
-</div>
-</div>
-```
+- [Quick Start](@ref quickstart) — run your first simulation
+- [Physics Overview](@ref physics-overview) — the full equations

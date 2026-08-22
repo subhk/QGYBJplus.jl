@@ -6,13 +6,7 @@ CurrentModule = QGYBJplus
 
 Run your first QGYBJ+.jl simulation in 5 minutes.
 
----
-
 ## Minimal Example
-
-```@raw html
-<div class="quickstart-card">
-```
 
 ```julia
 using QGYBJplus
@@ -32,12 +26,6 @@ simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
                                             schedule=TimeInterval(3600.0)))
 run!(simulation)
 ```
-
-```@raw html
-</div>
-```
-
----
 
 ## Step-by-Step Breakdown
 
@@ -111,22 +99,7 @@ WKE, WPE, WCE = compute_detailed_wave_energy(state, simulation.grid, simulation.
 WE_B, WE_A = wave_energy(state.B, state.A)
 ```
 
----
-
 ## Common Configuration Options
-
-```@raw html
-<div class="feature-grid">
-<div class="feature-card">
-    <h3>Physics Options</h3>
-    <p>Control the physical model behavior</p>
-</div>
-<div class="feature-card">
-    <h3>Stratification</h3>
-    <p>Choose ocean density profile</p>
-</div>
-</div>
-```
 
 ```julia
 model = QGYBJModel(
@@ -148,8 +121,6 @@ model = QGYBJModel(
 | `closure` | `HorizontalHyperdiffusivity()` | Flow and wave dissipation |
 | `stratification` | `ConstantStratification(N²=1e-5)` | Vertical stratification |
 
----
-
 ## Output Files
 
 The `NetCDFOutput(path="output", ...)` above creates:
@@ -164,29 +135,8 @@ output/
     └── total_energy.nc
 ```
 
----
-
 ## What's Next?
 
-```@raw html
-<div class="learning-path">
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../worked_example/">Worked Example</a></strong> — Detailed step-by-step walkthrough
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../guide/configuration/">Configuration Guide</a></strong> — All available parameters
-    </div>
-</div>
-<div class="path-step">
-    <div class="step-number">→</div>
-    <div class="step-content">
-        <strong><a href="../advanced/parallel/">MPI Parallelization</a></strong> — Run large-scale simulations
-    </div>
-</div>
-</div>
-```
+- [Worked Example](@ref worked_example) — step-by-step walkthrough
+- [Configuration](@ref configuration) — all available parameters
+- [MPI Parallelization](@ref parallel) — large-scale runs

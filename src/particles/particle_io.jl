@@ -435,8 +435,8 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
             ds.attrib["iteration"] = iteration
             ds.attrib["number_of_particles"] = length(ids)
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-            ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
+            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
         end
 
     catch e
@@ -511,8 +511,8 @@ function create_streaming_particle_file!(manager::ParticleOutputManager{T},
             ds.attrib["number_of_particles"] = np_global
             ds.attrib["output_mode"] = "streaming"
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-            ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
+            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
         end
 
         println("Created streaming particle file: $filename")
@@ -702,8 +702,8 @@ function write_accumulated_trajectories!(manager::ParticleOutputManager{T},
             ds.attrib["end_time"] = manager.time_series[end]
             ds.attrib["output_mode"] = "trajectory"
             ds.attrib["integration_method"] = string(tracker.config.integration_method)
-            ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-            ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
+            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
 
             # Add user metadata
             for (key, value) in metadata
@@ -949,11 +949,12 @@ function _write_particle_trajectories_arrays(filename::String,
             ds.attrib["created_at"] = string(now())
             ds.attrib["number_of_particles"] = np
             ds.attrib["integration_method"] = string(config.integration_method)
-            ds.attrib["use_ybj_w"] = config.use_ybj_w
-            ds.attrib["use_3d_advection"] = config.use_3d_advection
-            ds.attrib["periodic_x"] = config.periodic_x
-            ds.attrib["periodic_y"] = config.periodic_y
-            ds.attrib["reflect_z"] = config.reflect_z
+            # NetCDF has no boolean attribute type; store flags as 0/1.
+            ds.attrib["use_ybj_w"] = Int32(config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int32(config.use_3d_advection)
+            ds.attrib["periodic_x"] = Int32(config.periodic_x)
+            ds.attrib["periodic_y"] = Int32(config.periodic_y)
+            ds.attrib["reflect_z"] = Int32(config.reflect_z)
 
             # Add user metadata
             for (key, value) in metadata
@@ -964,7 +965,7 @@ function _write_particle_trajectories_arrays(filename::String,
         @info "Particle trajectories written to: $filename"
 
     catch e
-        @warn "NCDatasets not available, cannot write particle trajectories: $e"
+        @warn "Failed to write particle trajectories to $filename" exception=(e, catch_backtrace())
     end
 
     return filename
@@ -1137,8 +1138,8 @@ function write_particle_snapshot(filename::String, tracker::ParticleTracker, tim
             ds.attrib["created_at"] = string(now())
             ds.attrib["time"] = time
             ds.attrib["number_of_particles"] = length(data.ids)
-            ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-            ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
+            ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
+            ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
         end
 
     catch e
@@ -1212,8 +1213,8 @@ function create_particle_output_file(filename::String, tracker::ParticleTracker;
                 ds.attrib["created_at"] = string(now())
                 ds.attrib["number_of_particles"] = np_global
                 ds.attrib["integration_method"] = string(tracker.config.integration_method)
-                ds.attrib["use_ybj_w"] = tracker.config.use_ybj_w
-                ds.attrib["use_3d_advection"] = tracker.config.use_3d_advection
+                ds.attrib["use_ybj_w"] = Int32(tracker.config.use_ybj_w)
+                ds.attrib["use_3d_advection"] = Int32(tracker.config.use_3d_advection)
             end
         end
 

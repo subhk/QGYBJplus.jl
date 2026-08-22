@@ -4,7 +4,7 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes the Young-Ben Jelloul Plus (YBJ+) formulation for near-inertial wave evolution.
+The Young–Ben Jelloul Plus (YBJ+) formulation for near-inertial wave evolution.
 
 ## Near-Inertial Waves
 

@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page provides guidance for optimizing QGYBJ+.jl performance.
-
 ## Quick Performance Wins
 
 ### 1. Use FFTW Wisdom

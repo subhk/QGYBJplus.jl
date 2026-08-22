@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes Lagrangian particle tracking in QGYBJ+.jl, including the physics, numerical algorithms, and parallel implementation.
-
 ## Overview
 
 Particle tracking allows you to:

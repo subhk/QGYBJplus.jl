@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page explains how to configure ocean stratification profiles in QGYBJ+.jl.
-
 ## Why Stratification Matters
 
 The buoyancy frequency ``N(z)`` affects:

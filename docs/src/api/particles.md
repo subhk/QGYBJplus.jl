@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page documents the particle advection API for Lagrangian tracking.
-
 ## Core Types
 
 ```@docs

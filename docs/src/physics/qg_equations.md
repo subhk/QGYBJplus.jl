@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page details the quasi-geostrophic (QG) equations implemented in QGYBJ+.jl.
-
 ## Potential Vorticity Evolution
 
 The core QG equation is the conservation of potential vorticity:

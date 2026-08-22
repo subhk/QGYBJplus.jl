@@ -1217,6 +1217,7 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     else
         1.0  # Default fallback
     end
+    f₀² = f₀^2
 
     # Get N² value from params (default to 1.0 if not available)
     N2_const = if params !== nothing && hasfield(typeof(params), :N²)
@@ -1423,7 +1424,6 @@ function compute_wave_velocities!(S::State, G::Grid; plans=nothing, params=nothi
     #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
     #   This expands to: w^S = -2·Im(K₀)/f₀
     inv_f₀ = 1.0 / f₀
-    f₀² = f₀^2
 
     # Add wave velocity and Stokes drift to existing QG velocities in physical space
     nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)

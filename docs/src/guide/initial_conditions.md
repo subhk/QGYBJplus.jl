@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes how to set up initial conditions for QGYBJ+.jl simulations.
-
 ## Overview
 
 Initial conditions must be specified for:

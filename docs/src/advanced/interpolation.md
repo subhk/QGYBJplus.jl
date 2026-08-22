@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page describes interpolation methods available in QGYBJ+.jl.
-
 ## Overview
 
 Interpolation is needed for:

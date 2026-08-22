@@ -40,24 +40,24 @@ N² = 1.0e-5            # Buoyancy frequency squared [s⁻²]
 # Dipole formula uses rotated (x,y) coords: x=(X-Y)/√2, y=(X+Y)/√2
 Lx = 70.0e3            # 70 km horizontal domain in (X,Y)
 Ly = 70.0e3            # 70 km horizontal domain in (X,Y)
-Lz = 3.0e3             # H = 3 km depth, surface at z = 0
+Lz = 2.0e3             # H = 2 km depth, surface at z = 0
 
 # Time stepping
-n_inertial_periods = 15.0
-T_inertial = 2π / f₀   # Inertial period = 2π/f [s] ≈ 14 hours
-dt = 2.0                # [s]
+n_inertial_periods = 10.0
+T_inertial = 2π / f₀                    # Inertial period = 2π/f [s] ≈ 14 hours
+dt = 2.0                                # [s]
 nt = round(Int, n_inertial_periods * T_inertial / dt)
 
 # Wave parameters
-u0_wave = 0.10         # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
-surface_layer_depth = 30.0  # Surface layer depth [m] (s = 30 m)
+u0_wave = 0.10                                  # Wave velocity amplitude [m/s] (u0 = 10 cm/s)
+surface_layer_depth = 30.0                      # Surface layer depth [m] (s = 30 m)
 
 # Flow parameters
-U0_flow = 0.335        # Flow velocity scale [m/s] (U = 33.5 cm/s)
-k_dipole = sqrt(2) * π / Lx  # κ = √2π/(70 km) per Asselin et al. (2020)
-psi0 = U0_flow / k_dipole  # Streamfunction amplitude [m²/s]
-vorticity_gradient = 2 * k_dipole^2 * U0_flow  # γ = 2κ²U ≈ 2.7e-9 m⁻¹ s⁻¹
-rossby_rms = k_dipole * U0_flow / f₀           # κU/f ≈ 0.17
+U0_flow = 0.335                                 # Flow velocity scale [m/s] (U = 33.5 cm/s)
+k_dipole = sqrt(2) * π / Lx                     # κ = √2π/(70 km) per Asselin et al. (2020)
+psi0 = U0_flow / k_dipole                       # Streamfunction amplitude [m²/s]
+vorticity_gradient = 2 * k_dipole^2 * U0_flow   # γ = 2κ²U ≈ 2.7e-9 m⁻¹ s⁻¹
+rossby_rms = k_dipole * U0_flow / f₀            # κU/f ≈ 0.17
 
 # Output settings
 output_dir = "output_asselin"

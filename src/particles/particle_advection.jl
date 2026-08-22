@@ -47,6 +47,7 @@ const State = _PARENT.State
 const plan_transforms! = _PARENT.plan_transforms!
 const compute_total_velocities! = _PARENT.compute_total_velocities!
 const ParallelConfig = _PARENT.ParallelConfig
+const Simulation = _PARENT.Simulation
 
 export ParticleConfig, ParticleState, ParticleTracker,
        create_particle_config, initialize_particles!,
@@ -287,7 +288,8 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     base_output_filename::String       # Base filename for automatic file splitting
     auto_file_splitting::Bool          # Enable automatic file splitting when max_save_points reached
     
-    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T
+    function ParticleTracker{T}(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing;
+                                plans=nothing) where T
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
         
@@ -330,8 +332,12 @@ mutable struct ParticleTracker{T<:AbstractFloat}
             w_field = zeros(T, grid.nz, grid.nx, grid.ny)
         end
 
-        # Set up transform plans (using unified interface)
-        plans = plan_transforms!(grid, parallel_config)
+        # Transform plans. Reuse the caller's plans whenever they are given:
+        # PencilFFTs compares pencils by identity, so a second plan set built for
+        # the same grid rejects arrays allocated from the first one.
+        if plans === nothing
+            plans = plan_transforms!(grid, parallel_config)
+        end
 
         # Defer halo exchange setup until first velocity update
         # This allows us to get actual local dimensions from State arrays
@@ -356,7 +362,18 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     end
 end
 
-ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing) where T = ParticleTracker{T}(config, grid, parallel_config)
+ParticleTracker(config::ParticleConfig{T}, grid::Grid, parallel_config=nothing; plans=nothing) where T =
+    ParticleTracker{T}(config, grid, parallel_config; plans=plans)
+
+"""
+    ParticleTracker(config, model::QGYBJModel)
+
+Build a tracker for `model`, reusing the model's grid, MPI configuration, and FFT
+plans. Pass the tracker to `Simulation(model; particles=tracker)` or to
+`run!(sim; particles=tracker)` to advect particles along with the flow.
+"""
+ParticleTracker(config::ParticleConfig{T}, model::Simulation) where T =
+    ParticleTracker{T}(config, model.grid, model.mpi_config; plans=model.plans)
 
 """
     setup_halo_exchange_for_grid(grid, rank, nprocs, comm, T; local_dims=nothing, process_grid=nothing,
@@ -564,7 +581,10 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
     end
     
     # Compute exact index ranges from the global particle grid
-    tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
+    # x_rel_* below are measured in particle-index units, so the tolerance has to
+    # be index-scaled too. Scaling it by the physical extent (metres) made a
+    # Float32 tracker on an ocean-sized domain discard every particle.
+    tol = sqrt(eps(T)) * max(one(T), T(config.nx_particles), T(config.ny_particles))
     x_rel_min = (x_min - config.x_min) / dxp
     x_rel_max = (x_max - config.x_min) / dxp
     y_rel_min = (y_min - config.y_min) / dyp
@@ -640,9 +660,13 @@ pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_verti
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function advect_particles!(tracker::ParticleTracker{T},
-                          state::State, grid::Grid, dt::T, current_time=nothing;
+                          state::State, grid::Grid, dt::Real, current_time=nothing;
                           params=nothing, N2_profile=nothing) where T
-    
+
+    # Trackers default to Float32 while the model runs in Float64, so accept any
+    # real time step and convert it to the tracker's precision here.
+    dt = T(dt)
+
     # Use simulation time if provided, otherwise use tracker's internal time
     if current_time !== nothing
         sim_time = T(current_time)

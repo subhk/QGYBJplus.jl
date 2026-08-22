@@ -4,8 +4,6 @@
 CurrentModule = QGYBJplus
 ```
 
-This page provides detailed technical documentation of the parallel particle advection algorithm in QGYBJ+.jl.
-
 ## Overview
 
 The parallel particle algorithm enables efficient Lagrangian particle tracking on distributed-memory systems using MPI. Key features:
@@ -390,10 +388,6 @@ end
 ```
 
 ## Velocity Data Flow: QG + Wave
-
-This section explains how particles obtain the combined QG flow and wave Stokes drift velocities in parallel mode.
-
-### Overview
 
 Particles are advected by the **total velocity field**:
 ```
