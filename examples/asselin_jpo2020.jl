@@ -18,16 +18,15 @@ inertial_period = 2π / f
 
 grid = RectilinearGrid(size=(256, 256, 128), extent=(L, L, H), centered=true,)
 
-model = QGYBJModel(grid=grid,
-                coriolis=FPlane(f=f),
-                stratification=ConstantStratification(N²=N²),
-                closure=HorizontalHyperdiffusivity(flow=0,
-                                                flow2=0,
-                                                waves=1.0e5,
-                                                waves2=0,),
-                flow=FixedFlow(),
-                feedback=NoFeedback(),
-                formulation=YBJPlus(),)
+model = QGYBJModel(
+    grid=grid,
+    coriolis=FPlane(f=f),
+    stratification=ConstantStratification(N²=N²),
+    closure=HorizontalHyperdiffusivity(waves=1.0e5, waves2=0),
+    flow=FixedFlow(),
+    feedback=NoFeedback(),
+    formulation=YBJPlus(),
+)
 
 set!(model;
     ψ=ψ₀,
