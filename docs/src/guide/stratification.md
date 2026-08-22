@@ -6,7 +6,7 @@ CurrentModule = QGYBJplus
 
 The vertical coordinate spans negative depth to zero and is cell centered.
 Stratification is evaluated on `model.grid.z`; runtime coefficients contain
-the resulting `N²`, `f²/N²`, and density factors.
+the resulting `N²` and Boussinesq elliptic coefficient `f²/N²`.
 
 ## Constant profile
 

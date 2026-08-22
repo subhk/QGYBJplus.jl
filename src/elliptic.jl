@@ -17,17 +17,18 @@ that arise in the QG-YBJ+ model. These are critical for:
 
 MATHEMATICAL BACKGROUND:
 ------------------------
-The QG PV inversion relates q and ψ through:
+The Boussinesq QG PV inversion relates q and ψ through:
 
-    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
+    q = ∇ₕ²ψ + ∂/∂z[(f²/N²) ∂ψ/∂z]
 
-Rearranging for the vertical operator (in spectral space):
+For a general Helmholtz problem, the corresponding vertical operator can be
+written in expanded form as:
 
     a(z) ∂²ψ/∂z² + b(z) ∂ψ/∂z - kₕ² ψ = q
 
 where:
     a(z) = f²/N²(z) (elliptic coefficient)
-    b(z) = coefficient from variable N² (often zero for constant density)
+    b(z) = ∂a/∂z when the flux-form operator is expanded
     kₕ² = kₓ² + kᵧ² (horizontal wavenumber squared)
 
 This is solved independently for each (kₓ, kᵧ) mode using a tridiagonal solver.
@@ -114,8 +115,8 @@ If workspace is `nothing`, temporary arrays are allocated internally.
 This is the core elliptic inversion that relates QGPV to streamfunction.
 
 PHYSICS:
-    q = ∇²ψ + (f²/N²) ∂²ψ/∂z²
-      = ∇²ψ + a_ell ∂²ψ/∂z²
+    q = ∇²ψ + ∂/∂z[(f²/N²) ∂ψ/∂z]
+      = ∇²ψ + ∂/∂z[a_ell ∂ψ/∂z]
 
 where a_ell = f²/N² is the "elliptic coefficient" that varies with
 stratification.
@@ -128,14 +129,14 @@ with Neumann BCs (ψ_z = 0) modifying the boundary stencils.
 =#
 
 """
-    invert_q_to_psi!(S, G; a, rho_u=nothing, rho_s=nothing, workspace=nothing)
+    invert_q_to_psi!(S, G; a, workspace=nothing)
 
 Invert spectral QGPV `q(kx,ky,z)` to obtain streamfunction `ψ(kx,ky,z)`.
 
 # Mathematical Problem
 For each horizontal wavenumber (kₓ, kᵧ), solve the vertical ODE:
 
-    a(z) ∂²ψ/∂z² - kₕ² ψ = q
+    ∂/∂z[a(z) ∂ψ/∂z] - kₕ² ψ = q
 
 with Neumann boundary conditions ψ_z = 0 at top and bottom.
 
@@ -143,7 +144,6 @@ with Neumann boundary conditions ψ_z = 0 at top and bottom.
 - `S::ModelFields`: ModelFields struct containing `q` (input) and `psi` (output)
 - `G::RuntimeGeometry`: RuntimeGeometry struct with wavenumbers and vertical coordinates
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length nz
-- `rho_u`, `rho_s`: Optional density weights on unstaggered and staggered levels
 - `workspace`: Optional z-pencil workspace arrays for 2D decomposition
 
 # Implementation Details
@@ -153,11 +153,9 @@ For 2D decomposition:
 3. Transpose ψ from z-pencil back to xy-pencil
 
 The discrete system is tridiagonal with structure:
-- Diagonal: d[k] = -(a[k] + a[k-1])/r_st[k] - kₕ² dz²
-- Upper diagonal: du[k] = a[k]/r_st[k]
-- Lower diagonal: dl[k] = a[k-1]/r_st[k]
-
-where r_ut, r_st are density weights (unity for Boussinesq).
+- Diagonal: d[k] = -(a[k] + a[k-1]) - kₕ² dz²
+- Upper diagonal: du[k] = a[k]
+- Lower diagonal: dl[k] = a[k-1]
 
 # Fortran Correspondence
 This matches `psi_solver` in elliptic.f90.
@@ -189,23 +187,19 @@ invert_q_to_psi!(state, grid; a=a_vec)
 ```
 """
 function invert_q_to_psi!(S::ModelFields, G::RuntimeGeometry; a::AbstractVector,
-    rho_u=nothing, rho_s=nothing, workspace=nothing)
+    workspace=nothing)
     nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
-    rho_u === nothing || length(rho_u) == nz ||
-        throw(DimensionMismatch("rho_u must have length nz=$nz"))
-    rho_s === nothing || length(rho_s) == nz ||
-        throw(DimensionMismatch("rho_s must have length nz=$nz"))
 
     # Check if we need to do transpose (2D decomposition)
     need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.q, G)
 
     if need_transpose
         # 2D decomposition: transpose to z-pencil, solve, transpose back
-        _invert_q_to_psi_2d!(S, G, a, rho_u, rho_s, workspace)
+        _invert_q_to_psi_2d!(S, G, a, workspace)
     else
         # Serial or 1D decomposition: direct solve (z already local)
-        _invert_q_to_psi_direct!(S, G, a, rho_u, rho_s)
+        _invert_q_to_psi_direct!(S, G, a)
     end
 
     return S
@@ -214,8 +208,8 @@ end
 """
 Direct solve for serial mode or 1D decomposition (z fully local).
 """
-function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
-    rho_u, rho_s)
+function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry,
+    a::AbstractVector)
     nz = G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -236,10 +230,6 @@ function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry, a::Abstrac
     # Vertical grid spacing
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
-
-    # Density weights for variable-density formulation
-    ρᵤₜ = rho_u === nothing ? ones(eltype(a), nz) : rho_u
-    ρₛₜ = rho_s === nothing ? ones(eltype(a), nz) : rho_s
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs  = zeros(eltype(a), nz)
@@ -291,19 +281,19 @@ function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry, a::Abstrac
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
         # Bottom boundary (k=1): Neumann condition ψ_z = 0
-        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + kₕ²*Δz² )
-        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
+        d[1]  = -(a[1] + kₕ²*Δz²)
+        dᵤ[1] = a[1]
 
         # Interior points (k = 2, ..., nz-1)
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + kₕ²*Δz² )
-            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
+            dₗ[k] = a[k-1]
+            d[k]  = -(a[k] + a[k-1] + kₕ²*Δz²)
+            dᵤ[k] = a[k]
         end
 
         # Top boundary (k=nz): Neumann condition ψ_z = 0
-        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
+        dₗ[nz] = a[nz-1]
+        d[nz]  = -(a[nz-1] + kₕ²*Δz²)
 
         # Solve for real and imaginary parts separately
         @inbounds for k in 1:nz
@@ -326,8 +316,8 @@ end
 """
 2D decomposition: transpose to z-pencil, solve, transpose back.
 """
-function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
-    rho_u, rho_s, workspace)
+function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry,
+    a::AbstractVector, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace if not provided
@@ -352,10 +342,6 @@ function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVec
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
-
-    # Density weights
-    ρᵤₜ = rho_u === nothing ? ones(eltype(a), nz) : rho_u
-    ρₛₜ = rho_s === nothing ? ones(eltype(a), nz) : rho_s
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs  = zeros(eltype(a), nz)
@@ -399,17 +385,17 @@ function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVec
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + kₕ²*Δz² )
-        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
+        d[1]  = -(a[1] + kₕ²*Δz²)
+        dᵤ[1] = a[1]
 
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + kₕ²*Δz² )
-            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
+            dₗ[k] = a[k-1]
+            d[k]  = -(a[k] + a[k-1] + kₕ²*Δz²)
+            dᵤ[k] = a[k]
         end
 
-        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + kₕ²*Δz² )
+        dₗ[nz] = a[nz-1]
+        d[nz]  = -(a[nz-1] + kₕ²*Δz²)
 
         # Solve for real and imaginary parts
         @inbounds for k in 1:nz
@@ -518,7 +504,6 @@ Direct Helmholtz solve for serial or 1D decomposition.
 
 Matches Fortran `helmholtzdouble` discretization exactly:
 - Uses centered stencil with same a[k], b[k] for all diagonals at point k
-- No density weighting (coefficients used directly)
 - Interior: d[k] = -2a[k] - kh²Δz²
 - Boundary conditions incorporated via RHS modifications
 """
@@ -653,7 +638,6 @@ end
 
 Matches Fortran `helmholtzdouble` discretization exactly:
 - Uses centered stencil with same a[k], b[k] for all diagonals at point k
-- No density weighting (coefficients used directly)
 - Interior: d[k] = -2a[k] - kh²Δz²
 
 """
@@ -804,7 +788,7 @@ elliptic operator. After time stepping B, we need to recover A for computing
 wave-related quantities.
 
 The operator L⁺ is:
-    L⁺A = a(z) ∂²A/∂z² - (kₕ²/4) A
+    L⁺A = ∂/∂z[a(z) ∂A/∂z] - (kₕ²/4) A
 
 So inverting gives us A from B. We also compute C = A_z for use in wave
 feedback and vertical velocity calculations.
@@ -812,14 +796,14 @@ feedback and vertical velocity calculations.
 =#
 
 """
-    invert_B_to_A!(S, G, a; rho_u=nothing, rho_s=nothing, workspace=nothing)
+    invert_B_to_A!(S, G, a; workspace=nothing)
 
 YBJ+ wave amplitude recovery: solve for A given B = L⁺A.
 
 # Mathematical Problem
 For each horizontal wavenumber (kₓ, kᵧ), solve:
 
-    a(z) ∂²A/∂z² - (kₕ²/4) A = B
+    ∂/∂z[a(z) ∂A/∂z] - (kₕ²/4) A = B
 
 with Neumann boundary conditions A_z = 0 at top and bottom.
 
@@ -827,7 +811,6 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 - `S::ModelFields`: ModelFields containing `B` (input), `A` and `C` (output)
 - `G::RuntimeGeometry`: RuntimeGeometry struct
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
-- `rho_u`, `rho_s`: Optional density weights on unstaggered and staggered levels
 - `workspace`: Optional z-pencil workspace for 2D decomposition
 
 # Output Fields
@@ -851,20 +834,15 @@ equation.
 This matches `A_solver_ybj_plus` in elliptic.f90.
 """
 function invert_B_to_A!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector;
-    rho_u=nothing, rho_s=nothing, workspace=nothing)
-    nz = G.nz
-    rho_u === nothing || length(rho_u) == nz ||
-        throw(DimensionMismatch("rho_u must have length nz=$nz"))
-    rho_s === nothing || length(rho_s) == nz ||
-        throw(DimensionMismatch("rho_s must have length nz=$nz"))
+    workspace=nothing)
 
     # Check if we need 2D decomposition transpose
     need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.B, G)
 
     if need_transpose
-        _invert_B_to_A_2d!(S, G, a, rho_u, rho_s, workspace)
+        _invert_B_to_A_2d!(S, G, a, workspace)
     else
-        _invert_B_to_A_direct!(S, G, a, rho_u, rho_s)
+        _invert_B_to_A_direct!(S, G, a)
     end
 
     return S
@@ -873,8 +851,8 @@ end
 """
 Direct B→A solve for serial or 1D decomposition.
 """
-function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
-    rho_u, rho_s)
+function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
+    a::AbstractVector)
     nz = G.nz
 
     A_arr = parent(S.A)
@@ -892,9 +870,6 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractV
     Δz² = Δz^2
     # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
     # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
-
-    ρᵤₜ = rho_u === nothing ? ones(eltype(a), nz) : rho_u
-    ρₛₜ = rho_s === nothing ? ones(eltype(a), nz) : rho_s
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhsᵣ = zeros(eltype(a), nz)
@@ -925,17 +900,17 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractV
 
             fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-            d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] )
-            dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
+            d[1]  = -a[1]
+            dᵤ[1] = a[1]
 
             @inbounds for k in 2:nz-1
-                dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
-                d[k]  = -((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k])
-                dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
+                dₗ[k] = a[k-1]
+                d[k]  = -(a[k] + a[k-1])
+                dᵤ[k] = a[k]
             end
 
-            dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
-            d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] )
+            dₗ[nz] = a[nz-1]
+            d[nz]  = -a[nz-1]
 
             @inbounds for k in 1:nz
                 rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
@@ -981,17 +956,17 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry, a::AbstractV
 
         fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
 
-        d[1]  = -( (ρᵤₜ[1]*a[1]) / ρₛₜ[1] + (kₕ²*Δz²)/4 )
-        dᵤ[1] =   (ρᵤₜ[1]*a[1]) / ρₛₜ[1]
+        d[1]  = -(a[1] + (kₕ²*Δz²)/4)
+        dᵤ[1] = a[1]
 
         @inbounds for k in 2:nz-1
-            dₗ[k] = (ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]
-            d[k]  = -( ((ρᵤₜ[k]*a[k] + ρᵤₜ[k-1]*a[k-1]) / ρₛₜ[k]) + (kₕ²*Δz²)/4 )
-            dᵤ[k] = (ρᵤₜ[k]*a[k]) / ρₛₜ[k]
+            dₗ[k] = a[k-1]
+            d[k]  = -(a[k] + a[k-1] + (kₕ²*Δz²)/4)
+            dᵤ[k] = a[k]
         end
 
-        dₗ[nz] = (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz]
-        d[nz]  = -( (ρᵤₜ[nz-1]*a[nz-1]) / ρₛₜ[nz] + (kₕ²*Δz²)/4 )
+        dₗ[nz] = a[nz-1]
+        d[nz]  = -(a[nz-1] + (kₕ²*Δz²)/4)
 
         # Build RHS
         @inbounds for k in 1:nz
@@ -1017,8 +992,8 @@ end
 """
 2D decomposition B→A solve with transposes.
 """
-function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector,
-    rho_u, rho_s, workspace)
+function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry,
+    a::AbstractVector, workspace)
     nz = G.nz
 
     # Allocate z-pencil workspace
@@ -1042,9 +1017,6 @@ function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVecto
 
     Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δ2 = Δ^2
-
-    r_ut = rho_u === nothing ? ones(eltype(a), nz) : rho_u
-    r_st = rho_s === nothing ? ones(eltype(a), nz) : rho_s
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhs_r = zeros(eltype(a), nz)
@@ -1072,17 +1044,17 @@ function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVecto
 
             fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-            d[1]  = -( (r_ut[1]*a[1]) / r_st[1] )
-            du[1] =   (r_ut[1]*a[1]) / r_st[1]
+            d[1]  = -a[1]
+            du[1] = a[1]
 
             @inbounds for k in 2:nz-1
-                dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
-                d[k]  = -((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k])
-                du[k] = (r_ut[k]*a[k]) / r_st[k]
+                dl[k] = a[k-1]
+                d[k]  = -(a[k] + a[k-1])
+                du[k] = a[k]
             end
 
-            dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
-            d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] )
+            dl[nz] = a[nz-1]
+            d[nz]  = -a[nz-1]
 
             @inbounds for k in 1:nz
                 rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
@@ -1124,17 +1096,17 @@ function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry, a::AbstractVecto
 
         fill!(dl, 0); fill!(d, 0); fill!(du, 0)
 
-        d[1]  = -( (r_ut[1]*a[1]) / r_st[1] + (kh2*Δ2)/4 )
-        du[1] =   (r_ut[1]*a[1]) / r_st[1]
+        d[1]  = -(a[1] + (kh2*Δ2)/4)
+        du[1] = a[1]
 
         @inbounds for k in 2:nz-1
-            dl[k] = (r_ut[k-1]*a[k-1]) / r_st[k]
-            d[k]  = -( ((r_ut[k]*a[k] + r_ut[k-1]*a[k-1]) / r_st[k]) + (kh2*Δ2)/4 )
-            du[k] = (r_ut[k]*a[k]) / r_st[k]
+            dl[k] = a[k-1]
+            d[k]  = -(a[k] + a[k-1] + (kh2*Δ2)/4)
+            du[k] = a[k]
         end
 
-        dl[nz] = (r_ut[nz-1]*a[nz-1]) / r_st[nz]
-        d[nz]  = -( (r_ut[nz-1]*a[nz-1]) / r_st[nz] + (kh2*Δ2)/4 )
+        dl[nz] = a[nz-1]
+        d[nz]  = -(a[nz-1] + (kh2*Δ2)/4)
 
         # Build RHS
         # RHS is just Δ² * B (no a_coeff - that was incorrect)

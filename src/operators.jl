@@ -194,8 +194,7 @@ Matches `compute_velo` in derivatives.f90.
 """
 function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
-    N2_profile=nothing, rho_u=nothing, rho_s=nothing,
-    workspace=nothing, dealias_mask=nothing)
+    N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -258,7 +257,7 @@ function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
             compute_ybj_vertical_velocity!(S, G, plans; f, N2,
-                N2_profile, rho_u, rho_s, workspace)
+                N2_profile, workspace)
         else
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
@@ -712,8 +711,7 @@ either:
 """
 function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
     f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
-    rho_u=nothing, rho_s=nothing, workspace=nothing,
-    skip_inversion=false, t=nothing)
+    workspace=nothing, skip_inversion=false, t=nothing)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
@@ -729,17 +727,17 @@ function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plan
     profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     if need_transpose
         _compute_ybj_vertical_velocity_2d!(S, G, plans, f, profile,
-            rho_u, rho_s, workspace, skip_inversion, t)
+            workspace, skip_inversion, t)
     else
         _compute_ybj_vertical_velocity_direct!(S, G, plans, f, profile,
-            rho_u, rho_s, skip_inversion, t)
+            skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
 function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, rho_u, rho_s, skip_inversion, t)
+    f, N2_profile, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -765,7 +763,7 @@ function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeomet
         @inbounds for k in eachindex(a_vec)
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
-        invert_B_to_A!(S, G, a_vec; rho_u, rho_s)
+        invert_B_to_A!(S, G, a_vec)
     end
     # Step 2: Compute vertical derivative A_z using finite differences
     Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
@@ -863,7 +861,7 @@ end
 
 # 2D decomposition version with transposes
 function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, rho_u, rho_s, workspace, skip_inversion, t)
+    f, N2_profile, workspace, skip_inversion, t)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
@@ -886,7 +884,7 @@ function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, 
             a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
         end
         # Pass workspace if available
-        invert_B_to_A!(S, G, a_vec; rho_u, rho_s, workspace)
+        invert_B_to_A!(S, G, a_vec; workspace)
     end
 
     # Now A and C (A_z) are in xy-pencil form.
@@ -1048,11 +1046,11 @@ Modified ModelFields with total velocity fields u, v, w.
 """
 function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
-    N2_profile=nothing, rho_u=nothing, rho_s=nothing,
-    workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+    N2_profile=nothing, workspace=nothing, dealias_mask=nothing,
+    include_wave_velocity=true)
     # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
     compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
-        N2_profile, rho_u, rho_s, workspace, dealias_mask)
+        N2_profile, workspace, dealias_mask)
 
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
