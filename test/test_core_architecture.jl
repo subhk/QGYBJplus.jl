@@ -10,13 +10,46 @@ using QGYBJplus
     @test nameof(typeof(grid)) == :RectilinearGrid
     @test !isdefined(QGYBJplus, :RectilinearGridSpec)
 
-    model = QGYBJModel(grid = grid,
-                       coriolis = FPlane(f = 1.0),
-                       stratification = ConstantStratification(N² = 1.0),
-                       closure = HorizontalHyperdiffusivity(
-                           flow = FlowHyperdiffusivity(coefficient = 0),
-                           wave = WaveHyperdiffusivity(coefficient = 0)),
-                       verbose = false)
+    initialization_logger = Test.TestLogger(
+        min_level = Base.CoreLogging.Info)
+    model = Base.CoreLogging.with_logger(initialization_logger) do
+        QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = 1.0),
+                   stratification = ConstantStratification(N² = 1.0),
+                   closure = HorizontalHyperdiffusivity(
+                       flow = FlowHyperdiffusivity(coefficient = 0),
+                       wave = WaveHyperdiffusivity(coefficient = 0)),
+                   verbose = true)
+    end
+
+    initialization_logs = Dict(
+        record.message => record for record in initialization_logger.logs)
+    expected_messages = (
+        "MPI initialized with 2D decomposition",
+        "Topology validation passed",
+        "Pencil decompositions created",
+        "QGYBJModel runtime initialized",
+    )
+    @test all(haskey(initialization_logs, message)
+              for message in expected_messages)
+    @test initialization_logs[expected_messages[1]].kwargs[:nprocs] ==
+          model.runtime.mpi.nprocs
+    @test initialization_logs[expected_messages[1]].kwargs[:topology] ==
+          model.runtime.mpi.topology
+    @test initialization_logs[expected_messages[2]].kwargs[:nx] == grid.size[1]
+    @test initialization_logs[expected_messages[2]].kwargs[:ny] == grid.size[2]
+    @test initialization_logs[expected_messages[2]].kwargs[:nz] == grid.size[3]
+    @test initialization_logs[expected_messages[2]].kwargs[:decomp_dims] ==
+          (2, 3)
+    @test initialization_logs[expected_messages[3]].kwargs[:xy_decomp] ==
+          (2, 3)
+    @test initialization_logs[expected_messages[3]].kwargs[:xz_decomp] ==
+          (1, 3)
+    @test initialization_logs[expected_messages[3]].kwargs[:z_decomp] ==
+          (2, 3)
+    @test initialization_logs[expected_messages[4]].kwargs[:size] == grid.size
+    @test initialization_logs[expected_messages[4]].kwargs[:ranks] ==
+          model.runtime.mpi.nprocs
 
     @test nameof(typeof(model)) == :QGYBJModel
     @test model.grid === grid
