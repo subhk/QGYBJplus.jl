@@ -40,37 +40,35 @@ import FFTW
 """
     Plans
 
-Container for FFT plans. Used for serial FFTW execution.
+Cached FFTW plans for serial (non-distributed) execution.
 
-For parallel execution with PencilFFTs, the MPI path
-provides `MPIPlans` which wraps `PencilFFTPlan` and uses `ldiv!` for the
-normalized inverse transform.
+Each horizontal plane is transformed in place through a single contiguous
+`(nx, ny)` buffer, so a transform allocates nothing after construction.
+Transforming a strided `A[k, :, :]` view directly, as an earlier version did,
+allocated a fresh copy per plane per call.
 
-# Fields
-- `backend::Symbol`: Always `:fftw` for this struct
-- `p_forward`: Reserved (not currently used)
-- `p_backward`: Reserved (not currently used)
-- `f_forward`: Reserved (not currently used)
-- `f_backward`: Reserved (not currently used)
+`fft_backward!` uses FFTW's normalized inverse, so no manual scaling is needed.
 
-# Current Implementation
-The current implementation uses FFTW.fft/ifft directly without pre-planning.
-FFTW internally caches plans for repeated transforms of the same size/type,
-so explicit pre-planning is not critical for performance. The reserved fields
-are kept for potential future optimization with explicit FFTW plan objects.
-
-# Note
-Distributed runtimes use `plan_distributed_transforms()` instead,
-which returns `MPIPlans`.
+Distributed runtimes use `plan_distributed_transforms()` instead, which returns
+`MPIPlans`.
 """
-Base.@kwdef mutable struct Plans
-    backend::Symbol = :fftw          # :fftw for serial mode
-    # Reserved fields for potential future FFTW plan caching
-    # Currently unused - FFTW.fft/ifft are called directly
-    p_forward::Any = nothing
-    p_backward::Any = nothing
-    f_forward::Any = nothing
-    f_backward::Any = nothing
+struct Plans{F, I, B<:AbstractMatrix}
+    backend::Symbol
+    forward::F
+    inverse::I
+    buffer::B
+end
+
+"""Build serial FFTW plans for an `nx × ny` horizontal plane."""
+function Plans(nx::Integer, ny::Integer, ::Type{T}=ComplexF64) where {T}
+    buffer = Matrix{T}(undef, nx, ny)
+    fill!(buffer, zero(T))
+    # Note: FFTW threading is deliberately not enabled here. It conflicts with
+    # Julia threading in the nonlinear kernels, and for the grids this serial
+    # path serves the thread overhead exceeds the benefit.
+    forward = FFTW.plan_fft!(buffer)
+    inverse = FFTW.plan_ifft!(buffer)
+    return Plans(:fftw, forward, inverse, buffer)
 end
 
 #=
@@ -118,8 +116,7 @@ function plan_transforms!(G::RuntimeGeometry, parallel_config=nothing)
     # 1. It can conflict with Julia threading in nonlinear kernels
     # 2. For small grids, thread overhead exceeds benefit
     # Users can enable FFTW threading manually if needed for large grids
-    # Note: We don't pre-plan here for simplicity. FFTW caches plans internally.
-    return Plans(backend=:fftw)
+    return Plans(G.nx, G.ny)
 end
 
 """
@@ -136,7 +133,7 @@ function setup_parallel_transforms(grid::RuntimeGeometry, pconfig)
         return PARENT.plan_distributed_transforms(grid, pconfig)
     end
     @warn "Parallel transforms requested but MPI plan setup not available. Falling back to FFTW."
-    return Plans(backend=:fftw)
+    return Plans(grid.nx, grid.ny)
 end
 
 #=
@@ -167,9 +164,13 @@ provides a separate `fft_forward!(dst::PencilArray, src::PencilArray, plans::MPI
 method that handles distributed transforms automatically.
 """
 function fft_forward!(dst, src, P::Plans)
-    # Serial FFTW path: transform each (x,y) plane independently for each z
+    # Serial FFTW path: transform each (x,y) plane independently for each z,
+    # through the plan's contiguous buffer so nothing is allocated per plane.
+    buffer = P.buffer
     @inbounds for k in axes(src, 1)
-        dst[k, :, :] .= FFTW.fft(src[k, :, :])
+        copyto!(buffer, view(src, k, :, :))
+        P.forward * buffer
+        copyto!(view(dst, k, :, :), buffer)
     end
     return dst
 end
@@ -203,10 +204,12 @@ provides a separate `fft_backward!(dst::PencilArray, src::PencilArray, plans::MP
 method that uses `ldiv!` for normalized inverse transforms.
 """
 function fft_backward!(dst, src, P::Plans)
-    # Serial FFTW path: transform each (x,y) plane independently for each z
-    # FFTW.ifft is normalized (divides by nx*ny)
+    # Serial FFTW path, normalized inverse (FFTW's ifft divides by nx*ny).
+    buffer = P.buffer
     @inbounds for k in axes(src, 1)
-        dst[k, :, :] .= FFTW.ifft(src[k, :, :])
+        copyto!(buffer, view(src, k, :, :))
+        P.inverse * buffer
+        copyto!(view(dst, k, :, :), buffer)
     end
     return dst
 end

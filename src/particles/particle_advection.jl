@@ -199,9 +199,12 @@ end
 """
 Main particle tracker that handles both serial and parallel execution.
 """
-mutable struct ParticleTracker{T<:AbstractFloat}
+mutable struct ParticleTracker{T<:AbstractFloat, P, C, D}
     config::ParticleConfig{T}
     particles::ParticleState{T}
+    # Back-reference to the owning QGYBJModel. Deliberately untyped: the model
+    # stores this tracker, so a concrete parameter here would be circular.
+    # Read once per advection call, never inside a per-particle loop.
     model::Any
     
     # RuntimeGeometry information
@@ -216,16 +219,16 @@ mutable struct ParticleTracker{T<:AbstractFloat}
     w_field::Array{T,3}
     
     # Transform plans (for velocity computation)
-    plans
+    plans::P
     
     # Parallel information (automatically detected)
-    comm::Any           # MPI communicator (nothing for serial)
+    comm::C            # MPI communicator (Nothing for serial)
     rank::Int          # MPI rank (0 for serial)
     nprocs::Int        # Number of MPI processes (1 for serial)
     is_parallel::Bool  # True if running in parallel
     
-    # Domain decomposition info (for parallel)
-    local_domain::Union{Nothing,NamedTuple}  # Local domain bounds
+    # Domain decomposition info (Nothing for serial)
+    local_domain::D
     
     # Particle migration buffers (for parallel)
     send_buffers::Vector{Vector{T}}
@@ -301,7 +304,7 @@ mutable struct ParticleTracker{T<:AbstractFloat}
         # (which may differ from 1D decomposition assumption in 2D pencil decomposition)
         halo_info = nothing  # Will be set up lazily in update_velocity_fields!
 
-        new{T}(
+        new{T, typeof(transform_plans), typeof(comm), typeof(local_domain)}(
             config, particles, model,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
@@ -924,95 +927,6 @@ function interpolate_velocity_with_halos_advanced(x::T, y::T, z::T,
         # Use original halo interpolation for trilinear
         return interpolate_velocity_with_halos(x, y, z, tracker, halo_info)
     end
-end
-
-"""
-Interpolate locally when no halo exchange is required.
-"""
-function interpolate_velocity_local(x::T, y::T, z::T, 
-                                  tracker::ParticleTracker{T}) where T
-    
-    # Handle periodic boundaries (shift to domain-relative coordinates)
-    x_rel = tracker.config.periodic_x ? _periodic_offset(x, tracker.x0, tracker.Lx) : x - tracker.x0
-    y_rel = tracker.config.periodic_y ? _periodic_offset(y, tracker.y0, tracker.Ly) : y - tracker.y0
-    z_min = -tracker.Lz
-    z0 = z_min + tracker.dz / 2
-    z_max = zero(T)
-    z_clamped = clamp(z, z0, z_max)
-    
-    # Convert to grid indices (0-based for interpolation)
-    fx = x_rel / tracker.dx
-    fy = y_rel / tracker.dy  
-    fz = (z_clamped - z0) / tracker.dz
-    
-    # Get integer and fractional parts
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-    iz = floor(Int, fz)
-    
-    rx = fx - ix
-    ry = fy - iy
-    rz = fz - iz
-    
-    # Handle boundary indices with proper periodic wrapping
-    if tracker.config.periodic_x
-        ix1 = mod(ix, tracker.nx) + 1
-        ix2 = mod(ix + 1, tracker.nx) + 1
-    else
-        ix1 = max(1, min(tracker.nx, ix + 1))
-        ix2 = max(1, min(tracker.nx, ix + 2))
-    end
-    
-    if tracker.config.periodic_y
-        iy1 = mod(iy, tracker.ny) + 1
-        iy2 = mod(iy + 1, tracker.ny) + 1
-    else
-        iy1 = max(1, min(tracker.ny, iy + 1))
-        iy2 = max(1, min(tracker.ny, iy + 2))
-    end
-    
-    # Z is never periodic
-    iz1 = max(1, min(tracker.nz, iz + 1))
-    iz2 = max(1, min(tracker.nz, iz + 2))
-    
-    # Trilinear interpolation
-    # Bottom face (z1)
-    u_z1_y1 = (1-rx) * tracker.u_field[iz1, ix1, iy1] + rx * tracker.u_field[iz1, ix2, iy1]
-    u_z1_y2 = (1-rx) * tracker.u_field[iz1, ix1, iy2] + rx * tracker.u_field[iz1, ix2, iy2]
-    u_z1 = (1-ry) * u_z1_y1 + ry * u_z1_y2
-    
-    v_z1_y1 = (1-rx) * tracker.v_field[iz1, ix1, iy1] + rx * tracker.v_field[iz1, ix2, iy1]
-    v_z1_y2 = (1-rx) * tracker.v_field[iz1, ix1, iy2] + rx * tracker.v_field[iz1, ix2, iy2]
-    v_z1 = (1-ry) * v_z1_y1 + ry * v_z1_y2
-    
-    w_z1_y1 = (1-rx) * tracker.w_field[iz1, ix1, iy1] + rx * tracker.w_field[iz1, ix2, iy1]
-    w_z1_y2 = (1-rx) * tracker.w_field[iz1, ix1, iy2] + rx * tracker.w_field[iz1, ix2, iy2]
-    w_z1 = (1-ry) * w_z1_y1 + ry * w_z1_y2
-    
-    # Top face (z2)
-    u_z2_y1 = (1-rx) * tracker.u_field[iz2, ix1, iy1] + rx * tracker.u_field[iz2, ix2, iy1]
-    u_z2_y2 = (1-rx) * tracker.u_field[iz2, ix1, iy2] + rx * tracker.u_field[iz2, ix2, iy2]
-    u_z2 = (1-ry) * u_z2_y1 + ry * u_z2_y2
-    
-    v_z2_y1 = (1-rx) * tracker.v_field[iz2, ix1, iy1] + rx * tracker.v_field[iz2, ix2, iy1]
-    v_z2_y2 = (1-rx) * tracker.v_field[iz2, ix1, iy2] + rx * tracker.v_field[iz2, ix2, iy2]
-    v_z2 = (1-ry) * v_z2_y1 + ry * v_z2_y2
-    
-    w_z2_y1 = (1-rx) * tracker.w_field[iz2, ix1, iy1] + rx * tracker.w_field[iz2, ix2, iy1]
-    w_z2_y2 = (1-rx) * tracker.w_field[iz2, ix1, iy2] + rx * tracker.w_field[iz2, ix2, iy2]
-    w_z2 = (1-ry) * w_z2_y1 + ry * w_z2_y2
-    
-    # Final interpolation in z
-    u_interp = (1-rz) * u_z1 + rz * u_z2
-    v_interp = (1-rz) * v_z1 + rz * v_z2
-    w_interp = (1-rz) * w_z1 + rz * w_z2
-    
-    # For 2D advection, set w to zero
-    if !tracker.config.use_3d_advection
-        w_interp = 0.0
-    end
-    
-    return u_interp, v_interp, w_interp
 end
 
 # Integration methods

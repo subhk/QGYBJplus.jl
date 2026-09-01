@@ -56,7 +56,16 @@ _no_dispersion(options::ETDModelOptions) = options.dispersion isa NoDispersion
 _wave_feedback_enabled(options::ETDModelOptions) =
     !_fixed_flow(options) && options.feedback isa WaveMeanFeedback
 
-"""Second-order exponential Runge-Kutta timestepper."""
+"""
+Second-order exponential Runge-Kutta timestepper.
+
+`workspace` starts as `nothing` and is filled with an
+[`ExponentialRungeKutta2Workspace`](@ref) on the first `step!`, which is when
+the field shapes are first known. A mutable field cannot be narrowed after that
+assignment, so it stays untyped; `step!` re-establishes the concrete type with
+an `isa` check before entering the kernels, and the field is read once per step
+rather than inside any loop.
+"""
 mutable struct ExponentialRungeKutta2{T}
     Δt::T
     workspace::Any
@@ -121,12 +130,13 @@ streamfunction inversion so wave feedback is not accumulated in prognostic q.
 """
 function replace_q_with_wave_feedback_rhs!(S::ModelFields, G::RuntimeGeometry,
                                            options::ETDModelOptions, plans, L;
-                                           q_base=nothing, qwk=nothing)
+                                           q_base=nothing, qwk=nothing,
+                                           workspace=nothing)
     q_base = q_base === nothing ? copy(S.q) : q_base
     parent(q_base) .= parent(S.q)
 
     qwk = qwk === nothing ? similar(S.q) : qwk
-    compute_qw_complex!(qwk, S.B, G, plans; f=options.f, Lmask=L)
+    compute_qw_complex!(qwk, S.B, G, plans; f=options.f, Lmask=L, workspace)
 
     q_arr = parent(S.q)
     q_base_arr = parent(q_base)
@@ -142,13 +152,57 @@ end
 restore_prognostic_q!(S::ModelFields, q_base) = (parent(S.q) .= parent(q_base); S)
 
 """
+Per-horizontal-mode ETD-RK2 integrating factors.
+
+`exp`/`expm1` depend only on (kₓ, kᵧ, Δt), never on z, but the stage loops run
+over (k, j, i). Evaluating them inline therefore repeated every transcendental
+`nz` times per stage. The table is rebuilt once per step, so a changing `Δt` is
+still honoured.
+"""
+struct ETDCoefficientTable{M<:AbstractMatrix}
+    Eq::M
+    hphi1q::M
+    hphi2q::M
+    EB::M
+    hphi1B::M
+    hphi2B::M
+end
+
+function ETDCoefficientTable(S::ModelFields)
+    _, nx_local, ny_local = size(parent(S.q))
+    build() = zeros(Float64, nx_local, ny_local)
+    return ETDCoefficientTable(build(), build(), build(),
+                               build(), build(), build())
+end
+
+"""Refresh `table` for the current `Δt` and closure."""
+function fill_etd_table!(table::ETDCoefficientTable, S::ModelFields,
+                         G::RuntimeGeometry, options::ETDModelOptions, Δt)
+    _, nx_local, ny_local = size(parent(S.q))
+    inviscid = _inviscid(options)
+    @inbounds for j in 1:ny_local, i in 1:nx_local
+        kₓ = G.kx[local_to_global(i, 2, S.q)]
+        kᵧ = G.ky[local_to_global(j, 3, S.q)]
+        lambda_q = int_factor(kₓ, kᵧ, Δt, options.closure;
+                              waves=false, inviscid=inviscid)
+        lambda_B = int_factor(kₓ, kᵧ, Δt, options.closure;
+                              waves=true, inviscid=inviscid)
+        table.Eq[i, j], table.hphi1q[i, j], table.hphi2q[i, j] =
+            _etd_coefficients(lambda_q, Δt)
+        table.EB[i, j], table.hphi1B[i, j], table.hphi2B[i, j] =
+            _etd_coefficients(lambda_B, Δt)
+    end
+    return table
+end
+
+"""
     ExponentialRungeKutta2Workspace(fields)
 
 Reusable stage and tendency storage for model-owned [`step!`](@ref). Allocate
 once per simulation to avoid recreating the Runge-Kutta state and spectral
 tendency arrays on every step.
 """
-mutable struct ExponentialRungeKutta2Workspace{S,A}
+mutable struct ExponentialRungeKutta2Workspace{S,A,E}
     next::S
     stage::S
     rhsq0::A
@@ -161,8 +215,11 @@ mutable struct ExponentialRungeKutta2Workspace{S,A}
     rBk::A
     q_base::A
     qwk::A
+    etd::E
 end
 
+# `plans` and `G` are accepted for call-site compatibility; the workspace is
+# derived entirely from the shape of `S`.
 function ExponentialRungeKutta2Workspace(S::ModelFields, plans=nothing; G=nothing)
     return ExponentialRungeKutta2Workspace(
         copy_fields(S),
@@ -170,6 +227,7 @@ function ExponentialRungeKutta2Workspace(S::ModelFields, plans=nothing; G=nothin
         similar(S.q), similar(S.B), similar(S.q), similar(S.B),
         similar(S.q), similar(S.q), similar(S.B), similar(S.B),
         similar(S.q), similar(S.q),
+        ETDCoefficientTable(S),
     )
 end
 
@@ -201,6 +259,7 @@ function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
                 S, G, options, plans, L;
                 q_base=timestep_workspace === nothing ? nothing : timestep_workspace.q_base,
                 qwk=timestep_workspace === nothing ? nothing : timestep_workspace.qwk,
+                workspace=workspace,
             )
         end
 
@@ -246,9 +305,9 @@ function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
     # B is a complex physical field represented by its complex Fourier
     # transform. Both YBJ formulations therefore use complex advection and
     # refraction kernels; only the B -> A diagnostic relation differs.
-    convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L)
-    convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L)
-    refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L)
+    convol_waqg_q!(nqk, S.u, S.v, S.q, G, plans; Lmask=L, workspace)
+    convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L, workspace)
+    refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L, workspace)
 
     if _linear(options)
         fill!(parent(nqk), zero(eltype(parent(nqk))))
@@ -318,10 +377,10 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
             fill!(parent(arrays.nBk), zero(eltype(parent(arrays.nBk))))
         else
             convol_waqg_B!(arrays.nBk, S.u, S.v, S.B,
-                           G, plans; Lmask=L)
+                           G, plans; Lmask=L, workspace)
         end
         refraction_waqg_B!(arrays.rBk, S.B, S.psi,
-                           G, plans; Lmask=L)
+                           G, plans; Lmask=L, workspace)
         sigma = compute_sigma(options.f, G, arrays.nBk, arrays.rBk;
                               Lmask=L, workspace)
         compute_A!(S.A, S.C, S.B, sigma, G;
@@ -350,6 +409,12 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
         Sstage = timestep_workspace.stage
     end
 
+    etd = timestep_workspace === nothing ?
+          ETDCoefficientTable(Sn) : timestep_workspace.etd
+    fill_etd_table!(etd, Sn, G, options, Δt)
+    Eq_table, hphi1q_table, hphi2q_table = etd.Eq, etd.hphi1q, etd.hphi2q
+    EB_table, hphi1B_table, hphi2B_table = etd.EB, etd.hphi1B, etd.hphi2B
+
     _compute_etdrk2_rhs!(rhsq0, rhsB0, Sn, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
                          N2_profile=N2_profile,
@@ -360,12 +425,8 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
     rhsq0_arr, rhsB0_arr = parent(rhsq0), parent(rhsB0)
 
     @dealiased_wavenumber_loop Sn.q G L begin
-        lambda_q = int_factor(kₓ, kᵧ, Δt, options.closure;
-            waves=false, inviscid=_inviscid(options))
-        lambda_B = int_factor(kₓ, kᵧ, Δt, options.closure;
-            waves=true, inviscid=_inviscid(options))
-        Eq, hphi1q, _ = _etd_coefficients(lambda_q, Δt)
-        EB, hphi1B, _ = _etd_coefficients(lambda_B, Δt)
+        Eq, hphi1q = Eq_table[i, j], hphi1q_table[i, j]
+        EB, hphi1B = EB_table[i, j], hphi1B_table[i, j]
 
         qstage_arr[k, i, j] = _fixed_flow(options) ? qn_arr[k, i, j] :
                                   Eq * qn_arr[k, i, j] + hphi1q * rhsq0_arr[k, i, j]
@@ -384,12 +445,8 @@ function _advance_etdrk2!(Snp1::ModelFields, Sn::ModelFields, G::RuntimeGeometry
     rhsq1_arr, rhsB1_arr = parent(rhsq1), parent(rhsB1)
 
     @dealiased_wavenumber_loop Sn.q G L begin
-        lambda_q = int_factor(kₓ, kᵧ, Δt, options.closure;
-            waves=false, inviscid=_inviscid(options))
-        lambda_B = int_factor(kₓ, kᵧ, Δt, options.closure;
-            waves=true, inviscid=_inviscid(options))
-        Eq, hphi1q, hphi2q = _etd_coefficients(lambda_q, Δt)
-        EB, hphi1B, hphi2B = _etd_coefficients(lambda_B, Δt)
+        Eq, hphi1q, hphi2q = Eq_table[i, j], hphi1q_table[i, j], hphi2q_table[i, j]
+        EB, hphi1B, hphi2B = EB_table[i, j], hphi1B_table[i, j], hphi2B_table[i, j]
 
         qnp1_arr[k, i, j] = _fixed_flow(options) ? qn_arr[k, i, j] :
                                 Eq * qn_arr[k, i, j] +

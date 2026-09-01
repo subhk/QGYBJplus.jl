@@ -28,6 +28,10 @@ mutable struct QGYBJModel{G, F, P, N, R}
     physics::P
     numerics::N
     runtime::R
+    # `nothing` until particles are initialized, then a ParticleTracker that
+    # holds a back-reference to this model. Typing the field concretely would
+    # make the two types mutually recursive, so it stays untyped; it is read
+    # once per step, never inside a kernel loop.
     particles::Any
 end
 

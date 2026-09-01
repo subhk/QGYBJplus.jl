@@ -69,3 +69,15 @@ mpi-test:
     - >-
       julia --project=. -e
       'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'
+    - >-
+      julia --project=. -e
+      'using MPI; run(`$(MPI.mpiexec()) -n 1 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
+    - >-
+      julia --project=. -e
+      'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
+    - >-
+      julia --project=. -e
+      'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_particles_periodic.jl`)'
+    - >-
+      julia --project=. -e
+      'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_extension.jl`)'

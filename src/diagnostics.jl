@@ -57,6 +57,8 @@ using ..QGYBJplus: local_to_global, z_is_local
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+using ..QGYBJplus: with_z_local, z_scratch
+using ..QGYBJplus: with_scratch, scratch_like, scratch_physical, scratch_phys_like
 import PencilArrays: PencilArray
 
 # Reference to parent module for physics functions
@@ -134,44 +136,49 @@ Modified rhs array with the omega equation forcing.
 Matches `omega_eqn_rhs` computation in the Fortran implementation.
 """
 function omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans; Lmask=nothing, workspace=nothing)
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(psi, G)
-
-    if need_transpose
-        _omega_eqn_rhs_2d!(rhs, psi, G, plans, Lmask, workspace)
-    else
-        _omega_eqn_rhs_direct!(rhs, psi, G, plans, Lmask)
+    with_scratch(workspace) do
+        _omega_eqn_rhs!(rhs, psi, G, plans, Lmask, workspace)
     end
     return rhs
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
+# One implementation for every decomposition. Only the vertical difference and
+# vertical average couple neighbouring levels, so those run under
+# `with_z_local`; everything after is pointwise in z.
+function _omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
 
-    # Get local dimensions
-    ψ_arr = parent(psi)
-    nz_local, nx_local, ny_local = size(ψ_arr)
+    ψzₖ = scratch_like(workspace, psi)     # ∂ψ/∂z, one-sided at the top
+    ψavgₖ = scratch_like(workspace, psi)   # ψ averaged onto the same half level
 
-    # Verify z is fully local
-    @assert nz_local == nz "Vertical dimension must be fully local for omega RHS"
-
-    # ψ_z in spectral space (simple finite difference)
-    ψzₖ = similar(psi)
-    ψzₖ_arr = parent(ψzₖ)
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        if k == nz
-            ψzₖ_arr[k, i, j] = 0  # Neumann top
-        else
-            ψzₖ_arr[k, i, j] = (ψ_arr[k+1, i, j] - ψ_arr[k, i, j]) / Δz
+    with_z_local(G, (ψzₖ, ψavgₖ, psi), (:out, :out, :in);
+                 scratch=z_scratch(workspace, :q_z, :A_z, :psi_z)) do ψz, ψavg, ψ
+        ψz_arr = parent(ψz)
+        ψavg_arr = parent(ψavg)
+        ψ_arr = parent(ψ)
+        nz_z, nx_z, ny_z = size(ψ_arr)
+        @assert nz_z == nz "Vertical dimension must be fully local for omega RHS"
+        @inbounds for k in 1:nz_z, j in 1:ny_z, i in 1:nx_z
+            if k == nz
+                ψz_arr[k, i, j] = 0                     # Neumann top
+                ψavg_arr[k, i, j] = ψ_arr[k, i, j]
+            else
+                ψz_arr[k, i, j] = (ψ_arr[k+1, i, j] - ψ_arr[k, i, j]) / Δz
+                ψavg_arr[k, i, j] = 0.5*(ψ_arr[k+1, i, j] + ψ_arr[k, i, j])
+            end
         end
     end
 
+    ψzₖ_arr = parent(ψzₖ)
+    ψavgₖ_arr = parent(ψavgₖ)
+    nz_local, nx_local, ny_local = size(ψzₖ_arr)
+
     # Build needed spectral derivatives
-    bxₖ = similar(psi); byₖ = similar(psi)
-    xxₖ = similar(psi); xyₖ = similar(psi)
+    bxₖ = scratch_like(workspace, psi); byₖ = scratch_like(workspace, psi)
+    xxₖ = scratch_like(workspace, psi); xyₖ = scratch_like(workspace, psi)
     bxₖ_arr = parent(bxₖ); byₖ_arr = parent(byₖ)
     xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
 
@@ -180,20 +187,19 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
         j_global = local_to_global(j, 3, psi)
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = kₓ^2 + kᵧ^2
 
         bxₖ_arr[k, i, j] = im*kₓ*ψzₖ_arr[k, i, j]
         byₖ_arr[k, i, j] = im*kᵧ*ψzₖ_arr[k, i, j]
-        # average psi between k and k+1; at top use psi at top
-        ψavg = k < nz ? 0.5*(ψ_arr[k+1, i, j] + ψ_arr[k, i, j]) : ψ_arr[k, i, j]
-        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavg
-        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavg
+        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavgₖ_arr[k, i, j]
+        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavgₖ_arr[k, i, j]
     end
 
     # To real space - use helper for correct pencil allocation
-    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
-    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
+    bxᵣ = scratch_physical(workspace, bxₖ, plans)
+    byᵣ = scratch_physical(workspace, byₖ, plans)
+    xxᵣ = scratch_physical(workspace, xxₖ, plans)
+    xyᵣ = scratch_physical(workspace, xyₖ, plans)
     fft_backward!(bxᵣ, bxₖ, plans)
     fft_backward!(byᵣ, byₖ, plans)
     fft_backward!(xxᵣ, xxₖ, plans)
@@ -203,7 +209,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
     xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
 
     # Real-space RHS
-    rhsᵣ = similar(bxᵣ)
+    rhsᵣ = scratch_phys_like(workspace, bxᵣ)
     rhsᵣ_arr = parent(rhsᵣ)
     # The physical FFT input pencil can have different local x/y extents from
     # the spectral output pencil even when z is fully local.
@@ -212,12 +218,10 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
         rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
     end
 
-    # Back to spectral
+    # Back to spectral. fft_backward! uses a normalized IFFT, so the
+    # pseudo-spectral product is already correctly scaled; only dealias.
     fft_forward!(rhs, rhsᵣ, plans)
 
-    # Apply dealiasing mask only (no normalization needed)
-    # fft_backward! uses normalized IFFT, so pseudo-spectral products are correctly scaled.
-    # Previous code incorrectly divided by nx*ny, weakening omega forcing.
     rhs_arr = parent(rhs)
     @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
         i_global = local_to_global(i, 2, rhs)
@@ -226,104 +230,7 @@ function _omega_eqn_rhs_direct!(rhs, psi, G::RuntimeGeometry, plans, Lmask)
             rhs_arr[k, i, j] = 0  # Dealias
         end
     end
-end
-
-# 2D decomposition version with transposes
-function _omega_eqn_rhs_2d!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-
-    # Allocate z-pencil workspace
-    ψ_z = workspace !== nothing && hasfield(typeof(workspace), :psi_z) ? workspace.psi_z : allocate_z_pencil(G, ComplexF64)
-    ψz_z = allocate_z_pencil(G, ComplexF64)
-    ψavg_z = allocate_z_pencil(G, ComplexF64)
-
-    # Transpose psi to z-pencil for vertical operations
-    transpose_to_z_pencil!(ψ_z, psi, G)
-
-    # Compute ψ_z and ψ_avg in z-pencil configuration (z now fully local)
-    ψ_z_arr = parent(ψ_z)
-    ψz_z_arr = parent(ψz_z)
-    ψavg_z_arr = parent(ψavg_z)
-
-    nz_local, nx_local_z, ny_local_z = size(ψ_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    @inbounds for k in 1:nz, j in 1:ny_local_z, i in 1:nx_local_z
-        if k == nz
-            ψz_z_arr[k, i, j] = 0  # Neumann top
-            ψavg_z_arr[k, i, j] = ψ_z_arr[k, i, j]
-        else
-            ψz_z_arr[k, i, j] = (ψ_z_arr[k+1, i, j] - ψ_z_arr[k, i, j]) / Δz
-            ψavg_z_arr[k, i, j] = 0.5*(ψ_z_arr[k+1, i, j] + ψ_z_arr[k, i, j])
-        end
-    end
-
-    # Transpose back to xy-pencil for horizontal operations
-    ψzₖ = similar(psi)
-    ψavgₖ = similar(psi)
-    transpose_to_xy_pencil!(ψzₖ, ψz_z, G)
-    transpose_to_xy_pencil!(ψavgₖ, ψavg_z, G)
-
-    # Get local dimensions for xy-pencil
-    ψzₖ_arr = parent(ψzₖ)
-    ψavgₖ_arr = parent(ψavgₖ)
-    nz_local_xy, nx_local, ny_local = size(ψzₖ_arr)
-
-    # Build needed spectral derivatives in xy-pencil
-    bxₖ = similar(psi); byₖ = similar(psi)
-    xxₖ = similar(psi); xyₖ = similar(psi)
-    bxₖ_arr = parent(bxₖ); byₖ_arr = parent(byₖ)
-    xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
-
-    @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, psi)
-        j_global = local_to_global(j, 3, psi)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-        kₕ² = kₓ^2 + kᵧ^2
-
-        bxₖ_arr[k, i, j] = im*kₓ*ψzₖ_arr[k, i, j]
-        byₖ_arr[k, i, j] = im*kᵧ*ψzₖ_arr[k, i, j]
-        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavgₖ_arr[k, i, j]
-        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavgₖ_arr[k, i, j]
-    end
-
-    # To real space (FFTs in xy-pencil) - use helper for correct pencil allocation
-    bxᵣ = _allocate_fft_dst(bxₖ, plans); byᵣ = _allocate_fft_dst(byₖ, plans)
-    xxᵣ = _allocate_fft_dst(xxₖ, plans); xyᵣ = _allocate_fft_dst(xyₖ, plans)
-    fft_backward!(bxᵣ, bxₖ, plans)
-    fft_backward!(byᵣ, byₖ, plans)
-    fft_backward!(xxᵣ, xxₖ, plans)
-    fft_backward!(xyᵣ, xyₖ, plans)
-
-    bxᵣ_arr = parent(bxᵣ); byᵣ_arr = parent(byᵣ)
-    xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
-
-    # Real-space RHS - use physical array dimensions (may differ from spectral in 2D decomposition)
-    rhsᵣ = similar(bxᵣ)
-    rhsᵣ_arr = parent(rhsᵣ)
-    nz_phys, nx_phys, ny_phys = size(bxᵣ_arr)
-    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
-    end
-
-    # Back to spectral
-    fft_forward!(rhs, rhsᵣ, plans)
-
-    # Apply dealiasing mask only (no normalization needed)
-    # fft_backward! uses normalized IFFT, so pseudo-spectral products are correctly scaled.
-    # Previous code incorrectly divided by nx*ny, weakening omega forcing.
-    rhs_arr = parent(rhs)
-    @inbounds for k in 1:nz_local_xy, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, rhs)
-        j_global = local_to_global(j, 3, rhs)
-        if !L[i_global, j_global]
-            rhs_arr[k, i, j] = 0  # Dealias
-        end
-    end
+    return rhs
 end
 
 #=
@@ -717,7 +624,6 @@ Tuple (E_B, E_A) of domain-summed squared magnitudes.
 - These are domain SUMS, not means. For energy density, divide by grid volume.
 - In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
 - For wave energies with spectral dealiasing,
-  use `wave_energy_spectral` instead.
 """
 function wave_energy(B, A)
     # Works with any array (regular or PencilArray)
@@ -729,337 +635,42 @@ function wave_energy(B, A)
     return EB, EA
 end
 
-"""
-    wave_energy_spectral(BR, BI, AR, AI, CR, CI, G, par; Lmask=nothing) -> (WKE, WPE, WCE)
-
-Compute physically accurate wave energies in spectral space with dealiasing.
-
-# Physical Background (matches YBJ+ paper)
-Three components of wave energy:
-
-1. **Wave Kinetic Energy (WKE)** - per YBJ+ equation (4.7):
-   WKE = (1/2) × Σₖ |LAₖ|²
-
-   where LA is computed directly using the L operator from equation (1.3):
-   L = ∂_z(f²/N² × ∂_z)
-
-   So LA = ∂_z(a(z) × C) where a(z) = f²/N² and C = ∂A/∂z.
-   This is discretized as: LA[k] = (a[k]×C[k] - a[k-1]×C[k-1]) / Δz
-
-2. **Wave Potential Energy (WPE)**:
-   WPE = Σₖ (0.5/a_ell) × kh² × (|CRₖ|² + |CIₖ|²)
-
-   where C = ∂A/∂z and a_ell = f²/N². This represents the potential energy from vertical wave structure.
-
-3. **Wave Correction Energy (WCE)**:
-   WCE = Σₖ (1/8) × (1/a_ell²) × kh⁴ × (|ARₖ|² + |AIₖ|²)
-
-   Higher-order correction term from the YBJ+ formulation.
-
-# Algorithm
-1. Loop over all spectral modes with dealiasing mask L
-2. Compute LA = ∂_z(a×C) using finite differences for each (i,j) mode
-3. Accumulate |LA|², kh²|C|²/a_ell, kh⁴|A|²/(8×a_ell²)
-4. Apply dealiasing correction: subtract half the kh=0 mode from WKE
-5. Integrate over z (sum local, divide by nz)
-
-# Arguments
-- `BR, BI`: Real and imaginary parts of wave envelope B (spectral)
-- `AR, AI`: Real and imaginary parts of wave amplitude A (spectral)
-- `CR, CI`: Real and imaginary parts of C = ∂A/∂z (spectral)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider for Coriolis and stratification
-- `Lmask`: Optional dealiasing mask
-
-# Returns
-Tuple (WKE, WPE, WCE) of wave energy components, normalized by nz.
-
-# Fortran Correspondence
-Matches `wave_energy` subroutine in diagnostics.f90 (lines 647-743).
-
-# Note
-In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global totals.
-"""
-function wave_energy_spectral(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-
-    # Get z-dependent elliptic coefficient a(z) = f²/N²(z)
-    # This handles both constant_N and skewed_gaussian stratification correctly
-    a_ell = if isdefined(PARENT, :a_ell_ut) && par !== nothing
-        PARENT.a_ell_ut(par, G)
-    else
-        fill(par.f₀^2 / par.N², nz)  # Fallback to constant
-    end
-
-    # Get local dimensions
-    BR_arr = parent(BR)
-    BI_arr = parent(BI)
-    AR_arr = parent(AR)
-    AI_arr = parent(AI)
-    CR_arr = parent(CR)
-    CI_arr = parent(CI)
-
-    nz_local, nx_local, ny_local = size(BR_arr)
-
-    # RuntimeGeometry spacing for vertical derivative
-    Δz = nz > 1 ? abs(G.z[2] - G.z[1]) : 1.0
-
-    # Accumulate energy
-    WKE_local = 0.0
-    WPE_local = 0.0
-    WCE_local = 0.0
-
-    # For WKE, we need to compute LA = ∂_z(a(z) × C) using equation (1.3) of YBJ+
-    # where L = ∂_z(f²/N² × ∂_z) and C = ∂A/∂z
-    # Discretization: LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
-    # This requires looping over (i,j) modes first, then computing LA across z levels
-
-    @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, BR)
-        j_global = local_to_global(j, 3, BR)
-
-        if !L[i_global, j_global]
-            continue
-        end
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        # Compute LA = ∂_z(a × C) for this (i,j) mode across all z levels
-        # Using the L operator from equation (1.3): L = ∂_z(f²/N² × ∂_z)
-        for k in 1:nz_local
-            k_global = local_to_global(k, 1, BR)
-            a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-
-            # Compute LA = ∂_z(a × C) using finite differences
-            # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
-            # C is defined at staggered points: C[k] represents derivative between k and k+1
-            if nz == 1
-                # Single layer: LA = 0 (no vertical structure)
-                LA_r = 0.0
-                LA_i = 0.0
-            elseif k_global == 1
-                # Bottom boundary: use one-sided difference
-                # LA[1] = a[1] × C[1] / Δz (assuming a[0]×C[0] = 0 from BC)
-                LA_r = a_ell_k * CR_arr[k, i, j] / Δz
-                LA_i = a_ell_k * CI_arr[k, i, j] / Δz
-            elseif k_global == nz
-                # Top boundary: use one-sided difference
-                # LA[nz] = -a[nz-1] × C[nz-1] / Δz (since C[nz] = 0 from BC)
-                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
-                LA_r = -a_ell_km1 * CR_arr[k-1, i, j] / Δz
-                LA_i = -a_ell_km1 * CI_arr[k-1, i, j] / Δz
-            else
-                # Interior: centered difference
-                # LA[k] = (a[k] × C[k] - a[k-1] × C[k-1]) / Δz
-                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
-                LA_r = (a_ell_k * CR_arr[k, i, j] - a_ell_km1 * CR_arr[k-1, i, j]) / Δz
-                LA_i = (a_ell_k * CI_arr[k, i, j] - a_ell_km1 * CI_arr[k-1, i, j]) / Δz
-            end
-
-            # WKE per equation (4.7): (1/2)|LA|²
-            WKE_local += 0.5 * (abs2(LA_r) + abs2(LA_i))
-
-            # WPE: (0.5/a_ell(z)) × kh² × (|CR|² + |CI|²)
-            WPE_local += (0.5 / a_ell_k) * kₕ² * (abs2(CR_arr[k, i, j]) + abs2(CI_arr[k, i, j]))
-
-            # WCE: (1/8) × (1/a_ell(z)²) × kh⁴ × (|AR|² + |AI|²)
-            WCE_local += (1.0/8.0) * (1.0/(a_ell_k*a_ell_k)) * kₕ²*kₕ² * (abs2(AR_arr[k, i, j]) + abs2(AI_arr[k, i, j]))
-        end
-    end
-
-    # Dealiasing correction for WKE: subtract half the kh=0 mode contribution
-    # At kh=0, we still need to compute LA using the L operator
-    if local_to_global(1, 2, BR) == 1 && local_to_global(1, 3, BR) == 1
-        wke_zero = 0.0
-        for k in 1:nz_local
-            k_global = local_to_global(k, 1, BR)
-            a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-            if nz == 1
-                LA_r = 0.0
-                LA_i = 0.0
-            elseif k_global == 1
-                LA_r = a_ell_k * CR_arr[k, 1, 1] / Δz
-                LA_i = a_ell_k * CI_arr[k, 1, 1] / Δz
-            elseif k_global == nz
-                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
-                LA_r = -a_ell_km1 * CR_arr[k-1, 1, 1] / Δz
-                LA_i = -a_ell_km1 * CI_arr[k-1, 1, 1] / Δz
-            else
-                a_ell_km1 = (k_global - 1) <= length(a_ell) ? a_ell[k_global - 1] : a_ell[end]
-                LA_r = (a_ell_k * CR_arr[k, 1, 1] - a_ell_km1 * CR_arr[k-1, 1, 1]) / Δz
-                LA_i = (a_ell_k * CI_arr[k, 1, 1] - a_ell_km1 * CI_arr[k-1, 1, 1]) / Δz
-            end
-            wke_zero += 0.5 * (abs2(LA_r) + abs2(LA_i))
-        end
-        WKE_local -= 0.5 * wke_zero / nz
-    end
-
-    # Normalize by nz (vertical integration)
-    WKE = WKE_local / nz
-    WPE = WPE_local / nz
-    WCE = WCE_local / nz
-
-    return WKE, WPE, WCE
-end
 
 #=
 ================================================================================
                     GLOBAL ENERGY DIAGNOSTICS (MPI-AWARE)
 ================================================================================
-These functions compute global energy by reducing across all MPI processes.
-In serial mode, they return the same result as the local versions.
+`flow_kinetic_energy` and `wave_energy` accumulate over the local portion of a
+distributed field. These wrappers add the MPI reduction, and are what the
+model-level `flow_kinetic_energy(::QGYBJModel)` / `wave_energy(::QGYBJModel)`
+entry points in core/io.jl call.
 ================================================================================
 =#
 
 """
     flow_kinetic_energy_global(u, v, mpi_config=nothing) -> KE
 
-Compute GLOBAL domain-integrated kinetic energy across all MPI processes.
-
-# Arguments
-- `u, v`: Velocity arrays (local portion in MPI mode)
-- `mpi_config`: MPI configuration (nothing for serial mode)
-
-# Returns
-Global kinetic energy (sum across all processes).
-
-# Example
-```julia
-# Serial mode
-KE = flow_kinetic_energy_global(state.u, state.v)
-
-# MPI mode
-KE = flow_kinetic_energy_global(state.u, state.v, mpi_config)
-```
+Domain-integrated balanced-flow kinetic energy summed across all MPI ranks.
+Pass `mpi_config=nothing` for a serial field, where the local sum is already
+the global one.
 """
 function flow_kinetic_energy_global(u, v, mpi_config=nothing)
-    # Compute local energy
     KE_local = flow_kinetic_energy(u, v)
-
-    # Reduce across processes if MPI is active
-    if mpi_config === nothing
-        return KE_local
-    else
-        # Use the MPI reduce function from the main module
-        return PARENT.mpi_reduce_sum(KE_local, mpi_config)
-    end
+    mpi_config === nothing && return KE_local
+    return PARENT.mpi_reduce_sum(KE_local, mpi_config)
 end
 
 """
     wave_energy_global(B, A, mpi_config=nothing) -> (E_B, E_A)
 
-Compute GLOBAL wave energy across all MPI processes.
-
-# Arguments
-- `B, A`: Wave envelope and amplitude arrays (local portion in MPI mode)
-- `mpi_config`: MPI configuration (nothing for serial mode)
-
-# Returns
-Tuple (E_B, E_A) of global summed squared magnitudes.
-
-# Example
-```julia
-# Serial mode
-EB, EA = wave_energy_global(state.B, state.A)
-
-# MPI mode
-EB, EA = wave_energy_global(state.B, state.A, mpi_config)
-```
+Wave envelope and amplitude energies summed across all MPI ranks. Pass
+`mpi_config=nothing` for a serial field.
 """
 function wave_energy_global(B, A, mpi_config=nothing)
-    # Compute local energy
     EB_local, EA_local = wave_energy(B, A)
-
-    # Reduce across processes if MPI is active
-    if mpi_config === nothing
-        return EB_local, EA_local
-    else
-        # Use the MPI reduce function from the main module
-        EB_global = PARENT.mpi_reduce_sum(EB_local, mpi_config)
-        EA_global = PARENT.mpi_reduce_sum(EA_local, mpi_config)
-        return EB_global, EA_global
-    end
-end
-
-"""
-    flow_kinetic_energy_spectral_global(uk, vk, G; Lmask=nothing, mpi_config=nothing) -> KE
-
-Compute GLOBAL kinetic energy in spectral space across all MPI processes.
-
-# Arguments
-- `uk, vk`: Spectral velocity fields (local portion in MPI mode)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `Lmask`: Optional dealiasing mask
-- `mpi_config`: MPI configuration (nothing for serial mode)
-
-# Returns
-Global Boussinesq kinetic energy with dealiasing.
-"""
-function flow_kinetic_energy_spectral_global(uk, vk, G::RuntimeGeometry;
-    Lmask=nothing, mpi_config=nothing)
-    KE_local = flow_kinetic_energy_spectral(uk, vk, G; Lmask=Lmask)
-
-    if mpi_config === nothing
-        return KE_local
-    else
-        return PARENT.mpi_reduce_sum(KE_local, mpi_config)
-    end
-end
-
-"""
-    flow_potential_energy_spectral_global(bk, G, par; Lmask=nothing, mpi_config=nothing) -> PE
-
-Compute GLOBAL potential energy in spectral space across all MPI processes.
-
-# Arguments
-- `bk`: Spectral buoyancy field (local portion in MPI mode)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider
-- `Lmask`: Optional dealiasing mask
-- `mpi_config`: MPI configuration (nothing for serial mode)
-
-# Returns
-Global Boussinesq potential energy with dealiasing.
-"""
-function flow_potential_energy_spectral_global(bk, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
-    PE_local = flow_potential_energy_spectral(bk, G, par; Lmask=Lmask)
-
-    if mpi_config === nothing
-        return PE_local
-    else
-        return PARENT.mpi_reduce_sum(PE_local, mpi_config)
-    end
-end
-
-"""
-    wave_energy_spectral_global(BR, BI, AR, AI, CR, CI, G, par; Lmask=nothing, mpi_config=nothing) -> (WKE, WPE, WCE)
-
-Compute GLOBAL wave energies in spectral space across all MPI processes.
-
-# Arguments
-- `BR, BI, AR, AI, CR, CI`: Spectral wave fields (local portions in MPI mode)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider
-- `Lmask`: Optional dealiasing mask
-- `mpi_config`: MPI configuration (nothing for serial mode)
-
-# Returns
-Tuple (WKE, WPE, WCE) of global wave energy components.
-"""
-function wave_energy_spectral_global(BR, BI, AR, AI, CR, CI, G::RuntimeGeometry, par; Lmask=nothing, mpi_config=nothing)
-    WKE_local, WPE_local, WCE_local = wave_energy_spectral(BR, BI, AR, AI, CR, CI, G, par; Lmask=Lmask)
-
-    if mpi_config === nothing
-        return WKE_local, WPE_local, WCE_local
-    else
-        WKE_global = PARENT.mpi_reduce_sum(WKE_local, mpi_config)
-        WPE_global = PARENT.mpi_reduce_sum(WPE_local, mpi_config)
-        WCE_global = PARENT.mpi_reduce_sum(WCE_local, mpi_config)
-        return WKE_global, WPE_global, WCE_global
-    end
+    mpi_config === nothing && return EB_local, EA_local
+    return PARENT.mpi_reduce_sum(EB_local, mpi_config),
+           PARENT.mpi_reduce_sum(EA_local, mpi_config)
 end
 
 end # module
@@ -1069,8 +680,7 @@ using .Diagnostics: omega_eqn_rhs!, wave_energy, flow_kinetic_energy, wave_energ
 using .Diagnostics: slice_horizontal, slice_vertical_xz
 
 # Export spectral energy diagnostics (Fortran-compatible)
-using .Diagnostics: flow_kinetic_energy_spectral, flow_potential_energy_spectral, wave_energy_spectral
+using .Diagnostics: flow_kinetic_energy_spectral, flow_potential_energy_spectral
 
 # Export MPI-aware global energy functions
 using .Diagnostics: flow_kinetic_energy_global, wave_energy_global
-using .Diagnostics: flow_kinetic_energy_spectral_global, flow_potential_energy_spectral_global, wave_energy_spectral_global

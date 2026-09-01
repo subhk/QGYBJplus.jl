@@ -101,6 +101,8 @@ using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local
 using ..QGYBJplus: fft_backward!, plan_transforms!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
+using ..QGYBJplus: with_z_local, z_scratch
+using ..QGYBJplus: with_scratch, scratch_like, scratch_physical
 using ..QGYBJplus: invert_B_to_A!
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
 import PencilArrays: PencilArray
@@ -195,6 +197,16 @@ Matches `compute_velo` in derivatives.f90.
 function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
     N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+
+    return with_scratch(workspace) do
+        _compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
+                             N2_profile, workspace, dealias_mask)
+    end
+end
+
+function _compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
+    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+    N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -205,8 +217,8 @@ function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
 
     # Spectral differentiation: û = -i ky ψ̂, v̂ = i kx ψ̂
     ψk = S.psi
-    uk = similar(ψk)
-    vk = similar(ψk)
+    uk = scratch_like(workspace, ψk)
+    vk = scratch_like(workspace, ψk)
     uk_arr = parent(uk)
     vk_arr = parent(vk)
 
@@ -227,8 +239,8 @@ function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
 
     # Allocate destination arrays on correct pencil for fft_backward!
     # For MPI: must be on input_pencil (physical space), not output_pencil
-    tmpu = _allocate_fft_dst(uk, plans)
-    tmpv = _allocate_fft_dst(vk, plans)
+    tmpu = scratch_physical(workspace, uk, plans)
+    tmpv = scratch_physical(workspace, vk, plans)
     fft_backward!(tmpu, uk, plans)
     fft_backward!(tmpv, vk, plans)
 
@@ -349,52 +361,69 @@ function compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
         dealias_mask = PARENT.dealias_mask(G)
     end
 
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.psi, G)
-
     profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
-    if need_transpose
-        _compute_vertical_velocity_2d!(S, G, plans, f, profile, workspace, dealias_mask)
-    else
-        _compute_vertical_velocity_direct!(S, G, plans, f, profile, dealias_mask)
+    with_scratch(workspace) do
+        _compute_vertical_velocity!(S, G, plans, f, profile, workspace, dealias_mask)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, dealias_mask)
-    nx, ny, nz = G.nx, G.ny, G.nz
+# One implementation for every decomposition: the omega equation is a vertical
+# tridiagonal solve, so `with_z_local` supplies z-local views and the kernel
+# below never has to care whether the spectral pencil distributes z.
+function _compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans,
+    f, N2_profile, workspace, dealias_mask)
 
-    # Get underlying arrays
+    nz = G.nz
     w_arr = parent(S.w)
-    nz_local, nx_local, ny_local = size(parent(S.psi))
 
-    # Verify z is fully local
-    @assert nz_local == nz "Vertical dimension must be fully local for direct solve"
+    # RHS of the omega equation, with dealiasing for its quadratic Jacobian.
+    rhsk = scratch_like(workspace, S.psi)
+    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans;
+                                      Lmask=dealias_mask, workspace=workspace)
 
-    # Get RHS of omega equation with proper dealiasing
-    # Previous code never passed dealias_mask, causing aliasing in the quadratic RHS term
-    rhsk = similar(S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
-    rhsk_arr = parent(rhsk)
+    wk = scratch_like(workspace, S.psi)
+    with_z_local(G, (wk, rhsk), (:out, :in);
+                 scratch=z_scratch(workspace, :psi_z, :work_z)) do wk_z, rhs_z
+        _omega_equation_solve!(wk_z, rhs_z, G, f, N2_profile)
+    end
 
-    # Solve the full omega equation: ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
-    # Note: The RHS from omega_eqn_rhs! is 2 J(ψ_z, ∇²ψ), so we multiply by f/N² below
-    wk = similar(S.psi)
+    # Transform to real space. fft_backward! is normalized, so nothing else.
+    tmpw = scratch_physical(workspace, wk, plans)
+    fft_backward!(tmpw, wk, plans)
+    tmpw_arr = parent(tmpw)
+
+    nz_phys, nx_phys, ny_phys = size(tmpw_arr)
+    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
+        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
+    end
+    return S
+end
+
+"""
+Solve `∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)` for every local horizontal
+wavenumber. Requires `wk` and `rhsk` to have a fully local vertical dimension;
+`wk` is zeroed here because it arrives as unwritten scratch.
+"""
+function _omega_equation_solve!(wk, rhsk, G::RuntimeGeometry, f, N2_profile)
+    nz = G.nz
     wk_arr = parent(wk)
-    fill!(wk_arr, 0.0)
+    rhsk_arr = parent(rhsk)
+    nz_local, nx_local, ny_local = size(wk_arr)
+    @assert nz_local == nz "Vertical dimension must be fully local for the omega solve"
+    fill!(wk_arr, zero(eltype(wk_arr)))
 
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
     f² = f^2
 
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    n_interior = nz - 2  # Interior points (constant for all wavenumbers)
+    # Rigid lid and bottom (w = 0) leave nz - 2 interior unknowns.
+    n_interior = nz - 2
     if n_interior > 0
         d = zeros(Float64, n_interior)
         dₗ = zeros(Float64, n_interior-1)
         dᵤ = zeros(Float64, n_interior-1)
-        rhs = zeros(eltype(S.psi), n_interior)
+        rhs = zeros(eltype(rhsk_arr), n_interior)
         dₗ_work = zeros(Float64, n_interior-1)
         d_work = zeros(Float64, n_interior)
         dᵤ_work = zeros(Float64, n_interior-1)
@@ -404,7 +433,6 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, 
         solᵢ = zeros(Float64, n_interior)
     end
 
-    # For each LOCAL horizontal wavenumber (kₓ, kᵧ), solve tridiagonal system
     @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
         i_global = local_to_global(i_local, 2, wk)
         j_global = local_to_global(j_local, 3, wk)
@@ -412,16 +440,13 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, 
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2
 
-        if kₕ² > 0 && nz > 2  # Need at least 3 levels for tridiagonal
+        if kₕ² > 0 && nz > 2  # Need at least 3 levels for a tridiagonal system
             if n_interior > 0
-                # Fill tridiagonal system (reusing pre-allocated arrays)
-                # ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
-                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS
-                # Centered second derivative: ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz²
+                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS, with the
+                # centered stencil ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz².
                 fill!(dₗ, 0.0); fill!(dᵤ, 0.0)
                 for iz in 1:n_interior
                     k = iz + 1  # Actual z-level (2 to nz-1)
-                    # Correct coefficient: f²/N² (not N²/f²)
                     coeff_z = (f²/N2_profile[k])/(Δz*Δz)
                     d[iz] = -2*coeff_z - kₕ²  # Diagonal
                     if iz > 1
@@ -430,12 +455,11 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, 
                     if iz < n_interior
                         dᵤ[iz] = coeff_z      # Super-diagonal
                     end
-                    # RHS scaling: omega_eqn_rhs! gives 2 J(...), we need (2f/N²) J(...)
-                    # So multiply by f/N²
+                    # omega_eqn_rhs! returns 2 J(...), so scale by f/N².
                     rhs[iz] = (f/N2_profile[k]) * rhsk_arr[k, i_local, j_local]
                 end
 
-                # Solve tridiagonal system - real and imaginary parts separately
+                # gtsv! overwrites its diagonals, so refill them per solve.
                 dₗ_work .= dₗ
                 d_work .= d
                 dᵤ_work .= dᵤ
@@ -468,166 +492,12 @@ function _compute_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, 
                     wk_arr[k, i_local, j_local] = solᵣ[iz] + im * solᵢ[iz]
                 end
             end
-
-        elseif kₕ² > 0 && nz <= 2
-            # With rigid lid BCs (w=0 at top and bottom), there are no interior points
-            # for nz <= 2. The only consistent solution is w=0 everywhere.
-            # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
-            for k in 1:nz
-                wk_arr[k, i_local, j_local] = 0.0
-            end
         end
+        # kₕ² > 0 with nz <= 2 has no interior unknowns, so w = 0 everywhere is
+        # the only solution consistent with the rigid-lid boundary conditions;
+        # wk was already zeroed above.
     end
-
-    # Transform to real space
-    tmpw = _allocate_fft_dst(wk, plans)
-    fft_backward!(tmpw, wk, plans)
-    tmpw_arr = parent(tmpw)
-
-    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
-    # No additional normalization needed here
-    nz_phys, nx_phys, ny_phys = size(tmpw_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
-    end
-end
-
-# 2D decomposition version with transposes
-function _compute_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, workspace, dealias_mask)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Allocate z-pencil workspace
-    work_z = workspace !== nothing && hasfield(typeof(workspace), :work_z) ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
-    wk_z = allocate_z_pencil(G, ComplexF64)
-
-    # Step 1: Compute RHS in xy-pencil configuration with proper dealiasing
-    rhsk = similar(S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans; Lmask=dealias_mask)
-
-    # Step 2: Transpose RHS to z-pencil
-    transpose_to_z_pencil!(work_z, rhsk, G)
-
-    # Step 3: Solve tridiagonal system on z-pencil (z now fully local)
-    rhsk_z_arr = parent(work_z)
-    wk_z_arr = parent(wk_z)
-    fill!(wk_z_arr, 0.0)
-
-    nz_local, nx_local_z, ny_local_z = size(rhsk_z_arr)
-    @assert nz_local == nz "Z must be fully local in z-pencil"
-
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    f² = f^2
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    n_interior = nz - 2  # Interior points (constant for all wavenumbers)
-    if n_interior > 0
-        d  = zeros(Float64, n_interior)
-        dₗ = zeros(Float64, n_interior-1)
-        dᵤ = zeros(Float64, n_interior-1)
-
-        rhs = zeros(ComplexF64, n_interior)
-
-        dₗ_work = zeros(Float64, n_interior-1)
-        d_work  = zeros(Float64, n_interior)
-        dᵤ_work = zeros(Float64, n_interior-1)
-
-        rhsᵣ = zeros(Float64, n_interior)
-        rhsᵢ = zeros(Float64, n_interior)
-        solᵣ = zeros(Float64, n_interior)
-        solᵢ = zeros(Float64, n_interior)
-    end
-
-    @inbounds for j_local in 1:ny_local_z, i_local in 1:nx_local_z
-        i_global = local_to_global_z(i_local, 2, G)
-        j_global = local_to_global_z(j_local, 3, G)
-        
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        if kₕ² > 0 && nz > 2
-            if n_interior > 0
-                # Fill tridiagonal system (reusing pre-allocated arrays)
-                # ∇²w + (f²/N²)(∂²w/∂z²) = (2f/N²) J(ψ_z, ∇²ψ)
-                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS
-                # Centered second derivative: ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz²
-                fill!(dₗ, 0.0); fill!(dᵤ, 0.0)
-                for iz in 1:n_interior
-                    k = iz + 1
-                    # Correct coefficient: f²/N² (not N²/f²)
-                    coeff_z = (f²/N2_profile[k])/(Δz*Δz)
-                    d[iz] = -2*coeff_z - kₕ²  # Diagonal
-                    if iz > 1
-                        dₗ[iz-1] = coeff_z    # Sub-diagonal
-                    end
-                    if iz < n_interior
-                        dᵤ[iz] = coeff_z      # Super-diagonal
-                    end
-                    # RHS scaling: omega_eqn_rhs! gives 2 J(...), we need (2f/N²) J(...)
-                    rhs[iz] = (f/N2_profile[k]) * rhsk_z_arr[k, i_local, j_local]
-                end
-
-                dₗ_work .= dₗ
-                d_work .= d
-                dᵤ_work .= dᵤ
-                @inbounds for iz in 1:n_interior
-                    rhsᵣ[iz] = real(rhs[iz])
-                    rhsᵢ[iz] = imag(rhs[iz])
-                end
-
-                try
-                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵣ)
-                    solᵣ .= rhsᵣ
-                catch e
-                    error("LAPACK gtsv failed for vertical velocity (real part, 2D decomp) at kx=$(G.kx[i_global]), ky=$(G.ky[j_global]): $e. " *
-                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
-                end
-
-                dₗ_work .= dₗ
-                d_work .= d
-                dᵤ_work .= dᵤ
-                try
-                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵢ)
-                    solᵢ .= rhsᵢ
-                catch e
-                    error("LAPACK gtsv failed for vertical velocity (imag part, 2D decomp) at kx=$(G.kx[i_global]), ky=$(G.ky[j_global]): $e. " *
-                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
-                end
-
-                for iz in 1:n_interior
-                    k = iz + 1
-                    wk_z_arr[k, i_local, j_local] = solᵣ[iz] + im * solᵢ[iz]
-                end
-            end
-
-        elseif kₕ² > 0 && nz <= 2
-            # With rigid lid BCs (w=0 at top and bottom), there are no interior points
-            # for nz <= 2. The only consistent solution is w=0 everywhere.
-            # Previous code incorrectly assigned w = -rhs/kh², violating BCs.
-            for k in 1:nz
-                wk_z_arr[k, i_local, j_local] = 0.0
-            end
-        end
-    end
-
-    # Step 4: Transpose result back to xy-pencil
-    wk = similar(S.psi)
-    transpose_to_xy_pencil!(wk, wk_z, G)
-
-    # Step 5: Transform to real space
-    tmpw = _allocate_fft_dst(wk, plans)
-    fft_backward!(tmpw, wk, plans)
-    tmpw_arr = parent(tmpw)
-    w_arr = parent(S.w)
-    nz_local, nx_local, ny_local = size(tmpw_arr)
-
-    # Note: fft_backward! is normalized (FFTW.ifft / PencilFFTs ldiv!)
-    # No additional normalization needed here
-    # Use nz_local (not global nz) for MPI-distributed arrays
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
-    end
+    return wk
 end
 
 #=
@@ -721,189 +591,62 @@ function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plan
               "to avoid inconsistent vertical velocity." maxlog=1
     end
 
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.A, G)
-
     profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
-    if need_transpose
-        _compute_ybj_vertical_velocity_2d!(S, G, plans, f, profile,
+    with_scratch(workspace) do
+        _compute_ybj_vertical_velocity!(S, G, plans, f, profile,
             workspace, skip_inversion, t)
-    else
-        _compute_ybj_vertical_velocity_direct!(S, G, plans, f, profile,
-            skip_inversion, t)
     end
     return S
 end
 
 # Direct computation when z is fully local (serial or 1D decomposition)
-function _compute_ybj_vertical_velocity_direct!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, skip_inversion, t)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get underlying arrays
-    w_arr = parent(S.w)
-
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-
-    # Step 1: Recover A from B = L⁺A using centralized YBJ+ inversion
-    # a(z) = f²/N²(z) is the elliptic coefficient
-    if skip_inversion
-        # Use existing S.A and S.C computed by the timestep with correct stratification.
-        # This avoids re-inverting with a potentially different (constant) N² profile.
-        # Note: S.A being all zeros is valid (e.g., no waves), so we just warn if unexpected
-        if all(iszero, parent(S.A))
-            @warn "skip_inversion=true but S.A is all zeros - vertical velocity will be zero" maxlog=1
-        end
-    else
-        # Re-invert B→A with the given N² profile.
-        # WARNING: If the timestep computed A with a different stratification,
-        # this will give inconsistent results.
-        a_vec = similar(G.z)
-        f_sq = f^2
-        @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
-        end
-        invert_B_to_A!(S, G, a_vec)
-    end
-    # Step 2: Compute vertical derivative A_z using finite differences
-    Aₖ_z = S.C  # C was set to A_z by invert_B_to_A!
-    Aₖ_z_arr = parent(Aₖ_z)
-    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
-
-    # Verify z is fully local on the spectral pencil (MPI input/output pencils can differ)
-    @assert nz_spec == nz "Vertical dimension must be fully local for direct solve"
-
-    # Step 3: Compute horizontal derivatives of A_z
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
-    dAz_dxₖ_arr = parent(dAz_dxₖ)
-    dAz_dyₖ_arr = parent(dAz_dyₖ)
-
-    # Compute derivatives for k = 1:(nz-1) where A_z is defined
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, dAz_dxₖ)
-        j_global = local_to_global(j_local, 3, dAz_dxₖ)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
-        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
-    end
-
-    # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
-    # Without this, the uninitialized data can inject NaNs/noise into the transform.
-    @inbounds for j_local in 1:ny_spec, i_local in 1:nx_spec
-        dAz_dxₖ_arr[nz, i_local, j_local] = 0
-        dAz_dyₖ_arr[nz, i_local, j_local] = 0
-    end
-
-    # Step 4: Compute YBJ vertical velocity in PHYSICAL space
-    # From Asselin & Young (2019) equation (2.10):
-    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
-    #
-    # where A_{zs} = ∂_s(A_z) = (1/2)(∂_x - i∂_y)(A_z) = (1/2)[(∂A_z/∂x) - i(∂A_z/∂y)]
-    #
-    # Expanding A_{zs} = A_r + i*A_i where:
-    #   A_r = (1/2)[Re(∂A_z/∂x) + Im(∂A_z/∂y)]  (real part of A_{zs})
-    #   A_i = (1/2)[Im(∂A_z/∂x) - Re(∂A_z/∂y)]  (imaginary part of A_{zs})
-    #
-    # The full oscillating velocity is:
-    #   w = -(f²/N²) * 2 * Re(A_{zs} * e^{-ift})
-    #     = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
-
-    # Transform horizontal derivatives to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
-    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
-    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
-    dAz_dx_phys_arr = parent(dAz_dx_phys)
-    dAz_dy_phys_arr = parent(dAz_dy_phys)
-    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
-
-    @assert size(w_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils for w and FFT output must match"
-
-    # Compute oscillation factors if time is provided
-    if t !== nothing
-        cos_ft = cos(f * t)
-        sin_ft = sin(f * t)
-    else
-        # If no time provided, use t=0 (cosine term only)
-        cos_ft = 1.0
-        sin_ft = 0.0
-    end
-
-    # Compute w in physical space using equation (2.10)
-    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
-        k_out = k + 1  # Shift to match output grid
-        N²ₗ = N2_profile[k_out]
-        ybj_factor = -(f^2) / N²ₗ
-
-        # Get derivatives in physical space
-        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
-        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
-
-        # Cosine coefficient: Re(∂A_z/∂x) + Im(∂A_z/∂y)
-        w_cos = real(dAz_dx) + imag(dAz_dy)
-        # Sine coefficient: Im(∂A_z/∂x) - Re(∂A_z/∂y)
-        w_sin = imag(dAz_dx) - real(dAz_dy)
-
-        # Full oscillating velocity from eq (2.10)
-        w_arr[k_out, i_local, j_local] = ybj_factor * (cos_ft * w_cos + sin_ft * w_sin)
-    end
-
-    # Apply boundary conditions: w = 0 at top and bottom
-    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
-        w_arr[1, i_local, j_local] = 0.0
-        if nz > 1
-            w_arr[nz, i_local, j_local] = 0.0
-        end
-    end
-end
-
-# 2D decomposition version with transposes
-function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, plans,
+# One implementation for every decomposition. The spectral work here is
+# pointwise in z (horizontal derivatives of A_z), so no transpose is needed —
+# only the `k` bookkeeping has to be done in GLOBAL indices, because the
+# spectral pencil distributes z whenever the process topology has px > 1.
+# The physical pencil always keeps z local, so the physical loop below can use
+# its own `k` directly.
+function _compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans,
     f, N2_profile, workspace, skip_inversion, t)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    nz = G.nz
 
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-
-    # Step 1: Recover A from B = L⁺A (invert_B_to_A! handles 2D decomposition internally)
-    # a(z) = f²/N²(z) is the elliptic coefficient
+    # Step 1: Recover A from B = L⁺A using the centralized YBJ+ inversion,
+    # with a(z) = f²/N²(z) as the elliptic coefficient.
     if skip_inversion
-        # Use existing S.A and S.C computed by the timestep with correct stratification.
-        # Note: S.A being all zeros is valid (e.g., no waves), so we just warn if unexpected
+        # Reuse S.A and S.C from the timestep, which used the correct
+        # stratification. All-zero A is legitimate (a run with no waves).
         if all(iszero, parent(S.A))
             @warn "skip_inversion=true but S.A is all zeros - vertical velocity will be zero" maxlog=1
         end
     else
-        # Re-invert B→A with the given N² profile.
-        # WARNING: If the timestep computed A with a different stratification,
-        # this will give inconsistent results.
         a_vec = similar(G.z)
         f_sq = f^2
         @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_profile[k]  # a = f²/N²
+            a_vec[k] = f_sq / N2_profile[k]
         end
-        # Pass workspace if available
         invert_B_to_A!(S, G, a_vec; workspace)
     end
 
-    # Now A and C (A_z) are in xy-pencil form.
-    # invert_B_to_A! already computed A_z and stored it in S.C during the z-pencil phase.
-    # Use S.C directly instead of recomputing - this ensures MPI and serial paths match,
-    # and respects skip_inversion=true which promises to reuse precomputed A/C.
+    # Step 2: horizontal derivatives of A_z, which invert_B_to_A! left in S.C.
     Aₖ_z = S.C
     Aₖ_z_arr = parent(Aₖ_z)
+    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
 
-    # Compute horizontal derivatives of A_z in xy-pencil
-    nz_local, nx_local, ny_local = size(Aₖ_z_arr)
-    @assert nz_local == nz "Vertical dimension must be fully local for YBJ vertical velocity"
-    dAz_dxₖ = similar(Aₖ_z)
-    dAz_dyₖ = similar(Aₖ_z)
+    dAz_dxₖ = scratch_like(workspace, Aₖ_z)
+    dAz_dyₖ = scratch_like(workspace, Aₖ_z)
     dAz_dxₖ_arr = parent(dAz_dxₖ)
     dAz_dyₖ_arr = parent(dAz_dyₖ)
 
-    # Compute derivatives for k = 1:(nz-1) where A_z is defined
-    @inbounds for k in 1:(nz-1), j_local in 1:ny_local, i_local in 1:nx_local
+    # A_z is defined for global levels 1:(nz-1). The top global level is zeroed
+    # rather than left as `similar` garbage, which would inject noise into the
+    # backward transform.
+    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
+        k_global = local_to_global(k, 1, Aₖ_z)
+        if k_global >= nz
+            dAz_dxₖ_arr[k, i_local, j_local] = 0
+            dAz_dyₖ_arr[k, i_local, j_local] = 0
+            continue
+        end
         i_global = local_to_global(i_local, 2, dAz_dxₖ)
         j_global = local_to_global(j_local, 3, dAz_dxₖ)
         ikₓ = im * G.kx[i_global]
@@ -912,68 +655,46 @@ function _compute_ybj_vertical_velocity_2d!(S::ModelFields, G::RuntimeGeometry, 
         dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
     end
 
-    # Zero the top slice (k=nz) to avoid garbage from similar() affecting fft_backward!
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        dAz_dxₖ_arr[nz, i_local, j_local] = 0
-        dAz_dyₖ_arr[nz, i_local, j_local] = 0
-    end
-
-    # Compute YBJ vertical velocity in PHYSICAL space (2D decomposition version)
-    # From Asselin & Young (2019) equation (2.10):
-    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.
-    #
-    # where A_{zs} = (1/2)[(∂A_z/∂x) - i(∂A_z/∂y)]
-    #
-    # Full formula:
-    #   w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
-
-    # Transform horizontal derivatives to physical space
-    dAz_dx_phys = _allocate_fft_dst(dAz_dxₖ, plans)
-    dAz_dy_phys = _allocate_fft_dst(dAz_dyₖ, plans)
+    # Step 3: YBJ vertical velocity in PHYSICAL space.
+    # Asselin & Young (2019) equation (2.10):
+    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.,  A_{zs} = (1/2)[∂ₓA_z - i ∂ᵧA_z]
+    #   w = -(f²/N²)[cos(ft)(Re ∂ₓA_z + Im ∂ᵧA_z) + sin(ft)(Im ∂ₓA_z - Re ∂ᵧA_z)]
+    dAz_dx_phys = scratch_physical(workspace, dAz_dxₖ, plans)
+    dAz_dy_phys = scratch_physical(workspace, dAz_dyₖ, plans)
     fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
     fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
     dAz_dx_phys_arr = parent(dAz_dx_phys)
     dAz_dy_phys_arr = parent(dAz_dy_phys)
 
     w_arr = parent(S.w)
-
-    # Compute oscillation factors if time is provided
-    if t !== nothing
-        cos_ft = cos(f * t)
-        sin_ft = sin(f * t)
-    else
-        # If no time provided, use t=0 (cosine term only)
-        cos_ft = 1.0
-        sin_ft = 0.0
-    end
-
-    # Compute w in physical space using equation (2.10)
     nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
-    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
-        k_out = k + 1
-        N²ₗ = N2_profile[k_out]
-        ybj_factor = -(f^2) / N²ₗ
+    @assert nz_phys == nz "Physical pencil must keep the vertical dimension local"
+    @assert size(w_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils for w and FFT output must match"
 
-        # Get derivatives in physical space
+    cos_ft = t === nothing ? 1.0 : cos(f * t)
+    sin_ft = t === nothing ? 0.0 : sin(f * t)
+
+    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
+        k_out = k + 1  # Shift to match output grid
+        ybj_factor = -(f^2) / N2_profile[k_out]
+
         dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
         dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
 
-        # Cosine coefficient: Re(∂A_z/∂x) + Im(∂A_z/∂y)
         w_cos = real(dAz_dx) + imag(dAz_dy)
-        # Sine coefficient: Im(∂A_z/∂x) - Re(∂A_z/∂y)
         w_sin = imag(dAz_dx) - real(dAz_dy)
 
-        # Full oscillating velocity from eq (2.10)
         w_arr[k_out, i_local, j_local] = ybj_factor * (cos_ft * w_cos + sin_ft * w_sin)
     end
 
-    # Apply boundary conditions
+    # Boundary conditions: w = 0 at the top and the bottom.
     @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
         w_arr[1, i_local, j_local] = 0.0
         if nz > 1
             w_arr[nz, i_local, j_local] = 0.0
         end
     end
+    return S
 end
 
 #=
@@ -1055,7 +776,7 @@ function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=not
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
     compute_wave_velocities!(S, G; plans, f, N2, compute_w,
-        include_wave_velocity, N2_profile)
+        include_wave_velocity, N2_profile, workspace)
 
     return S
 end
@@ -1153,7 +874,17 @@ Call after compute_velocities! to get total velocity.
 """
 function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true,
-    include_wave_velocity=true, N2_profile=nothing)
+    include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
+
+    return with_scratch(workspace) do
+        _compute_wave_velocities!(S, G; plans, f, N2, compute_w,
+                                  include_wave_velocity, N2_profile, workspace)
+    end
+end
+
+function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
+    f::Real=1.0, N2::Real=1.0, compute_w=true,
+    include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays
@@ -1162,7 +893,8 @@ function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=noth
     w_arr = parent(S.w)
     Aₖ_arr = parent(S.A)
     Bₖ_arr = parent(S.B)
-    Aₖ_z_arr = parent(S.C)  # A_z = ∂A/∂z computed by invert_B_to_A!
+    Aₖ_z = S.C              # A_z = ∂A/∂z computed by invert_B_to_A!
+    Aₖ_z_arr = parent(Aₖ_z)
     nz_local, nx_local, ny_local = size(Aₖ_arr)
 
     # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
@@ -1185,9 +917,9 @@ function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=noth
     # ∂_{s*} → (1/2)(ikₓ + i·ikᵧ) = (i/2)(kₓ - kᵧ)... wait, let me recalculate
     # Actually: ∂_{s*}f → (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (i/2)(kₓ + i kᵧ) f̂ = (i/2) k* f̂
     # where k* = kₓ + i kᵧ is the complex wavenumber conjugate
-    LAₖ = similar(S.A)
-    dLA_ds_conjₖ = similar(S.A)  # ∂_{s*}(LA)
-    dAz_ds_conjₖ = similar(S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
+    LAₖ = scratch_like(workspace, S.A)
+    dLA_ds_conjₖ = scratch_like(workspace, S.A)  # ∂_{s*}(LA)
+    dAz_ds_conjₖ = scratch_like(workspace, S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
     LAₖ_arr = parent(LAₖ)
     dLA_ds_conjₖ_arr = parent(dLA_ds_conjₖ)
     dAz_ds_conjₖ_arr = parent(dAz_ds_conjₖ)
@@ -1234,34 +966,43 @@ function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=noth
     # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz} where M = (f₀²/N²)A_z
     # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
 
-    # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z
-    Aₖ_zz = similar(S.A)
-    Aₖ_zz_arr = parent(Aₖ_zz)
+    # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z.
+    # This couples neighbouring vertical levels, so it has to run with z fully
+    # local: on the spectral pencil z is distributed whenever px > 1, and the
+    # boundary stencils below would otherwise be applied at every rank seam.
+    Aₖ_zz = scratch_like(workspace, S.A)
     Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
 
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        for k in 2:(nz_local-1)
-            # Centered difference for A_{zz}
-            Aₖ_zz_arr[k, i_local, j_local] = (Aₖ_z_arr[k+1, i_local, j_local] - 2*Aₖ_z_arr[k, i_local, j_local] + Aₖ_z_arr[k-1, i_local, j_local]) / (Δz^2)
-        end
-        # One-sided at boundaries (second-order forward/backward)
-        if nz_local >= 3
-            Aₖ_zz_arr[1, i_local, j_local] = (Aₖ_z_arr[3, i_local, j_local] - 2*Aₖ_z_arr[2, i_local, j_local] + Aₖ_z_arr[1, i_local, j_local]) / (Δz^2)
-            Aₖ_zz_arr[nz_local, i_local, j_local] = (Aₖ_z_arr[nz_local, i_local, j_local] - 2*Aₖ_z_arr[nz_local-1, i_local, j_local] + Aₖ_z_arr[nz_local-2, i_local, j_local]) / (Δz^2)
-        elseif nz_local == 2
-            Aₖ_zz_arr[1, i_local, j_local] = 0.0
-            Aₖ_zz_arr[2, i_local, j_local] = 0.0
-        else
-            Aₖ_zz_arr[1, i_local, j_local] = 0.0
+    with_z_local(G, (Aₖ_zz, Aₖ_z), (:out, :in);
+                 scratch=z_scratch(workspace, :work_z, :C_z)) do Azz, Az
+        Azz_arr = parent(Azz)
+        Az_arr = parent(Az)
+        nz_z, nx_z, ny_z = size(Az_arr)
+        @inbounds for j_local in 1:ny_z, i_local in 1:nx_z
+            for k in 2:(nz_z-1)
+                # Centered difference for A_{zz}
+                Azz_arr[k, i_local, j_local] = (Az_arr[k+1, i_local, j_local] - 2*Az_arr[k, i_local, j_local] + Az_arr[k-1, i_local, j_local]) / (Δz^2)
+            end
+            # One-sided at boundaries (second-order forward/backward)
+            if nz_z >= 3
+                Azz_arr[1, i_local, j_local] = (Az_arr[3, i_local, j_local] - 2*Az_arr[2, i_local, j_local] + Az_arr[1, i_local, j_local]) / (Δz^2)
+                Azz_arr[nz_z, i_local, j_local] = (Az_arr[nz_z, i_local, j_local] - 2*Az_arr[nz_z-1, i_local, j_local] + Az_arr[nz_z-2, i_local, j_local]) / (Δz^2)
+            elseif nz_z == 2
+                Azz_arr[1, i_local, j_local] = 0.0
+                Azz_arr[2, i_local, j_local] = 0.0
+            else
+                Azz_arr[1, i_local, j_local] = 0.0
+            end
         end
     end
+    Aₖ_zz_arr = parent(Aₖ_zz)
 
     # Compute horizontal Laplacian Δ_H(A_z) and A_{zs}, A_{zzs} in spectral space
     # Δ_H(A_z) = -k_h² · Â_z in spectral space
     # A_{zs} = ∂_s(A_z) = (1/2)(ikₓ + kᵧ) · Â_z  [already computed as dAz_ds_conjₖ]
     # A_{zzs} = ∂_s(A_{zz}) = (1/2)(ikₓ + kᵧ) · Â_{zz}
-    Δ_H_Azₖ = similar(S.A)
-    A_zzsₖ = similar(S.A)
+    Δ_H_Azₖ = scratch_like(workspace, S.A)
+    A_zzsₖ = scratch_like(workspace, S.A)
     Δ_H_Azₖ_arr = parent(Δ_H_Azₖ)
     A_zzsₖ_arr = parent(A_zzsₖ)
 
@@ -1303,32 +1044,38 @@ function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=noth
 
     # Compute vertical derivative of LA using finite differences
     # ∂(LA)/∂z for full Jacobian and vertical Stokes drift
-    dLA_dzₖ = similar(S.A)
-    dLA_dzₖ_arr = parent(dLA_dzₖ)
-    # Note: Δz already computed above for A_{zz}
+    dLA_dzₖ = scratch_like(workspace, S.A)
+    # Note: Δz already computed above for A_{zz}. Vertical coupling again, so
+    # again with z fully local.
 
     # Second-order centered differences for interior, one-sided at boundaries
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        for k in 2:(nz_local-1)
-            # Centered difference
-            dLA_dzₖ_arr[k, i_local, j_local] = (LAₖ_arr[k+1, i_local, j_local] - LAₖ_arr[k-1, i_local, j_local]) / (2 * Δz)
-        end
-        # One-sided at boundaries
-        if nz_local >= 2
-            dLA_dzₖ_arr[1, i_local, j_local] = (LAₖ_arr[2, i_local, j_local] - LAₖ_arr[1, i_local, j_local]) / Δz
-            dLA_dzₖ_arr[nz_local, i_local, j_local] = (LAₖ_arr[nz_local, i_local, j_local] - LAₖ_arr[nz_local-1, i_local, j_local]) / Δz
-        else
-            dLA_dzₖ_arr[1, i_local, j_local] = 0.0
+    with_z_local(G, (dLA_dzₖ, LAₖ), (:out, :in);
+                 scratch=z_scratch(workspace, :A_z, :B_z)) do dLA_dz, LA
+        dLA_dz_arr = parent(dLA_dz)
+        LA_arr = parent(LA)
+        nz_z, nx_z, ny_z = size(LA_arr)
+        @inbounds for j_local in 1:ny_z, i_local in 1:nx_z
+            for k in 2:(nz_z-1)
+                # Centered difference
+                dLA_dz_arr[k, i_local, j_local] = (LA_arr[k+1, i_local, j_local] - LA_arr[k-1, i_local, j_local]) / (2 * Δz)
+            end
+            # One-sided at boundaries
+            if nz_z >= 2
+                dLA_dz_arr[1, i_local, j_local] = (LA_arr[2, i_local, j_local] - LA_arr[1, i_local, j_local]) / Δz
+                dLA_dz_arr[nz_z, i_local, j_local] = (LA_arr[nz_z, i_local, j_local] - LA_arr[nz_z-1, i_local, j_local]) / Δz
+            else
+                dLA_dz_arr[1, i_local, j_local] = 0.0
+            end
         end
     end
 
     # Transform all fields to physical space
     # The Jacobian J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA) is a product of fields
     # and MUST be computed in physical space, not spectral space
-    LAᵣ = _allocate_fft_dst(LAₖ, plans)
-    dLA_ds_conjᵣ = _allocate_fft_dst(dLA_ds_conjₖ, plans)
-    dAz_ds_conjᵣ = _allocate_fft_dst(dAz_ds_conjₖ, plans)
-    dLA_dzᵣ = _allocate_fft_dst(dLA_dzₖ, plans)
+    LAᵣ = scratch_physical(workspace, LAₖ, plans)
+    dLA_ds_conjᵣ = scratch_physical(workspace, dLA_ds_conjₖ, plans)
+    dAz_ds_conjᵣ = scratch_physical(workspace, dAz_ds_conjₖ, plans)
+    dLA_dzᵣ = scratch_physical(workspace, dLA_dzₖ, plans)
 
     fft_backward!(LAᵣ, LAₖ, plans)
     fft_backward!(dLA_ds_conjᵣ, dLA_ds_conjₖ, plans)
@@ -1336,10 +1083,10 @@ function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=noth
     fft_backward!(dLA_dzᵣ, dLA_dzₖ, plans)
 
     # Transform additional fields for vertical Stokes drift (eq 3.19-3.20)
-    Azᵣ = _allocate_fft_dst(S.C, plans)  # A_z in physical space
-    Azzᵣ = _allocate_fft_dst(Aₖ_zz, plans)  # A_{zz} in physical space
-    Δ_H_Azᵣ = _allocate_fft_dst(Δ_H_Azₖ, plans)  # Δ_H(A_z) in physical space
-    A_zzsᵣ = _allocate_fft_dst(A_zzsₖ, plans)  # A_{zzs} in physical space
+    Azᵣ = scratch_physical(workspace, S.C, plans)  # A_z in physical space
+    Azzᵣ = scratch_physical(workspace, Aₖ_zz, plans)  # A_{zz} in physical space
+    Δ_H_Azᵣ = scratch_physical(workspace, Δ_H_Azₖ, plans)  # Δ_H(A_z) in physical space
+    A_zzsᵣ = scratch_physical(workspace, A_zzsₖ, plans)  # A_{zzs} in physical space
 
     fft_backward!(Azᵣ, S.C, plans)
     fft_backward!(Azzᵣ, Aₖ_zz, plans)

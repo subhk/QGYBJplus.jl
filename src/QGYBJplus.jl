@@ -63,7 +63,9 @@ include("core/fields.jl")
 include("stratification.jl")
 
 include("transforms.jl")
+include("scratch.jl")
 include("parallel_mpi.jl")
+include("zpencil.jl")
 include("loop_macros.jl")
 
 include("physics.jl")

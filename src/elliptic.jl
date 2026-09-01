@@ -70,6 +70,7 @@ module Elliptic
 using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local, is_parallel_array
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
+using ..QGYBJplus: with_z_local, z_scratch
 const PARENT = Base.parentmodule(@__MODULE__)
 
 #=
@@ -191,30 +192,27 @@ function invert_q_to_psi!(S::ModelFields, G::RuntimeGeometry; a::AbstractVector,
     nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
 
-    # Check if we need to do transpose (2D decomposition)
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.q, G)
-
-    if need_transpose
-        # 2D decomposition: transpose to z-pencil, solve, transpose back
-        _invert_q_to_psi_2d!(S, G, a, workspace)
-    else
-        # Serial or 1D decomposition: direct solve (z already local)
-        _invert_q_to_psi_direct!(S, G, a)
+    # `with_z_local` passes the fields straight through when z is already local
+    # (serial or 1D decomposition) and mirrors them onto z-pencils when the
+    # spectral pencil distributes z.
+    with_z_local(G, (S.psi, S.q), (:out, :in);
+                 scratch=z_scratch(workspace, :psi_z, :q_z)) do psi_z, q_z
+        _invert_q_to_psi!(psi_z, q_z, G, a)
     end
-
     return S
 end
 
 """
-Direct solve for serial mode or 1D decomposition (z fully local).
+Vertical tridiagonal PV inversion. Requires `psi` and `q` to have a fully
+local vertical dimension; `with_z_local` in `invert_q_to_psi!` guarantees
+that for every decomposition.
 """
-function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry,
-    a::AbstractVector)
+function _invert_q_to_psi!(psi, q, G::RuntimeGeometry, a::AbstractVector)
     nz = G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
-    ψ_arr = parent(S.psi)   # Output: streamfunction
-    q_arr = parent(S.q)     # Input: QGPV
+    ψ_arr = parent(psi)   # Output: streamfunction
+    q_arr = parent(q)     # Input: QGPV
 
     # Get local dimensions
     nz_local, nx_local, ny_local = size(ψ_arr)
@@ -226,6 +224,7 @@ function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry,
     dₗ = zeros(eltype(a), nz)   # Lower diagonal
     d  = zeros(eltype(a), nz)   # Main diagonal
     dᵤ = zeros(eltype(a), nz)   # Upper diagonal
+    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
 
     # Vertical grid spacing
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
@@ -240,8 +239,8 @@ function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry,
     # Loop over all LOCAL horizontal wavenumbers (using local indices)
     for j_local in 1:ny_local, i_local in 1:nx_local
         # Get global indices for wavenumber lookup
-        i_global = local_to_global(i_local, 2, S.q)
-        j_global = local_to_global(j_local, 3, S.q)
+        i_global = local_to_global(i_local, 2, q)
+        j_global = local_to_global(j_local, 3, q)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -299,122 +298,19 @@ function _invert_q_to_psi_direct!(S::ModelFields, G::RuntimeGeometry,
         @inbounds for k in 1:nz
             rhs[k] = Δz² * real(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work)
 
         @inbounds for k in 1:nz
             rhsᵢ[k] = Δz² * imag(q_arr[k, i_local, j_local])
         end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
 
         # Combine into complex solution
         @inbounds for k in 1:nz
             ψ_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
-end
-
-"""
-2D decomposition: transpose to z-pencil, solve, transpose back.
-"""
-function _invert_q_to_psi_2d!(S::ModelFields, G::RuntimeGeometry,
-    a::AbstractVector, workspace)
-    nz = G.nz
-
-    # Allocate z-pencil workspace if not provided
-    q_z = workspace !== nothing ? workspace.q_z : allocate_z_pencil(G, ComplexF64)
-    ψ_z = workspace !== nothing ? workspace.psi_z : allocate_z_pencil(G, ComplexF64)
-
-    # Transpose q from xy-pencil to z-pencil
-    transpose_to_z_pencil!(q_z, S.q, G)
-
-    # Get underlying arrays in z-pencil format
-    q_z_arr = parent(q_z)
-    ψ_z_arr = parent(ψ_z)
-
-    # Get local dimensions in z-pencil (z is now fully local)
-    nz_local, nx_local, ny_local = size(q_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    # Tridiagonal matrix diagonals
-    dₗ = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    dᵤ = zeros(eltype(a), nz)
-
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δz² = Δz^2
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhs  = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
-
-    # Loop over LOCAL wavenumbers in z-pencil configuration
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        # Get global indices for wavenumber lookup (z-pencil ranges)
-        i_global = local_to_global_z(i_local, 2, G)
-        j_global = local_to_global_z(j_local, 3, G)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        # Special case: kₕ² = 0 (horizontal mean mode)
-        # CAUTION: This discards any horizontally uniform PV without enforcing the
-        # compatibility condition ∫q dz = 0.
-        if kₕ² == 0
-            # Check if mean mode has significant energy (warn once per run)
-            q_mean_mag = maximum(abs, @view q_z_arr[:, i_local, j_local])
-            if q_mean_mag > 1e-10  # Threshold for "significant"
-                @warn "invert_q_to_psi!: Non-zero horizontal mean in q (max |q(k=0)|=$(q_mean_mag)). " *
-                      "This barotropic component is discarded (ψ=0 for kₕ²=0) and will not " *
-                      "contribute to the flow field. This is physically correct for computing " *
-                      "velocities but may affect PV conservation diagnostics." maxlog=1
-            end
-            @inbounds for k in 1:nz
-                ψ_z_arr[k, i_local, j_local] = 0
-            end
-            continue
-        end
-
-        # Special case: nz == 1 (single-layer / 2D mode)
-        if nz == 1
-            @inbounds ψ_z_arr[1, i_local, j_local] = -q_z_arr[1, i_local, j_local] / kₕ²
-            continue
-        end
-
-        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-        d[1]  = -(a[1] + kₕ²*Δz²)
-        dᵤ[1] = a[1]
-
-        @inbounds for k in 2:nz-1
-            dₗ[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + kₕ²*Δz²)
-            dᵤ[k] = a[k]
-        end
-
-        dₗ[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + kₕ²*Δz²)
-
-        # Solve for real and imaginary parts
-        @inbounds for k in 1:nz
-            rhs[k] = Δz² * real(q_z_arr[k, i_local, j_local])
-        end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs)
-
-        @inbounds for k in 1:nz
-            rhsᵢ[k] = Δz² * imag(q_z_arr[k, i_local, j_local])
-        end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
-
-        @inbounds for k in 1:nz
-            ψ_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
-        end
-    end
-
-    # Transpose ψ from z-pencil back to xy-pencil
-    transpose_to_xy_pencil!(S.psi, ψ_z, G)
+    return psi
 end
 
 #=
@@ -465,8 +361,12 @@ Boundary flux terms are added to RHS:
 # Fortran Correspondence
 This matches `helmholtzdouble` in elliptic.f90 exactly.
 
-# Note
-For 2D decomposition, boundary conditions are not yet supported and will trigger a warning.
+# Boundary-condition arrays
+`bot_bc` / `top_bc` may be plain global `(nx, ny)` arrays in any decomposition.
+A *distributed* BC array is only accepted when the solve needs no transpose,
+because its local (i, j) range belongs to the xy-pencil, not the z-pencil.
+Passing one when z is distributed raises an error rather than silently
+dropping the flux, which an earlier version did.
 """
 function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            a::AbstractVector,
@@ -477,13 +377,21 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            workspace=nothing)
     nz = G.nz
 
-    # Check if we need 2D decomposition transpose
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(rhs, G)
+    # `with_z_local` is a no-op when z is already local, and mirrors onto
+    # z-pencils when the spectral pencil distributes z. A distributed BC array
+    # is indexed by its own local (i, j), which only lines up in the no-op case.
+    if !z_is_local(rhs, G)
+        for (bc, name) in ((bot_bc, "bot_bc"), (top_bc, "top_bc"))
+            bc !== nothing && is_parallel_array(bc) && throw(ArgumentError(
+                "$name must be a global (nx, ny) array when the vertical " *
+                "dimension is distributed; a pencil-local array cannot be " *
+                "matched to z-pencil columns"))
+        end
+    end
 
-    if need_transpose
-        _invert_helmholtz_2d!(dstk, rhs, G, a, b, scale_kh2, bot_bc, top_bc, workspace)
-    else
-        _invert_helmholtz_direct!(dstk, rhs, G, a, b, scale_kh2, bot_bc, top_bc)
+    with_z_local(G, (dstk, rhs), (:out, :in);
+                 scratch=z_scratch(workspace, :psi_z, :work_z)) do dst_z, rhs_z
+        _invert_helmholtz!(dst_z, rhs_z, G, a, b, scale_kh2, bot_bc, top_bc)
     end
 
     return dstk
@@ -507,7 +415,7 @@ Matches Fortran `helmholtzdouble` discretization exactly:
 - Interior: d[k] = -2a[k] - kh²Δz²
 - Boundary conditions incorporated via RHS modifications
 """
-function _invert_helmholtz_direct!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc)
+function _invert_helmholtz!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc)
     nz = G.nz
 
     dst_arr = parent(dstk)
@@ -561,6 +469,7 @@ function _invert_helmholtz_direct!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh
     dₗ = zeros(eltype(a), nz)
     d  = zeros(eltype(a), nz)
     dᵤ = zeros(eltype(a), nz)
+    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
 
     # Pre-allocate work arrays outside loop to reduce GC pressure
     rhsᵣ = zeros(eltype(a), nz)
@@ -624,159 +533,14 @@ function _invert_helmholtz_direct!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh
         end
 
         # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
 
         @inbounds for k in 1:nz
             dst_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
         end
     end
-end
-
-"""
-2D decomposition Helmholtz solve with transposes.
-
-Matches Fortran `helmholtzdouble` discretization exactly:
-- Uses centered stencil with same a[k], b[k] for all diagonals at point k
-- Interior: d[k] = -2a[k] - kh²Δz²
-
-"""
-function _invert_helmholtz_2d!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc, workspace)
-    nz = G.nz
-
-    @assert length(a) == nz "a must have length nz=$nz"
-    @assert length(b) == nz "b must have length nz=$nz"
-
-    # Use z-pencil workspace arrays to avoid repeated allocations
-    # work_z is used for input (rhs), psi_z is used for output (dst)
-    rhs_z = workspace !== nothing ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
-    dst_z = workspace !== nothing ? workspace.psi_z : allocate_z_pencil(G, ComplexF64)
-
-    # Transpose to z-pencil
-    transpose_to_z_pencil!(rhs_z, rhs, G)
-
-    rhs_z_arr = parent(rhs_z)
-    dst_z_arr = parent(dst_z)
-
-    nz_local, nx_local, ny_local = size(rhs_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    if nz == 1
-        if bot_bc !== nothing || top_bc !== nothing
-            @warn "Helmholtz solve with nz=1 ignores boundary conditions" maxlog=1
-        end
-        tol = sqrt(eps(real(one(eltype(rhs_z_arr)))))
-        singular_warned = false
-
-        for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global_z(i_local, 2, G)
-            j_global = local_to_global_z(j_local, 3, G)
-
-            kₓ = G.kx[i_global]
-            kᵧ = G.ky[j_global]
-            kₕ² = kₓ^2 + kᵧ^2
-            denom = scale_kh2 * kₕ²
-
-            rhs_val = rhs_z_arr[1, i_local, j_local]
-            if abs(denom) < tol
-                if !singular_warned && abs(rhs_val) > tol
-                    @warn "Helmholtz solve with nz=1 has kₕ²≈0 and nonzero RHS; setting φ=0 for the mean mode." maxlog=1
-                    singular_warned = true
-                end
-                dst_z_arr[1, i_local, j_local] = 0
-            else
-                dst_z_arr[1, i_local, j_local] = -rhs_val / denom
-            end
-        end
-
-        transpose_to_xy_pencil!(dstk, dst_z, G)
-        return dstk
-    end
-
-    if (bot_bc !== nothing && is_parallel_array(bot_bc)) || (top_bc !== nothing && is_parallel_array(top_bc))
-        @warn "invert_helmholtz!: boundary conditions are not supported for 2D decomposition " *
-              "when bc arrays are distributed. Ignoring bot_bc/top_bc." maxlog=1
-        bot_bc = nothing
-        top_bc = nothing
-    end
-
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δz² = Δz^2
-
-    dₗ = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    dᵤ = zeros(eltype(a), nz)
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhsᵣ = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
-
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global_z(i_local, 2, G)
-        j_global = local_to_global_z(j_local, 3, G)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-        #= Build tridiagonal matrix matching Fortran helmholtzdouble exactly
-           Key: uses same a[k], b[k] for all diagonals at each point k =#
-
-        # Bottom boundary (k=1): Neumann condition
-        # Fortran: d(1) = -a_helm(1) - 0.5*b_helm(1)*dz - kh2*dz*dz
-        #          du(1) = a_helm(1) + 0.5*b_helm(1)*dz
-        d[1]  = -a[1] - 0.5*b[1]*Δz - scale_kh2*kₕ²*Δz²
-        dᵤ[1] =  a[1] + 0.5*b[1]*Δz
-
-        # Interior points (k = 2, ..., nz-1)
-        # Fortran: d(iz) = -2*a_helm(iz) - kh2*dz*dz
-        #          du(iz) = a_helm(iz) + 0.5*b_helm(iz)*dz
-        #          dl(iz-1) = a_helm(iz) - 0.5*b_helm(iz)*dz
-        @inbounds for k in 2:nz-1
-            dₗ[k] = a[k] - 0.5*b[k]*Δz
-            d[k]  = -2*a[k] - scale_kh2*kₕ²*Δz²
-            dᵤ[k] =  a[k] + 0.5*b[k]*Δz
-        end
-
-        # Top boundary (k=nz): Neumann condition
-        # Fortran: d(n3) = -a_helm(n3) + 0.5*b_helm(n3)*dz - kh2*dz*dz
-        #          dl(n3-1) = a_helm(n3) - 0.5*b_helm(n3)*dz
-        dₗ[nz] = a[nz] - 0.5*b[nz]*Δz
-        d[nz]  = -a[nz] + 0.5*b[nz]*Δz - scale_kh2*kₕ²*Δz²
-
-        # Build RHS (reusing pre-allocated arrays)
-        @inbounds for k in 1:nz
-            rhsᵣ[k] = Δz² * real(rhs_z_arr[k, i_local, j_local])
-            rhsᵢ[k] = Δz² * imag(rhs_z_arr[k, i_local, j_local])
-        end
-
-        # Add boundary condition contributions to RHS
-        if bot_bc !== nothing
-            bc_val = _bc_value(bot_bc, i_local, j_local, i_global, j_global)
-            rhsᵣ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * real(bc_val)
-            rhsᵢ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * imag(bc_val)
-        end
-        if top_bc !== nothing
-            bc_val = _bc_value(top_bc, i_local, j_local, i_global, j_global)
-            rhsᵣ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * real(bc_val)
-            rhsᵢ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * imag(bc_val)
-        end
-
-        # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
-
-        @inbounds for k in 1:nz
-            dst_z_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
-        end
-    end
-
-    # Transpose back to xy-pencil
-    transpose_to_xy_pencil!(dstk, dst_z, G)
+    return dstk
 end
 
 #=
@@ -836,28 +600,24 @@ This matches `A_solver_ybj_plus` in elliptic.f90.
 function invert_B_to_A!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector;
     workspace=nothing)
 
-    # Check if we need 2D decomposition transpose
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(S.B, G)
-
-    if need_transpose
-        _invert_B_to_A_2d!(S, G, a, workspace)
-    else
-        _invert_B_to_A_direct!(S, G, a)
+    with_z_local(G, (S.A, S.C, S.B), (:out, :out, :in);
+                 scratch=z_scratch(workspace, :A_z, :C_z, :B_z)) do A_z, C_z, B_z
+        _invert_B_to_A!(A_z, C_z, B_z, G, a)
     end
-
     return S
 end
 
 """
-Direct B→A solve for serial or 1D decomposition.
+Recover the wave amplitude `A` and its vertical derivative `C = A_z` from the
+evolved field `B = L⁺A`. Requires a fully local vertical dimension, which
+`with_z_local` in `invert_B_to_A!` guarantees for every decomposition.
 """
-function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
-    a::AbstractVector)
+function _invert_B_to_A!(A, C, B, G::RuntimeGeometry, a::AbstractVector)
     nz = G.nz
 
-    A_arr = parent(S.A)
-    B_arr = parent(S.B)
-    C_arr = parent(S.C)
+    A_arr = parent(A)
+    B_arr = parent(B)
+    C_arr = parent(C)
 
     nz_local, nx_local, ny_local = size(A_arr)
     @assert nz_local == nz "Vertical dimension must be fully local"
@@ -865,6 +625,7 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
     dₗ = zeros(eltype(a), nz)
     d  = zeros(eltype(a), nz)
     dᵤ = zeros(eltype(a), nz)
+    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
 
     Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
     Δz² = Δz^2
@@ -878,8 +639,8 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
     solᵢ = zeros(eltype(a), nz)
 
     for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, S.B)
-        j_global = local_to_global(j_local, 3, S.B)
+        i_global = local_to_global(i_local, 2, B)
+        j_global = local_to_global(j_local, 3, B)
 
         kₓ = G.kx[i_global]
         kᵧ = G.ky[j_global]
@@ -923,8 +684,8 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
             rhsᵣ[1] = 0
             rhsᵢ[1] = 0
 
-            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
+            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
 
             # Remove vertical mean to select a unique null-space representative
             mean_val = zero(Complex{eltype(a)})
@@ -975,8 +736,8 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
             rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
         end
 
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ)
+        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
+        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
 
         @inbounds for k in 1:nz
             A_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
@@ -987,151 +748,7 @@ function _invert_B_to_A_direct!(S::ModelFields, G::RuntimeGeometry,
         end
         C_arr[nz, i_local, j_local] = 0
     end
-end
-
-"""
-2D decomposition B→A solve with transposes.
-"""
-function _invert_B_to_A_2d!(S::ModelFields, G::RuntimeGeometry,
-    a::AbstractVector, workspace)
-    nz = G.nz
-
-    # Allocate z-pencil workspace
-    B_z = workspace !== nothing ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
-    A_z = workspace !== nothing ? workspace.A_z : allocate_z_pencil(G, ComplexF64)
-    C_z = workspace !== nothing ? workspace.C_z : allocate_z_pencil(G, ComplexF64)
-
-    # Transpose B to z-pencil
-    transpose_to_z_pencil!(B_z, S.B, G)
-
-    B_z_arr = parent(B_z)
-    A_z_arr = parent(A_z)
-    C_z_arr = parent(C_z)
-
-    nz_local, nx_local, ny_local = size(B_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    dl = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    du = zeros(eltype(a), nz)
-
-    Δ = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δ2 = Δ^2
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhs_r = zeros(eltype(a), nz)
-    rhs_i = zeros(eltype(a), nz)
-    solr  = zeros(eltype(a), nz)
-    soli  = zeros(eltype(a), nz)
-
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global_z(i_local, 2, G)
-        j_global = local_to_global_z(j_local, 3, G)
-
-        kx_val = G.kx[i_global]
-        ky_val = G.ky[j_global]
-        kh2 = kx_val^2 + ky_val^2
-
-        # Special case: kₕ² = 0 (horizontal mean mode)
-        if kh2 == 0
-            if nz == 1
-                @inbounds begin
-                    A_z_arr[1, i_local, j_local] = 0
-                    C_z_arr[1, i_local, j_local] = 0
-                end
-                continue
-            end
-
-            fill!(dl, 0); fill!(d, 0); fill!(du, 0)
-
-            d[1]  = -a[1]
-            du[1] = a[1]
-
-            @inbounds for k in 2:nz-1
-                dl[k] = a[k-1]
-                d[k]  = -(a[k] + a[k-1])
-                du[k] = a[k]
-            end
-
-            dl[nz] = a[nz-1]
-            d[nz]  = -a[nz-1]
-
-            @inbounds for k in 1:nz
-                rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
-                rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
-            end
-
-            # Fix gauge: A[1] = 0 for a nonsingular solve
-            d[1] = 1
-            du[1] = 0
-            rhs_r[1] = 0
-            rhs_i[1] = 0
-
-            thomas_solve!(solr, dl, d, du, rhs_r)
-            thomas_solve!(soli, dl, d, du, rhs_i)
-
-            mean_val = zero(Complex{eltype(a)})
-            @inbounds for k in 1:nz
-                mean_val += solr[k] + im*soli[k]
-            end
-            mean_val /= nz
-
-            @inbounds for k in 1:nz
-                A_z_arr[k, i_local, j_local] = (solr[k] + im*soli[k]) - mean_val
-            end
-
-            @inbounds for k in 1:nz-1
-                C_z_arr[k, i_local, j_local] = (A_z_arr[k+1, i_local, j_local] - A_z_arr[k, i_local, j_local]) / Δ
-            end
-            C_z_arr[nz, i_local, j_local] = 0
-            continue
-        end
-
-        # Special case: nz == 1 (single-layer / 2D mode)
-        if nz == 1
-            @inbounds A_z_arr[1, i_local, j_local] = -4 * B_z_arr[1, i_local, j_local] / kh2
-            @inbounds C_z_arr[1, i_local, j_local] = 0
-            continue
-        end
-
-        fill!(dl, 0); fill!(d, 0); fill!(du, 0)
-
-        d[1]  = -(a[1] + (kh2*Δ2)/4)
-        du[1] = a[1]
-
-        @inbounds for k in 2:nz-1
-            dl[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + (kh2*Δ2)/4)
-            du[k] = a[k]
-        end
-
-        dl[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + (kh2*Δ2)/4)
-
-        # Build RHS
-        # RHS is just Δ² * B (no a_coeff - that was incorrect)
-        # The a(z) profile is already in the LHS operator matrix
-        @inbounds for k in 1:nz
-            rhs_r[k] = Δ2 * real(B_z_arr[k, i_local, j_local])
-            rhs_i[k] = Δ2 * imag(B_z_arr[k, i_local, j_local])
-        end
-
-        thomas_solve!(solr, dl, d, du, rhs_r)
-        thomas_solve!(soli, dl, d, du, rhs_i)
-
-        @inbounds for k in 1:nz
-            A_z_arr[k, i_local, j_local] = solr[k] + im*soli[k]
-        end
-
-        @inbounds for k in 1:nz-1
-            C_z_arr[k, i_local, j_local] = (A_z_arr[k+1, i_local, j_local] - A_z_arr[k, i_local, j_local])/Δ
-        end
-        C_z_arr[nz, i_local, j_local] = 0
-    end
-
-    # Transpose A and C back to xy-pencil
-    transpose_to_xy_pencil!(S.A, A_z, G)
-    transpose_to_xy_pencil!(S.C, C_z, G)
+    return A, C
 end
 
 #=
@@ -1165,26 +782,38 @@ In-place Thomas algorithm for solving tridiagonal systems Ax = b.
 # Complexity
 O(n) operations (vs O(n³) for general LU decomposition)
 """
-function thomas_solve!(x, dₗ, d, dᵤ, b)
-    n = length(d)
+thomas_solve!(x, dₗ, d, dᵤ, b) = thomas_solve!(x, dₗ, d, dᵤ, b, similar(dᵤ))
 
-    # Make working copies
-    c = copy(dᵤ)
-    d̃ = copy(d)
+"""
+    thomas_solve!(x, dₗ, d, dᵤ, b, c)
+
+Thomas algorithm with caller-supplied scratch. `c` is overwritten with the
+modified superdiagonal; it must be a distinct vector of the same length as `dᵤ`.
+
+Callers run this once per horizontal wavenumber, so `c` is hoisted out of that
+loop alongside the diagonals rather than copied on every solve. The main
+diagonal `d` is only ever read, so it needs no copy at all.
+"""
+function thomas_solve!(x, dₗ, d, dᵤ, b, c)
+    n = length(d)
+    length(c) == length(dᵤ) ||
+        throw(DimensionMismatch("Thomas scratch must match the superdiagonal"))
+
+    copyto!(c, dᵤ)
     x .= b
 
     # Singularity tolerance
     tol = sqrt(eps(eltype(d)))
 
     # Forward sweep
-    if abs(d̃[1]) < tol
-        error("Singular matrix in Thomas solver: d[1] ≈ 0 (|d[1]| = $(abs(d̃[1]))). " *
+    if abs(d[1]) < tol
+        error("Singular matrix in Thomas solver: d[1] ≈ 0 (|d[1]| = $(abs(d[1]))). " *
               "This may indicate ill-conditioned elliptic problem from N²≈0 or degenerate wavenumber.")
     end
-    c[1] /= d̃[1]
-    x[1] /= d̃[1]
+    c[1] /= d[1]
+    x[1] /= d[1]
     @inbounds for i in 2:n
-        denom = d̃[i] - dₗ[i]*c[i-1]
+        denom = d[i] - dₗ[i]*c[i-1]
         if abs(denom) < tol
             error("Singular matrix in Thomas solver at i=$i: |denom| = $(abs(denom)). " *
                   "This may indicate ill-conditioned system from N²≈0 or unstable stratification.")
