@@ -89,3 +89,39 @@ using QGYBJplus
         finalize_model!(model)
     end
 end
+
+@testset "Model-level energy diagnostics" begin
+    # These two entry points are the only callers of the MPI-aware
+    # *_global energy wrappers, so without them the wrappers look dead.
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0),
+        topology=(1, 1),
+        verbose=false,
+    )
+
+    try
+        set!(model;
+             ψ=(x, y, z) -> sinpi(x / π) * cospi(y / π),
+             waves=SurfaceWave(amplitude=0.1, scale=0.2),
+             verbose=false)
+
+        kinetic_energy = flow_kinetic_energy(model)
+        @test kinetic_energy isa Real
+        @test isfinite(kinetic_energy)
+        @test kinetic_energy > 0
+
+        envelope_energy, amplitude_energy = wave_energy(model)
+        @test isfinite(envelope_energy) && envelope_energy > 0
+        @test isfinite(amplitude_energy) && amplitude_energy > 0
+
+        # A quiescent model carries no balanced kinetic energy.
+        fill!(parent(model.fields.q), 0)
+        fill!(parent(model.fields.psi), 0)
+        @test flow_kinetic_energy(model) ≈ 0 atol=1e-20
+    finally
+        finalize_model!(model)
+    end
+end

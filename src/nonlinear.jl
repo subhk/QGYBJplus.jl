@@ -52,6 +52,8 @@ using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: allocate_z_pencil
 using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+using ..QGYBJplus: with_scratch, scratch_like, scratch_physical, scratch_phys_like
+using ..QGYBJplus: with_z_local, z_scratch
 import PencilArrays: PencilArray
 
 # Reference to parent module for accessing is_dealiased
@@ -411,7 +413,8 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::RuntimeGeometry, p
 end
 
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
-function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans; Lmask=nothing, use_real::Bool=false)
+function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans;
+                         Lmask=nothing, use_real::Bool=false, workspace=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     u_arr = parent(u); v_arr = parent(v)
@@ -424,16 +427,16 @@ function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans; Lmask=nothi
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
-    χᵣ = _allocate_fft_dst(χk, plans)
-    χk_f = similar(χk)
+    χᵣ = scratch_physical(workspace, χk, plans)
+    χk_f = scratch_like(workspace, χk)
     _prefilter_spectral!(χk_f, χk, G, Lmask)
     fft_backward!(χᵣ, χk_f, plans)
     χᵣ_arr = parent(χᵣ)
 
-    uterm_r = _allocate_fft_dst(χk, plans)
-    vterm_r = _allocate_fft_dst(χk, plans)
+    uterm_r = scratch_physical(workspace, χk, plans)
+    vterm_r = scratch_physical(workspace, χk, plans)
     uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
-    uterm_k = similar(χk); vterm_k = similar(χk)
+    uterm_k = scratch_like(workspace, χk); vterm_k = scratch_like(workspace, χk)
 
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
         χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
@@ -465,8 +468,12 @@ end
 
 Compute advection of q using divergence form without splitting wave fields.
 """
-function convol_waqg_q!(nqk, u, v, qk, G::RuntimeGeometry, plans; Lmask=nothing)
-    return _convol_advect!(nqk, u, v, qk, G, plans; Lmask=Lmask, use_real=true)
+function convol_waqg_q!(nqk, u, v, qk, G::RuntimeGeometry, plans;
+                        Lmask=nothing, workspace=nothing)
+    return with_scratch(workspace) do
+        _convol_advect!(nqk, u, v, qk, G, plans;
+                        Lmask=Lmask, use_real=true, workspace)
+    end
 end
 
 """
@@ -474,8 +481,12 @@ end
 
 Compute advection of complex B directly (YBJ+ path).
 """
-function convol_waqg_B!(nBk, u, v, Bk, G::RuntimeGeometry, plans; Lmask=nothing)
-    return _convol_advect!(nBk, u, v, Bk, G, plans; Lmask=Lmask, use_real=false)
+function convol_waqg_B!(nBk, u, v, Bk, G::RuntimeGeometry, plans;
+                        Lmask=nothing, workspace=nothing)
+    return with_scratch(workspace) do
+        _convol_advect!(nBk, u, v, Bk, G, plans;
+                        Lmask=Lmask, use_real=false, workspace)
+    end
 end
 
 #=
@@ -545,7 +556,7 @@ function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::RuntimeGeometry, plans
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
-    ζₖ = similar(ψₖ)
+    ζₖ = scratch_like(workspace, ψₖ)
     ζₖ_arr = parent(ζₖ)
 
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
@@ -615,7 +626,14 @@ end
 
 Compute wave refraction term ζ*B directly for complex B (YBJ+ path).
 """
-function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
+function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans;
+                            Lmask=nothing, workspace=nothing)
+    return with_scratch(workspace) do
+        _refraction_waqg_B!(rBk, Bk, ψₖ, G, plans, Lmask, workspace)
+    end
+end
+
+function _refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     ψ_arr = parent(ψₖ)
@@ -626,7 +644,7 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=not
     use_inline_dealias = isnothing(Lmask)
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
-    ζₖ = similar(ψₖ)
+    ζₖ = scratch_like(workspace, ψₖ)
     ζₖ_arr = parent(ζₖ)
 
     @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
@@ -642,9 +660,9 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=not
         end
     end
 
-    ζᵣ = _allocate_fft_dst(ζₖ, plans)
-    Bᵣ = _allocate_fft_dst(Bk, plans)
-    Bk_f = similar(Bk)
+    ζᵣ = scratch_physical(workspace, ζₖ, plans)
+    Bᵣ = scratch_physical(workspace, Bk, plans)
+    Bk_f = scratch_like(workspace, Bk)
     _prefilter_spectral!(Bk_f, Bk, G, Lmask)
     fft_backward!(ζᵣ, ζₖ, plans)
     fft_backward!(Bᵣ, Bk_f, plans)
@@ -652,7 +670,7 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans; Lmask=not
     ζᵣ_arr = parent(ζᵣ)
     Bᵣ_arr = parent(Bᵣ)
 
-    rBᵣ = similar(Bᵣ)
+    rBᵣ = scratch_phys_like(workspace, Bᵣ)
     rBᵣ_arr = parent(rBᵣ)
 
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
@@ -855,9 +873,31 @@ end
     compute_qw_complex!(qʷₖ, Bk, G, plans; f, Lmask=nothing)
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
+
+Implements the wave part of the "XV⁺" potential vorticity, Asselin & Young
+(2019) equation (3.5):
+
+    q = ΔΨ + LΨ + (i/2f) J(L⁺A*, L⁺A) + (1/4f) Δ|L⁺A|²
+
+The argument is `B = L⁺A`, **not** the backrotated velocity `LA`. That is
+deliberate, not an oversight: A&Y obtain (3.5) from Xie & Vanneste's PV by the
+substitution L ↦ L⁺, and it is precisely that substitution which gives the
+coupled system (1.4), (3.4), (3.5) its nonlinear "coupled energy" conservation
+law, A&Y equations (3.6)–(3.7). Passing `LA` here would reproduce the original
+XV potential vorticity and break that conservation law.
+
+Note the deliberate asymmetry with the wave kinetic energy, which *does* use
+`LA` — A&Y equation (4.7) and the remark following it: "to define WKE for YBJ⁺
+we use L, not L⁺". See `_local_energy_components` in core/io.jl.
 """
 function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
-                             f::Real, Lmask=nothing)
+                             f::Real, Lmask=nothing, workspace=nothing)
+    return with_scratch(workspace) do
+        _compute_qw_complex!(qʷₖ, Bk, G, plans, f, Lmask, workspace)
+    end
+end
+
+function _compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans, f, Lmask, workspace)
     nx, ny, nz = G.nx, G.ny, G.nz
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
@@ -866,7 +906,7 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     qʷₖ_arr = parent(qʷₖ)
 
     # Prefilter inputs to avoid aliasing when upstream fields are not masked
-    Bk_f = similar(Bk)
+    Bk_f = scratch_like(workspace, Bk)
     _prefilter_spectral!(Bk_f, Bk, G, Lmask)
 
     Bk_arr = parent(Bk_f)
@@ -876,7 +916,7 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
 
     # Spectral derivatives of B
-    Bₓₖ = similar(Bk); Bᵧₖ = similar(Bk)
+    Bₓₖ = scratch_like(workspace, Bk); Bᵧₖ = scratch_like(workspace, Bk)
     Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
 
     @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
@@ -889,9 +929,9 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     end
 
     # Transform to physical space
-    Bᵣ = _allocate_fft_dst(Bk, plans)
-    Bₓᵣ = _allocate_fft_dst(Bₓₖ, plans)
-    Bᵧᵣ = _allocate_fft_dst(Bᵧₖ, plans)
+    Bᵣ = scratch_physical(workspace, Bk, plans)
+    Bₓᵣ = scratch_physical(workspace, Bₓₖ, plans)
+    Bᵧᵣ = scratch_physical(workspace, Bᵧₖ, plans)
     fft_backward!(Bᵣ, Bk_f, plans)
     fft_backward!(Bₓᵣ, Bₓₖ, plans)
     fft_backward!(Bᵧᵣ, Bᵧₖ, plans)
@@ -901,7 +941,7 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     Bᵧᵣ_arr = parent(Bᵧᵣ)
 
     # (i/2)J(B*, B) term in physical space
-    qʷᵣ = similar(Bᵣ)
+    qʷᵣ = scratch_phys_like(workspace, Bᵣ)
     qʷᵣ_arr = parent(qʷᵣ)
     # Use physical array dimensions (may differ from spectral in 2D decomposition)
     nz_phys, nx_phys, ny_phys = size(qʷᵣ_arr)
@@ -912,7 +952,7 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     end
 
     # |B|^2 term
-    mag² = _allocate_fft_dst(Bk, plans)
+    mag² = scratch_physical(workspace, Bk, plans)
     mag²_arr = parent(mag²)
     # Physical array dimensions (already defined above as nz_phys, nx_phys, ny_phys)
     @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
@@ -920,7 +960,7 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     end
 
     # Transform to spectral
-    tempₖ = similar(Bk)
+    tempₖ = scratch_like(workspace, Bk)
     fft_forward!(tempₖ, mag², plans)
     fft_forward!(qʷₖ, qʷᵣ, plans)
     tempₖ_arr = parent(tempₖ)
@@ -990,41 +1030,32 @@ This matches `dissipation_q_nv` in derivatives.f90.
 """
 function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::RuntimeGeometry;
     workspace=nothing)
-    nz = G.nz
 
-    # Check if we need 2D decomposition transpose
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(qok, G)
-
-    if need_transpose
-        _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G, workspace)
-    else
-        _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G)
+    # A single layer has no vertical diffusion, and no transpose to arrange.
+    if G.nz <= 1
+        fill!(parent(dqk), zero(eltype(parent(dqk))))
+        return dqk
     end
 
+    with_z_local(G, (dqk, qok), (:out, :in);
+                 scratch=z_scratch(workspace, :work_z, :q_z)) do dq_z, q_z
+        _dissipation_q_nv!(dq_z, q_z, vertical_diffusivity, G)
+    end
     return dqk
 end
 
 """
-Direct vertical diffusion for serial or 1D decomposition (z fully local).
+Second-order vertical diffusion with Neumann (q_z = 0) top and bottom.
+Requires a fully local vertical dimension, which `dissipation_q_nv!` arranges.
 """
-function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry)
+function _dissipation_q_nv!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry)
     nz = G.nz
 
-    # Get underlying arrays
     dqk_arr = parent(dqk)
     qok_arr = parent(qok)
     nz_local, nx_local, ny_local = size(dqk_arr)
-
-    # Verify z is fully local
     @assert nz_local == nz "Vertical dimension must be fully local"
 
-    # Handle nz=1 case: no vertical diffusion possible with single layer
-    if nz <= 1
-        fill!(dqk_arr, zero(eltype(dqk_arr)))
-        return
-    end
-
-    # Vertical grid spacing (safe now since nz >= 2)
     Δz = G.z[2] - G.z[1]
     Δz⁻² = 1/(Δz*Δz)
     νz = vertical_diffusivity
@@ -1041,52 +1072,7 @@ function _dissipation_q_nv_direct!(dqk, qok, vertical_diffusivity, G::RuntimeGeo
             dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k+1, i_local, j_local] - 2qok_arr[k, i_local, j_local] + qok_arr[k-1, i_local, j_local] ) * Δz⁻²
         end
     end
-end
-
-"""
-2D decomposition vertical diffusion with transposes.
-"""
-function _dissipation_q_nv_2d!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry, workspace)
-    nz = G.nz
-
-    # Handle nz=1 case: no vertical diffusion possible with single layer
-    if nz <= 1
-        dqk_arr = parent(dqk)
-        fill!(dqk_arr, zero(eltype(dqk_arr)))
-        return
-    end
-
-    # Allocate z-pencil workspace
-    qok_z = workspace !== nothing ? workspace.q_z : allocate_z_pencil(G, ComplexF64)
-    dqk_z = workspace !== nothing ? workspace.work_z : allocate_z_pencil(G, ComplexF64)
-
-    # Transpose input to z-pencil
-    transpose_to_z_pencil!(qok_z, qok, G)
-
-    # Get underlying arrays in z-pencil format
-    qok_z_arr = parent(qok_z)
-    dqk_z_arr = parent(dqk_z)
-    nz_local, nx_local, ny_local = size(qok_z_arr)
-
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    # Vertical grid spacing (safe now since nz >= 2)
-    Δz = G.z[2] - G.z[1]
-    Δz⁻² = 1/(Δz*Δz)
-    νz = vertical_diffusivity
-
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        if k == 1
-            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k+1, i_local, j_local] - qok_z_arr[k, i_local, j_local] ) * Δz⁻²
-        elseif k == nz
-            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k-1, i_local, j_local] - qok_z_arr[k, i_local, j_local] ) * Δz⁻²
-        else
-            dqk_z_arr[k, i_local, j_local] = νz * ( qok_z_arr[k+1, i_local, j_local] - 2qok_z_arr[k, i_local, j_local] + qok_z_arr[k-1, i_local, j_local] ) * Δz⁻²
-        end
-    end
-
-    # Transpose output back to xy-pencil
-    transpose_to_xy_pencil!(dqk, dqk_z, G)
+    return dqk
 end
 
 #=

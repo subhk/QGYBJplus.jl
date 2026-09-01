@@ -243,6 +243,8 @@ end
 """Simulation-owned accumulator for scheduled energy diagnostics."""
 mutable struct EnergyDiagnosticsManager{T, S}
     specification::S
+    # Snapshot buffer, allocated on the first write and reused after that.
+    fields::Any
     last_time::Union{Nothing, T}
     last_iteration::Union{Nothing, Int}
     next_time::Union{Nothing, T}
@@ -261,7 +263,7 @@ function EnergyDiagnosticsManager(specification::S, ::Type{T},
     next_time = specification.schedule isa TimeInterval ?
                 T(start_time + specification.schedule.interval) : nothing
     return EnergyDiagnosticsManager{T, S}(
-        specification, nothing, nothing, next_time,
+        specification, nothing, nothing, nothing, next_time,
         T[], T[], T[], T[], T[], T[], false)
 end
 
@@ -333,9 +335,13 @@ function _local_energy_components(model::QGYBJModel, fields::ModelFields)
     geometry = runtime.geometry
     coefficients = runtime.coefficients
     mask = runtime.dealias_mask
-    psi_z = allocate_z_pencil(geometry, eltype(fields.psi))
-    A_z = allocate_z_pencil(geometry, eltype(fields.A))
-    C_z = allocate_z_pencil(geometry, eltype(fields.C))
+    workspace = runtime.workspace
+    psi_z, = z_scratch(workspace, :psi_z)
+    A_z, = z_scratch(workspace, :A_z)
+    C_z, = z_scratch(workspace, :C_z)
+    psi_z === nothing && (psi_z = allocate_z_pencil(geometry, eltype(fields.psi)))
+    A_z === nothing && (A_z = allocate_z_pencil(geometry, eltype(fields.A)))
+    C_z === nothing && (C_z = allocate_z_pencil(geometry, eltype(fields.C)))
     transpose_to_z_pencil!(psi_z, fields.psi, geometry)
     transpose_to_z_pencil!(A_z, fields.A, geometry)
     transpose_to_z_pencil!(C_z, fields.C, geometry)
@@ -409,7 +415,12 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     # whose stepping path intentionally clears A and C. Work on a copy so
     # scheduled observation never mutates the live model's diagnostic state.
     model = simulation.model
-    fields = copy_fields(model.fields)
+    if manager.fields === nothing
+        manager.fields = copy_fields(model.fields)
+    else
+        copy_fields!(manager.fields, model.fields)
+    end
+    fields = manager.fields
     runtime = model.runtime
     coefficients = runtime.coefficients
     invert_q_to_psi!(fields, runtime.geometry;

@@ -550,7 +550,7 @@ add_balanced_component!(fields, grid, a_ell)
 ```
 """
 function add_balanced_component!(S::ModelFields, G::RuntimeGeometry,
-    a_ell::AbstractVector)
+    a_ell::AbstractVector; workspace=nothing)
     @info "Adding balanced component to initial state"
 
     nz = G.nz
@@ -564,7 +564,7 @@ function add_balanced_component!(S::ModelFields, G::RuntimeGeometry,
     # Compute potential vorticity q from ψ
     # q = -kh² ψ + ∂/∂z (a_ell ∂ψ/∂z)
     if hasfield(typeof(S), :q)
-        compute_q_from_psi!(S.q, S.psi, G, a_ell, dz)
+        compute_q_from_psi!(S.q, S.psi, G, a_ell, dz; workspace)
         @info "Computed potential vorticity q from streamfunction"
     end
 
@@ -594,7 +594,16 @@ In spectral space with finite differences in z:
 
 with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-sided stencil).
 """
-function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, dz)
+function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, dz; workspace=nothing)
+    with_z_local(G, (q, psi), (:out, :in);
+                 scratch=z_scratch(workspace, :q_z, :psi_z)) do q_z, psi_z
+        _compute_q_from_psi_kernel!(q_z, psi_z, G, a_ell, dz)
+    end
+    return q
+end
+
+"""Vertical stencil for `compute_q_from_psi!`; requires z to be fully local."""
+function _compute_q_from_psi_kernel!(q, psi, G::RuntimeGeometry, a_ell, dz)
     nz = G.nz
     dz2 = dz^2
 

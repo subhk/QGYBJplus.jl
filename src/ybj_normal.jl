@@ -62,6 +62,7 @@ using ..QGYBJplus: RuntimeGeometry
 using ..QGYBJplus: local_to_global, get_local_dims, z_is_local
 using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
 using ..QGYBJplus: local_to_global_z, allocate_z_pencil
+using ..QGYBJplus: with_z_local, z_scratch
 
 #=
 ================================================================================
@@ -104,31 +105,29 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 Matches `sumB` in derivatives.f90.
 """
 function sumB!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry; Lmask=nothing, workspace=nothing)
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(B, G)
-
-    if need_transpose
-        _sumB_2d!(B, G, Lmask, workspace)
-    else
-        _sumB_direct!(B, G, Lmask)
+    with_z_local(G, (B,), (:inout,);
+                 scratch=z_scratch(workspace, :B_z)) do B_z
+        _sumB!(B_z, G, Lmask)
     end
     return B
 end
 
-# Direct computation when z is fully local
-function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask)
+"""
+Remove the vertical mean of `B` at each retained horizontal wavenumber, and
+zero the modes the dealiasing mask drops. Requires a fully local vertical
+dimension, which `sumB!` arranges.
+"""
+function _sumB!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
 
     B_arr = parent(B)
     nz_local, nx_local, ny_local = size(B_arr)
-
     @assert nz_local == nz "Vertical dimension must be fully local"
 
     @inbounds for j in 1:ny_local, i in 1:nx_local
         i_global = local_to_global(i, 2, B)
         j_global = local_to_global(j, 3, B)
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
         kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
 
         if L[i_global, j_global] && kₕ² > 0
@@ -146,46 +145,7 @@ function _sumB_direct!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask)
             end
         end
     end
-end
-
-# 2D decomposition version with transposes
-function _sumB_2d!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-
-    # Transpose to z-pencil for vertical operations
-    B_z = workspace !== nothing && hasfield(typeof(workspace), :B_z) ? workspace.B_z : allocate_z_pencil(G, ComplexF64)
-    transpose_to_z_pencil!(B_z, B, G)
-
-    B_z_arr = parent(B_z)
-    nz_local, nx_local_z, ny_local_z = size(B_z_arr)
-
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 2, G)
-        j_global = local_to_global_z(j, 3, G)
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
-
-        if L[i_global, j_global] && kₕ² > 0
-            s = 0.0 + 0.0im
-            for k in 1:nz
-                s += B_z_arr[k, i, j]
-            end
-            aveij = s / nz
-            for k in 1:nz
-                B_z_arr[k, i, j] -= aveij
-            end
-        else
-            for k in 1:nz
-                B_z_arr[k, i, j] = 0
-            end
-        end
-    end
-
-    # Transpose back to xy-pencil
-    transpose_to_xy_pencil!(B, B_z, G)
+    return B
 end
 
 #=
@@ -246,21 +206,18 @@ function compute_sigma(f::Real, G::RuntimeGeometry, nBk, rBk;
                        Lmask=nothing, workspace=nothing)
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ sigma requires a finite, nonzero Coriolis frequency"))
-    need_transpose = G.decomposition !== nothing &&
-        hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(nBk, G)
-
-    if need_transpose
-        return _compute_sigma_complex_2d(
-            f, G, nBk, rBk, Lmask, workspace)
-    else
-        return _compute_sigma_complex_direct(
-            f, G, nBk, rBk, Lmask)
+    return with_z_local(G, (nBk, rBk), (:in, :in);
+                        scratch=z_scratch(workspace, :B_z, :work_z)) do nB_z, rB_z
+        _compute_sigma_complex(f, G, nB_z, rB_z, Lmask)
     end
 end
 
-function _compute_sigma_complex_direct(
-    f, G::RuntimeGeometry, nBk, rBk, Lmask)
-
+"""
+Sigma is the solvability condition of the vertical integration: one value per
+horizontal wavenumber, accumulated over the full column. Requires a fully local
+vertical dimension, which `compute_sigma` arranges.
+"""
+function _compute_sigma_complex(f, G::RuntimeGeometry, nBk, rBk, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
     nB_arr = parent(nBk)
@@ -286,62 +243,22 @@ function _compute_sigma_complex_direct(
     return σ
 end
 
-function _compute_sigma_complex_2d(
-    f, G::RuntimeGeometry, nBk, rBk, Lmask, workspace)
-
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-    nB_z = workspace !== nothing && hasproperty(workspace, :B_z) ?
-        workspace.B_z : allocate_z_pencil(G, ComplexF64)
-    rB_z = workspace !== nothing && hasproperty(workspace, :work_z) ?
-        workspace.work_z : allocate_z_pencil(G, ComplexF64)
-    nB_z === rB_z &&
-        throw(ArgumentError("normal-YBJ sigma requires distinct z-pencil buffers"))
-
-    transpose_to_z_pencil!(nB_z, nBk, G)
-    transpose_to_z_pencil!(rB_z, rBk, G)
-    nB_arr = parent(nB_z)
-    rB_arr = parent(rB_z)
-    nz_local, nx_local, ny_local = size(nB_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    σ = zeros(eltype(nB_arr), nx_local, ny_local)
-    @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global_z(i, 2, G)
-        j_global = local_to_global_z(j, 3, G)
-        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
-        if L[i_global, j_global] && kₕ² > 0
-            value = zero(eltype(nB_arr))
-            for k in 1:nz
-                value += (rB_arr[k, i, j] - 2im*nB_arr[k, i, j]) / kₕ²
-            end
-            σ[i, j] = value
-        end
-    end
-
-    σ ./= f
-    return σ
-end
-
 function compute_sigma(f::Real, G::RuntimeGeometry,
                        nBRk, nBIk, rBRk, rBIk;
                        Lmask=nothing, workspace=nothing)
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ sigma requires a finite, nonzero Coriolis frequency"))
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(nBRk, G)
-
-    if need_transpose
-        return _compute_sigma_2d(
-            f, G, nBRk, nBIk, rBRk, rBIk, Lmask, workspace)
-    else
-        return _compute_sigma_direct(
-            f, G, nBRk, nBIk, rBRk, rBIk, Lmask)
+    return with_z_local(G, (nBRk, nBIk, rBRk, rBIk), (:in, :in, :in, :in);
+                        scratch=z_scratch(workspace, :B_z, :work_z, :A_z, :C_z)) do nBR, nBI, rBR, rBI
+        _compute_sigma(f, G, nBR, nBI, rBR, rBI, Lmask)
     end
 end
 
-# Direct computation when z is fully local
-function _compute_sigma_direct(
+"""
+Split-component sigma constraint. Requires a fully local vertical dimension,
+which `compute_sigma` arranges.
+"""
+function _compute_sigma(
     f, G::RuntimeGeometry, nBRk, nBIk, rBRk, rBIk, Lmask)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
@@ -376,55 +293,6 @@ function _compute_sigma_direct(
 
     # Enforce zero vertical mean of the dimensional YBJ tendency, whose
     # dispersion coefficient is f₀/2.
-    σ ./= f
-
-    return σ
-end
-
-# 2D decomposition version with transposes
-function _compute_sigma_2d(
-    f, G::RuntimeGeometry, nBRk, nBIk, rBRk, rBIk, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-
-    # Transpose to z-pencil for vertical summation
-    nBRk_z = allocate_z_pencil(G, ComplexF64)
-    nBIk_z = allocate_z_pencil(G, ComplexF64)
-    rBRk_z = allocate_z_pencil(G, ComplexF64)
-    rBIk_z = allocate_z_pencil(G, ComplexF64)
-
-    transpose_to_z_pencil!(nBRk_z, nBRk, G)
-    transpose_to_z_pencil!(nBIk_z, nBIk, G)
-    transpose_to_z_pencil!(rBRk_z, rBRk, G)
-    transpose_to_z_pencil!(rBIk_z, rBIk, G)
-
-    nBRk_z_arr = parent(nBRk_z)
-    nBIk_z_arr = parent(nBIk_z)
-    rBRk_z_arr = parent(rBRk_z)
-    rBIk_z_arr = parent(rBIk_z)
-
-    nz_local, nx_local_z, ny_local_z = size(nBRk_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    σ = zeros(ComplexF64, nx_local_z, ny_local_z)
-
-    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 2, G)
-        j_global = local_to_global_z(j, 3, G)
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
-
-        if L[i_global, j_global] && kₕ² > 0
-            s = 0.0 + 0.0im
-            for k in 1:nz
-                s += ( rBRk_z_arr[k, i, j] + 2*nBIk_z_arr[k, i, j] + im*( rBIk_z_arr[k, i, j] - 2*nBRk_z_arr[k, i, j] ) )/kₕ²
-            end
-            σ[i,j] = s
-        else
-            σ[i,j] = 0
-        end
-    end
-
     σ ./= f
 
     return σ
@@ -512,20 +380,19 @@ function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3}
                     N2_profile=nothing)
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ recovery requires a finite, nonzero Coriolis frequency"))
-    need_transpose = G.decomposition !== nothing &&
-        hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(B, G)
-
-    if need_transpose
-        _compute_A_complex_2d!(
-            A, C, B, sigma, f, G, Lmask, workspace, N2_profile)
-    else
-        _compute_A_complex_direct!(
-            A, C, B, sigma, f, G, Lmask, N2_profile)
+    with_z_local(G, (A, C, B), (:out, :out, :in);
+                 scratch=z_scratch(workspace, :A_z, :C_z, :B_z)) do A_z, C_z, B_z
+        _compute_A_complex!(A_z, C_z, B_z, sigma, f, G, Lmask, N2_profile)
     end
     return A, C
 end
 
-function _compute_A_complex_direct!(A, C, B, σ, f, G, Lmask, N2_profile)
+"""
+Recover `A` and `C = A_z` from the normal-YBJ envelope by upward integration.
+Requires a fully local vertical dimension, which `compute_A!` arranges. `sigma`
+is indexed on the same pencil the kernel sees, which `compute_sigma` matches.
+"""
+function _compute_A_complex!(A, C, B, σ, f, G, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx, ny) : Lmask
     N² = (N2_profile !== nothing && length(N2_profile) == nz) ?
@@ -572,70 +439,7 @@ function _compute_A_complex_direct!(A, C, B, σ, f, G, Lmask, N2_profile)
             end
         end
     end
-end
-
-function _compute_A_complex_2d!(
-    A, C, B, σ, f, G, Lmask, workspace, N2_profile)
-
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ?
-        N2_profile : ones(nz)
-    inv_f² = inv(float(f))^2
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-
-    B_z = workspace !== nothing && hasproperty(workspace, :B_z) ?
-        workspace.B_z : allocate_z_pencil(G, ComplexF64)
-    A_z = workspace !== nothing && hasproperty(workspace, :A_z) ?
-        workspace.A_z : allocate_z_pencil(G, ComplexF64)
-    C_z = workspace !== nothing && hasproperty(workspace, :C_z) ?
-        workspace.C_z : allocate_z_pencil(G, ComplexF64)
-    (B_z === A_z || B_z === C_z || A_z === C_z) &&
-        throw(ArgumentError("normal-YBJ recovery requires distinct z-pencil buffers"))
-
-    transpose_to_z_pencil!(B_z, B, G)
-    B_arr = parent(B_z)
-    A_arr = parent(A_z)
-    C_arr = parent(C_z)
-    nz_local, nx_local, ny_local = size(B_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    @inbounds for j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global_z(i, 2, G)
-        j_global = local_to_global_z(j, 3, G)
-        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
-
-        if L[i_global, j_global] && kₕ² > 0
-            cumulative_B = zero(eltype(B_arr))
-            A_arr[1, i, j] = 0
-            for k in 2:nz
-                cumulative_B += B_arr[k-1, i, j]
-                A_arr[k, i, j] = A_arr[k-1, i, j] +
-                    cumulative_B * N²[k-1] * inv_f² * Δz^2
-            end
-            sum_A = zero(eltype(A_arr))
-            for k in 1:nz
-                sum_A += A_arr[k, i, j]
-            end
-            adjustment = (σ[i, j] - sum_A) / nz
-            for k in 1:nz
-                A_arr[k, i, j] += adjustment
-            end
-            for k in 1:(nz-1)
-                C_arr[k, i, j] =
-                    (A_arr[k+1, i, j] - A_arr[k, i, j]) / Δz
-            end
-            C_arr[nz, i, j] = 0
-        else
-            for k in 1:nz
-                A_arr[k, i, j] = 0
-                C_arr[k, i, j] = 0
-            end
-        end
-    end
-
-    transpose_to_xy_pencil!(A, A_z, G)
-    transpose_to_xy_pencil!(C, C_z, G)
+    return A, C
 end
 
 function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3},
@@ -645,21 +449,18 @@ function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3}
                     N2_profile=nothing)
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ recovery requires a finite, nonzero Coriolis frequency"))
-    # Check if we need 2D decomposition with transposes
-    need_transpose = G.decomposition !== nothing && hasfield(typeof(G.decomposition), :pencil_z) && !z_is_local(BRk, G)
-
-    if need_transpose
-        _compute_A_2d!(
-            A, C, BRk, BIk, sigma, f, G, Lmask, workspace, N2_profile)
-    else
-        _compute_A_direct!(
-            A, C, BRk, BIk, sigma, f, G, Lmask, N2_profile)
+    with_z_local(G, (A, C, BRk, BIk), (:out, :out, :in, :in);
+                 scratch=z_scratch(workspace, :A_z, :C_z, :B_z, :work_z)) do A_z, C_z, BR_z, BI_z
+        _compute_A!(A_z, C_z, BR_z, BI_z, sigma, f, G, Lmask, N2_profile)
     end
     return A, C
 end
 
-# Direct computation when z is fully local
-function _compute_A_direct!(A, C, BRk, BIk, σ, f, G, Lmask, N2_profile)
+"""
+Split-component form of the normal-YBJ recovery. Requires a fully local
+vertical dimension, which `compute_A!` arranges.
+"""
+function _compute_A!(A, C, BRk, BIk, σ, f, G, Lmask, N2_profile)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = isnothing(Lmask) ? trues(nx,ny) : Lmask
     N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
@@ -712,76 +513,7 @@ function _compute_A_direct!(A, C, BRk, BIk, σ, f, G, Lmask, N2_profile)
             end
         end
     end
-end
-
-# 2D decomposition version with transposes
-function _compute_A_2d!(
-    A, C, BRk, BIk, σ, f, G, Lmask, workspace, N2_profile)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    N² = (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
-    inv_f² = inv(float(f))^2
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-
-    # Transpose inputs to z-pencil
-    BRk_z = allocate_z_pencil(G, ComplexF64)
-    BIk_z = allocate_z_pencil(G, ComplexF64)
-    A_z = allocate_z_pencil(G, ComplexF64)
-    C_z = allocate_z_pencil(G, ComplexF64)
-
-    transpose_to_z_pencil!(BRk_z, BRk, G)
-    transpose_to_z_pencil!(BIk_z, BIk, G)
-
-    BRk_z_arr = parent(BRk_z)
-    BIk_z_arr = parent(BIk_z)
-    A_z_arr = parent(A_z)
-    C_z_arr = parent(C_z)
-
-    nz_local, nx_local_z, ny_local_z = size(BRk_z_arr)
-    @assert nz_local == nz "After transpose, z must be fully local"
-
-    @inbounds for j in 1:ny_local_z, i in 1:nx_local_z
-        i_global = local_to_global_z(i, 2, G)
-        j_global = local_to_global_z(j, 3, G)
-        # Compute kₕ² from global kx, ky arrays (works in both serial and parallel)
-        kₕ² = G.kx[i_global]^2 + G.ky[j_global]^2
-
-        if L[i_global, j_global] && kₕ² > 0
-            # Stage 1: cumulative vertical integration
-            sBR = 0.0 + 0.0im
-            sBI = 0.0 + 0.0im
-            A_z_arr[1, i, j] = 0
-            for k in 2:nz
-                sBR += BRk_z_arr[k-1, i, j]
-                sBI += BIk_z_arr[k-1, i, j]
-                A_z_arr[k, i, j] = A_z_arr[k-1, i, j] +
-                    (sBR + im*sBI) * N²[k-1] * inv_f² * Δz^2
-            end
-            # Stage 2: apply σ constraint
-            # Note: σ is computed in z-pencil configuration, so indexing matches
-            sumA = 0.0 + 0.0im
-            for k in 1:nz
-                sumA += A_z_arr[k, i, j]
-            end
-            adj = (σ[i,j] - sumA)/nz
-            for k in 1:nz
-                A_z_arr[k, i, j] += adj
-            end
-            # Stage 3: vertical derivative
-            for k in 1:nz-1
-                C_z_arr[k, i, j] = (A_z_arr[k+1, i, j] - A_z_arr[k, i, j])/Δz
-            end
-            C_z_arr[nz, i, j] = 0
-        else
-            for k in 1:nz
-                A_z_arr[k, i, j] = 0; C_z_arr[k, i, j] = 0
-            end
-        end
-    end
-
-    # Transpose results back to xy-pencil
-    transpose_to_xy_pencil!(A, A_z, G)
-    transpose_to_xy_pencil!(C, C_z, G)
+    return A, C
 end
 
 end # module

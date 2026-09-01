@@ -8,14 +8,13 @@ end
     ModelRuntime
 
 Ephemeral execution resources associated with a model: MPI ownership,
-decomposition metadata, transform plans and destinations, operator
-coefficients, dealiasing metadata, and reusable workspaces.
+decomposition metadata, transform plans, operator coefficients, dealiasing
+metadata, and reusable workspaces.
 """
-mutable struct ModelRuntime{M, D, P, X, W, C, L, G}
+mutable struct ModelRuntime{M, D, P, W, C, L, G}
     mpi::M
     decomposition::D
     plans::P
-    transform_destinations::X
     workspace::W
     coefficients::C
     dealias_mask::L
@@ -48,10 +47,9 @@ function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
         a_ell = a_ell_from_N2(N², physics.coriolis)
         coefficients = OperatorCoefficients(N², a_ell)
         mask = dealias_mask(grid)
-        destinations = hasproperty(plans, :work_arrays) ? plans.work_arrays : nothing
 
         runtime = ModelRuntime(
-            mpi, geometry.decomposition, plans, destinations, workspace,
+            mpi, geometry.decomposition, plans, workspace,
             coefficients, mask, geometry,
             !mpi_was_initialized, false)
 
@@ -231,7 +229,8 @@ function Operators.compute_wave_velocities!(model::QGYBJModel;
     context = _operator_context(model)
     compute_wave_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, compute_w, include_wave_velocity)
+        N2_profile=context.N2, compute_w, include_wave_velocity,
+        workspace=context.workspace)
     return model
 end
 

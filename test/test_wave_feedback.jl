@@ -268,3 +268,104 @@ end
         finalize_model!(model)
     end
 end
+
+#=
+Structural properties the wave PV must satisfy, independently of how it is
+discretised:
+
+    q^w = (i/2f₀) J(B*, B) + (1/4f₀) ∇²_h |B|²
+
+The testset above pins the value against a hand calculation for one B. These
+pin the properties, so a change that happens to preserve that one case but
+breaks the form still fails.
+=#
+@testset "Wave PV structural properties" begin
+    f = 2e-4
+    grid = RectilinearGrid(size=(16, 16, 4), x=(-π, π), y=(-π, π), z=(-1.0, 0.0))
+
+    function feedback_model(coriolis)
+        return QGYBJModel(
+            grid=grid, coriolis=FPlane(f=coriolis),
+            stratification=ConstantStratification(N²=1e-4),
+            closure=HorizontalHyperdiffusivity(
+                flow=FlowHyperdiffusivity(coefficient=0),
+                wave=WaveHyperdiffusivity(coefficient=0)),
+            flow=FixedFlow(), feedback=WaveMeanFeedback(),
+            formulation=YBJPlus(), topology=(1, 1), verbose=false)
+    end
+
+    """Physical-space q^w for an envelope given as a function of (x, y, z)."""
+    function wave_pv(coriolis, envelope)
+        model = feedback_model(coriolis)
+        try
+            context = QGYBJplus._operator_context(model)
+            physical = QGYBJplus.allocate_fft_backward_dst(
+                model.fields.B, model.runtime)
+            values = parent(physical)
+            @inbounds for k in axes(values, 1), i in axes(values, 2),
+                          j in axes(values, 3)
+                values[k, i, j] = envelope(grid.x[i], grid.y[j], grid.z[k])
+            end
+            QGYBJplus.fft_forward!(model.fields.B, physical, model.runtime.plans)
+
+            spectral = similar(model.fields.q)
+            QGYBJplus.compute_qw_complex!(spectral, model.fields.B,
+                context.grid, context.plans; f=coriolis, Lmask=context.mask)
+            result = QGYBJplus.allocate_fft_backward_dst(spectral, model.runtime)
+            QGYBJplus.fft_backward!(result, spectral, context.plans)
+            return copy(parent(result))
+        finally
+            finalize_model!(model)
+        end
+    end
+
+    largest(array) = maximum(abs, array)
+    mixed(x, y, z) = sin(x) + im * sin(y)
+
+    baseline = wave_pv(f, mixed)
+    @test largest(real.(baseline)) > 0
+
+    # (i/2)J(B*,B) is real because J(B*,B) is purely imaginary, and ∇²|B|² is
+    # real, so the wave PV carries no imaginary part.
+    @test largest(imag.(baseline)) / largest(real.(baseline)) < 1e-12
+
+    # Both terms are horizontal derivatives: a horizontally uniform envelope
+    # contributes no PV, however large it is.
+    @test largest(wave_pv(f, (x, y, z) -> 1 + 2im)) == 0
+
+    # A single plane wave has |B|² constant and J(B*,B) = 0.
+    @test largest(wave_pv(f, (x, y, z) -> 0.7 * exp(3im * x))) < 1e-9
+
+    # Quadratic in the envelope.
+    doubled = wave_pv(f, (x, y, z) -> 2 * mixed(x, y, z))
+    @test largest(real.(doubled)) / largest(real.(baseline)) ≈ 4 rtol = 1e-10
+
+    # Inversely proportional to f₀.
+    halved_f = wave_pv(f / 2, mixed)
+    @test largest(real.(halved_f)) / largest(real.(baseline)) ≈ 2 rtol = 1e-10
+
+    # A purely real envelope kills the Jacobian, isolating the |B|² term:
+    # (1/4f) ∂ₓ²sin²x = (1/2f) cos 2x.
+    real_envelope = wave_pv(f, (x, y, z) -> sin(x) + 0im)
+    expected = [0.5 * cos(2 * grid.x[i]) / f
+                for k in axes(real_envelope, 1), i in axes(real_envelope, 2),
+                    j in axes(real_envelope, 3)]
+    @test real.(real_envelope) ≈ expected rtol = 1e-10
+
+    # A conjugated envelope flips the Jacobian term and leaves |B|² alone, so
+    # q^w(B*) is the |B|² part minus the Jacobian part.
+    conjugated = wave_pv(f, (x, y, z) -> conj(mixed(x, y, z)))
+    jacobian_part = (real.(baseline) .- real.(conjugated)) ./ 2
+    magnitude_part = (real.(baseline) .+ real.(conjugated)) ./ 2
+    @test largest(jacobian_part) > 0
+    # For B = sin x + i sin y the Jacobian part is -cos x cos y / f.
+    jacobian_expected = [-cos(grid.x[i]) * cos(grid.y[j]) / f
+                         for k in axes(baseline, 1), i in axes(baseline, 2),
+                             j in axes(baseline, 3)]
+    @test jacobian_part ≈ jacobian_expected rtol = 1e-10
+    # ...and the remainder is the |B|² part, 0.5(cos 2x + cos 2y)/f.
+    magnitude_expected = [0.5 * (cos(2grid.x[i]) + cos(2grid.y[j])) / f
+                          for k in axes(baseline, 1), i in axes(baseline, 2),
+                              j in axes(baseline, 3)]
+    @test magnitude_part ≈ magnitude_expected rtol = 1e-10
+end

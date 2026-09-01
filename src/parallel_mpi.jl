@@ -492,6 +492,9 @@ struct MPIWorkspace{T, PA}
     A_z::PA
     C_z::PA
     work_z::PA
+    # Reusable grid-sized temporaries for the pseudo-spectral kernels (scratch.jl).
+    spectral::ScratchPool{PA}
+    physical::ScratchPool{PA}
 end
 
 """
@@ -657,7 +660,9 @@ function allocate_distributed_workspace(grid::RuntimeGeometry,
     C_z    = PencilArray{Complex{T}}(undef, pencil_z); fill!(C_z, 0)
     work_z = PencilArray{Complex{T}}(undef, pencil_z); fill!(work_z, 0)
 
-    return MPIWorkspace{T, typeof(q_z)}(q_z, psi_z, B_z, A_z, C_z, work_z)
+    return MPIWorkspace{T, typeof(q_z)}(
+        q_z, psi_z, B_z, A_z, C_z, work_z,
+        ScratchPool{typeof(q_z)}(), ScratchPool{typeof(q_z)}())
 end
 
 #=
@@ -951,13 +956,6 @@ function local_to_global_z(local_idx::Int, dim::Int, grid::RuntimeGeometry)
     return decomp.local_range_z[dim][local_idx]
 end
 
-function local_indices(grid::RuntimeGeometry)
-    decomp = grid.decomposition
-    if decomp === nothing
-        error("RuntimeGeometry does not have MPI decomposition")
-    end
-    return decomp.local_range_xy
-end
 
 #=
 ================================================================================

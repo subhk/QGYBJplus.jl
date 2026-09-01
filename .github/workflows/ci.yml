@@ -79,3 +79,18 @@ jobs:
         run: >-
           julia --project=. -e
           'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'
+
+      - name: Run distributed-z operator regression (1 and 4 ranks)
+        run: |
+          julia --project=. -e 'using MPI; run(`$(MPI.mpiexec()) -n 1 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
+          julia --project=. -e 'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
+
+      - name: Run MPI particle periodic-seam regression
+        run: >-
+          julia --project=. -e
+          'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_particles_periodic.jl`)'
+
+      - name: Run distributed runtime metadata checks
+        run: >-
+          julia --project=. -e
+          'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_extension.jl`)'

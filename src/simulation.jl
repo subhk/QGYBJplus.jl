@@ -62,12 +62,15 @@ function _check_termination_conditions!(simulation::Simulation)
     bad_count = MPI.Allreduce(local_bad ? 1 : 0, +, runtime.mpi.comm)
     bad_count == 0 || error("non-finite value detected in the model state")
 
-    # Reuse the runtime-owned FFT input buffer: this check runs every step and
-    # must not allocate a grid-sized physical field each time.
-    psi_physical = runtime.transform_destinations.input
-    fft_backward!(psi_physical, fields.psi, runtime)
-    local_maximum = maximum(abs, parent(psi_physical))
-    global_maximum = MPI.Allreduce(local_maximum, MPI.MAX, runtime.mpi.comm)
+    # Borrow from the runtime scratch pool rather than writing into the FFT
+    # plan's own work arrays: this check runs every step and must not allocate
+    # a grid-sized physical field, but it must not alias the transform buffers
+    # either.
+    global_maximum = with_scratch(runtime.workspace) do
+        psi_physical = scratch_physical(runtime.workspace, fields.psi, runtime.plans)
+        fft_backward!(psi_physical, fields.psi, runtime)
+        MPI.Allreduce(maximum(abs, parent(psi_physical)), MPI.MAX, runtime.mpi.comm)
+    end
     global_maximum <= 1e10 || error(
         "solution appears to be blowing up (max |psi| = $global_maximum)")
     return simulation
@@ -77,10 +80,17 @@ function _progress_maxima(model::QGYBJModel)
     fields = model.fields
     runtime = model.runtime
 
-    # Reuse the runtime FFT buffers to recover the physical wave velocity LA.
+    # Recover the physical wave velocity LA from pooled scratch.
     # For YBJ+, B = L⁺A = LA - kₕ²A/4 in horizontal spectral space.
-    LA_spectral = runtime.transform_destinations.output
-    LA_physical = runtime.transform_destinations.input
+    return with_scratch(runtime.workspace) do
+        _progress_maxima(model, runtime)
+    end
+end
+
+function _progress_maxima(model::QGYBJModel, runtime)
+    fields = model.fields
+    LA_spectral = scratch_like(runtime.workspace, fields.B)
+    LA_physical = scratch_physical(runtime.workspace, fields.B, runtime.plans)
     LA_spectral_data = parent(LA_spectral)
     copyto!(LA_spectral_data, parent(fields.B))
     if !(model.physics.formulation isa YBJ)
@@ -159,6 +169,12 @@ function _configure_time_stepping!(simulation::Simulation;
         isfinite(value) && value > zero(value) ||
             throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
         simulation.timestepper.Δt = value
+    end
+
+    if stop_iteration !== nothing && stop_time !== nothing
+        throw(ArgumentError(
+            "pass stop_time or stop_iteration, not both " *
+            "(got stop_time=$stop_time, stop_iteration=$stop_iteration)"))
     end
 
     if stop_iteration !== nothing
@@ -313,7 +329,8 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
 
     if pv_method in (:qg, :balanced)
         coefficients = runtime.coefficients
-        add_balanced_component!(fields, grid, coefficients.a_ell)
+        add_balanced_component!(fields, grid, coefficients.a_ell;
+                                workspace=runtime.workspace)
     elseif pv_method in (:barotropic, :asselin)
         compute_barotropic_q_from_psi!(fields.q, fields.psi, grid)
     elseif pv_method !== :none
@@ -431,7 +448,8 @@ function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
     runtime = model.runtime
     if pv_method in (:qg, :balanced)
         coefficients = runtime.coefficients
-        add_balanced_component!(fields, runtime.geometry, coefficients.a_ell)
+        add_balanced_component!(fields, runtime.geometry, coefficients.a_ell;
+                                workspace=runtime.workspace)
     elseif pv_method in (:barotropic, :asselin)
         compute_barotropic_q_from_psi!(fields.q, fields.psi, runtime.geometry)
     elseif pv_method !== :none
@@ -447,8 +465,25 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
     context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
     mask = context.mask
+
+    # The normal-YBJ solvability constraint divides by kₕ², so `sumB!` discards
+    # the kₕ = 0 column. A horizontally uniform envelope — which is exactly what
+    # `SurfaceWave` produces — lives entirely there, and would otherwise be
+    # zeroed without a word, leaving a wave-free run that looks configured.
+    comm = model.runtime.mpi.comm
+    before = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
     sumB!(fields.B, context.grid;
           Lmask=mask, workspace=context.workspace)
+    after = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
+    if before > 0 && after <= eps(before) && model.runtime.mpi.is_root
+        @warn "YBJ() discarded the entire wave field: it is horizontally " *
+              "uniform (all of its energy is in the kₕ = 0 column, which the " *
+              "normal-YBJ solvability constraint cannot represent). Use a wave " *
+              "initial condition with horizontal structure, or switch to " *
+              "formulation=YBJPlus(), which retains kₕ = 0." maxlog=1
+
+    end
+
     _diagnose_flow!(fields, context.grid, options, context.plans,
         context.a, mask;
         workspace=context.workspace,

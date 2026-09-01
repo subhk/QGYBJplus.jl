@@ -92,6 +92,25 @@ function allocate_fields(grid::RuntimeGeometry; T::Type{<:AbstractFloat}=Float64
 end
 
 """
+    copy_fields!(destination::ModelFields, source::ModelFields)
+
+Copy every array of `source` into the matching array of `destination`, which
+must already have the same layout. Used by scheduled diagnostics, which observe
+a snapshot every write and must not allocate a field set each time.
+"""
+function copy_fields!(destination::ModelFields, source::ModelFields)
+    copyto!(destination.q, source.q)
+    copyto!(destination.B, source.B)
+    copyto!(destination.psi, source.psi)
+    copyto!(destination.A, source.A)
+    copyto!(destination.C, source.C)
+    copyto!(destination.u, source.u)
+    copyto!(destination.v, source.v)
+    copyto!(destination.w, source.w)
+    return destination
+end
+
+"""
     copy_fields(fields::ModelFields)
 
 Copy model fields with `similar`, preserving pencil decompositions for

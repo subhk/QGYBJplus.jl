@@ -50,6 +50,17 @@ q^w = \frac{i}{2f_0}J(B^*,B)
 The factors of ``1/f_0`` are part of the dimensional equation. With
 `NoFeedback()` or `NoWaveFeedback()`, the solver uses ``q^w=0``.
 
+This is the wave part of the "XV``^+``" potential vorticity of Asselin & Young
+(2019), equation (3.5), whose argument is ``B=L^+A`` rather than the
+backrotated velocity ``LA``. A&Y reach (3.5) from the Xie & Vanneste PV by the
+substitution ``L\mapsto L^+``, and that substitution is what gives the coupled
+system its "coupled energy" conservation law (their equations (3.6)–(3.7)).
+Using ``LA`` here would recover the original XV potential vorticity instead.
+
+Note the intended contrast with wave kinetic energy, which uses ``LA``: A&Y
+equation (4.7) and the remark that "to define WKE for YBJ``^+`` we use ``L``,
+not ``L^+``".
+
 ## Streamfunction inversion
 
 The streamfunction is diagnosed from balanced PV:
