@@ -109,6 +109,13 @@ end
     ) == dt * 0.25 * (kx^2 + ky^2)^2
     @test QGYBJplus.int_factor(kx, ky, dt, wave_closure) == 0
 
+    # Zero-valued terms must be ignored before exponentiation. Otherwise an
+    # intentionally disabled high-order term can evaluate as 0*Inf = NaN.
+    sparse_wave_closure = WaveHyperdiffusivity(
+        (0.0, 0.25), (1024, 2))
+    @test QGYBJplus.int_factor(
+        2.0, 0.0, 1.0, sparse_wave_closure; waves=true) == 1.0
+
     component_types = (:AbstractCoriolis, :AbstractStratification,
                        :FlowEvolution, :FixedFlow, :EvolvingFlow,
                        :FeedbackMode, :NoFeedback, :WaveMeanFeedback,

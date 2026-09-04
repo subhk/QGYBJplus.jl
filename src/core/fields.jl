@@ -7,6 +7,11 @@ the diagnostic fields `psi`, `A`, and `C`, are spectral and complex-valued;
 the velocity fields `u`, `v`, and `w` are real-valued.
 
 `RT` and `CT` may be ordinary arrays or distributed pencil arrays.
+
+The `ModelFields` container remains the same object across `step!` calls. Its
+array properties are double-buffered and rotate after a successful step, so
+keep a reference to the container rather than to an individual array when a
+live view of the model is required.
 """
 Base.@kwdef mutable struct ModelFields{
     T,
@@ -108,6 +113,21 @@ function copy_fields!(destination::ModelFields, source::ModelFields)
     copyto!(destination.v, source.v)
     copyto!(destination.w, source.w)
     return destination
+end
+
+"""Swap double-buffered arrays while preserving both `ModelFields` objects."""
+function _swap_field_storage!(first::ModelFields, second::ModelFields)
+    typeof(first) === typeof(second) ||
+        throw(ArgumentError("field buffers must have identical types"))
+    first.q, second.q = second.q, first.q
+    first.B, second.B = second.B, first.B
+    first.psi, second.psi = second.psi, first.psi
+    first.A, second.A = second.A, first.A
+    first.C, second.C = second.C, first.C
+    first.u, second.u = second.u, first.u
+    first.v, second.v = second.v, first.v
+    first.w, second.w = second.w, first.w
+    return first, second
 end
 
 """

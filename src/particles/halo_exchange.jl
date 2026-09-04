@@ -29,6 +29,8 @@ where directions are: W=left(-x), E=right(+x), S=bottom(-y), N=top(+y)
 
 module HaloExchange
 
+using MPI
+
 # Import interpolation types for halo width calculation
 using ..InterpolationSchemes: InterpolationMethod, TRILINEAR, TRICUBIC, QUINTIC, ADAPTIVE, required_halo_width
 
@@ -411,8 +413,7 @@ function exchange_velocity_halos!(halo_info::HaloInfo{T},
             return halo_info
         end
 
-        # Import MPI module
-        M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+        M = MPI
 
         # Copy local data to extended arrays (center region)
         copy_local_to_extended_2d!(halo_info, u_field, v_field, w_field)

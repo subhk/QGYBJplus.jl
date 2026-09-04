@@ -116,6 +116,14 @@ function _gather_array(field, model::QGYBJModel)
     return runtime.mpi.is_root ? Array(parent(gathered)) : nothing
 end
 
+_wave_formulation_name(model::QGYBJModel) =
+    string(nameof(typeof(model.physics.formulation)))
+_feedback_mode_name(model::QGYBJModel) =
+    string(nameof(typeof(model.physics.feedback)))
+_generalized_pv_convention(model::QGYBJModel) =
+    _wave_feedback_enabled(ETDModelOptions(model.physics, model.numerics)) ?
+    "total_with_wave_pv" : "balanced_only"
+
 function _refresh_output_diagnostics!(model::QGYBJModel,
     specification::NetCDFOutput)
 
@@ -124,7 +132,9 @@ function _refresh_output_diagnostics!(model::QGYBJModel,
     write_velocities = specification.velocities ||
                        :velocities in specification.fields
 
-    (write_psi || write_velocities) && invert_q_to_psi!(model)
+    options = ETDModelOptions(model.physics, model.numerics)
+    (write_psi || write_velocities) && !_fixed_flow(options) &&
+        invert_q_to_psi!(model)
     write_waves && _refresh_wave_diagnostics!(model)
     write_velocities && compute_velocities!(model; compute_w=true)
     return model
@@ -173,15 +183,19 @@ function _write_model_state_file!(manager::ModelOutputManager,
             dataset.dim["x"] = nx
             dataset.dim["y"] = ny
             dataset.dim["z"] = nz
+            dataset.dim["z_face"] = nz
             dataset.dim["time"] = 1
 
             x = NCDatasets.defVar(dataset, "x", Float64, ("x",))
             y = NCDatasets.defVar(dataset, "y", Float64, ("y",))
             z = NCDatasets.defVar(dataset, "z", Float64, ("z",))
+            z_face = NCDatasets.defVar(
+                dataset, "z_face", Float64, ("z_face",))
             time = NCDatasets.defVar(dataset, "time", Float64, ("time",))
             x[:] = grid.x
             y[:] = grid.y
             z[:] = grid.z
+            z_face[:] = grid.z_faces[2:end]
             time[1] = simulation.clock.time
 
             if write_psi
@@ -206,8 +220,12 @@ function _write_model_state_file!(manager::ModelOutputManager,
             end
 
             N² = NCDatasets.defVar(dataset, "N2", Float64, ("z",))
-            a_ell = NCDatasets.defVar(dataset, "a_ell", Float64, ("z",))
+            N²_face = NCDatasets.defVar(
+                dataset, "N2_face", Float64, ("z_face",))
+            a_ell = NCDatasets.defVar(
+                dataset, "a_ell", Float64, ("z_face",))
             N²[:] = runtime.coefficients.N²
+            N²_face[:] = runtime.coefficients.N²_face
             a_ell[:] = runtime.coefficients.a_ell
 
             dataset.attrib["title"] = "QG-YBJ model state"
@@ -217,8 +235,10 @@ function _write_model_state_file!(manager::ModelOutputManager,
             dataset.attrib["Lx"] = grid.extent[1]
             dataset.attrib["Ly"] = grid.extent[2]
             dataset.attrib["Lz"] = grid.extent[3]
-            dataset.attrib["wave_formulation"] =
-                string(nameof(typeof(model.physics.formulation)))
+            dataset.attrib["wave_formulation"] = _wave_formulation_name(model)
+            dataset.attrib["feedback_mode"] = _feedback_mode_name(model)
+            dataset.attrib["generalized_pv"] =
+                _generalized_pv_convention(model)
         end
         filepath
     end
@@ -356,20 +376,22 @@ function _local_energy_components(model::QGYBJModel, fields::ModelFields)
     wave_KE = 0.0
     wave_PE = 0.0
     wave_CE = 0.0
+    include_wave_correction = !(model.physics.formulation isa YBJ)
     for j in axes(psi, 3), i in axes(psi, 2)
         i_global = local_to_global_z(i, 2, geometry)
         j_global = local_to_global_z(j, 3, geometry)
         mask[i_global, j_global] || continue
         kh² = geometry.kx[i_global]^2 + geometry.ky[j_global]^2
-        horizontal_weight = (i_global == 1 && j_global == 1) ? 0.5 : 1.0
         for k in axes(psi, 1)
             k_global = local_to_global_z(k, 1, geometry)
             a = coefficients.a_ell[k_global]
-            mean_flow_KE += horizontal_weight * kh² * abs2(psi[k, i, j])
+            # Horizontal fields use a full complex FFT, so Parseval assigns the
+            # zero mode the same weight as every other stored coefficient.
+            mean_flow_KE += kh² * abs2(psi[k, i, j])
 
             if k < last(axes(psi, 1))
                 ψz = (psi[k + 1, i, j] - psi[k, i, j]) / dz
-                mean_flow_PE += horizontal_weight * a * abs2(ψz)
+                mean_flow_PE += a * abs2(ψz)
             end
 
             LA = if nz == 1
@@ -382,9 +404,20 @@ function _local_energy_components(model::QGYBJModel, fields::ModelFields)
                 (a * C[k, i, j] -
                  coefficients.a_ell[k_global - 1] * C[k - 1, i, j]) / dz
             end
-            wave_KE += horizontal_weight * abs2(LA)
-            wave_PE += horizontal_weight * (0.5 / a) * kh² * abs2(C[k, i, j])
-            wave_CE += horizontal_weight * (1 / (8a^2)) * kh²^2 * abs2(A[k, i, j])
+            # WKE is an informational phase-averaged kinetic-energy diagnostic;
+            # unlike the following two terms, it is not part of the coupled
+            # invariant in Asselin & Young (2019), equation (3.7).
+            wave_KE += abs2(LA)
+
+            # The shared outer factor 1/2 below turns these accumulators into
+            # (a/4)|∇A_z|² and (1/16)|ΔA|², respectively, as in (3.7).
+            wave_PE += 0.5a * kh² * abs2(C[k, i, j])
+            if include_wave_correction
+                # The correction results from L → L⁺ and is absent from the
+                # original YBJ formulation. PassiveWave keeps the existing L⁺
+                # diagnostic convention used by `_refresh_wave_diagnostics!`.
+                wave_CE += (1 / 8) * kh²^2 * abs2(A[k, i, j])
+            end
         end
     end
 
@@ -411,9 +444,9 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     simulation::Simulation)
 
     # ETD-RK2 stores only q and B prognostically. Rebuild the diagnostic fields
-    # required by the energy formulas, including for passive/no-dispersion runs
-    # whose stepping path intentionally clears A and C. Work on a copy so
-    # scheduled observation never mutates the live model's diagnostic state.
+    # required by the energy formulas, including for passive-wave runs whose
+    # stepping path intentionally clears A and C. Work on a copy so scheduled
+    # observation never mutates the live model's diagnostic state.
     model = simulation.model
     if manager.fields === nothing
         manager.fields = copy_fields(model.fields)
@@ -423,9 +456,14 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     fields = manager.fields
     runtime = model.runtime
     coefficients = runtime.coefficients
-    invert_q_to_psi!(fields, runtime.geometry;
-        a=coefficients.a_ell,
-        workspace=runtime.workspace)
+    options = ETDModelOptions(model.physics, model.numerics)
+    # FixedFlow owns a prescribed streamfunction independently of q. Preserve
+    # that copied diagnostic instead of replacing it with an elliptic inversion.
+    if !_fixed_flow(options)
+        _invert_total_q_to_psi!(fields, runtime.geometry, options,
+            runtime.plans, coefficients.a_ell, runtime.dealias_mask;
+            workspace=runtime.workspace)
+    end
     _refresh_wave_diagnostics!(fields, model)
     values = _energy_components(model, fields)
     T = eltype(manager.time)
@@ -512,6 +550,12 @@ function _write_energy_diagnostics!(manager::EnergyDiagnosticsManager,
             total_flow_variable = NCDatasets.defVar(
                 dataset, "total_flow_energy", Float64, ("time",))
             total_flow_variable[:] = total_flow
+            # Asselin & Young (2019), equation (3.7): wave kinetic energy is
+            # informational and is not part of the conserved coupled energy.
+            coupled_energy = total_flow .+ manager.wave_PE .+ manager.wave_CE
+            coupled_variable = NCDatasets.defVar(
+                dataset, "coupled_energy", Float64, ("time",))
+            coupled_variable[:] = coupled_energy
             total_variable = NCDatasets.defVar(
                 dataset, "total_energy", Float64, ("time",))
             total_variable[:] = total_wave .+ total_flow
@@ -560,6 +604,19 @@ end
 function _read_restart_on_root(model::QGYBJModel, path::AbstractString)
     return _run_on_root(model) do
         NCDataset(path, "r") do dataset
+            if haskey(dataset.attrib, "wave_formulation")
+                stored = String(dataset.attrib["wave_formulation"])
+                expected = _wave_formulation_name(model)
+                stored == expected || throw(ArgumentError(
+                    "restart wave formulation is $stored; model uses $expected"))
+            end
+            if haskey(dataset.attrib, "generalized_pv")
+                stored = String(dataset.attrib["generalized_pv"])
+                expected = _generalized_pv_convention(model)
+                stored == expected || throw(ArgumentError(
+                    "restart generalized-PV convention is $stored; " *
+                    "model requires $expected"))
+            end
             required = ("q_hat_real", "q_hat_imag",
                         "B_hat_real", "B_hat_imag")
             all(name -> haskey(dataset, name), required) ||

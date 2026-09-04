@@ -379,14 +379,10 @@ Apply 2/3 dealiasing mask to spectral field using radial cutoff.
 Handles both serial (Array) and parallel (PencilArray) cases.
 
 Uses the same radial 2/3 rule as `dealias_mask()`:
-- Keep wavenumbers with |k| ≤ (2/3) × k_Nyquist = N/3
+- Keep integer wavenumbers with |k| < N/3
 - Radial cutoff ensures isotropic dealiasing
 """
 function apply_dealiasing_mask!(field, G::RuntimeGeometry)
-    # Radial 2/3 cutoff: k_max = min(nx, ny) / 3
-    kmax = floor(Int, min(G.nx, G.ny) / 3)
-    kmax_sq = kmax^2
-
     # Get local array and its dimensions
     field_arr = parent(field)
     nz_local, nx_local, ny_local = size(field_arr)
@@ -395,15 +391,14 @@ function apply_dealiasing_mask!(field, G::RuntimeGeometry)
         for j_local in 1:ny_local
             # Get global j index for wavenumber lookup
             j_global = local_to_global(j_local, 3, field)
-            ky = j_global <= G.ny÷2 ? j_global-1 : j_global-1-G.ny
 
             for i_local in 1:nx_local
                 # Get global i index for wavenumber lookup
                 i_global = local_to_global(i_local, 2, field)
-                kx = i_global <= G.nx÷2 ? i_global-1 : i_global-1-G.nx
 
-                # Radial check: zero modes outside dealiasing circle
-                if kx^2 + ky^2 > kmax_sq
+                # Share the canonical cutoff, including its exclusion of an
+                # exact N/3 endpoint when a dimension is divisible by three.
+                if !is_dealiased(i_global, j_global, G)
                     field_arr[k, i_local, j_local] = zero(eltype(field_arr))
                 end
             end
@@ -545,7 +540,8 @@ Based on init_psi_generic and init_q from the Fortran implementation.
 add_balanced_component!(fields, grid, coefficients.a_ell)
 
 # With variable stratification
-N2 = compute_stratification_profile(strat_profile, grid)
+N2_face = evaluate_N2.(Ref(strat_profile), grid.z_faces[2:end])
+a_ell = a_ell_from_N2(N2_face, FPlane(f=1e-4))
 add_balanced_component!(fields, grid, a_ell)
 ```
 """

@@ -34,12 +34,18 @@ end
 """Test whether a global Fourier index lies inside the radial cutoff."""
 @inline function is_dealiased(i_global::Int, j_global::Int,
                               nx::Int, ny::Int)
-    kmax = fld(min(nx, ny), 3)
+    # The exact |k| = N/3 boundary is unsafe for an unpadded quadratic
+    # product: two boundary modes can alias back onto the retained disk.
+    # Preserve the disk interior and exclude only that boundary when the
+    # limiting dimension is divisible by three.
+    nmin = min(nx, ny)
+    kmax = fld(nmin, 3)
     ix = i_global - 1
     ix = ix <= nx ÷ 2 ? ix : ix - nx
     jy = j_global - 1
     jy = jy <= ny ÷ 2 ? jy : jy - ny
-    return ix^2 + jy^2 <= kmax^2
+    radius² = ix^2 + jy^2
+    return nmin % 3 == 0 ? radius² < kmax^2 : radius² <= kmax^2
 end
 
 @inline is_dealiased(i::Int, j::Int, geometry::RuntimeGeometry) =

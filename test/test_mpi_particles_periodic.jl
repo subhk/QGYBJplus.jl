@@ -189,6 +189,23 @@ if rank == 0
     end
 end
 
+# A local preprocessing error must be reported collectively instead of leaving
+# healthy ranks blocked in the exchange collectives.
+local_particles = tracker.particles
+x_before_failure = copy(local_particles.x)
+if rank == 0 && local_particles.np > 0
+    local_particles.x[1] = NaN
+end
+preprocessing_failed = try
+    QGYBJplus.UnifiedParticleAdvection.migrate_particles!(tracker)
+    false
+catch
+    true
+end
+@test preprocessing_failed
+local_particles.x .= x_before_failure
+MPI.Barrier(comm)
+
 
 # Simulation owns collective particle-output scheduling and finalization.
 particle_output_dir = mktempdir()
@@ -245,6 +262,74 @@ failing_particle_simulation = Simulation(
 @test_throws Exception run!(failing_particle_simulation)
 @test failing_particle_simulation.state == Failed
 @test failing_particle_output.closed
+
+# Auto-split write failures on rank 0 must reach every rank before any rank
+# clears its in-memory history or advances the file sequence.
+split_base = rank == 0 ?
+             joinpath(particle_output_dir, "missing", "trajectory") : ""
+split_base = MPI.bcast(split_base, 0, comm)
+QGYBJplus.UnifiedParticleAdvection.enable_auto_file_splitting!(
+    tracker, split_base; max_points_per_file=1)
+particles = tracker.particles
+empty!(particles.x_history)
+empty!(particles.y_history)
+empty!(particles.z_history)
+empty!(particles.id_history)
+empty!(particles.time_history)
+particles.time = 0.0
+QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+particles.time = 1.0
+split_failed = try
+    QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+    false
+catch
+    true
+end
+@test split_failed
+@test particles.time_history == [0.0]
+@test tracker.output_file_sequence == 0
+
+# Historical positions cannot safely fall back to the rank's current IDs after
+# migration, even when the local particle count happens to be unchanged.
+saved_id_history = copy(particles.id_history)
+empty!(particles.id_history)
+missing_ids_path = rank == 0 ?
+                   joinpath(particle_output_dir, "missing_ids.nc") : ""
+missing_ids_path = MPI.bcast(missing_ids_path, 0, comm)
+missing_ids_failed = try
+    write_particle_trajectories(missing_ids_path, tracker)
+    false
+catch
+    true
+end
+@test missing_ids_failed
+append!(particles.id_history, saved_id_history)
+
+# A history-length mismatch must be rejected collectively before ranks enter
+# different numbers of trajectory gathers.
+if rank == 0
+    push!(particles.x_history, copy(particles.x))
+    push!(particles.y_history, copy(particles.y))
+    push!(particles.z_history, copy(particles.z))
+    push!(particles.id_history, copy(particles.id))
+    push!(particles.time_history, 1.0)
+end
+mismatch_path = rank == 0 ? joinpath(particle_output_dir, "mismatch.nc") : ""
+mismatch_path = MPI.bcast(mismatch_path, 0, comm)
+mismatch_failed = try
+    write_particle_trajectories(mismatch_path, tracker)
+    false
+catch
+    true
+end
+@test mismatch_failed
+if rank == 0
+    pop!(particles.x_history)
+    pop!(particles.y_history)
+    pop!(particles.z_history)
+    pop!(particles.id_history)
+    pop!(particles.time_history)
+end
 
 MPI.Barrier(comm)
 finalize_model!(model)

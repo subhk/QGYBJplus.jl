@@ -1,4 +1,5 @@
 using Test
+using NCDatasets
 using QGYBJplus
 
 function wave_feedback_test_model(grid, formulation; f=2e-4, linear=NonlinearDynamics())
@@ -14,6 +15,22 @@ function wave_feedback_test_model(grid, formulation; f=2e-4, linear=NonlinearDyn
         formulation=formulation,
         linear=linear,
         no_dispersion=NoDispersion(),
+        topology=(1, 1),
+        verbose=false,
+    )
+end
+
+function coupled_feedback_test_model(grid; f=1.0, formulation=YBJPlus())
+    return QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=f),
+        stratification=ConstantStratification(N²=1.0),
+        closure=HorizontalHyperdiffusivity(
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0)),
+        flow=EvolvingFlow(),
+        feedback=WaveMeanFeedback(),
+        formulation=formulation,
         topology=(1, 1),
         verbose=false,
     )
@@ -143,6 +160,7 @@ end
                 dealias_mask=context.mask,
                 workspace=context.workspace,
                 N2_profile=context.N2,
+                N2_face_profile=context.N2_face,
             )
             return copy(parent(rhsB))
         end
@@ -344,6 +362,19 @@ breaks the form still fails.
     halved_f = wave_pv(f / 2, mixed)
     @test largest(real.(halved_f)) / largest(real.(baseline)) ≈ 2 rtol = 1e-10
 
+    # The signed Coriolis frequency matters: the full wave-PV contribution
+    # reverses between hemispheres.
+    negative_f = wave_pv(-f, mixed)
+    @test negative_f ≈ -baseline rtol = 1e-10 atol = 1e-9
+
+    # A constant envelope phase cancels from both B* derivatives and |B|².
+    phase = cis(0.37)
+    phase_shifted = wave_pv(f, (x, y, z) -> phase * mixed(x, y, z))
+    @test phase_shifted ≈ baseline rtol = 1e-10 atol = 1e-9
+
+    # Both terms are horizontal divergences on the periodic domain.
+    @test abs(sum(real, baseline)) < 1e-11 * length(baseline) * largest(baseline)
+
     # A purely real envelope kills the Jacobian, isolating the |B|² term:
     # (1/4f) ∂ₓ²sin²x = (1/2f) cos 2x.
     real_envelope = wave_pv(f, (x, y, z) -> sin(x) + 0im)
@@ -368,4 +399,370 @@ breaks the form still fails.
                           for k in axes(baseline, 1), i in axes(baseline, 2),
                               j in axes(baseline, 3)]
     @test magnitude_part ≈ magnitude_expected rtol = 1e-10
+end
+
+@testset "Wave feedback owns total PV throughout the model API" begin
+    grid = RectilinearGrid(
+        size=(16, 16, 4),
+        x=(-π, π),
+        y=(-π, π),
+        z=(-1.0, 0.0),
+    )
+    model = coupled_feedback_test_model(grid)
+
+    try
+        wave = [
+            (1 + 0.1k) * (sin(grid.x[i]) + im * sin(grid.y[j]))
+            for k in 1:grid.size[3], i in 1:grid.size[1], j in 1:grid.size[2]
+        ]
+        set!(model;
+            ψ=(x, y, z) -> cos(x) + 0.3sin(y),
+            B=FieldArray(wave),
+            verbose=false)
+
+        context = QGYBJplus._operator_context(model)
+        expected_psi = copy(parent(model.fields.psi))
+        qg = similar(model.fields.q)
+        dz = grid.z[2] - grid.z[1]
+        QGYBJplus.compute_q_from_psi!(
+            qg, model.fields.psi, context.grid, context.a, dz;
+            workspace=context.workspace)
+        qw = similar(model.fields.q)
+        QGYBJplus.compute_qw_complex!(
+            qw, model.fields.B, context.grid, context.plans;
+            f=context.f, Lmask=context.mask, workspace=context.workspace)
+        expected_total_q = parent(qg) .+ parent(qw)
+
+        # `q` is prognostic total generalized PV, including immediately after
+        # initialization. A first diagnostic pass must not move a prescribed ψ.
+        @test parent(model.fields.q) ≈ expected_total_q atol=2e-11
+        QGYBJplus._diagnose_flow!(model.fields, context.grid,
+            QGYBJplus.ETDModelOptions(model.physics, model.numerics),
+            context.plans, context.a, context.mask;
+            workspace=context.workspace,
+            N2_profile=context.N2)
+        @test parent(model.fields.psi) ≈ expected_psi atol=2e-11
+        @test parent(model.fields.q) ≈ expected_total_q atol=2e-11
+
+        # The exported model-level inversion has the same total-PV semantics as
+        # the time-stepper, and leaves the prognostic field untouched.
+        fill!(parent(model.fields.psi), 0)
+        invert_q_to_psi!(model)
+        @test parent(model.fields.psi) ≈ expected_psi atol=2e-11
+        @test parent(model.fields.q) ≈ expected_total_q atol=2e-11
+
+        # Temporary q-qʷ replacement is transactional even if inversion fails.
+        q_before_failure = copy(parent(model.fields.q))
+        @test_throws AssertionError QGYBJplus._diagnose_flow!(
+            model.fields, context.grid,
+            QGYBJplus.ETDModelOptions(model.physics, model.numerics),
+            context.plans, ones(1), context.mask;
+            workspace=context.workspace,
+            N2_profile=context.N2)
+        @test parent(model.fields.q) == q_before_failure
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Normal YBJ wave initialization preserves prescribed flow" begin
+    grid = RectilinearGrid(
+        size=(8, 8, 4),
+        x=(-π, π),
+        y=(-π, π),
+        z=(-1.0, 0.0),
+    )
+    model = coupled_feedback_test_model(grid; formulation=YBJ())
+
+    try
+        set!(model; ψ=(x, y, z) -> cos(x) + 0.2sin(y), verbose=false)
+        prescribed_psi = copy(parent(model.fields.psi))
+        vertical_mode = (-1.5, -0.5, 0.5, 1.5)
+        wave = [
+            vertical_mode[k] * (sin(grid.x[i]) + im * sin(grid.y[j]))
+            for k in 1:grid.size[3], i in 1:grid.size[1], j in 1:grid.size[2]
+        ]
+        set!(model; B=FieldArray(wave), verbose=false)
+
+        context = QGYBJplus._operator_context(model)
+        qg = similar(model.fields.q)
+        qw = similar(model.fields.q)
+        QGYBJplus.compute_q_from_psi!(qg, model.fields.psi,
+            context.grid, context.a, grid.z[2] - grid.z[1];
+            workspace=context.workspace)
+        QGYBJplus.compute_qw_complex!(qw, model.fields.B,
+            context.grid, context.plans;
+            f=context.f, Lmask=context.mask, workspace=context.workspace)
+
+        @test parent(model.fields.psi) ≈ prescribed_psi atol=2e-11
+        @test parent(model.fields.q) ≈
+              parent(qg) .+ parent(qw) atol=2e-11
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Coupled output, energy, and restart use balanced PV" begin
+    grid = RectilinearGrid(
+        size=(8, 8, 4),
+        x=(-π, π),
+        y=(-π, π),
+        z=(-1.0, 0.0),
+    )
+    model = coupled_feedback_test_model(grid)
+
+    try
+        wave = [
+            (1 + 0.15k) * (sin(grid.x[i]) + im * sin(grid.y[j]))
+            for k in 1:grid.size[3], i in 1:grid.size[1], j in 1:grid.size[2]
+        ]
+        set!(model;
+            ψ=(x, y, z) -> cos(x) + 0.2sin(y),
+            B=FieldArray(wave),
+            verbose=false)
+
+        context = QGYBJplus._operator_context(model)
+        options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
+        expected_psi = copy(parent(model.fields.psi))
+        qg = similar(model.fields.q)
+        qw = similar(model.fields.q)
+        QGYBJplus.compute_q_from_psi!(qg, model.fields.psi,
+            context.grid, context.a, grid.z[2] - grid.z[1];
+            workspace=context.workspace)
+        QGYBJplus.compute_qw_complex!(qw, model.fields.B,
+            context.grid, context.plans;
+            f=context.f, Lmask=context.mask, workspace=context.workspace)
+        parent(model.fields.q) .= parent(qg) .+ parent(qw)
+        expected_q = copy(parent(model.fields.q))
+        expected_B = copy(parent(model.fields.B))
+
+        # Scheduled energy diagnostics rebuild a private field snapshot. Its
+        # flow energy must be based on q-qʷ, and observing must not mutate the
+        # live model.
+        reference = QGYBJplus.copy_fields(model.fields)
+        QGYBJplus._diagnose_flow!(reference, context.grid, options,
+            context.plans, context.a, context.mask;
+            workspace=context.workspace,
+            N2_profile=context.N2)
+        QGYBJplus._refresh_wave_diagnostics!(reference, model)
+        reference_energy = QGYBJplus._energy_components(model, reference)
+
+        simulation = Simulation(model;
+            Δt=0.1,
+            stop_iteration=1,
+            output=false,
+            diagnostics=false,
+            verbose=false)
+        diagnostic_specification = EnergyDiagnosticsOutput(
+            path="unused", schedule=IterationInterval(1))
+        diagnostic_manager = QGYBJplus.EnergyDiagnosticsManager(
+            diagnostic_specification, Float64)
+        QGYBJplus._record_energy_diagnostics!(
+            diagnostic_manager, simulation)
+        @test only(diagnostic_manager.mean_flow_KE) ≈ reference_energy[4]
+        @test only(diagnostic_manager.mean_flow_PE) ≈ reference_energy[5]
+        @test parent(model.fields.psi) == expected_psi
+        @test parent(model.fields.q) == expected_q
+
+        mktempdir() do directory
+            specification = NetCDFOutput(
+                path=directory,
+                schedule=IterationInterval(1),
+                fields=(:ψ, :waves),
+                velocities=true)
+            manager = QGYBJplus.ModelOutputManager(
+                specification, Float64)
+            QGYBJplus._write_model_state_file!(manager, simulation)
+            path = joinpath(directory, "state0001.nc")
+
+            expected_spectral = similar(model.fields.psi)
+            parent(expected_spectral) .= expected_psi
+            expected_physical = QGYBJplus.allocate_fft_backward_dst(
+                model.fields.psi, model.runtime)
+            QGYBJplus.fft_backward!(expected_physical,
+                expected_spectral, model.runtime.plans)
+            NCDataset(path, "r") do dataset
+                @test dataset["psi"][:, :, :] ≈
+                      permutedims(real.(parent(expected_physical)), (2, 3, 1))
+                @test dataset.attrib["feedback_mode"] == "WaveMeanFeedback"
+                @test dataset.attrib["generalized_pv"] == "total_with_wave_pv"
+            end
+
+            uncoupled = wave_feedback_test_model(
+                grid, YBJPlus(); f=context.f)
+            try
+                @test_throws ErrorException restore!(uncoupled, path)
+            finally
+                finalize_model!(uncoupled)
+            end
+            normal_ybj = coupled_feedback_test_model(
+                grid; f=context.f, formulation=YBJ())
+            try
+                @test_throws ErrorException restore!(normal_ybj, path)
+            finally
+                finalize_model!(normal_ybj)
+            end
+
+            fill!(parent(model.fields.psi), 0)
+            fill!(parent(model.fields.A), 0)
+            fill!(parent(model.fields.C), 0)
+            restore!(model, path)
+            @test parent(model.fields.psi) ≈ expected_psi atol=2e-11
+            @test parent(model.fields.q) ≈ expected_q atol=2e-11
+            @test parent(model.fields.B) ≈ expected_B atol=2e-11
+        end
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Wave feedback excludes the aliased two-thirds endpoint" begin
+    grid = RectilinearGrid(
+        size=(12, 12, 1),
+        x=(-π, π),
+        y=(-π, π),
+        z=(-1.0, 0.0),
+    )
+    model = wave_feedback_test_model(grid, YBJPlus(); f=1.0)
+
+    try
+        context = QGYBJplus._operator_context(model)
+        wave = QGYBJplus.allocate_fft_backward_dst(
+            model.fields.B, model.runtime)
+        values = parent(wave)
+        @inbounds for k in axes(values, 1), i in axes(values, 2),
+                      j in axes(values, 3)
+            values[k, i, j] = cos(4grid.x[i])
+        end
+        QGYBJplus.fft_forward!(
+            model.fields.B, wave, model.runtime.plans)
+
+        qw = similar(model.fields.q)
+        QGYBJplus.compute_qw_complex!(
+            qw, model.fields.B, context.grid, context.plans;
+            f=1.0, Lmask=context.mask, workspace=context.workspace)
+
+        @test !is_dealiased(5, 1, grid) # kx = N/3 is not alias-safe.
+        @test is_dealiased(4, 3, grid)  # (kx, ky) = (3, 2) remains inside.
+        @test maximum(abs, parent(qw)) < 1e-12
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Coupled wave-feedback ETD-RK2 is second order" begin
+    grid = RectilinearGrid(
+        size=(8, 8, 4),
+        extent=(2π, 2π, 1.0),
+    )
+    horizon = 0.1
+
+    function evolve_coupled(Δt)
+        model = coupled_feedback_test_model(grid)
+        try
+            wave = [
+                (0.10 + 0.02k) *
+                (sin(grid.x[i]) + 0.7im * cos(grid.y[j]) +
+                 0.3sin(grid.x[i] + grid.y[j]))
+                for k in 1:grid.size[3], i in 1:grid.size[1],
+                    j in 1:grid.size[2]
+            ]
+            set!(model;
+                ψ=(x, y, z) ->
+                    0.8sin(x) * (1 + 0.4z) +
+                    0.35sin(x + y) * (1 + 0.3z^2),
+                B=FieldArray(wave),
+                verbose=false,
+            )
+
+            timestepper = ExponentialRungeKutta2(Δt=Δt)
+            for _ in 1:round(Int, horizon / Δt)
+                step!(model, timestepper)
+            end
+
+            context = QGYBJplus._operator_context(model)
+            qg = similar(model.fields.q)
+            qw = similar(model.fields.q)
+            QGYBJplus.compute_q_from_psi!(
+                qg, model.fields.psi, context.grid, context.a, grid.dz;
+                workspace=context.workspace,
+            )
+            QGYBJplus.compute_qw_complex!(
+                qw, model.fields.B, context.grid, context.plans;
+                f=context.f, Lmask=context.mask, workspace=context.workspace,
+            )
+            q_values = copy(parent(model.fields.q))
+            consistency = maximum(abs,
+                q_values .- parent(qg) .- parent(qw)) /
+                max(maximum(abs, q_values), eps())
+            return (
+                q=q_values,
+                B=copy(parent(model.fields.B)),
+                consistency,
+            )
+        finally
+            finalize_model!(model)
+        end
+    end
+
+    coarse = evolve_coupled(0.01)
+    medium = evolve_coupled(0.005)
+    fine = evolve_coupled(0.0025)
+    q_ratio = maximum(abs, coarse.q .- medium.q) /
+              maximum(abs, medium.q .- fine.q)
+    B_ratio = maximum(abs, coarse.B .- medium.B) /
+              maximum(abs, medium.B .- fine.B)
+
+    @test 3.7 < q_ratio < 4.3
+    @test 3.7 < B_ratio < 4.3
+    @test fine.consistency < 2e-12
+end
+
+@testset "Coupled-energy spectral coefficients" begin
+    grid = RectilinearGrid(
+        size=(8, 8, 3),
+        x=(-π, π),
+        y=(-π, π),
+        z=(-1.0, 0.0),
+    )
+    model = coupled_feedback_test_model(grid; f=2.0)
+
+    try
+        fields = model.fields
+        a = only(unique(model.runtime.coefficients.a_ell))
+        dz = grid.z[2] - grid.z[1]
+        normalization = 0.5 / ((grid.size[1] * grid.size[2])^2 * grid.size[3])
+
+        # These are full complex FFTs, so the horizontal zero mode has the same
+        # Parseval weight as every other mode.
+        fill!(parent(fields.A), 0)
+        fill!(parent(fields.C), 0)
+        parent(fields.C)[1, 1, 1] = 2
+        LA_bottom = a * 2 / dz
+        LA_above = -LA_bottom
+        expected_wke = normalization * (abs2(LA_bottom) + abs2(LA_above))
+        energies = QGYBJplus._local_energy_components(model, fields)
+        @test energies[1] ≈ expected_wke rtol=2e-14
+
+        # Asselin--Young (3.7): a/4 |∇A_z|² and 1/16 |ΔA|².
+        # `_local_energy_components` applies the common outer factor 1/2.
+        fill!(parent(fields.A), 0)
+        fill!(parent(fields.C), 0)
+        parent(fields.C)[1, 2, 1] = 3
+        parent(fields.A)[1, 2, 1] = 5
+        energies = QGYBJplus._local_energy_components(model, fields)
+        @test energies[2] ≈ normalization * (0.5a * 9) rtol=2e-14
+        @test energies[3] ≈ normalization * ((1 / 8) * 25) rtol=2e-14
+    finally
+        finalize_model!(model)
+    end
+
+    ybj_model = coupled_feedback_test_model(grid; f=2.0, formulation=YBJ())
+    try
+        parent(ybj_model.fields.A)[1, 2, 1] = 5
+        @test iszero(QGYBJplus._local_energy_components(
+            ybj_model, ybj_model.fields)[3])
+    finally
+        finalize_model!(ybj_model)
+    end
 end

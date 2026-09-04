@@ -333,7 +333,7 @@ For each horizontal wavenumber (kₓ, kᵧ):
 **Stage 1: Cumulative Integration**
 ```julia
 Ã[1] = 0
-Ã[k] = Ã[k-1] + (Σⱼ₌₁ᵏ⁻¹ B[j]) × N²[k-1]/f₀² × dz²
+Ã[k] = Ã[k-1] + (Σⱼ₌₁ᵏ⁻¹ B[j]) × N²_face[k-1]/f₀² × dz²
 ```
 
 **Stage 2: Apply Sigma Constraint**
@@ -360,8 +360,9 @@ C[nz] = 0                      # Neumann BC at top
 - `f`: Coriolis frequency ``f₀``
 - `Lmask`: Optional dealiasing mask
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
-- `N2_profile`: Optional N²(z) profile for variable stratification. If not provided,
-  uses a unit profile.
+- `N2_profile`: Optional N²(z) sampled at the upper faces
+  `G.z_faces[2:end]` for variable stratification. If not provided, uses a unit
+  profile.
 
 # Returns
 Tuple (A, C) with recovered amplitude and its vertical derivative.

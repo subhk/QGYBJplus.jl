@@ -5,8 +5,10 @@ CurrentModule = QGYBJplus
 ```
 
 The vertical coordinate spans negative depth to zero and is cell centered.
-Stratification is evaluated on `model.grid.z`; runtime coefficients contain
-the resulting `N²` and Boussinesq elliptic coefficient `f²/N²`.
+Runtime coefficients contain `N²` evaluated at the cell centers
+`model.grid.z`, together with `N²_face` evaluated at each cell's upper face
+`model.grid.z_faces[2:end]`. The Boussinesq elliptic coefficient is the
+face-based array `a_ell = f²/N²_face`.
 
 ## Constant profile
 
@@ -36,6 +38,9 @@ They can be evaluated independently:
 values = compute_stratification_profile(profile, grid)
 value_at_depth = evaluate_N2(profile, -100.0)
 ```
+
+`compute_stratification_profile` returns the cell-center samples used by
+pointwise physics.
 
 ## File input
 

@@ -2,11 +2,11 @@ using Test
 using QGYBJplus
 
 @testset "Simulation clock and lifecycle" begin
-    function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave())
+    function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave(), f=1.0)
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
         return QGYBJModel(
             grid=grid,
-            coriolis=FPlane(f=1.0),
+            coriolis=FPlane(f=f),
             stratification=ConstantStratification(N²=1.0),
             closure=HorizontalHyperdiffusivity(
                 flow=FlowHyperdiffusivity(coefficient=0),
@@ -19,6 +19,13 @@ using QGYBJplus
             topology=(1, 1),
             verbose=false,
         )
+    end
+
+    negative_f_model = lifecycle_model(f=-2.0)
+    try
+        @test inertial_period(negative_f_model) ≈ π
+    finally
+        finalize_model!(negative_f_model)
     end
 
     model = lifecycle_model()

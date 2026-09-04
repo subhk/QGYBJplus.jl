@@ -76,6 +76,17 @@ const Q = QGYBJplus
             @test velocity_bytes < 0.25 * grid_array_bytes
         end
 
+        @testset "ETD workspace layout validation is allocation-free" begin
+            timestepper = ExponentialRungeKutta2(Δt=1.0)
+            step!(model, timestepper)
+            timestep_workspace =
+                timestepper.workspace::ExponentialRungeKutta2Workspace
+            validation_bytes = bytes_per_call() do
+                Q._etdrk2_workspace_matches(timestep_workspace, model.fields)
+            end
+            @test validation_bytes == 0
+        end
+
         @testset "one ETD-RK2 step stays within budget" begin
             timestepper = ExponentialRungeKutta2(Δt=1.0)
             step_bytes = bytes_per_call(() -> step!(model, timestepper))

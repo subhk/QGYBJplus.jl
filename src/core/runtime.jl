@@ -1,6 +1,10 @@
 """Precomputed vertical coefficients used by model operators."""
 struct OperatorCoefficients{T}
+    "Pointwise N² sampled at cell centers (`grid.z`)."
     N²::Vector{T}
+    "N² sampled at each cell's upper face (`grid.z_faces[2:end]`)."
+    N²_face::Vector{T}
+    "Flux coefficient f²/N² sampled at the same upper faces as `N²_face`."
     a_ell::Vector{T}
 end
 
@@ -44,8 +48,9 @@ function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
 
         profile = _runtime_profile(physics.stratification)
         N² = Float64.(compute_stratification_profile(profile, grid))
-        a_ell = a_ell_from_N2(N², physics.coriolis)
-        coefficients = OperatorCoefficients(N², a_ell)
+        N²_face = Float64.(_compute_stratification_face_profile(profile, grid))
+        a_ell = a_ell_from_N2(N²_face, physics.coriolis)
+        coefficients = OperatorCoefficients(N², N²_face, a_ell)
         mask = dealias_mask(grid)
 
         runtime = ModelRuntime(
@@ -160,14 +165,17 @@ function _operator_context(model::QGYBJModel)
         mask=runtime.dealias_mask,
         f=model.physics.coriolis.f,
         N2=coefficients.N²,
+        N2_face=coefficients.N²_face,
         a=coefficients.a_ell,
     )
 end
 
 function Elliptic.invert_q_to_psi!(model::QGYBJModel)
     context = _operator_context(model)
-    invert_q_to_psi!(context.fields, context.grid;
-        a=context.a, workspace=context.workspace)
+    options = ETDModelOptions(model.physics, model.numerics)
+    _invert_total_q_to_psi!(context.fields, context.grid, options,
+        context.plans, context.a, context.mask;
+        workspace=context.workspace)
     return model
 end
 
@@ -190,7 +198,8 @@ function Operators.compute_velocities!(model::QGYBJModel;
     context = _operator_context(model)
     compute_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, compute_w, use_ybj_w, workspace=context.workspace,
+        N2_profile=context.N2, N2_face_profile=context.N2_face,
+        compute_w, use_ybj_w, workspace=context.workspace,
         dealias_mask=context.mask)
     return model
 end
@@ -209,6 +218,7 @@ function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     context = _operator_context(model)
     compute_ybj_vertical_velocity!(context.fields, context.grid, context.plans;
         f=context.f, N2=first(context.N2), N2_profile=context.N2,
+        N2_face_profile=context.N2_face,
         workspace=context.workspace, skip_inversion, t)
     return model
 end
@@ -219,7 +229,8 @@ function Operators.compute_total_velocities!(model::QGYBJModel;
     context = _operator_context(model)
     compute_total_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, compute_w, use_ybj_w, include_wave_velocity,
+        N2_profile=context.N2, N2_face_profile=context.N2_face,
+        compute_w, use_ybj_w, include_wave_velocity,
         workspace=context.workspace, dealias_mask=context.mask)
     return model
 end
@@ -236,27 +247,42 @@ end
 
 """Advance `model` by one model-owned exponential Runge-Kutta step."""
 function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
+    Δt = timestepper.Δt
+    isfinite(Δt) && Δt > zero(Δt) ||
+        throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
+
     context = _operator_context(model)
-    timestepper.workspace === nothing &&
-        (timestepper.workspace = ExponentialRungeKutta2Workspace(
-            model.fields, context.plans; G=context.grid))
     timestep_workspace = timestepper.workspace
+    owner_changed = timestepper.workspace_owner !== nothing &&
+                    timestepper.workspace_owner !== model.runtime
+    if timestep_workspace === nothing || owner_changed
+        timestep_workspace = ExponentialRungeKutta2Workspace(
+            model.fields, context.plans; G=context.grid)
+    elseif !(timestep_workspace isa ExponentialRungeKutta2Workspace)
+        throw(ArgumentError("timestepper workspace has an incompatible type"))
+    elseif !_etdrk2_workspace_matches(timestep_workspace, model.fields)
+        timestep_workspace = ExponentialRungeKutta2Workspace(
+            model.fields, context.plans; G=context.grid)
+    end
+    timestepper.workspace = timestep_workspace
     timestep_workspace isa ExponentialRungeKutta2Workspace ||
         throw(ArgumentError("timestepper workspace has an incompatible type"))
+    timestepper.workspace_owner = model.runtime
 
     options = ETDModelOptions(model.physics, model.numerics)
     next_fields = timestep_workspace.next
     _advance_etdrk2!(next_fields, model.fields, context.grid, options,
         context.plans;
-        Δt=timestepper.Δt,
+        Δt,
         a=context.a,
         dealias_mask=context.mask,
         workspace=context.workspace,
         N2_profile=context.N2,
+        N2_face_profile=context.N2_face,
         timestep_workspace=timestep_workspace)
 
-    previous_fields = model.fields
-    model.fields = next_fields
-    timestep_workspace.next = previous_fields
+    # Keep the public `model.fields` container stable for callbacks and cached
+    # handles while rotating its double-buffered array storage at zero copy.
+    _swap_field_storage!(model.fields, next_fields)
     return model
 end

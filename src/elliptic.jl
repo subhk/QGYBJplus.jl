@@ -144,7 +144,8 @@ with Neumann boundary conditions ψ_z = 0 at top and bottom.
 # Arguments
 - `S::ModelFields`: ModelFields struct containing `q` (input) and `psi` (output)
 - `G::RuntimeGeometry`: RuntimeGeometry struct with wavenumbers and vertical coordinates
-- `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length nz
+- `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length
+  nz, sampled at upper cell faces `grid.z_faces[2:end]`
 - `workspace`: Optional z-pencil workspace arrays for 2D decomposition
 
 # Implementation Details
@@ -171,19 +172,14 @@ null space. Consequently:
 1. A solution exists only if ∫q dz = 0 (compatibility condition)
 2. The solution is determined only up to an arbitrary constant
 
-This implementation sets ψ=0 for kₕ=0 because:
-- For periodic domains, the mean streamfunction doesn't affect velocities
-  (u = -∂ψ/∂y, v = ∂ψ/∂x, both zero for constant ψ)
-- Standard spectral QG codes typically ignore the barotropic mean
-- Initial conditions and forcing are assumed to have zero horizontal mean
-
-If your application requires tracking vertically-varying barotropic modes,
-you would need to solve the singular ODE with an additional constraint
-(e.g., ∫ψ dz = 0) to uniquely determine the solution.
+This implementation retains the compatible, vertically varying part of the
+horizontal-mean PV and fixes the null-space gauge with `sum(ψ) = 0`. If the
+depth mean of q is nonzero, that incompatible constant component is projected
+out (with a warning); no Neumann solution exists for it.
 
 # Example
 ```julia
-a_vec = a_ell_from_N2(N2_profile, FPlane(f=1e-4))
+a_vec = a_ell_from_N2(N2_face_profile, FPlane(f=1e-4))
 invert_q_to_psi!(state, grid; a=a_vec)
 ```
 """
@@ -246,24 +242,45 @@ function _invert_q_to_psi!(psi, q, G::RuntimeGeometry, a::AbstractVector)
         kᵧ = G.ky[j_global]
         kₕ² = kₓ^2 + kᵧ^2   # Horizontal wavenumber squared
 
-        # Special case: kₕ² = 0 (horizontal mean mode)
-        # The operator ∂/∂z(a ∂/∂z) with Neumann BCs is singular (constant null space).
-        # We set ψ=0 because: (1) mean ψ doesn't affect velocities in periodic domains,
-        # (2) the ODE solution is only determined up to an arbitrary constant.
-        # CAUTION: This discards any horizontally uniform PV without enforcing the
-        # compatibility condition ∫q dz = 0. If the mean mode has significant magnitude,
-        # total PV may be misrepresented in diagnostics.
+        # Special case: kₕ² = 0 (horizontal mean mode).  The constant part
+        # of ψ is a null mode, but a vertically varying, mean-zero q column has
+        # a valid solution and must not be discarded.  Project only the
+        # incompatible depth mean of q, integrate the discrete vertical flux,
+        # and impose the gauge sum(ψ)=0.
         if kₕ² == 0
-            # Check if mean mode has significant energy (warn once per run)
-            q_mean_mag = maximum(abs, @view q_arr[:, i_local, j_local])
-            if q_mean_mag > 1e-10  # Threshold for "significant"
-                @warn "invert_q_to_psi!: Non-zero horizontal mean in q (max |q(k=0)|=$(q_mean_mag)). " *
-                      "This barotropic component is discarded (ψ=0 for kₕ²=0) and will not " *
-                      "contribute to the flow field. This is physically correct for computing " *
-                      "velocities but may affect PV conservation diagnostics." maxlog=1
-            end
+            q̄ = zero(eltype(q_arr))
+            q_scale = zero(typeof(abs(zero(eltype(q_arr)))))
             @inbounds for k in 1:nz
-                ψ_arr[k, i_local, j_local] = 0
+                value = q_arr[k, i_local, j_local]
+                q̄ += value
+                q_scale = max(q_scale, abs(value))
+            end
+            q̄ /= nz
+
+            real_type = typeof(q_scale)
+            compatibility_tolerance =
+                100 * eps(real_type) * max(one(real_type), q_scale)
+            if abs(q̄) > compatibility_tolerance
+                @warn "invert_q_to_psi!: the horizontal-mean q column violates " *
+                      "the Neumann compatibility condition (depth mean=$(q̄)); " *
+                      "projecting out that vertically constant component." maxlog=1
+            end
+
+            ψ_arr[1, i_local, j_local] = zero(eltype(ψ_arr))
+            flux = zero(eltype(q_arr))
+            @inbounds for k in 1:(nz - 1)
+                flux += q_arr[k, i_local, j_local] - q̄
+                ψ_arr[k + 1, i_local, j_local] =
+                    ψ_arr[k, i_local, j_local] + Δz² * flux / a[k]
+            end
+
+            ψ̄ = zero(eltype(ψ_arr))
+            @inbounds for k in 1:nz
+                ψ̄ += ψ_arr[k, i_local, j_local]
+            end
+            ψ̄ /= nz
+            @inbounds for k in 1:nz
+                ψ_arr[k, i_local, j_local] -= ψ̄
             end
             continue
         end
@@ -574,7 +591,8 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 # Arguments
 - `S::ModelFields`: ModelFields containing `B` (input), `A` and `C` (output)
 - `G::RuntimeGeometry`: RuntimeGeometry struct
-- `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z)
+- `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), sampled
+  at upper cell faces `grid.z_faces[2:end]`
 - `workspace`: Optional z-pencil workspace for 2D decomposition
 
 # Output Fields

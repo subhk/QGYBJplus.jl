@@ -40,6 +40,8 @@ Time synchronization:
 
 module UnifiedParticleAdvection
 
+using MPI
+
 # Bind names from parent module (QGYBJplus) without using/import
 const _PARENT = Base.parentmodule(@__MODULE__)
 const RuntimeGeometry = _PARENT.RuntimeGeometry
@@ -259,7 +261,7 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, C, D}
         # Use provided parallel config or detect environment
         if parallel_config !== nothing && parallel_config.use_mpi
             try
-                M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+                M = MPI
                 comm = parallel_config.comm
                 rank = M.Comm_rank(comm)
                 nprocs = M.Comm_size(comm)
@@ -374,7 +376,7 @@ function detect_parallel_environment()
     is_parallel = false
 
     try
-        M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
+        M = MPI
         if M.Initialized()
             comm = M.COMM_WORLD
             rank = M.Comm_rank(comm)
@@ -591,7 +593,7 @@ function initialize_particles_parallel!(tracker::ParticleTracker{T},
 end
 
 """
-    advect_particles!(tracker, state, grid, dt, current_time=nothing; params=nothing, N2_profile=nothing)
+    advect_particles!(tracker, state, grid, dt, current_time=nothing; params=nothing, N2_profile=nothing, N2_face_profile=nothing)
 
 Advect particles using unified serial/parallel interface.
 Respects the particle_advec_time setting - particles remain stationary until this time.
@@ -603,20 +605,21 @@ Parameters:
 - dt: Time step
 - current_time: Current simulation time (if not provided, uses tracker's internal time)
 - `f`, `N2`: Physical coefficients used by the velocity diagnostic.
-- N2_profile: Optional N²(z) profile for nonuniform stratification. If not provided and
-  `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
-  simulation's actual stratification.
+- N2_profile: Optional cell-center N²(z) profile for nonuniform stratification.
+- N2_face_profile: Optional upper-face N²(z) profile used to recover A when
+  `use_ybj_w=true`.
 
 # Important
 When using YBJ vertical velocity (`use_ybj_w=true`) with variable stratification, you MUST
-pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
+pass the same `N2_face_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function advect_particles!(tracker::ParticleTracker{T},
                           state::ModelFields, grid::RuntimeGeometry, dt::T,
                           current_time=nothing;
                           f::Real=1, N2::Real=1,
-                          N2_profile=nothing) where T
+                          N2_profile=nothing,
+                          N2_face_profile=nothing) where T
     
     # Use simulation time if provided, otherwise use tracker's internal time
     if current_time !== nothing
@@ -647,7 +650,8 @@ function advect_particles!(tracker::ParticleTracker{T},
     end
     
     # Normal advection process starts here.
-    update_velocity_fields!(tracker, state, grid; f, N2, N2_profile)
+    update_velocity_fields!(tracker, state, grid;
+        f, N2, N2_profile, N2_face_profile)
     
     # Advect particles using chosen integration method
     if tracker.config.integration_method == :euler
@@ -685,7 +689,7 @@ function advect_particles!(tracker::ParticleTracker{T},
 end
 
 """
-    update_velocity_fields!(tracker, state, grid; params=nothing, N2_profile=nothing)
+    update_velocity_fields!(tracker, state, grid; params=nothing, N2_profile=nothing, N2_face_profile=nothing)
 
 Update TOTAL velocity fields from fluid state (QG + wave velocities) and exchange halos if parallel.
 Computes the complete velocity field needed for proper QG-YBJ particle advection.
@@ -694,19 +698,20 @@ Handles 2D pencil decomposition by getting actual local dimensions from ModelFie
 
 # Arguments
 - `f`, `N2`: Physical coefficients used by the velocity diagnostic.
-- `N2_profile`: Optional N²(z) profile for nonuniform stratification. If not provided and
-  `use_ybj_w=true`, will use constant N² from params, which may be inconsistent with the
-  simulation's actual stratification.
+- `N2_profile`: Optional cell-center N²(z) profile for nonuniform stratification.
+- `N2_face_profile`: Optional upper-face N²(z) profile used to recover A when
+  `use_ybj_w=true`.
 
 # Important
 When using YBJ vertical velocity (`use_ybj_w=true`) with variable stratification, you MUST
-pass the same `N2_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
+pass the same `N2_face_profile` used in the simulation. Otherwise, `compute_ybj_vertical_velocity!`
 will re-invert B→A with constant N², giving inconsistent particle velocities.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::ModelFields, grid::RuntimeGeometry;
                                 f::Real=1, N2::Real=1,
-                                N2_profile=nothing) where T
+                                N2_profile=nothing,
+                                N2_face_profile=nothing) where T
     # Compute total velocities with the model's physical coefficients.
     compute_total_velocities!(state, grid;
                               plans=tracker.plans,
@@ -714,7 +719,8 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                               N2,
                               compute_w=true,
                               use_ybj_w=tracker.config.use_ybj_w,
-                              N2_profile=N2_profile)
+                              N2_profile=N2_profile,
+                              N2_face_profile=N2_face_profile)
 
     # Get actual local dimensions from ModelFields arrays
     # This handles both serial (full grid) and parallel (2D pencil decomposition)
@@ -1040,23 +1046,21 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
     end
     
     if Base.find_package("MPI") === nothing
-        @warn "MPI not available; cannot migrate particles"
-        return tracker
+        error("MPI not available; cannot migrate particles")
     end
+    M = MPI
+    particles = tracker.particles
+
+    keep_indices = Int[]
+    preprocessing_failure = nothing
     try
-        M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-        particles = tracker.particles
-        local_domain = tracker.local_domain
-        
         # Clear send buffers
         for i in 1:tracker.nprocs
             empty!(tracker.send_buffers[i])
             empty!(tracker.send_buffers_id[i])
         end
-        
+
         # Find particles that need migration
-        keep_indices = Int[]
-        
         use_2d = tracker.local_domain !== nothing &&
                  hasproperty(tracker.local_domain, :py) &&
                  tracker.local_domain.py > 1
@@ -1064,8 +1068,10 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
         for i in 1:particles.np
             x = particles.x[i]
             y = particles.y[i]
-            target_rank = use_2d ? find_target_rank(x, y, tracker) : find_target_rank(x, tracker)
-            
+            target_rank = use_2d ?
+                          find_target_rank(x, y, tracker) :
+                          find_target_rank(x, tracker)
+
             if target_rank == tracker.rank
                 push!(keep_indices, i)
             else
@@ -1076,24 +1082,58 @@ function migrate_particles!(tracker::ParticleTracker{T}) where T
                 push!(tracker.send_buffers_id[target_rank + 1], particles.id[i])
             end
         end
-        
-        # Keep only local particles
-        particles.x = particles.x[keep_indices]
-        particles.y = particles.y[keep_indices]
-        particles.z = particles.z[keep_indices]
-        particles.id = particles.id[keep_indices]
-        particles.u = particles.u[keep_indices]
-        particles.v = particles.v[keep_indices]
-        particles.w = particles.w[keep_indices]
-        particles.np = length(keep_indices)
-        
-        # Exchange particles between ranks
-        exchange_particles!(tracker)
-        
-    catch e
-        @warn "Particle migration failed: $e"
+    catch exception
+        preprocessing_failure = sprint(showerror, exception)
     end
-    
+
+    preprocessing_valid = M.Allreduce(
+        preprocessing_failure === nothing ? 1 : 0, M.MIN, tracker.comm)
+    if preprocessing_valid != 1
+        detail = preprocessing_failure === nothing ?
+                 "failure reported by another rank" : preprocessing_failure
+        error("particle migration preprocessing failed: $detail")
+    end
+
+    # Preserve the complete local state until the exchange succeeds. The
+    # filtered arrays below are newly allocated, so these references remain
+    # untouched even if received particles are appended before a later error.
+    original_state = (
+        x=particles.x, y=particles.y, z=particles.z, id=particles.id,
+        u=particles.u, v=particles.v, w=particles.w, np=particles.np,
+    )
+
+    try
+        # Complete communication into temporary receive buffers before
+        # changing the canonical particle collection on any rank.
+        exchange_particles!(tracker)
+
+        particles.x = original_state.x[keep_indices]
+        particles.y = original_state.y[keep_indices]
+        particles.z = original_state.z[keep_indices]
+        particles.id = original_state.id[keep_indices]
+        particles.u = original_state.u[keep_indices]
+        particles.v = original_state.v[keep_indices]
+        particles.w = original_state.w[keep_indices]
+        particles.np = length(keep_indices)
+        add_received_particles!(tracker)
+    catch
+        particles.x = original_state.x
+        particles.y = original_state.y
+        particles.z = original_state.z
+        particles.id = original_state.id
+        particles.u = original_state.u
+        particles.v = original_state.v
+        particles.w = original_state.w
+        particles.np = original_state.np
+        for buffer in tracker.recv_buffers
+            empty!(buffer)
+        end
+        for ids in tracker.recv_buffers_id
+            empty!(ids)
+        end
+        rethrow()
+    end
+
     return tracker
 end
 
@@ -1174,76 +1214,95 @@ Uses Isend/Irecv to avoid deadlock when all ranks try to communicate simultaneou
 """
 function exchange_particles!(tracker::ParticleTracker{T}) where T
     if Base.find_package("MPI") === nothing
-        @warn "MPI not available; cannot exchange particles"
-        return
+        error("MPI not available; cannot exchange particles")
     end
-    try
-        M = Base.require(Base.PkgId(Base.UUID("da04e1cc-30fd-572f-bb4f-1f8673147195"), "MPI"))
-        comm = tracker.comm
-        nprocs = tracker.nprocs
-        rank = tracker.rank
+    M = MPI
+    comm = tracker.comm
+    nprocs = tracker.nprocs
+    rank = tracker.rank
 
-        # Send/receive particle counts using Alltoall
-        # Each rank sends 1 element (particle count) to every other rank
-        send_counts = [length(tracker.send_buffers[i]) ÷ 6 for i in 1:nprocs]
-        send_counts_id = [length(tracker.send_buffers_id[i]) for i in 1:nprocs]
-        @assert send_counts == send_counts_id "Particle data and id buffers are inconsistent"
-        recv_counts = M.Alltoall(send_counts, 1, comm)
+    local_layout_valid =
+        M.Comm_size(comm) == nprocs &&
+        M.Comm_rank(comm) == rank &&
+        length(tracker.send_buffers) == nprocs &&
+        length(tracker.send_buffers_id) == nprocs &&
+        length(tracker.recv_buffers) == nprocs &&
+        length(tracker.recv_buffers_id) == nprocs
+    layout_valid = M.Allreduce(local_layout_valid ? 1 : 0, M.MIN, comm)
+    layout_valid == 1 ||
+        error("particle exchange metadata is inconsistent with the MPI communicator")
 
-        # Post all non-blocking receives first
-        recv_reqs = M.Request[]
-        for other_rank in 0:nprocs-1
-            if other_rank == rank
-                continue
-            end
-            if recv_counts[other_rank + 1] > 0
-                recv_data = Vector{T}(undef, recv_counts[other_rank + 1] * 6)
-                tracker.recv_buffers[other_rank + 1] = recv_data
-                recv_ids = Vector{Int}(undef, recv_counts[other_rank + 1])
-                tracker.recv_buffers_id[other_rank + 1] = recv_ids
+    # Send/receive particle counts using Alltoall
+    # Each rank sends 1 element (particle count) to every other rank
+    send_counts = [length(tracker.send_buffers[i]) ÷ 6 for i in 1:nprocs]
+    send_counts_id = [length(tracker.send_buffers_id[i]) for i in 1:nprocs]
+    local_counts_valid =
+        all(i -> length(tracker.send_buffers[i]) % 6 == 0, 1:nprocs) &&
+        send_counts == send_counts_id
+    counts_valid = M.Allreduce(local_counts_valid ? 1 : 0, M.MIN, comm)
+    counts_valid == 1 ||
+        error("particle data and id send buffers are inconsistent")
 
-                req = M.Irecv!(recv_data, other_rank, other_rank, comm)  # Tag = sender rank
-                req_id = M.Irecv!(recv_ids, other_rank, other_rank + nprocs, comm)
-                push!(recv_reqs, req)
-                push!(recv_reqs, req_id)
-            end
-        end
-
-        # Post all non-blocking sends
-        send_reqs = M.Request[]
-        for other_rank in 0:nprocs-1
-            if other_rank == rank
-                continue
-            end
-            if !isempty(tracker.send_buffers[other_rank + 1])
-                req = M.Isend(tracker.send_buffers[other_rank + 1], other_rank, rank, comm)  # Tag = my rank
-                push!(send_reqs, req)
-            end
-            if !isempty(tracker.send_buffers_id[other_rank + 1])
-                req_id = M.Isend(tracker.send_buffers_id[other_rank + 1], other_rank, rank + nprocs, comm)
-                push!(send_reqs, req_id)
-            end
-        end
-
-        # Wait for all receives to complete
-        if !isempty(recv_reqs)
-            M.Waitall(recv_reqs)
-        end
-
-        # Add received particles
-        add_received_particles!(tracker)
-
-        # Wait for all sends to complete before clearing buffers
-        if !isempty(send_reqs)
-            M.Waitall(send_reqs)
-        end
-
-        # Synchronize to ensure all particle exchanges are complete
-        M.Barrier(comm)
-
-    catch e
-        @warn "Particle exchange failed: $e"
+    for i in 1:nprocs
+        empty!(tracker.recv_buffers[i])
+        empty!(tracker.recv_buffers_id[i])
     end
+    recv_counts = M.Alltoall(send_counts, 1, comm)
+
+    # Post all non-blocking receives first
+    recv_reqs = M.Request[]
+    for other_rank in 0:nprocs-1
+        if other_rank == rank
+            continue
+        end
+        if recv_counts[other_rank + 1] > 0
+            recv_data = Vector{T}(undef, recv_counts[other_rank + 1] * 6)
+            tracker.recv_buffers[other_rank + 1] = recv_data
+            recv_ids = Vector{Int}(undef, recv_counts[other_rank + 1])
+            tracker.recv_buffers_id[other_rank + 1] = recv_ids
+
+            req = M.Irecv!(recv_data, other_rank, other_rank, comm)  # Tag = sender rank
+            req_id = M.Irecv!(recv_ids, other_rank, other_rank + nprocs, comm)
+            push!(recv_reqs, req)
+            push!(recv_reqs, req_id)
+        end
+    end
+
+    # Post all non-blocking sends
+    send_reqs = M.Request[]
+    for other_rank in 0:nprocs-1
+        if other_rank == rank
+            continue
+        end
+        if !isempty(tracker.send_buffers[other_rank + 1])
+            req = M.Isend(tracker.send_buffers[other_rank + 1], other_rank, rank, comm)  # Tag = my rank
+            push!(send_reqs, req)
+        end
+        if !isempty(tracker.send_buffers_id[other_rank + 1])
+            req_id = M.Isend(tracker.send_buffers_id[other_rank + 1], other_rank, rank + nprocs, comm)
+            push!(send_reqs, req_id)
+        end
+    end
+
+    # Finish every transfer before committing any particle-array changes.
+    if !isempty(recv_reqs)
+        M.Waitall(recv_reqs)
+    end
+    if !isempty(send_reqs)
+        M.Waitall(send_reqs)
+    end
+
+    local_received_valid = all(1:nprocs) do i
+        length(tracker.recv_buffers[i]) % 6 == 0 &&
+            length(tracker.recv_buffers[i]) ÷ 6 ==
+            length(tracker.recv_buffers_id[i])
+    end
+    received_valid = M.Allreduce(local_received_valid ? 1 : 0, M.MIN, comm)
+    received_valid == 1 ||
+        error("received particle data and id buffers are inconsistent")
+
+    # Every rank reaches this point with complete, validated receive buffers.
+    M.Barrier(comm)
 end
 
 """
@@ -1308,11 +1367,22 @@ function apply_boundary_conditions!(tracker::ParticleTracker{T}) where T
         
         # Vertical boundaries (z ∈ [-Lz, 0])
         if config.reflect_z
-            if particles.z[i] > 0
-                particles.z[i] = -particles.z[i]
-                particles.w[i] = -particles.w[i]
-            elseif particles.z[i] < -tracker.Lz
-                particles.z[i] = -2*tracker.Lz - particles.z[i]
+            z = particles.z[i]
+            crossings = if z > 0
+                ceil(Int, z / tracker.Lz)
+            elseif z < -tracker.Lz
+                ceil(Int, (-tracker.Lz - z) / tracker.Lz)
+            else
+                0
+            end
+
+            reflected_depth = mod(-z, 2 * tracker.Lz)
+            if reflected_depth <= tracker.Lz
+                particles.z[i] = -reflected_depth
+            else
+                particles.z[i] = reflected_depth - 2 * tracker.Lz
+            end
+            if isodd(crossings)
                 particles.w[i] = -particles.w[i]
             end
         else
@@ -1401,14 +1471,11 @@ function split_and_save_trajectory_segment!(tracker::ParticleTracker{T}) where T
         "auto_split_enabled" => true
     )
     
-    # Save this segment using existing I/O function
-    try
-        # Import the I/O module function
-        write_particle_trajectories(filename, tracker; metadata=metadata)
-        println("  ✅ Successfully saved segment $(tracker.output_file_sequence)")
-    catch e
-        @warn "Failed to save trajectory segment: $e"
-    end
+    # ParticleIO is included after this module, so resolve its exported writer
+    # from the parent at call time instead of capturing an undefined binding.
+    writer = getfield(_PARENT, :write_particle_trajectories)
+    writer(filename, tracker; metadata=metadata)
+    println("  ✅ Successfully saved segment $(tracker.output_file_sequence)")
     
     return tracker
 end
@@ -1464,6 +1531,9 @@ finalize_trajectory_files!(tracker)
 """
 function enable_auto_file_splitting!(tracker::ParticleTracker{T}, base_filename::String;
                                      max_points_per_file::Int=1000) where T
+    max_points_per_file > 0 ||
+        throw(ArgumentError("max_points_per_file must be positive"))
+
     # Update tracker configuration
     tracker.base_output_filename = base_filename
     tracker.auto_file_splitting = true
