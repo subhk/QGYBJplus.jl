@@ -255,9 +255,11 @@ try
 
     @testset "Collective progress maxima" begin
         if rank == 0
-            @test occursin("iteration=$NSTEPS | time=", progress_text)
-            @test occursin("max_wave_speed=", progress_text)
-            @test occursin("max_flow_speed=", progress_text)
+            @test occursin("Iteration: $(lpad(NSTEPS, 4, '0')), time: ", progress_text)
+            @test occursin("Δt: ", progress_text)
+            @test occursin("max(|LA|) = ", progress_text)
+            @test occursin("max(|uₕ|) = ", progress_text)
+            @test occursin("wall time: ", progress_text)
         else
             @test isempty(progress_text)
         end

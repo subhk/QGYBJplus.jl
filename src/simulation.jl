@@ -13,6 +13,36 @@ nprocs(simulation::Simulation) = nprocs(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
 _advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
 
+_maybe_integer(value) = isinteger(value) ? Int(value) : value
+
+function _prettytime_units(seconds)
+    seconds < 1e-9 && return seconds, "seconds"
+    seconds < 1e-6 && return seconds * 1e9, "ns"
+    seconds < 1e-3 && return seconds * 1e6, "μs"
+    seconds < 1 && return seconds * 1e3, "ms"
+    seconds < 60 && return seconds, seconds == 1 ? "second" : "seconds"
+    if seconds < 3600
+        value = _maybe_integer(seconds / 60)
+        return value, value == 1 ? "minute" : "minutes"
+    elseif seconds < 86400
+        value = _maybe_integer(seconds / 3600)
+        return value, value == 1 ? "hour" : "hours"
+    else
+        value = _maybe_integer(seconds / 86400)
+        return value, value == 1 ? "day" : "days"
+    end
+end
+
+function _prettytime(seconds::Real)
+    iszero(seconds) && return "0 seconds"
+    seconds < 1e-9 && return @sprintf("%.3e seconds", seconds)
+
+    value, units = _prettytime_units(_maybe_integer(seconds))
+    return isinteger(value) ?
+           @sprintf("%d %s", value, units) :
+           @sprintf("%.3f %s", value, units)
+end
+
 function _before_stop_time(simulation::Simulation)
     stop_time = simulation.stop_time
     stop_time === nothing && return true
@@ -89,15 +119,20 @@ function _progress_maxima(model::QGYBJModel, runtime)
     )
 end
 
-function _print_detailed_progress(simulation::Simulation)
+function _print_detailed_progress(
+    simulation::Simulation, run_wall_start::UInt64)
+
     maxima = _progress_maxima(simulation.model)
     simulation.model.runtime.mpi.is_root || return simulation
+    wall_time = 1e-9 * (time_ns() - run_wall_start)
     @printf(stdout,
-        "iteration=%d | time=%s s | max_wave_speed=%.3e m/s | max_flow_speed=%.3e m/s\n",
+        "Iteration: %04d, time: %s, Δt: %s, max(|LA|) = %.3e m s⁻¹, max(|uₕ|) = %.3e m s⁻¹, wall time: %s\n",
         simulation.clock.iteration,
-        string(simulation.clock.time),
+        _prettytime(simulation.clock.time),
+        _prettytime(_time_step(simulation)),
         maxima.wave_speed,
         maxima.flow_speed,
+        _prettytime(wall_time),
     )
     flush(stdout)
     return simulation
@@ -671,6 +706,7 @@ function run!(simulation::Simulation;
     options.diagnostics_interval > 0 ||
         throw(ArgumentError("diagnostics_interval must be positive"))
 
+    run_wall_start = time_ns()
     simulation.state = Running
     try
         _prepare_simulation_output!(simulation)
@@ -699,7 +735,7 @@ function run!(simulation::Simulation;
                 if detailed_progress
                     # All ranks participate in the global maxima reductions;
                     # only the root rank writes the resulting line.
-                    _print_detailed_progress(simulation)
+                    _print_detailed_progress(simulation, run_wall_start)
                 elseif runtime.mpi.is_root
                     @info "Simulation progress" iteration=simulation.clock.iteration time=simulation.clock.time
                 end

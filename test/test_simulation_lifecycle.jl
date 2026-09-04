@@ -1,6 +1,15 @@
 using Test
 using QGYBJplus
 
+struct SlowProgressModel
+    runtime
+end
+
+function QGYBJplus._progress_maxima(::SlowProgressModel)
+    sleep(0.2)
+    return (wave_speed=1.0, flow_speed=2.0)
+end
+
 @testset "Simulation clock and lifecycle" begin
     function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave(), f=1.0)
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
@@ -92,14 +101,19 @@ using QGYBJplus
 
         progress_lines = filter(!isempty, split(progress_text, '\n'))
         @test length(progress_lines) == 2
-        @test occursin("iteration=1 | time=0.25 s | ", progress_text)
-        @test occursin("iteration=2 | time=0.5 s | ", progress_text)
-        @test all(occursin("max_wave_speed=", line) for line in progress_lines)
-        @test all(occursin("max_flow_speed=", line) for line in progress_lines)
+        @test startswith(progress_lines[1],
+            "Iteration: 0001, time: 250 ms, Δt: 250 ms, ")
+        @test startswith(progress_lines[2],
+            "Iteration: 0002, time: 500 ms, Δt: 250 ms, ")
+        @test all(occursin("max(|LA|) = ", line) for line in progress_lines)
+        @test all(occursin("max(|uₕ|) = ", line) for line in progress_lines)
+        @test all(occursin(
+            r", wall time: (?:[0-9.eE+-]+ (?:ns|μs|ms|second|seconds|minute|minutes|hour|hours|day|days))$",
+            line) for line in progress_lines)
         wave_matches = collect(eachmatch(
-            r"max_wave_speed=([0-9.eE+-]+)", progress_text))
+            r"max\(\|LA\|\) = ([0-9.eE+-]+)", progress_text))
         flow_matches = collect(eachmatch(
-            r"max_flow_speed=([0-9.eE+-]+)", progress_text))
+            r"max\(\|uₕ\|\) = ([0-9.eE+-]+)", progress_text))
         @test length(wave_matches) == 2
         @test length(flow_matches) == 2
         @test all(parse(Float64, match.captures[1]) > 0 for match in wave_matches)

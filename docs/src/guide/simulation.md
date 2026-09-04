@@ -68,12 +68,34 @@ run!(simulation; progress=true, diagnostics_interval=100)
 ```
 
 ```text
-iteration=100 | time=200.0 s | max_wave_speed=9.998e-02 m/s | max_flow_speed=3.349e-01 m/s
+Iteration: 0100, time: 3.333 minutes, Δt: 2 seconds, max(|LA|) = 9.998e-02 m s⁻¹, max(|uₕ|) = 3.349e-01 m s⁻¹, wall time: 12.345 seconds
 ```
 
 Here the wave speed is ``\max |LA|`` and the flow speed is
 ``\max \sqrt{u^2+v^2}``. In MPI runs, the maxima are global and only rank zero
-prints.
+prints. Wall time is the elapsed time for the current `run!` call.
+
+By default, model construction also reports the MPI and runtime setup on rank
+zero:
+
+```text
+┌ Info: MPI initialized with 2D decomposition
+│   nprocs = 16
+└   topology = (4, 4)
+┌ Info: Topology validation passed
+│   nx = 256
+│   ny = 256
+│   nz = 128
+│   topology = (4, 4)
+└   decomp_dims = (2, 3)
+┌ Info: Pencil decompositions created
+│   xy_decomp = (2, 3)
+│   xz_decomp = (1, 3)
+└   z_decomp = (2, 3)
+┌ Info: QGYBJModel runtime initialized
+│   size = (256, 256, 128)
+└   ranks = 16
+```
 
 ## Clock access
 
