@@ -298,26 +298,30 @@ function evaluate_N2(profile::FileProfile{T}, z::Real) where T
 end
 
 """
-    compute_stratification_profile(profile::StratificationProfile, G::RuntimeGeometry)
+    compute_stratification_profile(profile::StratificationProfile, grid::RectilinearGrid)
 
-Compute N² profile on model grid.
+Compute the pointwise N² profile at the model's cell centers (`grid.z`).
 
-The profile is evaluated on unstaggered (face) levels at `z = G.z - dz/2`
-to match the Fortran coefficient grid.
+Flux-form vertical operators use a separately sampled upper-face profile; see
+`_compute_stratification_face_profile`.
 """
 function compute_stratification_profile(
     profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
 
-    nz = geometry.size[3]
-    N2_profile = zeros(T, nz)
-    dz = geometry.dz
+    return T[evaluate_N2(profile, z) for z in geometry.z]
+end
 
-    for k in 1:nz
-        z_unstag = geometry.z[k] - dz / 2
-        N2_profile[k] = evaluate_N2(profile, z_unstag)
-    end
+"""
+    _compute_stratification_face_profile(profile, grid)
 
-    return N2_profile
+Sample N² at the upper face of each cell, `grid.z_faces[2:end]`. The final
+entry is the top boundary; homogeneous Neumann flux operators retain it for a
+uniform indexing convention even though its boundary flux is zero.
+"""
+function _compute_stratification_face_profile(
+    profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
+
+    return T[evaluate_N2(profile, z) for z in @view geometry.z_faces[2:end]]
 end
 
 """
@@ -325,14 +329,14 @@ end
 
 Load stratification profile from NetCDF file.
 
-Uses `read_stratification_raw` to read both z coordinates and N² values
-without interpolation. The resulting FileProfile can then be evaluated
-at any z (depth = -z) using linear interpolation.
+Reads either signed vertical coordinates (`z`, positive upward) or positive
+depth coordinates (`depth`) together with N² values. Coordinates and values
+are sorted by increasing depth before constructing the profile.
 """
 function load_stratification_from_file(filename::String)
     T = Float64
 
-    z_data, N2_data = NCDataset(filename, "r") do dataset
+    coordinate_name, coordinate_data, N2_data = NCDataset(filename, "r") do dataset
         z_names = ("z", "depth")
         N2_names = ("N2", "N²", "n2")
         z_index = findfirst(name -> haskey(dataset, name), z_names)
@@ -343,10 +347,33 @@ function load_stratification_from_file(filename::String)
             throw(ArgumentError("stratification file must contain z or depth"))
         N2_name === nothing &&
             throw(ArgumentError("stratification file must contain N2"))
-        (vec(dataset[z_name][:]), vec(dataset[N2_name][:]))
+        (z_name, vec(dataset[z_name][:]), vec(dataset[N2_name][:]))
     end
 
-    return FileProfile{T}(filename, Vector{T}(z_data), Vector{T}(N2_data))
+    depths = Vector{T}(coordinate_data)
+    values = Vector{T}(N2_data)
+    # Model-native z is non-positive and increases upward. Preserve the
+    # historical convention in which nonnegative data named `z` meant depth.
+    coordinate_name == "z" && any(<(zero(T)), depths) &&
+        (depths .*= -one(T))
+
+    isempty(depths) &&
+        throw(ArgumentError("stratification file contains no coordinate data"))
+    length(depths) == length(values) ||
+        throw(ArgumentError(
+            "stratification coordinate and N2 arrays must have equal lengths"))
+    all(isfinite, depths) ||
+        throw(ArgumentError("stratification coordinates must be finite"))
+    all(isfinite, values) ||
+        throw(ArgumentError("stratification N2 values must be finite"))
+
+    permutation = sortperm(depths)
+    depths = depths[permutation]
+    values = values[permutation]
+    all(>(zero(T)), diff(depths)) ||
+        throw(ArgumentError("stratification coordinates must be unique"))
+
+    return FileProfile{T}(filename, depths, values)
 end
 
 """
@@ -448,11 +475,13 @@ function validate_stratification(N2_profile::Vector{T}) where T
         push!(warnings, "Very small N² values (min = $N2_min) - may cause numerical issues")
     end
     
-    # Check for sharp gradients
-    gradients = diff(N2_profile)
-    max_gradient = maximum(abs.(gradients))
-    if max_gradient > 10.0 * (N2_max - N2_min) / length(N2_profile)
-        push!(warnings, "Sharp N² gradients detected - may require high vertical resolution")
+    # Check for sharp gradients when at least one interval exists.
+    if length(N2_profile) > 1
+        gradients = diff(N2_profile)
+        max_gradient = maximum(abs.(gradients))
+        if max_gradient > 10.0 * (N2_max - N2_min) / length(N2_profile)
+            push!(warnings, "Sharp N² gradients detected - may require high vertical resolution")
+        end
     end
     
     return errors, warnings

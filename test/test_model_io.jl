@@ -8,6 +8,57 @@ module EnergyExample
 include(joinpath(@__DIR__, "..", "examples", "compute_energy.jl"))
 end
 
+@testset "Fixed-flow observation preserves the prescribed streamfunction" begin
+    grid = RectilinearGrid(size=(8, 8, 2), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(
+        grid=grid,
+        coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0),
+        closure=HorizontalHyperdiffusivity(
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0)),
+        flow=FixedFlow(),
+        feedback=NoFeedback(),
+        formulation=PassiveWave(),
+        linear=LinearDynamics(),
+        no_dispersion=NoDispersion(),
+        topology=(1, 1),
+        verbose=false,
+    )
+    try
+        prescribed_flow = (x, y, z) -> sin(x) + 0.4cos(y)
+        set!(model; ψ=prescribed_flow, pv_method=:none, verbose=false)
+        prescribed_psi = copy(parent(model.fields.psi))
+
+        mktempdir() do output_dir
+            specification = NetCDFOutput(
+                path=output_dir, fields=(:ψ,), velocities=true)
+            QGYBJplus._refresh_output_diagnostics!(model, specification)
+            @test parent(model.fields.psi) == prescribed_psi
+
+            # Energy diagnostics operate on a snapshot, but must likewise use
+            # the prescribed ψ rather than deriving a different one from q.
+            set!(model; ψ=prescribed_flow, pv_method=:none, verbose=false)
+            simulation = Simulation(
+                model;
+                Δt=0.1,
+                stop_iteration=1,
+                output=false,
+                diagnostics=EnergyDiagnosticsOutput(
+                    path=output_dir, schedule=IterationInterval(1)),
+                verbose=false,
+            )
+            QGYBJplus._prepare_simulation_diagnostics!(simulation)
+            QGYBJplus._record_energy_diagnostics!(
+                simulation.diagnostics_manager, simulation)
+            @test only(simulation.diagnostics_manager.mean_flow_KE) > 0
+            @test parent(model.fields.psi) == prescribed_psi
+        end
+    finally
+        finalize_model!(model)
+    end
+end
+
 @testset "Simulation-owned NetCDF output and restart" begin
     mktempdir() do output_dir
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
@@ -56,10 +107,17 @@ end
                 @test collect((ds.attrib["Lx"], ds.attrib["Ly"],
                                ds.attrib["Lz"])) ≈ collect(grid.extent)
                 @test ds.attrib["wave_formulation"] == "PassiveWave"
-                @test ds["N2"][:] ≈ model.runtime.coefficients.N²
+                @test dimnames(ds["N2"]) == ("z",)
+                @test ds["N2"][:] ≈ N²_function.(grid.z)
                 @test !all(==(first(ds["N2"][:])), ds["N2"][:])
+                @test dimnames(ds["z_face"]) == ("z_face",)
+                @test ds["z_face"][:] ≈ grid.z_faces[2:end]
+                @test dimnames(ds["N2_face"]) == ("z_face",)
+                @test ds["N2_face"][:] ≈
+                      N²_function.(grid.z_faces[2:end])
+                @test dimnames(ds["a_ell"]) == ("z_face",)
                 @test ds["a_ell"][:] ≈
-                      model.physics.coriolis.f^2 ./ ds["N2"][:]
+                      model.physics.coriolis.f^2 ./ ds["N2_face"][:]
                 @test all(name -> haskey(ds, name),
                     ("psi", "A_real", "A_imag", "LA_real", "LA_imag",
                      "q_hat_real", "q_hat_imag", "B_hat_real",
@@ -224,12 +282,15 @@ end
                     "wave_KE", "wave_PE", "wave_CE",
                     "mean_flow_KE", "mean_flow_PE",
                     "total_wave_energy", "total_flow_energy",
-                    "total_energy"))
+                    "coupled_energy", "total_energy"))
                 @test ds["total_wave_energy"][:] ≈
                       ds["wave_KE"][:] .+ ds["wave_PE"][:] .+
                       ds["wave_CE"][:]
                 @test ds["total_flow_energy"][:] ≈
                       ds["mean_flow_KE"][:] .+ ds["mean_flow_PE"][:]
+                @test ds["coupled_energy"][:] ≈
+                      ds["total_flow_energy"][:] .+
+                      ds["wave_PE"][:] .+ ds["wave_CE"][:]
                 @test all(isfinite, ds["total_energy"][:])
                 @test first(ds["wave_KE"][:]) > 0
                 @test ds["wave_KE"][:] ≈ fill(first(ds["wave_KE"][:]), 3)
@@ -360,6 +421,7 @@ end
                     context.a, context.mask;
                     workspace=context.workspace,
                     N2_profile=context.N2,
+                    N2_face_profile=context.N2_face,
                 )
                 @test maximum(abs,
                     parent(expected.psi) .- baseline_psi) > 1e-10

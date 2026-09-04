@@ -65,6 +65,7 @@ function UnifiedParticleAdvection.advect_particles!(
         f=model.physics.coriolis.f,
         N2=first(runtime.coefficients.N²),
         N2_profile=runtime.coefficients.N²,
+        N2_face_profile=runtime.coefficients.N²_face,
     )
     return model
 end

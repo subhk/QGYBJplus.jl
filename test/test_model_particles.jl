@@ -95,6 +95,158 @@ using QGYBJplus
             @test model.particles.particles.time ≈ 0.1
         end
 
+        @testset "large vertical reflections stay in bounds" begin
+            initialize_particles!(model, box)
+            tracker = model.particles
+            particles = tracker.particles
+            particles.z .= [2.75, -3.75, 1.0, -2.0, -0.25, 0.0]
+            particles.w .= 1.0
+
+            QGYBJplus.UnifiedParticleAdvection.apply_boundary_conditions!(tracker)
+
+            @test particles.z ≈ [-0.75, -0.25, -1.0, 0.0, -0.25, 0.0]
+            @test particles.w ≈ [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0]
+            @test all(z -> -tracker.Lz <= z <= 0, particles.z)
+        end
+
+        @testset "default particle and output precisions interoperate" begin
+            default_box = particles_in_box(
+                -0.5;
+                x_max=grid.extent[1],
+                y_max=grid.extent[2],
+                nx=2,
+                ny=2,
+            )
+            @test default_box isa ParticleConfig{Float32}
+            initialize_particles!(model, default_box)
+            tracker = model.particles
+
+            mktempdir() do output_dir
+                manager = ParticleOutputManager(
+                    output_dir;
+                    save_interval_iter=1,
+                    save_interval_time=0.0,
+                    output_mode=:trajectory,
+                )
+                operations_succeeded = try
+                    QGYBJplus.setup_particle_output!(manager, tracker)
+                    QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0)
+                    QGYBJplus.finalize_particle_output!(manager, tracker)
+                    true
+                catch
+                    false
+                end
+
+                @test operations_succeeded
+                @test manager.time_series == [0.0]
+                @test length(manager.x_series) == 1
+                @test eltype(only(manager.x_series)) === Float64
+                @test only(manager.x_series) ≈ Float64.(tracker.particles.x)
+                @test isfile(joinpath(
+                    output_dir, "particles", "particles_trajectory.nc"))
+            end
+        end
+
+        @testset "automatic trajectory splitting is transactional" begin
+            initialize_particles!(model, box)
+            tracker = model.particles
+            particles = tracker.particles
+            empty!(particles.x_history)
+            empty!(particles.y_history)
+            empty!(particles.z_history)
+            empty!(particles.id_history)
+            empty!(particles.time_history)
+
+            mktempdir() do output_dir
+                base = joinpath(output_dir, "trajectory")
+                @test_throws ArgumentError QGYBJplus.UnifiedParticleAdvection.enable_auto_file_splitting!(
+                    tracker, base; max_points_per_file=0)
+                QGYBJplus.UnifiedParticleAdvection.enable_auto_file_splitting!(
+                    tracker, base; max_points_per_file=1)
+                particles.time = 0.0
+                QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+                particles.time = 1.0
+                QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+
+                first_segment = "$(base).nc"
+                @test isfile(first_segment)
+                if isfile(first_segment)
+                    NCDataset(first_segment, "r") do dataset
+                        @test dataset["time"][:] ≈ [0.0]
+                    end
+                end
+                @test particles.time_history ≈ [1.0]
+                @test tracker.output_file_sequence == 1
+            end
+
+            initialize_particles!(model, box)
+            tracker = model.particles
+            particles = tracker.particles
+            empty!(particles.x_history)
+            empty!(particles.y_history)
+            empty!(particles.z_history)
+            empty!(particles.id_history)
+            empty!(particles.time_history)
+            mktempdir() do output_dir
+                base = joinpath(output_dir, "missing", "trajectory")
+                QGYBJplus.UnifiedParticleAdvection.enable_auto_file_splitting!(
+                    tracker, base; max_points_per_file=1)
+                particles.time = 0.0
+                QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+                particles.time = 1.0
+
+                split_failed = try
+                    QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
+                    false
+                catch
+                    true
+                end
+
+                @test split_failed
+                @test particles.time_history ≈ [0.0]
+                @test tracker.output_file_sequence == 0
+            end
+        end
+
+        @testset "failed migration restores local particles" begin
+            initialize_particles!(model, box)
+            tracker = model.particles
+            particles = tracker.particles
+            particles.x .= 0.75 * tracker.Lx
+            original = (
+                x=copy(particles.x), y=copy(particles.y), z=copy(particles.z),
+                id=copy(particles.id), u=copy(particles.u),
+                v=copy(particles.v), w=copy(particles.w), np=particles.np,
+            )
+
+            # Deliberately make the tracker metadata inconsistent with the
+            # single-rank communicator. The MPI call itself remains local,
+            # while exchange must fail when it sees the missing second rank.
+            tracker.is_parallel = true
+            tracker.nprocs = 2
+            push!(tracker.send_buffers, Float64[])
+            push!(tracker.recv_buffers, Float64[])
+            push!(tracker.send_buffers_id, Int[])
+            push!(tracker.recv_buffers_id, Int[])
+
+            migration_failed = try
+                QGYBJplus.UnifiedParticleAdvection.migrate_particles!(tracker)
+                false
+            catch
+                true
+            end
+
+            @test migration_failed
+            @test particles.np == original.np
+            @test particles.x == original.x
+            @test particles.y == original.y
+            @test particles.z == original.z
+            @test particles.id == original.id
+            @test particles.u == original.u
+            @test particles.v == original.v
+            @test particles.w == original.w
+        end
+
         initialize_particles!(model, box)
         mktempdir() do output_dir
             particle_output = ParticleOutputManager(

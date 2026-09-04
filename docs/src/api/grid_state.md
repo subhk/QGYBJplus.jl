@@ -33,6 +33,11 @@ fields_copy = copy_fields(model.fields)
 ```
 
 `copy_fields` preserves distributed pencil layouts and copies every array.
+The `model.fields` container keeps its identity across time steps, so a cached
+`fields = model.fields` remains a live handle. Individual arrays are
+double-buffered and rotate; access `fields.q` (and the other properties) again
+after each step rather than caching `q = fields.q`. Use `copy_fields` when a
+fixed snapshot is needed.
 
 ## Distributed metadata
 

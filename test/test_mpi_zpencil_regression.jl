@@ -103,8 +103,10 @@ function serial_context(grid)
     fields = Q.ModelFields(Float64, (NZ, NX, NY))
     plans = Q.plan_transforms!(geometry)
     N² = Float64.(compute_stratification_profile(stratification(), grid))
+    N²_face = Float64.(Q._compute_stratification_face_profile(stratification(), grid))
     return (geometry=geometry, fields=fields, plans=plans,
-            N²=N², a=a_ell_from_N2(N², FPlane(f=FCOR)), mask=dealias_mask(grid))
+            N²=N², N²_face=N²_face,
+            a=a_ell_from_N2(N²_face, FPlane(f=FCOR)), mask=dealias_mask(grid))
 end
 
 scatter!(destination, global_field, model) =
@@ -177,7 +179,9 @@ end
                 copyto!(reference.fields.B, B_global)
                 Q.compute_ybj_vertical_velocity!(
                     reference.fields, reference.geometry, reference.plans;
-                    f=FCOR, N2=first(reference.N²), N2_profile=reference.N²)
+                    f=FCOR, N2=first(reference.N²),
+                    N2_profile=reference.N²,
+                    N2_face_profile=reference.N²_face)
                 @test relative_error(w_distributed, reference.fields.w) < TOLERANCE
             end
         finally
@@ -201,13 +205,17 @@ end
             if RANK == 0
                 copyto!(reference.fields.q, q_global)
                 copyto!(reference.fields.B, B_global)
-                Q.invert_q_to_psi!(reference.fields, reference.geometry;
-                                   a=reference.a)
+                options = Q.ETDModelOptions(model_physics(), model_numerics())
+                Q._invert_total_q_to_psi!(
+                    reference.fields, reference.geometry, options,
+                    reference.plans, reference.a, reference.mask)
                 Q.invert_B_to_A!(reference.fields, reference.geometry, reference.a)
                 Q.compute_total_velocities!(
                     reference.fields, reference.geometry;
                     plans=reference.plans, f=FCOR, N2=first(reference.N²),
-                    N2_profile=reference.N², dealias_mask=reference.mask)
+                    N2_profile=reference.N²,
+                    N2_face_profile=reference.N²_face,
+                    dealias_mask=reference.mask)
                 @test relative_error(u_distributed, reference.fields.u) < TOLERANCE
                 @test relative_error(v_distributed, reference.fields.v) < TOLERANCE
                 @test relative_error(w_distributed, reference.fields.w) < TOLERANCE
@@ -242,7 +250,8 @@ end
                                    options, reference.plans;
                                    Δt=1e-3, a=reference.a,
                                    dealias_mask=reference.mask,
-                                   N2_profile=reference.N²)
+                                   N2_profile=reference.N²,
+                                   N2_face_profile=reference.N²_face)
                 @test relative_error(q_distributed, next.q) < TOLERANCE
                 @test relative_error(B_distributed, next.B) < TOLERANCE
                 @test relative_error(u_distributed, next.u) < TOLERANCE

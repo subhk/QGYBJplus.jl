@@ -147,7 +147,7 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Compute geostrophic velocities from the spectral streamfunction ψ̂.
 
@@ -179,7 +179,10 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula instead of omega equation
-- `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
+- `N2_profile::Vector`: Optional cell-center N²(z) profile for pointwise
+  diagnostics and the omega-equation solve
+- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used when the
+  YBJ vertical-velocity path must recover A from B
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS (quadratic term).
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
@@ -196,17 +199,20 @@ Matches `compute_velo` in derivatives.f90.
 """
 function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
-    N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    N2_profile=nothing, N2_face_profile=nothing,
+    workspace=nothing, dealias_mask=nothing)
 
     return with_scratch(workspace) do
         _compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
-                             N2_profile, workspace, dealias_mask)
+                             N2_profile, N2_face_profile,
+                             workspace, dealias_mask)
     end
 end
 
 function _compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
-    N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    N2_profile=nothing, N2_face_profile=nothing,
+    workspace=nothing, dealias_mask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
 
     # Get underlying arrays (works for both Array and PencilArray)
@@ -269,7 +275,7 @@ function _compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
         if use_ybj_w
             # Use YBJ vertical velocity formulation (equation 4)
             compute_ybj_vertical_velocity!(S, G, plans; f, N2,
-                N2_profile, workspace)
+                N2_profile, N2_face_profile, workspace)
         else
             # Use standard QG omega equation with dealiasing
             # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
@@ -509,7 +515,7 @@ Wave-induced vertical motion from the YBJ+ formulation.
 =#
 
 """
-    compute_ybj_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
+    compute_ybj_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, skip_inversion=false, t=nothing)
 
 Compute vertical velocity from near-inertial wave envelope using YBJ+ formulation.
 
@@ -557,7 +563,10 @@ This represents vertical motion induced by:
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
-- `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
+- `N2_profile::Vector`: Optional cell-center N²(z) profile used by the
+  pointwise factor in the diagnosed velocity (default: constant N² = 1)
+- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used to recover
+  A from B. It falls back to `N2_profile` for backward compatibility.
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
   Use this when A/C were already computed in the timestep with the correct stratification.
@@ -570,31 +579,34 @@ Matches YBJ vertical velocity computation in the Fortran implementation.
 
 # Important Note
 When `skip_inversion=false` (default), this function re-inverts B→A using the provided
-N2_profile (or constant N² fallback). If the timestep computed A/C with a different
+N2_face_profile (or the legacy `N2_profile`/constant fallback). If the timestep computed A/C with a different
 stratification, this will give inconsistent results. For runs with nonuniform N²,
 either:
 1. Pass `skip_inversion=true` and ensure A/C are already computed correctly
-2. Pass the exact same N2_profile that was used in the timestep
+2. Pass the exact same `N2_face_profile` that was used in the timestep
 
 # References
 - Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (2.10)
 """
 function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
-    f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
+    f::Real=1.0, N2::Real=1.0, N2_profile=nothing, N2_face_profile=nothing,
     workspace=nothing, skip_inversion=false, t=nothing)
     # Warn about potential stratification inconsistency
     # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
     # This can give inconsistent results if the simulation uses variable stratification.
-    if !skip_inversion && N2_profile === nothing
+    if !skip_inversion && N2_face_profile === nothing && N2_profile === nothing
         @warn "compute_ybj_vertical_velocity!: Re-inverting B→A with constant N² (no N2_profile provided). " *
-              "If your simulation uses variable stratification, pass N2_profile or use skip_inversion=true " *
+              "If your simulation uses variable stratification, pass N2_face_profile or use skip_inversion=true " *
               "to avoid inconsistent vertical velocity." maxlog=1
     end
 
-    profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
+    center_profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
+    face_profile = _coerce_N2_profile(
+        N2_face_profile === nothing ? N2_profile : N2_face_profile,
+        N2, G.nz, G)
     with_scratch(workspace) do
-        _compute_ybj_vertical_velocity!(S, G, plans, f, profile,
-            workspace, skip_inversion, t)
+        _compute_ybj_vertical_velocity!(S, G, plans, f, center_profile,
+            face_profile, workspace, skip_inversion, t)
     end
     return S
 end
@@ -607,7 +619,7 @@ end
 # The physical pencil always keeps z local, so the physical loop below can use
 # its own `k` directly.
 function _compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, workspace, skip_inversion, t)
+    f, N2_profile, N2_face_profile, workspace, skip_inversion, t)
     nz = G.nz
 
     # Step 1: Recover A from B = L⁺A using the centralized YBJ+ inversion,
@@ -622,7 +634,7 @@ function _compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, pla
         a_vec = similar(G.z)
         f_sq = f^2
         @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_profile[k]
+            a_vec[k] = f_sq / N2_face_profile[k]
         end
         invert_B_to_A!(S, G, a_vec; workspace)
     end
@@ -707,7 +719,7 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+    compute_total_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
 
 Compute the TOTAL velocity field for Lagrangian particle advection.
 
@@ -757,7 +769,10 @@ For Lagrangian particle advection, always use this function rather than
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
 - `compute_w::Bool`: If true, compute vertical velocity
 - `use_ybj_w::Bool`: If true, use YBJ formula for w
-- `N2_profile::Vector`: Optional N²(z) profile for vertical velocity computation
+- `N2_profile::Vector`: Optional cell-center N²(z) profile for pointwise
+  velocity terms and the omega-equation solve
+- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used if the YBJ
+  vertical-velocity path recovers A from B
 - `workspace`: Optional pre-allocated workspace for 2D decomposition
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS
 - `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
@@ -767,11 +782,12 @@ Modified ModelFields with total velocity fields u, v, w.
 """
 function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
     f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
-    N2_profile=nothing, workspace=nothing, dealias_mask=nothing,
+    N2_profile=nothing, N2_face_profile=nothing,
+    workspace=nothing, dealias_mask=nothing,
     include_wave_velocity=true)
     # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
     compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
-        N2_profile, workspace, dealias_mask)
+        N2_profile, N2_face_profile, workspace, dealias_mask)
 
     # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
     # Pass N2_profile for the second term in the Jacobian (f²/N²)
@@ -966,7 +982,7 @@ function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=not
     # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz} where M = (f₀²/N²)A_z
     # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
 
-    # Compute A_{zz} = ∂²A/∂z² using finite differences on A_z.
+    # Compute A_{zz} = ∂(A_z)/∂z using finite differences on A_z.
     # This couples neighbouring vertical levels, so it has to run with z fully
     # local: on the spectral pencil z is distributed whenever px > 1, and the
     # boundary stencils below would otherwise be applied at every rank seam.
@@ -979,17 +995,13 @@ function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=not
         Az_arr = parent(Az)
         nz_z, nx_z, ny_z = size(Az_arr)
         @inbounds for j_local in 1:ny_z, i_local in 1:nx_z
-            for k in 2:(nz_z-1)
-                # Centered difference for A_{zz}
-                Azz_arr[k, i_local, j_local] = (Az_arr[k+1, i_local, j_local] - 2*Az_arr[k, i_local, j_local] + Az_arr[k-1, i_local, j_local]) / (Δz^2)
-            end
-            # One-sided at boundaries (second-order forward/backward)
-            if nz_z >= 3
-                Azz_arr[1, i_local, j_local] = (Az_arr[3, i_local, j_local] - 2*Az_arr[2, i_local, j_local] + Az_arr[1, i_local, j_local]) / (Δz^2)
-                Azz_arr[nz_z, i_local, j_local] = (Az_arr[nz_z, i_local, j_local] - 2*Az_arr[nz_z-1, i_local, j_local] + Az_arr[nz_z-2, i_local, j_local]) / (Δz^2)
-            elseif nz_z == 2
-                Azz_arr[1, i_local, j_local] = 0.0
-                Azz_arr[2, i_local, j_local] = 0.0
+            if nz_z >= 2
+                # C[k] = A_z is the upper-face flux for cell k. The bottom
+                # Neumann flux is implicit; C[nz] stores the top value (zero).
+                Azz_arr[1, i_local, j_local] = Az_arr[1, i_local, j_local] / Δz
+                for k in 2:nz_z
+                    Azz_arr[k, i_local, j_local] = (Az_arr[k, i_local, j_local] - Az_arr[k-1, i_local, j_local]) / Δz
+                end
             else
                 Azz_arr[1, i_local, j_local] = 0.0
             end

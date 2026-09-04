@@ -10,11 +10,21 @@ Horizontal derivatives are pseudo-spectral. Linear derivatives multiply
 Fourier coefficients by `im*kx` or `im*ky`; nonlinear products are evaluated
 in physical space and transformed back.
 
-The radial two-thirds mask retains indices satisfying
+The radial two-thirds mask retains integer mode indices satisfying
 
 ```math
-i_x^2 + i_y^2 \leq \left\lfloor\frac{\min(n_x,n_y)}{3}\right\rfloor^2.
+\begin{aligned}
+i_x^2 + i_y^2 &< K^2, && 3 \mid \min(n_x,n_y), \\
+i_x^2 + i_y^2 &\leq K^2, && \text{otherwise},
+\end{aligned}
+\qquad
+K = \left\lfloor\frac{\min(n_x,n_y)}{3}\right\rfloor.
 ```
+
+The strict inequality excludes the exact ``|k|=N/3`` boundary when the
+limiting dimension is divisible by three. Retaining that boundary in an
+unpadded quadratic product would allow two cutoff modes to alias onto the
+opposite retained boundary; modes inside the radial disk remain available.
 
 ```julia
 mask = dealias_mask(model.grid)
@@ -32,8 +42,11 @@ vertical derivatives and the variable-coefficient operator
 ```
 
 At every horizontal Fourier mode, elliptic inversions reduce to a tridiagonal
-vertical solve. Under MPI the runtime transposes between the spectral output
-pencil and a pencil with the full vertical column local.
+vertical solve. The pointwise `N²` profile is sampled at cell centers, while
+the conservative flux uses
+`a_ell[k] = f² / N²(grid.z_faces[k + 1])` at each cell's upper face. Under MPI
+the runtime transposes between the spectral output pencil and a pencil with the
+full vertical column local.
 
 ## ETD-RK2
 
@@ -56,9 +69,11 @@ u_{n+1} &= e^{hL}u_n + h\varphi_1(hL)N(u_n)
 The diagonal linear term is horizontal hyperdiffusion,
 
 ```math
-\lambda = \nu_1(k_x^2+k_y^2)^{p_1}
-          + \nu_2(k_x^2+k_y^2)^{p_2}.
+\lambda = \nu_1(k_x^2+k_y^2)^{p_1/2}
+          + \nu_2(k_x^2+k_y^2)^{p_2/2}.
 ```
+
+Here each ``p_i`` is the configured total (positive, even) derivative order.
 
 The implementation evaluates `exp(-λh)`, `hφ₁(-λh)`, and `hφ₂(-λh)` with
 cancellation-safe series near zero. Advection, refraction, dispersion, and

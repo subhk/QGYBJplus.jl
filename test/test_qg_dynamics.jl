@@ -134,6 +134,7 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
                 context.grid, options, context.plans;
                 a=context.a, dealias_mask=context.mask,
                 workspace=context.workspace, N2_profile=context.N2,
+                N2_face_profile=context.N2_face,
                 timestep_workspace=nothing)
 
             # Independent evaluation of the advection term on the same state.
@@ -148,6 +149,46 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
             # minus the Jacobian.
             @test peak(parent(tendency_q) .+ parent(jacobian)) /
                   peak(parent(jacobian)) < 1e-12
+        finally
+            finalize_model!(model)
+        end
+    end
+
+    @testset "the Jacobian sign matches an independent manufactured tendency" begin
+        barotropic_grid = RectilinearGrid(
+            size=(16, 16, 1), extent=(2π, 2π, 1.0))
+        model = qg_model(barotropic_grid; dissipation=Inviscid())
+        try
+            amplitude = 0.3
+            # For ψ = sin(x)sin(y) + a cos(2x), q = ∇²ψ and direct
+            # differentiation gives -J(ψ,q) = 4a sin(x)sin(2x)cos(y).
+            set!(model;
+                ψ=(x, y, z) -> sin(x) * sin(y) + amplitude * cos(2x),
+                verbose=false)
+            context = Q._operator_context(model)
+            options = Q.ETDModelOptions(model.physics, model.numerics)
+            tendency_q = similar(model.fields.q)
+            tendency_B = similar(model.fields.B)
+            Q._compute_etdrk2_rhs!(
+                tendency_q, tendency_B, model.fields,
+                context.grid, options, context.plans;
+                a=context.a,
+                dealias_mask=context.mask,
+                workspace=context.workspace,
+                N2_profile=context.N2,
+                N2_face_profile=context.N2_face,
+            )
+
+            physical = Q.allocate_fft_backward_dst(
+                tendency_q, model.runtime)
+            Q.fft_backward!(physical, tendency_q, context.plans)
+            expected = [
+                4amplitude * sin(barotropic_grid.x[i]) *
+                sin(2barotropic_grid.x[i]) * cos(barotropic_grid.y[j])
+                for k in 1:1, i in 1:16, j in 1:16
+            ]
+            @test real.(parent(physical)) ≈ expected atol=2e-13
+            @test maximum(abs, imag.(parent(physical))) < 2e-13
         finally
             finalize_model!(model)
         end
@@ -168,6 +209,7 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
                 context.grid, options, context.plans;
                 a=context.a, dealias_mask=context.mask,
                 workspace=context.workspace, N2_profile=context.N2,
+                N2_face_profile=context.N2_face,
                 timestep_workspace=nothing)
             reference_tendency = copy(parent(reference_tendency))
         finally
@@ -200,6 +242,20 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
         @test all(>(0), errors)
         @test 3.4 < errors[1] / errors[2] < 4.6
         @test 3.4 < errors[2] / errors[3] < 4.6
+    end
+
+    @testset "nonlinear QG plus horizontal hyperdiffusion remains second order" begin
+        # This exercises the actual semilinear split: the Jacobian is explicit
+        # while horizontal diffusion is carried by the exponential factor.
+        horizon = 0.1
+        coarse = evolved_q(grid, two_modes;
+            steps=10, Δt=horizon / 10, coefficient=0.02, order=2)
+        medium = evolved_q(grid, two_modes;
+            steps=20, Δt=horizon / 20, coefficient=0.02, order=2)
+        fine = evolved_q(grid, two_modes;
+            steps=40, Δt=horizon / 40, coefficient=0.02, order=2)
+        ratio = peak(coarse .- medium) / peak(medium .- fine)
+        @test 3.5 < ratio < 4.5
     end
 
     @testset "inviscid nonlinear stepping nearly conserves enstrophy" begin

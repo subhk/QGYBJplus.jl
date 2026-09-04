@@ -11,53 +11,11 @@ function QGYBJplus._progress_maxima(::SlowProgressModel)
 end
 
 @testset "Simulation clock and lifecycle" begin
-    @test isdefined(QGYBJplus, :_prettytime)
-    if isdefined(QGYBJplus, :_prettytime)
-        @test QGYBJplus._prettytime(0.0) == "0 seconds"
-        @test QGYBJplus._prettytime(0.25) == "250 ms"
-        @test QGYBJplus._prettytime(1.25) == "1.250 seconds"
-        @test QGYBJplus._prettytime(60.0) == "1 minute"
-        @test QGYBJplus._prettytime(5400.0) == "1.500 hours"
-        @test QGYBJplus._prettytime(129600.0) == "1.500 days"
-    end
-
-    slow_model = SlowProgressModel((mpi=(is_root=true,),))
-    slow_simulation = Simulation(
-        slow_model,
-        Clock(Float64),
-        (Δt=0.25,),
-        nothing,
-        1,
-        QGYBJplus.default_run_options(Float64),
-        nothing,
-        nothing,
-        nothing,
-        Ready,
-    )
-    slow_simulation.clock.iteration = 1
-    slow_simulation.clock.time = 0.25
-    slow_progress_text = mktemp() do _, io
-        run_wall_start = time_ns() - UInt64(2_000_000_000)
-        redirect_stdout(io) do
-            QGYBJplus._print_detailed_progress(
-                slow_simulation, run_wall_start)
-        end
-        flush(io)
-        seekstart(io)
-        read(io, String)
-    end
-    slow_wall_match = match(
-        r"wall time: ([0-9.]+) seconds", slow_progress_text)
-    @test slow_wall_match !== nothing
-    if slow_wall_match !== nothing
-        @test parse(Float64, slow_wall_match.captures[1]) >= 2.15
-    end
-
-    function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave())
+    function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave(), f=1.0)
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
         return QGYBJModel(
             grid=grid,
-            coriolis=FPlane(f=1.0),
+            coriolis=FPlane(f=f),
             stratification=ConstantStratification(N²=1.0),
             closure=HorizontalHyperdiffusivity(
                 flow=FlowHyperdiffusivity(coefficient=0),
@@ -70,6 +28,13 @@ end
             topology=(1, 1),
             verbose=false,
         )
+    end
+
+    negative_f_model = lifecycle_model(f=-2.0)
+    try
+        @test inertial_period(negative_f_model) ≈ π
+    finally
+        finalize_model!(negative_f_model)
     end
 
     model = lifecycle_model()

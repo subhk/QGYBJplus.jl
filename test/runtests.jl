@@ -10,6 +10,7 @@ MPI.Initialized() || MPI.Init()
 
 try
     include("test_core_components.jl")
+    include("test_stratification.jl")
     include("test_docs_api_consistency.jl")
     include("test_model_fields.jl")
     include("test_core_architecture.jl")

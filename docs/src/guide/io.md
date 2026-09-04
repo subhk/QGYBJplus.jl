@@ -43,13 +43,24 @@ The directory contains `wave_KE.nc`, `wave_PE.nc`, `wave_CE.nc`,
 independent location with
 `EnergyDiagnosticsOutput(path="energies", schedule=TimeInterval(600.0))`.
 The summary file preserves the component series together with
-`total_wave_energy`, `total_flow_energy`, and `total_energy`.
+`total_wave_energy`, `total_flow_energy`, `coupled_energy`, and `total_energy`.
+`coupled_energy = total_flow_energy + wave_PE + wave_CE` is the
+wave--mean-feedback conservation diagnostic of Asselin & Young (2019), equation
+(3.7), for the ideal inviscid coupled system; it excludes the informational
+`wave_KE` series. The existing
+`total_energy` remains the sum of every reported flow and wave component.
 
 ## Snapshot schema
 
-Every file contains `x`, `y`, `z`, `time`, iteration metadata, spectral
-`q_hat_real`, `q_hat_imag`, `B_hat_real`, and `B_hat_imag`, plus `N2` and
-`a_ell`. The `Lx`, `Ly`, and `Lz` attributes record the domain extent.
+Every file contains `x`, `y`, `z`, `z_face`, `time`, iteration metadata,
+spectral `q_hat_real`, `q_hat_imag`, `B_hat_real`, and `B_hat_imag`, plus
+`N2`, `N2_face`, and `a_ell`. `N2` is sampled at cell centers on `z`;
+`N2_face` and `a_ell = f0^2 / N2_face` are sampled at each cell's upper face
+on `z_face = grid.z_faces[2:end]`. The `Lx`, `Ly`, and `Lz` attributes record
+the domain extent.
+`feedback_mode` records the configured feedback component, while
+`generalized_pv` distinguishes balanced-only PV from total PV containing the
+wave contribution.
 
 Selecting `:ψ` adds physical `psi`. Selecting `:waves` adds physical
 `A_real`, `A_imag`, `LA_real`, and `LA_imag`, where
@@ -105,9 +116,10 @@ restore!(model, "output/state0011.nc")
 simulation = Simulation(model; Δt=10.0, stop_iteration=100)
 ```
 
-The restart dimensions must match `model.grid.size`, and the formulation must
-match the model that wrote the file. Diagnostic arrays are reconstructed after
-the distributed scatter.
+The restart dimensions, wave formulation, and generalized-PV convention must
+match the receiving model. New snapshots validate these attributes before
+loading; older snapshots without the metadata remain readable. Diagnostic
+arrays are reconstructed after the distributed scatter.
 
 ## Failure behavior
 

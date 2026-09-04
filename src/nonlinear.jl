@@ -92,10 +92,15 @@ The Jacobian conserves both φ and χ integrals (energy and enstrophy).
 
 function _component_int_factor(kₓ::Real, kᵧ::Real, Δt::Real, closure)
     kₕ² = kₓ^2 + kᵧ^2
-    return Δt * sum(
-        coefficient * kₕ²^(order ÷ 2)
-        for (coefficient, order) in zip(closure.coefficients, closure.orders)
-    )
+    T = promote_type(typeof(kₕ²), eltype(closure.coefficients))
+    rate = zero(T)
+    for (coefficient, order) in zip(closure.coefficients, closure.orders)
+        # Besides saving work for disabled closure terms, skipping before the
+        # power prevents 0 * Inf from turning a legitimate zero rate into NaN.
+        iszero(coefficient) && continue
+        rate += coefficient * kₕ²^(order ÷ 2)
+    end
+    return Δt * rate
 end
 
 """
@@ -874,17 +879,18 @@ end
 
 Compute wave feedback directly from complex B without spectral BR/BI splitting.
 
-Implements the wave part of the "XV⁺" potential vorticity, Asselin & Young
-(2019) equation (3.5):
+For `YBJPlus`, this implements the wave part of the "XV⁺" potential
+vorticity, Asselin & Young (2019) equation (3.5):
 
     q = ΔΨ + LΨ + (i/2f) J(L⁺A*, L⁺A) + (1/4f) Δ|L⁺A|²
 
-The argument is `B = L⁺A`, **not** the backrotated velocity `LA`. That is
-deliberate, not an oversight: A&Y obtain (3.5) from Xie & Vanneste's PV by the
-substitution L ↦ L⁺, and it is precisely that substitution which gives the
-coupled system (1.4), (3.4), (3.5) its nonlinear "coupled energy" conservation
-law, A&Y equations (3.6)–(3.7). Passing `LA` here would reproduce the original
-XV potential vorticity and break that conservation law.
+The caller supplies the formulation's prognostic envelope: `B = L⁺A` for
+`YBJPlus`, or `B = LA` for the original `YBJ` formulation. A&Y obtain (3.5)
+from Xie & Vanneste's PV by the substitution L ↦ L⁺, and it is precisely
+that substitution which gives the YBJ⁺ coupled system (1.4), (3.4), (3.5)
+its nonlinear "coupled energy" conservation law, A&Y equations (3.6)–(3.7).
+Substituting `LA` for the YBJ⁺ state would instead recover the original XV
+potential vorticity and lose that YBJ⁺ conservation law.
 
 Note the deliberate asymmetry with the wave kinetic energy, which *does* use
 `LA` — A&Y equation (4.7) and the remark following it: "to define WKE for YBJ⁺
@@ -1128,9 +1134,9 @@ Note: Uses isotropic form `(kx² + ky²)^n` for proper damping of diagonal modes
 
 # Usage in Time Stepping
 ```julia
-# After computing tendency
-factor = exp(-int_factor(kx, ky, Δt, closure))
-q_new = factor * q_tendency
+# Build the scalar damping exponent used by the ETD-RK2 coefficient table.
+lambda_dt = int_factor(kx, ky, Δt, closure)
+E, hφ1, hφ2 = _etd_coefficients(lambda_dt, Δt)
 ```
 
 # Fortran Correspondence
@@ -1140,7 +1146,7 @@ This matches the integrating factor computation in the main loop of main_waqg.f9
 ```julia
 # Get integrating factor for wavenumber (3, 4)
 lambda_dt = int_factor(3.0, 4.0, Δt, closure)
-factor = exp(-lambda_dt)  # Multiply solution by this
+factor = exp(-lambda_dt)
 ```
 """
 function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,

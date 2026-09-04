@@ -39,6 +39,9 @@ q^w = \frac{i}{2f_0}J(B^*,B)
     + \frac{1}{4f_0}\nabla_h^2|B|^2.
 ```
 
+Here `YBJPlus()` supplies ``B=L^+A`` (the XV``^+`` PV), while `YBJ()`
+supplies ``B=LA`` (the original XV PV).
+
 Each ETD-RK2 stage diagnoses ``q^w`` from its stage-local complex wave
 field. Streamfunction inversion uses ``q-q^w``, after which the solver
 restores the prognostic total `q`.

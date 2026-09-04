@@ -327,15 +327,7 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
         throw(ArgumentError("method must be :function or :random"))
     end
 
-    if pv_method in (:qg, :balanced)
-        coefficients = runtime.coefficients
-        add_balanced_component!(fields, grid, coefficients.a_ell;
-                                workspace=runtime.workspace)
-    elseif pv_method in (:barotropic, :asselin)
-        compute_barotropic_q_from_psi!(fields.q, fields.psi, grid)
-    elseif pv_method !== :none
-        throw(ArgumentError("pv_method must be :qg, :barotropic, or :none"))
-    end
+    _rebuild_total_q_from_psi!(fields, model, pv_method)
     compute_velocities!(model; compute_w=false)
     return owner
 end
@@ -346,6 +338,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     surface_depth::Real,
     uniform::Bool=true,
     profile::Symbol=:gaussian,
+    pv_method::Symbol=:qg,
     verbose::Bool=true)
 
     surface_depth > 0 ||
@@ -376,14 +369,16 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
         B_array[k_local, :, :] .= complex(T(amplitude) * vertical_profile)
     end
     fft_forward!(fields.B, B_phys, plans)
-    _refresh_wave_diagnostics!(model)
+    _refresh_wave_diagnostics!(model;
+        rebuild_total_q=true, pv_method)
     return owner
 end
 
 function set_exponential_surface_waves!(owner::Union{QGYBJModel, Simulation};
-    amplitude::Real, efold_depth::Real, uniform::Bool=true, verbose::Bool=true)
+    amplitude::Real, efold_depth::Real, uniform::Bool=true,
+    pv_method::Symbol=:qg, verbose::Bool=true)
     return set_surface_waves!(owner; amplitude, surface_depth=efold_depth,
-                              uniform, profile=:exponential, verbose)
+                              uniform, profile=:exponential, pv_method, verbose)
 end
 
 _first_notnothing(values...) = begin
@@ -443,8 +438,9 @@ function _assign_initial_field!(destination, model::QGYBJModel,
     return destination
 end
 
-function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
-    fields = model.fields
+function _rebuild_total_q_from_psi!(fields::ModelFields,
+    model::QGYBJModel, pv_method::Symbol)
+
     runtime = model.runtime
     if pv_method in (:qg, :balanced)
         coefficients = runtime.coefficients
@@ -455,16 +451,36 @@ function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
     elseif pv_method !== :none
         throw(ArgumentError("pv_method must be :qg, :barotropic, or :none"))
     end
+
+    pv_method === :none && return fields
+
+    options = ETDModelOptions(model.physics, model.numerics)
+    if _wave_feedback_enabled(options)
+        with_scratch(runtime.workspace) do
+            qwave = scratch_like(runtime.workspace, fields.q)
+            compute_qw_complex!(qwave, fields.B, runtime.geometry,
+                runtime.plans; f=options.f, Lmask=runtime.dealias_mask,
+                workspace=runtime.workspace)
+            parent(fields.q) .+= parent(qwave)
+        end
+    end
+    return fields
+end
+
+function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
+    _rebuild_total_q_from_psi!(model.fields, model, pv_method)
     compute_velocities!(model; compute_w=false)
     return model
 end
 
 function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
-    model::QGYBJModel)
+    model::QGYBJModel; rebuild_total_q::Bool=false,
+    pv_method::Symbol=:qg)
 
     context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
     mask = context.mask
+    recovery_mask = _linear(options) ? nothing : mask
 
     # The normal-YBJ solvability constraint divides by kₕ², so `sumB!` discards
     # the kₕ = 0 column. A horizontally uniform envelope — which is exactly what
@@ -473,7 +489,7 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
     comm = model.runtime.mpi.comm
     before = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
     sumB!(fields.B, context.grid;
-          Lmask=mask, workspace=context.workspace)
+          Lmask=recovery_mask, workspace=context.workspace)
     after = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
     if before > 0 && after <= eps(before) && model.runtime.mpi.is_root
         @warn "YBJ() discarded the entire wave field: it is horizontally " *
@@ -483,6 +499,9 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
               "formulation=YBJPlus(), which retains kₕ = 0." maxlog=1
 
     end
+
+    rebuild_total_q && _wave_feedback_enabled(options) &&
+        _rebuild_total_q_from_psi!(fields, model, pv_method)
 
     _diagnose_flow!(fields, context.grid, options, context.plans,
         context.a, mask;
@@ -504,26 +523,31 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
         arrays.nBk, arrays.rBk;
         Lmask=mask, workspace=context.workspace)
     compute_A!(fields.A, fields.C, fields.B, sigma, context.grid;
-        f=context.f, Lmask=mask, workspace=context.workspace,
-        N2_profile=context.N2)
+        f=context.f, Lmask=recovery_mask, workspace=context.workspace,
+        N2_profile=context.N2_face)
     return fields
 end
 
 function _refresh_wave_diagnostics!(fields::ModelFields,
-    model::QGYBJModel)
+    model::QGYBJModel; rebuild_total_q::Bool=false,
+    pv_method::Symbol=:qg)
 
     if model.physics.formulation isa YBJ
-        _refresh_normal_ybj_diagnostics!(fields, model)
+        _refresh_normal_ybj_diagnostics!(fields, model;
+            rebuild_total_q, pv_method)
     else
         context = _operator_context(model)
+        options = ETDModelOptions(model.physics, model.numerics)
+        rebuild_total_q && _wave_feedback_enabled(options) &&
+            _rebuild_total_q_from_psi!(fields, model, pv_method)
         invert_B_to_A!(fields, context.grid, context.a;
             workspace=context.workspace)
     end
     return fields
 end
 
-function _refresh_wave_diagnostics!(model::QGYBJModel)
-    _refresh_wave_diagnostics!(model.fields, model)
+function _refresh_wave_diagnostics!(model::QGYBJModel; kwargs...)
+    _refresh_wave_diagnostics!(model.fields, model; kwargs...)
     return model
 end
 
@@ -559,10 +583,11 @@ function set!(owner::Union{QGYBJModel, Simulation};
         if wave isa SurfaceWave
             set_surface_waves!(owner; amplitude=wave.amplitude,
                                surface_depth=wave.scale,
-                               profile=wave.profile, verbose)
+                               profile=wave.profile, pv_method, verbose)
         elseif wave isa AbstractArray || wave isa FieldArray || wave isa FieldFile
             _assign_initial_field!(model.fields.B, model, wave)
-            _refresh_wave_diagnostics!(model)
+            _refresh_wave_diagnostics!(model;
+                rebuild_total_q=true, pv_method)
         else
             throw(ArgumentError(
                 "waves/B must be a SurfaceWave, array, FieldArray, or FieldFile"))
@@ -576,7 +601,8 @@ end
 function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real, kx::Int, ky::Int, sigma_k::Real,
     z_center::Union{Real, Nothing}=nothing,
-    z_width::Union{Real, Nothing}=nothing)
+    z_width::Union{Real, Nothing}=nothing,
+    pv_method::Symbol=:qg)
 
     _assert_mutable(owner)
     model = _model(owner)
@@ -592,7 +618,8 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
                                 z_center=z_c, z_width=z_w)
     model.fields.B .= scatter_from_root(packet, grid, runtime.mpi;
                                         plans=runtime.plans)
-    _refresh_wave_diagnostics!(model)
+    _refresh_wave_diagnostics!(model;
+        rebuild_total_q=true, pv_method)
     return owner
 end
 
@@ -752,7 +779,7 @@ end
 finalize_simulation!(model::QGYBJModel) = finalize_model!(model)
 
 get_time(simulation::Simulation, step::Int) = step * _time_step(simulation)
-get_inertial_period(model::QGYBJModel) = 2π / model.physics.coriolis.f
+get_inertial_period(model::QGYBJModel) = 2π / abs(model.physics.coriolis.f)
 get_inertial_period(simulation::Simulation) = get_inertial_period(simulation.model)
 inertial_period(model::QGYBJModel) = get_inertial_period(model)
 inertial_period(simulation::Simulation) = get_inertial_period(simulation)
