@@ -220,3 +220,26 @@ end
     @test_throws DimensionMismatch psi_after(ζ=zeros(3, 16, 16))
     @test_throws ArgumentError psi_after(ψ=ψ_exact, ζ=ζ_exact)
 end
+
+@testset "Waves are measured from the top of a shifted domain" begin
+    # The same domain with its lid at z = 0 or at z = -100 m must get the
+    # same wave profiles below the lid.
+    profiles = map(((-1000.0, 0.0), (-1100.0, -100.0))) do z_bounds
+        grid = RectilinearGrid(size=(4, 4, 16), x=(0.0, 1e4), y=(0.0, 1e4), z=z_bounds)
+        model = QGYBJModel(; grid, verbose=false)
+        try
+            set!(model; waves=SurfaceWave(amplitude=0.1, scale=200.0))
+            surface = Array(model.fields.B[:, 1, 1])
+            set_wave_packet!(model; amplitude=0.1, kx=1, ky=0, sigma_k=0.5,
+                             z_center=300.0, z_width=100.0)
+            # The packet's phases are random; its envelope is not.
+            (surface, abs.(Array(model.fields.B[:, 2, 1])))
+        finally
+            finalize_model!(model)
+        end
+    end
+    @test profiles[1][1] ≈ profiles[2][1]
+    @test profiles[1][2] ≈ profiles[2][2]
+    # Levels lie (16 - k + 1/2) 62.5 m below the lid: 281 m is nearest 300 m.
+    @test argmax(profiles[2][2]) == 12
+end

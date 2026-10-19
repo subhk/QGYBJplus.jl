@@ -60,13 +60,15 @@ Creates a dedicated `particles/` subdirectory for organized output.
 
 """
     ParticleOutputManager(output_dir; save_interval_iter=0,
-                          save_interval_time=0.1,
+                          save_interval_time=0,
                           output_mode=:trajectory,
                           file_prefix="particles",
                           overwrite=false)
 
-Schedule particle NetCDF output under `output_dir/particles`. Set the unused
-iteration- or time-based interval to zero. `output_mode` may be:
+Schedule particle NetCDF output under `output_dir/particles`, every
+`save_interval_iter` iterations or every `save_interval_time` in the model's
+time units: give one of them; the iteration interval wins when both are
+positive. `output_mode` may be:
 
 - `:trajectory`: one file, `<prefix>_trajectory.nc`, written when the run ends;
 - `:streaming`: one file, `<prefix>_stream.nc`, extended at every save, so a
@@ -118,16 +120,24 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     global_particle_count::Int
     closed::Bool
 
-    function ParticleOutputManager{T}(output_dir::String;
-                                      save_interval_iter::Int=0,
-                                      save_interval_time::T=T(0.1),
+    function ParticleOutputManager{T}(output_dir::AbstractString;
+                                      save_interval_iter::Integer=0,
+                                      save_interval_time::Real=0,
                                       output_mode::Symbol=:trajectory,
-                                      file_prefix::String="particles",
+                                      file_prefix::AbstractString="particles",
                                       overwrite::Bool=false) where T
         save_interval_iter >= 0 ||
             throw(ArgumentError("save_interval_iter must be non-negative"))
-        isfinite(save_interval_time) && save_interval_time >= zero(T) ||
+        isfinite(save_interval_time) && save_interval_time >= 0 ||
             throw(ArgumentError("save_interval_time must be finite and non-negative"))
+        # No default schedule suits every run: a time interval means seconds
+        # in a dimensional run and model units in a nondimensional one, and
+        # saving every step can exhaust memory in :trajectory mode.
+        save_interval_iter > 0 || save_interval_time > 0 ||
+            throw(ArgumentError("give a positive save_interval_iter or save_interval_time"))
+        output_dir = String(output_dir)
+        file_prefix = String(file_prefix)
+        save_interval_time = T(save_interval_time)
         output_mode in (:snapshots, :trajectory, :streaming) ||
             throw(ArgumentError(
                 "output_mode must be :snapshots, :trajectory, or :streaming"))
@@ -166,7 +176,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
 end
 
 # Convenience constructor
-ParticleOutputManager(output_dir::String; kwargs...) =
+ParticleOutputManager(output_dir::AbstractString; kwargs...) =
     ParticleOutputManager{Float64}(output_dir; kwargs...)
 
 """

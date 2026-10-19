@@ -156,3 +156,30 @@ using QGYBJplus
     @test_throws InvalidStateException set!(
         simulation; waves=SurfaceWave(amplitude=0.1, scale=0.2))
 end
+
+@testset "A run whose output setup fails can be retried" begin
+    mktempdir() do directory
+        grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+        build() = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+                             stratification=ConstantStratification(N²=1.0),
+                             verbose=false)
+        output(path) = NetCDFOutput(path=joinpath(directory, path),
+                                    schedule=IterationInterval(1))
+        first_run = Simulation(build(); Δt=0.1, stop_iteration=1,
+                               output=output("taken"), diagnostics=false, verbose=false)
+        run!(first_run)
+        finalize_simulation!(first_run)
+
+        # The second run finds the first one's files: nothing is written, so
+        # it stays ready and runs once given another path.
+        simulation = Simulation(build(); Δt=0.1, stop_iteration=1,
+                                output=output("taken"), diagnostics=false, verbose=false)
+        @test_throws ArgumentError run!(simulation)
+        @test simulation.state == Ready
+        @test simulation.output_manager === nothing
+        run!(simulation; output=output("fresh"))
+        @test simulation.state == Stopped
+        @test isfile(joinpath(directory, "fresh", "state0002.nc"))
+        finalize_simulation!(simulation)
+    end
+end

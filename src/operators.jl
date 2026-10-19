@@ -907,12 +907,20 @@ end
     end
 end
 
+# `u`, `v`, and `w` are the velocities corrected in place: those of `S` by
+# default, or other arrays of the same size, such as a particle tracker's
+# snapshot, so that the model's own velocity keeps the Lagrangian mean.
 function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing,
     plans=nothing, f::Real=1.0, N2::Real=1.0, compute_w=true,
     include_wave_velocity=true, N2_profile=nothing, N2_face_profile=nothing,
-    formulation=YBJPlus(), workspace=nothing, vertical_excursions::Bool=true)
+    formulation=YBJPlus(), workspace=nothing, vertical_excursions::Bool=true,
+    u=S.u, v=S.v, w=S.w)
     nz = G.nz
-    backend = get_backend(S.u)
+    backend = get_backend(u)
+    for velocity in (u, v, w)
+        size(velocity) == size(S.u) || throw(DimensionMismatch(
+            "velocity arrays must have the size $(size(S.u)) of the fields"))
+    end
     if plans === nothing
         plans = plan_transforms!(G)
     end
@@ -941,8 +949,8 @@ function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing
             fft_backward!(buffer, buffer, plans)
         end
 
-        launch!(_stokes_drift_kernel!, backend, size(S.u),
-                S.u, S.v, S.w, LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ,
+        launch!(_stokes_drift_kernel!, backend, size(u),
+                u, v, w, LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ,
                 T(inv(float(f))), 1 / vertical_spacing(G), nz,
                 Bool(include_wave_velocity), Bool(compute_w), T(cos_ft), T(sin_ft),
                 vertical_excursions)
@@ -951,7 +959,7 @@ function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing
     # The wave vertical velocity at the same phase, once the drift buffers
     # are returned.
     if include_wave_velocity && compute_w
-        _ybj_w!(S.w, S, G, plans, f, face_profile, workspace, cos_ft, sin_ft, true)
+        _ybj_w!(w, S, G, plans, f, face_profile, workspace, cos_ft, sin_ft, true)
     end
     return S
 end

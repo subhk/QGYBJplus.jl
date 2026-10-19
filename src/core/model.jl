@@ -75,16 +75,45 @@ _dispersion_component(mode::DispersionMode) = mode
 _dispersion_component(no_dispersion::Bool) = no_dispersion ? NoDispersion() : Dispersive()
 
 """
+Warn when the default closure barely damps the smallest scale the grid keeps.
+Its coefficients come from nondimensional setups: with dimensional
+wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) they damp nothing, and a nonlinear run is
+effectively inviscid. The damping is measured against the inertial period,
+the one time scale every model has.
+"""
+function _warn_inert_default_closure(grid::RectilinearGrid,
+                                     closure::HorizontalHyperdiffusivity, f::Real)
+    kept = dealias_mask(grid)
+    k² = maximum(grid.kh2[kept])
+    iszero(k²) && return nothing
+    rate = max(Nonlinear._hyperdiffusion_exponent(closure.flow, k², 1.0),
+               Nonlinear._hyperdiffusion_exponent(closure.wave, k², 1.0))
+    rate < 1e-6 * abs(f) || return nothing
+    periods = abs(f) / (2π * rate)
+    @warn "The default closure, HorizontalHyperdiffusivity(), barely damps this " *
+          "grid: the smallest scale it keeps, at kₕ = $(round(sqrt(k²); sigdigits=3)), " *
+          "decays by e in $(round(periods; sigdigits=3)) inertial periods. Its " *
+          "coefficients suit nondimensional setups. For a dimensional one, pass a " *
+          "closure with coefficients from compute_hyperdiff_coeff, or " *
+          "inviscid=Inviscid() to run without horizontal damping deliberately." maxlog=1
+    return nothing
+end
+
+"""
     QGYBJModel(; grid, coriolis, stratification, closure, ...)
 
 Build a model on the architecture of `grid` (`CPU()` or `GPU()`). Public
 symbols and booleans are converted to typed components before transform plans
 or fields are allocated.
+
+`closure` defaults to `HorizontalHyperdiffusivity()`, whose coefficients suit
+nondimensional setups; with `verbose`, a nonlinear, dissipative model warns
+when they barely damp its grid, as they do for dimensional wavenumbers.
 """
 function QGYBJModel(; grid::RectilinearGrid,
     coriolis=FPlane(f=1e-4),
     stratification=ConstantStratification(N²=1e-5),
-    closure::AbstractClosure=HorizontalHyperdiffusivity(),
+    closure::Union{Nothing, AbstractClosure}=nothing,
     vertical_diffusion=VerticalDiffusivity(),
     flow=:evolving,
     feedback=:none,
@@ -111,10 +140,14 @@ function QGYBJModel(; grid::RectilinearGrid,
     physics = ModelPhysics(coriolis_component, stratification_component,
                            flow_component, feedback_component,
                            formulation_component)
-    numerics = ModelNumerics(closure, vertical_component,
+    closure_component = closure === nothing ? HorizontalHyperdiffusivity() : closure
+    numerics = ModelNumerics(closure_component, vertical_component,
                              _dissipation_component(inviscid),
                              _dynamics_component(linear),
                              _dispersion_component(no_dispersion))
+    closure === nothing && verbose && numerics.dissipation isa Dissipative &&
+        numerics.dynamics isa NonlinearDynamics &&
+        _warn_inert_default_closure(grid, closure_component, coriolis_component.f)
 
     runtime = build_runtime(grid, physics, numerics; verbose)
     fields = allocate_fields(grid, runtime)

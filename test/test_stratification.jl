@@ -156,3 +156,24 @@ end
     @test isempty(errors)
     @test isempty(warnings)
 end
+
+@testset "Piecewise profiles cover every depth" begin
+    layers = PiecewiseProfile([10.0, 500.0, 4000.0], [0.01, 0.03])
+    @test evaluate_N2(layers, -5.0) == 0.01^2      # above the first interface
+    @test evaluate_N2(layers, -100.0) == 0.01^2
+    @test evaluate_N2(layers, -1000.0) == 0.03^2
+    @test evaluate_N2(layers, -5000.0) == 0.03^2   # below the last interface
+    @test PiecewiseProfile([0, 500, 4000], [0.01, 0.03]) isa PiecewiseProfile{Float64}
+    @test_throws ArgumentError PiecewiseProfile([0.0, 500.0], [0.01, 0.03])
+    @test_throws ArgumentError PiecewiseProfile([0.0], Float64[])
+    @test_throws ArgumentError PiecewiseProfile([500.0, 0.0, 1000.0], [0.01, 0.03])
+end
+
+@testset "Elliptic coefficients clamp N² relative to its range" begin
+    # Abyssal N² of 1e-8 s⁻² is physical and must not be clamped.
+    N² = [1e-8, 1e-6, 1e-5]
+    @test a_ell_from_N2(N², 1e-4) ≈ 1e-8 ./ N²
+    clamped = @test_logs (:warn, r"below √eps") a_ell_from_N2([1e-20, 1.0], 1.0)
+    @test clamped[1] ≈ 1 / sqrt(eps(Float64))
+    @test clamped[2] == 1
+end

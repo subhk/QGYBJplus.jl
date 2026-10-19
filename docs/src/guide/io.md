@@ -151,9 +151,12 @@ start new trajectories after a restart.
 
 ## Failure behavior
 
-Output exceptions move the simulation to `Failed`, close the state,
-diagnostics, and particle managers, and are rethrown. Use
-`try`/`finally` to guarantee cleanup:
+An error while setting up output, such as state files from another run, is
+raised before anything is written and leaves the simulation `Ready`: run it
+again with another path or `overwrite=true`. Exceptions during the run,
+including while writing, move the simulation to `Failed`, close the state,
+diagnostics, and particle managers, and are rethrown. Use `try`/`finally` to
+guarantee cleanup:
 
 ```julia
 try

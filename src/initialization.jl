@@ -11,7 +11,6 @@ and copied to the model's architecture there.
 =#
 
 using Random
-using LinearAlgebra
 
 #=
 Deterministic, architecture-independent random numbers. Every Fourier
@@ -151,7 +150,7 @@ end
 
 Create a horizontally localized wave packet in spectral space with a Gaussian
 vertical envelope, as a host array. `z_center` and `z_width` are depths
-measured positively downward from the surface.
+measured positively downward from the top of the domain (its rigid lid).
 """
 function create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
                             z_center::Real=G.Lz / 2,
@@ -165,8 +164,9 @@ function create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Rea
     kx_max = G.nx ÷ 2
     ky_max = G.ny ÷ 2
 
+    top = last(G.z_faces)
     for k in 1:G.nz
-        depth = -G.z[k]
+        depth = top - G.z[k]
         z_envelope = exp(-((depth - z_center)^2) / (2 * z_width^2))
 
         for j in 1:G.ny

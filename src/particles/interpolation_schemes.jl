@@ -75,11 +75,12 @@ Interpolate each array of the tuple `fields` (cell centred, `(nz, nx, ny)`
 layout) at `(x, y, z)`, with `x` and `y` measured from the domain origin.
 Returns a tuple with one value per field.
 
-Above the lid `z = 0` and below the bottom `z = -Lz`, field `n` continues as
-the mirror image of its column: evenly for `parities[n] = 1` (zero normal
-derivative, as for the horizontal velocity, since ψ_z = 0 there) and oddly
-for `parities[n] = -1` (zero value, as for the vertical velocity). A position
-outside `[-Lz, 0]` takes the value at the nearer boundary.
+The column spans `grid_info.z_min` to `grid_info.z_max`, by default `-Lz` to
+`0`. Above the lid and below the bottom, field `n` continues as the mirror
+image of its column: evenly for `parities[n] = 1` (zero normal derivative, as
+for the horizontal velocity, since ψ_z = 0 there) and oddly for
+`parities[n] = -1` (zero value, as for the vertical velocity). A position
+outside the column takes the value at the nearer boundary.
 """
 function interpolate_fields(fields::NTuple{N, AbstractArray{T, 3}},
                             parities::NTuple{N, Int}, x::T, y::T, z::T,

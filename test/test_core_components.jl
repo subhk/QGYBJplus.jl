@@ -110,3 +110,43 @@ end
     @test model.runtime.finalized
     @test_throws ErrorException invert_q_to_psi!(model)
 end
+
+@testset "Hyperdiffusion coefficients target the dealiasing cutoff" begin
+    dx, dt, order = 1e3, 10.0, 8
+    ν = compute_hyperdiff_coeff(; dx, dy=dx, dt, order)
+    # One e-fold every efold_steps = 10 steps at the largest wavenumber the
+    # two-thirds rule keeps; the Nyquist target is (3/2)^order weaker there.
+    @test 10 * dt * ν * (2π / (3dx))^order ≈ 1
+    @test compute_hyperdiff_coeff(; dx, dy=dx, dt, order, kmax_fraction=1) ≈
+          ν * (2 / 3)^order
+    @test compute_hyperdiff_params(nx=64, ny=64, Lx=64dx, Ly=64dx, dt=dt,
+                                   order=order).ν ≈ ν
+    parameters = dimensional_hyperdiff_params(nx=64, ny=64, Lx=64dx, Ly=64dx,
+                                              dt=dt, order=order)
+    @test parameters.νₕ₁ ≈ ν
+    @test parameters.νₕ₁ʷ ≈ ν
+    @test parameters.ilap1 == order ÷ 2
+end
+
+@testset "The default closure warns where it cannot damp" begin
+    inert = r"barely damps this grid"
+    dimensional = RectilinearGrid(size=(16, 16, 4), extent=(500e3, 500e3, 4000.0))
+    model = @test_logs (:warn, inert) match_mode=:any QGYBJModel(grid=dimensional)
+    finalize_model!(model)
+
+    # Not for a closure given explicitly, an undamped or linear model, or a
+    # nondimensional grid, where the default damps the grid scale strongly.
+    quiet = (:info, r"runtime initialized")
+    explicit = HorizontalHyperdiffusivity(
+        flow=FlowHyperdiffusivity(coefficient=0), wave=WaveHyperdiffusivity(coefficient=0))
+    for model in (
+        (@test_logs quiet QGYBJModel(grid=dimensional, closure=explicit)),
+        (@test_logs quiet QGYBJModel(grid=dimensional, inviscid=Inviscid())),
+        (@test_logs quiet QGYBJModel(grid=dimensional, linear=LinearDynamics())),
+        (@test_logs quiet QGYBJModel(
+            grid=RectilinearGrid(size=(16, 16, 4), extent=(2π, 2π, 1.0)),
+            coriolis=FPlane(f=1.0), stratification=ConstantStratification(N²=1.0))),
+    )
+        finalize_model!(model)
+    end
+end

@@ -675,3 +675,94 @@ end
         finalize_model!(model)
     end
 end
+
+@testset "Particles use the grid's vertical extent" begin
+    # u = U(z) cos(2πy/L), linear in z, so a particle on a level must read
+    # that level's value even when the domain's top is not z = 0.
+    L = 100e3
+    for z_bounds in ((-4000.0, 0.0), (-4100.0, -100.0))
+        grid = RectilinearGrid(size=(16, 16, 8), x=(0.0, L), y=(0.0, L), z=z_bounds)
+        model = QGYBJModel(; grid, flow=FixedFlow(), verbose=false)
+        try
+            levels = grid.z
+            U(z) = 0.1 * (z - levels[1]) / (levels[end] - levels[1])
+            set!(model; ψ=(x, y, z) -> -U(z) * L / (2π) * sin(2π * y / L))
+            for k in (1, 3, 8)
+                initialize_particles!(model, particles_in_box(Float64, levels[k];
+                    x_max=L, y_max=L, nx=2, ny=2))
+                tracker = model.particles
+                QGYBJplus.UnifiedParticleAdvection.update_velocity_fields!(
+                    tracker, model.fields, model.runtime.geometry; time=0.0)
+                u, _ = interpolate_velocity_at_position(0.0, 0.0, levels[k], tracker, 0.0)
+                @test u ≈ model.fields.u[k, 1, 1]
+            end
+        finally
+            finalize_model!(model)
+        end
+    end
+end
+
+@testset "Instantaneous particles leave the model's velocity the Lagrangian mean" begin
+    L = 100e3
+    grid = RectilinearGrid(size=(16, 16, 8), x=(0.0, L), y=(0.0, L), z=(-1000.0, 0.0))
+    model = QGYBJModel(; grid, verbose=false)
+    try
+        nx, ny, nz = grid.size
+        # Waves that vary horizontally, so that they have a Stokes drift.
+        B = [ComplexF64(0.1 * exp(grid.z[k] / 200) * cis(4π * grid.x[i] / L))
+             for k in 1:nz, i in 1:nx, j in 1:ny]
+        set!(model; ψ=(x, y, z) -> 1e3 * sin(2π * x / L) * cos(2π * y / L), B)
+        initialize_particles!(model, particles_in_box(Float64, -100.0;
+            x_max=L, y_max=L, nx=2, ny=2, wave_motion=:instantaneous))
+        simulation = Simulation(model; Δt=60.0, stop_iteration=3, output=false,
+                                diagnostics=false, verbose=false)
+        run!(simulation)
+        u, v = copy(model.fields.u), copy(model.fields.v)
+        compute_velocities!(model; compute_w=false)
+        @test model.fields.u == u
+        @test model.fields.v == v
+        # The particles themselves still feel the mean less the drift.
+        @test maximum(abs, model.particles.current.u .- u) > 1e-4
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Particle times keep double precision" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+                       stratification=ConstantStratification(N²=1.0),
+                       flow=FixedFlow(), verbose=false)
+    try
+        set!(model; ψ=(x, y, z) -> sin(x) * cos(y))
+        initialize_particles!(model, particles_in_box(Float32, -0.5;
+            x_max=2π, y_max=2π, nx=2, ny=2))
+        tracker = model.particles
+        # Neither time is representable in Float32.
+        t₀ = 1e8 + 0.5
+        advect_particles!(model, 0.25; current_time=t₀)
+        @test tracker.particles.time === t₀ + 0.25
+        @test tracker.current.time === t₀ + 0.25
+
+        # Snapshot weights and the inertial phase are formed in Float64.
+        P = QGYBJplus.UnifiedParticleAdvection
+        for t in (1e8, 1e8 + 20)
+            P.update_velocity_fields!(tracker, model.fields,
+                                      model.runtime.geometry; time=t)
+        end
+        velocity = P._velocity_arguments(tracker, 1e8 + 5)
+        @test velocity.θ₀ === 0.25f0
+        @test velocity.θ_rate === Float32(1 / 20)
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Particle output needs a schedule" begin
+    mktempdir() do path
+        @test ParticleOutputManager(path; save_interval_time=3600).save_interval_time === 3600.0
+        @test ParticleOutputManager(path; save_interval_iter=10).save_interval_iter == 10
+        @test_throws ArgumentError ParticleOutputManager(path)
+        @test_throws ArgumentError ParticleOutputManager(path; save_interval_time=-1)
+    end
+end

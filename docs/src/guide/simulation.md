@@ -30,6 +30,9 @@ explicitly, or `diagnostics=false` to disable diagnostic files.
 
 The lifecycle progresses through `Ready`, `Running`, and `Stopped`. An
 exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
+Output is set up before the run starts, so an error there, such as files left
+by another run, leaves the simulation `Ready` to run again with other
+settings.
 Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
 construct a new simulation around the same model to continue from the current
 fields. A new simulation's clock starts at zero; to continue the time axis

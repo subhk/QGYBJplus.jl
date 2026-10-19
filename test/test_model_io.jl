@@ -642,3 +642,26 @@ end
         @test final_states[1] == final_states[2]
     end
 end
+
+@testset "Energy diagnostics count every mode of a linear run" begin
+    L = 100e3
+    grid = RectilinearGrid(size=(32, 32, 4), x=(0.0, L), y=(0.0, L), z=(-1000.0, 0.0))
+    # Wavenumber 14 lies outside the two-thirds cutoff, ⌊32/3⌋ = 10, which
+    # linear runs keep and nonlinear runs remove.
+    ψ(x, y, z) = 1e3 * sin(2π * 14 * x / L)
+    for (linear, expected) in ((true, :all), (false, :none))
+        model = QGYBJModel(; grid, linear, verbose=false)
+        try
+            set!(model; ψ)
+            mean_flow_KE = QGYBJplus._local_energy_components(model, model.fields)[4]
+            u, v = model.fields.u, model.fields.v
+            if expected === :all
+                @test mean_flow_KE ≈ sum(u .^ 2 .+ v .^ 2) / (2 * length(u))
+            else
+                @test mean_flow_KE < 1e-20
+            end
+        finally
+            finalize_model!(model)
+        end
+    end
+end

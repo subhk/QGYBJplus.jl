@@ -142,15 +142,21 @@ end
 """
 `Δt Σ νₙ kₕ^orderₙ` for a hyperdiffusivity component. Pure scalar code, so the
 ETD coefficient kernel calls it on every backend.
+
+The powers are taken in at least double precision. A single-precision model
+passes a `Float32` kₕ², and dimensional wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) raised to
+the twelfth or sixteenth power underflow `Float32`, which would switch the
+damping off.
 """
 @inline function _hyperdiffusion_exponent(closure, kₕ², Δt)
-    T = promote_type(typeof(kₕ²), eltype(closure.coefficients))
+    T = promote_type(Float64, typeof(kₕ²), eltype(closure.coefficients))
+    k² = convert(T, kₕ²)
     rate = zero(T)
     for (coefficient, order) in zip(closure.coefficients, closure.orders)
         # Besides saving work for disabled closure terms, skipping before the
         # power prevents 0 * Inf from turning a legitimate zero rate into NaN.
         iszero(coefficient) && continue
-        rate += coefficient * kₕ²^(order ÷ 2)
+        rate += coefficient * k²^(order ÷ 2)
     end
     return Δt * rate
 end
