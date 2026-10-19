@@ -11,19 +11,23 @@ end
 """
     ModelRuntime
 
-Ephemeral execution resources associated with a model: MPI ownership,
-decomposition metadata, transform plans, operator coefficients, dealiasing
-metadata, and reusable workspaces.
+Ephemeral execution resources associated with a model: its architecture,
+kernel-facing geometry, transform plans, scratch workspace, operator
+coefficients, and dealiasing mask.
+
+`coefficients` holds the host profiles (written to output files and returned
+to users); `device_coefficients` holds the same profiles stored on the
+architecture, which is what the kernels read. On the CPU both refer to the
+same vectors.
 """
-mutable struct ModelRuntime{M, D, P, W, C, L, G}
-    mpi::M
-    decomposition::D
+mutable struct ModelRuntime{A, G, P, W, C, K, L}
+    architecture::A
+    geometry::G
     plans::P
     workspace::W
     coefficients::C
+    device_coefficients::K
     dealias_mask::L
-    geometry::G
-    owns_mpi::Bool
     finalized::Bool
 end
 
@@ -33,130 +37,71 @@ _runtime_profile(stratification::ConstantStratification) =
     ConstantN(sqrt(float(stratification.N²)))
 _runtime_profile(stratification::StratificationProfile) = stratification
 
-"""Construct execution resources for `grid` transactionally."""
+"""Construct execution resources for `grid` on the grid's architecture."""
 function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
-    numerics::ModelNumerics; topology=nothing, parallel_io::Bool=false,
-    verbose::Bool=true)
+    numerics::ModelNumerics; verbose::Bool=true)
 
-    mpi_was_initialized = MPI.Initialized()
-    runtime = nothing
-    try
-        mpi = setup_mpi_environment(; topology, parallel_io)
-        geometry = build_runtime_geometry(grid, mpi)
-        plans = plan_distributed_transforms(geometry, mpi)
-        workspace = allocate_distributed_workspace(geometry, mpi)
+    architecture = grid.architecture
+    T = eltype(grid)
+    nx, ny, nz = grid.size
+    geometry = RuntimeGeometry(grid)
+    plans = Plans(architecture, nz, nx, ny, Complex{T})
+    workspace = ModelWorkspace(architecture, (nz, nx, ny); T)
 
-        profile = _runtime_profile(physics.stratification)
-        N² = Float64.(compute_stratification_profile(profile, grid))
-        N²_face = Float64.(_compute_stratification_face_profile(profile, grid))
-        a_ell = a_ell_from_N2(N²_face, physics.coriolis)
-        coefficients = OperatorCoefficients(N², N²_face, a_ell)
-        mask = dealias_mask(grid)
+    # The host profiles (written to output files) are Float64; the kernels
+    # read copies in the grid's precision.
+    profile = _runtime_profile(physics.stratification)
+    _warn_uncovered_depths(profile, grid)
+    N² = Float64.(compute_stratification_profile(profile, grid))
+    N²_face = Float64.(_compute_stratification_face_profile(profile, grid))
+    a_ell = a_ell_from_N2(N²_face, physics.coriolis)
+    coefficients = OperatorCoefficients(N², N²_face, a_ell)
+    in_precision(profile) = eltype(profile) === T ? profile : T.(profile)
+    device_coefficients = (
+        N²=on_architecture(architecture, in_precision(N²)),
+        N²_face=on_architecture(architecture, in_precision(N²_face)),
+        a_ell=on_architecture(architecture, in_precision(a_ell)),
+    )
+    mask = on_architecture(architecture, dealias_mask(grid))
 
-        runtime = ModelRuntime(
-            mpi, geometry.decomposition, plans, workspace,
-            coefficients, mask, geometry,
-            !mpi_was_initialized, false)
-
-        if mpi.is_root && verbose
-            @info "QGYBJModel runtime initialized" size=grid.size ranks=mpi.nprocs
-        end
-        MPI.Barrier(mpi.comm)
-        return runtime
-    catch
-        if !mpi_was_initialized && MPI.Initialized() && !MPI.Finalized()
-            GC.gc(true)
-            MPI.Finalize()
-        end
-        rethrow()
+    if verbose
+        @info "QGYBJModel runtime initialized" architecture size=grid.size precision=T
     end
+    return ModelRuntime(architecture, geometry, plans, workspace, coefficients,
+                        device_coefficients, mask, false)
 end
 
-"""Allocate distributed model fields using a runtime's transform pencils."""
+"""Allocate model fields on the runtime's architecture, in the grid's precision."""
 function allocate_fields(grid::RectilinearGrid, runtime::ModelRuntime;
-    T::Type{<:AbstractFloat}=Float64)
+    T::Type{<:AbstractFloat}=eltype(grid))
 
     runtime.finalized && error("cannot allocate fields from a finalized runtime")
     grid.size == (runtime.geometry.nx,
                   runtime.geometry.ny,
                   runtime.geometry.nz) ||
         throw(ArgumentError("runtime geometry does not match the public grid"))
-    return allocate_distributed_fields(
-        runtime.geometry, runtime.plans, runtime.mpi; T)
+    nx, ny, nz = grid.size
+    return ModelFields(runtime.architecture, T, (nz, nx, ny))
 end
 
-"""Release runtime-owned MPI resources without touching externally owned MPI."""
-function finalize_runtime!(runtime::ModelRuntime; synchronize::Bool=true)
+"""Release runtime-owned scratch storage; repeated calls are safe."""
+function finalize_runtime!(runtime::ModelRuntime)
     runtime.finalized && return runtime
-
-    if runtime.owns_mpi && MPI.Initialized() && !MPI.Finalized()
-        synchronize && MPI.Barrier(runtime.mpi.comm)
-        GC.gc(true)
-        MPI.Finalize()
-    end
+    empty!(runtime.workspace.pool.buffers)
+    runtime.workspace.pool.taken = 0
     runtime.finalized = true
     return runtime
 end
 
-# Runtime-local layout and index mapping. Spectral layout is the default
-# because prognostic model fields live on the FFT output pencil.
-get_local_range_spectral(runtime::ModelRuntime) =
-    get_local_range_spectral(runtime.plans)
-get_local_range_physical(runtime::ModelRuntime) =
-    get_local_range_physical(runtime.plans)
-get_local_range(runtime::ModelRuntime) = get_local_range_spectral(runtime)
-get_local_range(model::QGYBJModel) = get_local_range(model.runtime)
-get_local_range_spectral(model::QGYBJModel) =
-    get_local_range_spectral(model.runtime)
-get_local_range_physical(model::QGYBJModel) =
-    get_local_range_physical(model.runtime)
-
-function local_to_global(local_index::Int, dimension::Int,
-    runtime::ModelRuntime)
-    return get_local_range_spectral(runtime)[dimension][local_index]
-end
-
-local_to_global(local_index::Int, dimension::Int, model::QGYBJModel) =
-    local_to_global(local_index, dimension, model.runtime)
-
-get_local_range_xy(runtime::ModelRuntime) = runtime.decomposition.local_range_xy
-get_local_range_z(runtime::ModelRuntime) = runtime.decomposition.local_range_z
-local_to_global_xy(local_index::Int, dimension::Int, runtime::ModelRuntime) =
-    get_local_range_xy(runtime)[dimension][local_index]
-local_to_global_z(local_index::Int, dimension::Int, runtime::ModelRuntime) =
-    get_local_range_z(runtime)[dimension][local_index]
-
-function z_is_local(runtime::ModelRuntime)
-    return get_local_range(runtime)[1] == 1:runtime.decomposition.global_dims[1]
-end
-z_is_local(model::QGYBJModel) = z_is_local(model.runtime)
-
-function get_kh2(i_local::Int, j_local::Int, k_local::Int, array,
-    model::QGYBJModel)
-    i_global = local_to_global(i_local, 2, array)
-    j_global = local_to_global(j_local, 3, array)
-    return model.grid.kh2[i_global, j_global]
-end
-
-get_kx(i_local::Int, array, model::QGYBJModel) =
-    model.grid.kx[local_to_global(i_local, 2, array)]
-get_ky(j_local::Int, array, model::QGYBJModel) =
-    model.grid.ky[local_to_global(j_local, 3, array)]
-
-transpose_to_z_pencil!(destination, source, runtime::ModelRuntime) =
-    transpose_to_z_pencil!(destination, source, runtime.decomposition)
-transpose_to_xy_pencil!(destination, source, runtime::ModelRuntime) =
-    transpose_to_xy_pencil!(destination, source, runtime.decomposition)
-
-allocate_fft_backward_dst(array, runtime::ModelRuntime) =
-    allocate_fft_backward_dst(array, runtime.plans)
+architecture(runtime::ModelRuntime) = runtime.architecture
+architecture(model::QGYBJModel) = model.runtime.architecture
 
 # Model-owned physical operator entry points use global geometry from the model
-# and distributed spectral metadata from its runtime.
+# and kernel-facing resources from its runtime.
 function _operator_context(model::QGYBJModel)
     runtime = model.runtime
     runtime.finalized && error("cannot use operators after model finalization")
-    coefficients = runtime.coefficients
+    coefficients = runtime.device_coefficients
     return (
         fields=model.fields,
         grid=runtime.geometry,
@@ -170,12 +115,15 @@ function _operator_context(model::QGYBJModel)
     )
 end
 
+"""Constant N² used when an operator falls back from its profile (host value)."""
+_reference_N²(model::QGYBJModel) = first(model.runtime.coefficients.N²)
+
 function Elliptic.invert_q_to_psi!(model::QGYBJModel)
     context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
     _invert_total_q_to_psi!(context.fields, context.grid, options,
         context.plans, context.a, context.mask;
-        workspace=context.workspace)
+        workspace=context.workspace, check_compatibility=true)
     return model
 end
 
@@ -193,22 +141,37 @@ function Elliptic.invert_helmholtz!(destination, rhs, model::QGYBJModel; kwargs.
     return destination
 end
 
+"""
+Wave-PV forcing of the mean-flow vertical velocity for a model with wave
+feedback, or `nothing` (see `compute_vertical_velocity!`).
+"""
+function _wave_pv_forcing(model::QGYBJModel, context)
+    options = ETDModelOptions(model.physics, model.numerics)
+    _wave_feedback_enabled(options) || return nothing
+    return D -> _wave_pv_derivative!(D, context.fields, context.grid, options,
+        context.plans, context.a, context.mask; workspace=context.workspace,
+        N2_profile=context.N2, N2_face_profile=context.N2_face)
+end
+
 function Operators.compute_velocities!(model::QGYBJModel;
     compute_w::Bool=true, use_ybj_w::Bool=false)
+    Operators._reject_use_ybj_w(use_ybj_w)
     context = _operator_context(model)
     compute_velocities!(context.fields, context.grid;
-        plans=context.plans, f=context.f, N2=first(context.N2),
+        plans=context.plans, f=context.f, N2=_reference_N²(model),
         N2_profile=context.N2, N2_face_profile=context.N2_face,
-        compute_w, use_ybj_w, workspace=context.workspace,
-        dealias_mask=context.mask)
+        compute_w, workspace=context.workspace,
+        dealias_mask=context.mask, pv_forcing=_wave_pv_forcing(model, context))
     return model
 end
 
 function Operators.compute_vertical_velocity!(model::QGYBJModel)
     context = _operator_context(model)
     compute_vertical_velocity!(context.fields, context.grid, context.plans;
-        f=context.f, N2=first(context.N2), N2_profile=context.N2,
-        workspace=context.workspace, dealias_mask=context.mask)
+        f=context.f, N2=_reference_N²(model), N2_profile=context.N2,
+        N2_face_profile=context.N2_face,
+        workspace=context.workspace, dealias_mask=context.mask,
+        pv_forcing=_wave_pv_forcing(model, context))
     return model
 end
 
@@ -216,32 +179,38 @@ end
 function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     skip_inversion::Bool=false, t=nothing)
     context = _operator_context(model)
+    # A is recovered by the formulation's own relation: B = L⁺A for YBJ⁺ and
+    # passive waves, the solvability-constrained B = LA for YBJ.
+    skip_inversion || _refresh_wave_diagnostics!(model)
     compute_ybj_vertical_velocity!(context.fields, context.grid, context.plans;
-        f=context.f, N2=first(context.N2), N2_profile=context.N2,
+        f=context.f, N2=_reference_N²(model), N2_profile=context.N2,
         N2_face_profile=context.N2_face,
-        workspace=context.workspace, skip_inversion, t)
+        workspace=context.workspace, skip_inversion=true, t)
     return model
 end
 
-function Operators.compute_total_velocities!(model::QGYBJModel;
+function Operators.compute_total_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, use_ybj_w::Bool=false,
     include_wave_velocity::Bool=true)
     context = _operator_context(model)
-    compute_total_velocities!(context.fields, context.grid;
-        plans=context.plans, f=context.f, N2=first(context.N2),
+    compute_total_velocities!(context.fields, context.grid; t,
+        plans=context.plans, f=context.f, N2=_reference_N²(model),
         N2_profile=context.N2, N2_face_profile=context.N2_face,
         compute_w, use_ybj_w, include_wave_velocity,
-        workspace=context.workspace, dealias_mask=context.mask)
+        formulation=model.physics.formulation,
+        workspace=context.workspace, dealias_mask=context.mask,
+        pv_forcing=_wave_pv_forcing(model, context))
     return model
 end
 
-function Operators.compute_wave_velocities!(model::QGYBJModel;
+function Operators.compute_wave_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, include_wave_velocity::Bool=true)
     context = _operator_context(model)
-    compute_wave_velocities!(context.fields, context.grid;
-        plans=context.plans, f=context.f, N2=first(context.N2),
-        N2_profile=context.N2, compute_w, include_wave_velocity,
-        workspace=context.workspace)
+    compute_wave_velocities!(context.fields, context.grid; t,
+        plans=context.plans, f=context.f, N2=_reference_N²(model),
+        N2_profile=context.N2, N2_face_profile=context.N2_face,
+        compute_w, include_wave_velocity,
+        formulation=model.physics.formulation, workspace=context.workspace)
     return model
 end
 
@@ -260,7 +229,8 @@ function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
             model.fields, context.plans; G=context.grid)
     elseif !(timestep_workspace isa ExponentialRungeKutta2Workspace)
         throw(ArgumentError("timestepper workspace has an incompatible type"))
-    elseif !_etdrk2_workspace_matches(timestep_workspace, model.fields)
+    elseif !_etdrk2_workspace_matches(timestep_workspace, model.fields) ||
+           !_etdrk2_workspace_belongs_to(timestep_workspace, context.grid)
         timestep_workspace = ExponentialRungeKutta2Workspace(
             model.fields, context.plans; G=context.grid)
     end
@@ -270,9 +240,7 @@ function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
     timestepper.workspace_owner = model.runtime
 
     options = ETDModelOptions(model.physics, model.numerics)
-    next_fields = timestep_workspace.next
-    _advance_etdrk2!(next_fields, model.fields, context.grid, options,
-        context.plans;
+    _advance_etdrk2!(model.fields, context.grid, options, context.plans;
         Δt,
         a=context.a,
         dealias_mask=context.mask,
@@ -280,9 +248,5 @@ function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
         N2_profile=context.N2,
         N2_face_profile=context.N2_face,
         timestep_workspace=timestep_workspace)
-
-    # Keep the public `model.fields` container stable for callbacks and cached
-    # handles while rotating its double-buffered array storage at zero copy.
-    _swap_field_storage!(model.fields, next_fields)
     return model
 end

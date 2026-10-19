@@ -27,12 +27,12 @@ OMEGA EQUATION RHS:
 -------------------
 The omega equation RHS drives ageostrophic vertical motion:
 
-    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+    N² ∇²w + f² ∂²w/∂z² = 2∇·Q
+                        = 2f [J(ψ_z, ∇²ψ) - J(ψ_x, ψ_xz) - J(ψ_y, ψ_yz)]
 
-The RHS 2J(ψ_z, ∇²ψ) represents:
-- Jacobian of vertical shear (thermal wind) and vorticity
-- Physically: differential advection creating divergence
-- Strong near fronts and eddy boundaries
+It combines differential vorticity advection with the Laplacian of buoyancy
+advection, and is strong near fronts and eddy boundaries. The discrete form
+makes w satisfy the model's own vorticity and buoyancy equations exactly.
 
 FIELD SLICING:
 --------------
@@ -40,9 +40,14 @@ Utility functions for extracting 2D slices from 3D spectral fields:
 - slice_horizontal: x-y plane at fixed z (good for surface fields)
 - slice_vertical_xz: x-z plane at fixed y (good for vertical structure)
 
+The omega RHS and the domain sums run on the fields' architecture. Slices and
+the per-mode spectral energy sums return host arrays and are evaluated on a
+host copy of their input.
+
 FORTRAN CORRESPONDENCE:
 -----------------------
-- omega_eqn_rhs! → omega_eqn_rhs in diagnostics.f90
+- omega_eqn_rhs! → omega_eqn_rhs in diagnostics.f90, which keeps only the
+  2J(ψ_z, ∇²ψ) part of the forcing (Trenberth's approximation)
 - wave_energy → energy diagnostics in diagnostics.f90
 - flow_kinetic_energy → ke_flow in diagnostics.f90
 
@@ -51,18 +56,13 @@ FORTRAN CORRESPONDENCE:
 
 module Diagnostics
 
+using KernelAbstractions: @kernel, @index, @Const, get_backend
 using ..QGYBJplus: RuntimeGeometry
-using ..QGYBJplus: plan_transforms!, fft_forward!, fft_backward!
-using ..QGYBJplus: local_to_global, z_is_local
-using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJplus: allocate_z_pencil
-using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
-using ..QGYBJplus: with_z_local, z_scratch
+using ..QGYBJplus: fft_forward!, fft_backward!
+using ..QGYBJplus: allocate_fft_backward_dst
 using ..QGYBJplus: with_scratch, scratch_like, scratch_physical, scratch_phys_like
-import PencilArrays: PencilArray
-
-# Reference to parent module for physics functions
-const PARENT = Base.parentmodule(@__MODULE__)
+using ..QGYBJplus: launch!, kernel_mask, keep_mode, dealias!, on_host, _check_mask_size,
+                   KeepAllModes, vertical_spacing
 
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
@@ -78,158 +78,134 @@ The RHS of the omega equation drives the ageostrophic vertical velocity.
 """
     omega_eqn_rhs!(rhs, psi, G, plans; Lmask=nothing, workspace=nothing)
 
-Compute the RHS forcing for the QG omega equation.
+Forcing of the QG omega equation, divided by `f`, at the interior faces.
 
 # Physical Background
-The QG omega equation relates vertical velocity w to the horizontal flow:
+With geostrophic velocity `(u, v) = (-ψ_y, ψ_x)` and buoyancy `b = f ψ_z`, the
+QG vorticity and buoyancy equations
 
-    N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
+    ζ_t + J(ψ, ζ) = f w_z,        b_t + J(ψ, b) + N² w = 0
 
-or equivalently (dividing by N²):
+combine into the omega equation
 
-    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+    N² ∇²w + f² w_zz = 2∇·Q = f [∂_z J(ψ, ζ) - ∇²J(ψ, ψ_z)]
+                            = 2f [J(ψ_z, ζ) - J(ψ_x, ψ_xz) - J(ψ_y, ψ_yz)].
 
-This function computes 2 J(ψ_z, ∇²ψ). The solver then applies the (f/N²) scaling.
+This function returns `2∇·Q / f`; the solver applies the `f/N²` scaling. The
+deformation terms `J(ψ_x, ψ_xz) + J(ψ_y, ψ_yz)` are part of the exact forcing
+(dropping them gives Trenberth's approximation `2f J(ψ_z, ζ)`).
 
-# Physical Interpretation
-The Jacobian J(ψ_z, ∇²ψ) represents:
-- ψ_z: Vertical shear of streamfunction (related to thermal wind/buoyancy)
-- ∇²ψ: Relative vorticity ζ
-- J: Cross-gradient interaction
+# Discretization
+`w` lives on the faces between levels, where the model's buoyancy
+`b = f (ψ[k+1] - ψ[k]) / Δz` lives. Using `ψ[k] + ψ[k+1]` over two on a face,
+`J(ψ_face, b) = (f/Δz) J(ψ[k], ψ[k+1])`, and the forcing at the face above
+level `k`, stored at index `k`, is
 
-Strong RHS forcing occurs where:
-- Fronts (large ψ_z) interact with vorticity gradients
-- Eddies tilt isopycnals through differential advection
+    rhs[k] = (J(ψ[k+1], ζ[k+1]) - J(ψ[k], ζ[k]) + kₕ² Ĵ(ψ[k], ψ[k+1])) / Δz
 
-# Numerical Method
-1. **Vertical derivative**: ψ_z via forward finite difference
-   ```
-   ψ_z[k] = (ψ[k+1] - ψ[k]) / dz,  ψ_z[nz] = 0 (Neumann)
-   ```
-
-2. **Spectral derivatives**:
-   - ∂ψ_z/∂x = i kₓ ψ_z
-   - ∂ψ_z/∂y = i kᵧ ψ_z
-   - ∂(∇²ψ)/∂x = -i kₓ kh² ψ_avg
-   - ∂(∇²ψ)/∂y = -i kᵧ kh² ψ_avg
-   where ψ_avg = (ψ[k+1] + ψ[k])/2 for staggered-grid consistency
-
-3. **Jacobian in physical space**:
-   ```
-   J(ψ_z, ∇²ψ) = (∂ψ_z/∂x)(∂∇²ψ/∂y) - (∂ψ_z/∂y)(∂∇²ψ/∂x)
-   ```
-
-4. **Transform back**: FFT to get spectral RHS
+with every Jacobian projected by `Lmask`, and `rhs[nz] = 0` at the top face.
+With this forcing the omega-equation `w` satisfies the model's discrete
+vorticity and buoyancy equations exactly, for the PV inversion's flux-form
+stencil and any N²(z).
 
 # Arguments
-- `rhs::Array{Complex,3}`: Output RHS array (modified in-place)
-- `psi::Array{Complex,3}`: Spectral streamfunction
+- `rhs`: Output spectral forcing `(nz, nx, ny)`, modified in place
+- `psi`: Spectral streamfunction
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `Lmask`: Optional dealiasing mask
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
-
-# Returns
-Modified rhs array with the omega equation forcing.
-
-# Fortran Correspondence
-Matches `omega_eqn_rhs` computation in the Fortran implementation.
+- `Lmask`: Dealiasing mask applied to ψ before and to the products after
+  multiplication (`nothing` keeps every mode)
+- `workspace`: Optional model workspace for scratch buffers
+- `accumulate`: Add the forcing to `rhs` instead of overwriting it
 """
-function omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans; Lmask=nothing, workspace=nothing)
+function omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans; Lmask=nothing,
+                        workspace=nothing, accumulate::Bool=false)
     with_scratch(workspace) do
-        _omega_eqn_rhs!(rhs, psi, G, plans, Lmask, workspace)
+        _omega_eqn_rhs!(rhs, psi, G, plans, Lmask, workspace, accumulate)
     end
     return rhs
 end
 
-# Direct computation when z is fully local (serial or 1D decomposition)
-# One implementation for every decomposition. Only the vertical difference and
-# vertical average couple neighbouring levels, so those run under
-# `with_z_local`; everything after is pointwise in z.
-function _omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx,ny) : Lmask
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
+"""Projected `∂ₓψ`, `∂ᵧψ`, `∂ₓζ`, `∂ᵧζ` with `ζ̂ = -kₕ² ψ̂`."""
+@kernel function _omega_gradient_kernel!(ψx, ψy, ζx, ζy, @Const(ψ), @Const(kx),
+                                         @Const(ky), mask)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if keep_mode(mask, i, j)
+        ikₓ = im * kx[i]
+        ikᵧ = im * ky[j]
+        ψ̂ = ψ[k, i, j]
+        ζ̂ = -(kx[i]^2 + ky[j]^2) * ψ̂
+        ψx[k, i, j] = ikₓ * ψ̂
+        ψy[k, i, j] = ikᵧ * ψ̂
+        ζx[k, i, j] = ikₓ * ζ̂
+        ζy[k, i, j] = ikᵧ * ζ̂
+    else
+        ψx[k, i, j] = zero(eltype(ψx))
+        ψy[k, i, j] = zero(eltype(ψy))
+        ζx[k, i, j] = zero(eltype(ζx))
+        ζy[k, i, j] = zero(eltype(ζy))
+    end
+end
 
-    ψzₖ = scratch_like(workspace, psi)     # ∂ψ/∂z, one-sided at the top
-    ψavgₖ = scratch_like(workspace, psi)   # ψ averaged onto the same half level
+"""
+Physical `J(ψ[k], ζ[k])` at every level, written over `ζx`, and
+`J(ψ[k], ψ[k+1])` on every face, written over `ζy`. Each work item reads only
+its own `ζ` entries, so the overwrite is safe.
+"""
+@kernel function _omega_jacobian_kernel!(ζx, ζy, @Const(ψx), @Const(ψy), nz)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        ψxₖ = real(ψx[k, i, j])
+        ψyₖ = real(ψy[k, i, j])
+        ζxₖ = real(ζx[k, i, j])
+        ζyₖ = real(ζy[k, i, j])
+        ζx[k, i, j] = ψxₖ * ζyₖ - ψyₖ * ζxₖ
+        ζy[k, i, j] = k < nz ?
+            ψxₖ * real(ψy[k + 1, i, j]) - ψyₖ * real(ψx[k + 1, i, j]) :
+            zero(eltype(ζy))
+    end
+end
 
-    with_z_local(G, (ψzₖ, ψavgₖ, psi), (:out, :out, :in);
-                 scratch=z_scratch(workspace, :q_z, :A_z, :psi_z)) do ψz, ψavg, ψ
-        ψz_arr = parent(ψz)
-        ψavg_arr = parent(ψavg)
-        ψ_arr = parent(ψ)
-        nz_z, nx_z, ny_z = size(ψ_arr)
-        @assert nz_z == nz "Vertical dimension must be fully local for omega RHS"
-        @inbounds for k in 1:nz_z, j in 1:ny_z, i in 1:nx_z
-            if k == nz
-                ψz_arr[k, i, j] = 0                     # Neumann top
-                ψavg_arr[k, i, j] = ψ_arr[k, i, j]
-            else
-                ψz_arr[k, i, j] = (ψ_arr[k+1, i, j] - ψ_arr[k, i, j]) / Δz
-                ψavg_arr[k, i, j] = 0.5*(ψ_arr[k+1, i, j] + ψ_arr[k, i, j])
-            end
+@kernel function _omega_forcing_kernel!(rhs, @Const(Jζ), @Const(Jψ), @Const(kx),
+                                        @Const(ky), mask, Δz, nz, accumulate)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        previous = accumulate ? rhs[k, i, j] : zero(eltype(rhs))
+        if k < nz && keep_mode(mask, i, j)
+            kₕ² = kx[i]^2 + ky[j]^2
+            rhs[k, i, j] = previous +
+                (Jζ[k + 1, i, j] - Jζ[k, i, j] + kₕ² * Jψ[k, i, j]) / Δz
+        else
+            rhs[k, i, j] = previous
         end
     end
+end
 
-    ψzₖ_arr = parent(ψzₖ)
-    ψavgₖ_arr = parent(ψavgₖ)
-    nz_local, nx_local, ny_local = size(ψzₖ_arr)
+function _omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace,
+                         accumulate::Bool=false)
+    nz = G.nz
+    backend = get_backend(rhs)
+    mask = kernel_mask(Lmask, rhs, KeepAllModes())
+    Δz = vertical_spacing(G)
+    @assert size(psi, 1) == nz "Vertical dimension must match the grid for omega RHS"
 
-    # Build needed spectral derivatives
-    bxₖ = scratch_like(workspace, psi); byₖ = scratch_like(workspace, psi)
-    xxₖ = scratch_like(workspace, psi); xyₖ = scratch_like(workspace, psi)
-    bxₖ_arr = parent(bxₖ); byₖ_arr = parent(byₖ)
-    xxₖ_arr = parent(xxₖ); xyₖ_arr = parent(xyₖ)
+    # Four buffers, transformed in place; the two products then replace ζx, ζy.
+    ψx = scratch_like(workspace, psi); ψy = scratch_like(workspace, psi)
+    ζx = scratch_like(workspace, psi); ζy = scratch_like(workspace, psi)
+    launch!(_omega_gradient_kernel!, backend, size(psi),
+            ψx, ψy, ζx, ζy, psi, G.kx, G.ky, mask)
+    fft_backward!(ψx, ψx, plans)
+    fft_backward!(ψy, ψy, plans)
+    fft_backward!(ζx, ζx, plans)
+    fft_backward!(ζy, ζy, plans)
 
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, psi)
-        j_global = local_to_global(j, 3, psi)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
+    launch!(_omega_jacobian_kernel!, backend, size(ζx), ζx, ζy, ψx, ψy, nz)
 
-        bxₖ_arr[k, i, j] = im*kₓ*ψzₖ_arr[k, i, j]
-        byₖ_arr[k, i, j] = im*kᵧ*ψzₖ_arr[k, i, j]
-        xxₖ_arr[k, i, j] = -im*kₓ*kₕ²*ψavgₖ_arr[k, i, j]
-        xyₖ_arr[k, i, j] = -im*kᵧ*kₕ²*ψavgₖ_arr[k, i, j]
-    end
-
-    # To real space - use helper for correct pencil allocation
-    bxᵣ = scratch_physical(workspace, bxₖ, plans)
-    byᵣ = scratch_physical(workspace, byₖ, plans)
-    xxᵣ = scratch_physical(workspace, xxₖ, plans)
-    xyᵣ = scratch_physical(workspace, xyₖ, plans)
-    fft_backward!(bxᵣ, bxₖ, plans)
-    fft_backward!(byᵣ, byₖ, plans)
-    fft_backward!(xxᵣ, xxₖ, plans)
-    fft_backward!(xyᵣ, xyₖ, plans)
-
-    bxᵣ_arr = parent(bxᵣ); byᵣ_arr = parent(byᵣ)
-    xxᵣ_arr = parent(xxᵣ); xyᵣ_arr = parent(xyᵣ)
-
-    # Real-space RHS
-    rhsᵣ = scratch_phys_like(workspace, bxᵣ)
-    rhsᵣ_arr = parent(rhsᵣ)
-    # The physical FFT input pencil can have different local x/y extents from
-    # the spectral output pencil even when z is fully local.
-    nz_phys, nx_phys, ny_phys = size(rhsᵣ_arr)
-    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        rhsᵣ_arr[k, i, j] = 2.0 * ( real(bxᵣ_arr[k, i, j])*real(xyᵣ_arr[k, i, j]) - real(byᵣ_arr[k, i, j])*real(xxᵣ_arr[k, i, j]) )
-    end
-
-    # Back to spectral. fft_backward! uses a normalized IFFT, so the
-    # pseudo-spectral product is already correctly scaled; only dealias.
-    fft_forward!(rhs, rhsᵣ, plans)
-
-    rhs_arr = parent(rhs)
-    @inbounds for k in 1:nz_local, j in 1:ny_local, i in 1:nx_local
-        i_global = local_to_global(i, 2, rhs)
-        j_global = local_to_global(j, 3, rhs)
-        if !L[i_global, j_global]
-            rhs_arr[k, i, j] = 0  # Dealias
-        end
-    end
+    # fft_backward! is normalized, so the products are already correctly scaled.
+    fft_forward!(ζx, ζx, plans)
+    fft_forward!(ζy, ζy, plans)
+    launch!(_omega_forcing_kernel!, backend, size(rhs),
+            rhs, ζx, ζy, G.kx, G.ky, mask, Δz, nz, accumulate)
     return rhs
 end
 
@@ -240,6 +216,14 @@ end
 Energy measures for monitoring simulation health and physics.
 ================================================================================
 =#
+
+_real_square(x) = real(x)^2
+
+"""Host Bool matrix for a diagnostic `Lmask` (`nothing` keeps every mode)."""
+_host_mask(::Nothing, nx, ny) = trues(nx, ny)
+_host_mask(mask::AbstractMatrix{Bool}, nx, ny) =
+    (_check_mask_size(mask, nx, ny); on_host(mask))
+_host_mask(rule, nx, ny) = [keep_mode(rule, i, j) for i in 1:nx, j in 1:ny]
 
 """
     flow_kinetic_energy(u, v) -> KE
@@ -261,21 +245,12 @@ Total kinetic energy (domain sum, not mean) in nondimensional units.
 
 # Note
 - This is NOT normalized by volume. For energy density, divide by nx×ny×nz.
-- In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
+- For complex arrays only the real part contributes.
 - For energy with spectral dealiasing,
   use `flow_kinetic_energy_spectral` instead.
 """
 function flow_kinetic_energy(u, v)
-    # Works with any array (regular or PencilArray)
-    # Uses real() to handle both real and complex arrays correctly
-    # (for real arrays, real() is a no-op; for complex, extracts real part)
-    u_arr = parent(u)
-    v_arr = parent(v)
-    KE = 0.0
-    @inbounds for i in eachindex(u_arr)
-        KE += 0.5 * (real(u_arr[i])^2 + real(v_arr[i])^2)
-    end
-    return KE
+    return 0.5 * (sum(_real_square, u) + sum(_real_square, v))
 end
 
 """
@@ -295,12 +270,6 @@ The total KE averages over the vertical levels:
 
     KE_total = (1/nz) Σᵢ KE(zᵢ)
 
-# Algorithm
-1. Loop over all spectral modes (kₓ, kᵧ, z) with dealiasing mask L
-2. Accumulate |u|² + |v|² at each level
-3. Apply dealiasing correction: subtract half the kh=0 mode
-4. Average over vertical levels (divide by nz)
-
 # Arguments
 - `uk, vk`: Spectral velocity fields (complex)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
@@ -312,53 +281,36 @@ Total kinetic energy per unit reference mass, normalized by nz.
 # Fortran Correspondence
 Matches the kinetic energy computation in `diag_zentrum` (diagnostics.f90:127-161)
 and `energy_linear` (diagnostics.f90:3024-3107).
-
-# Note
-In MPI mode, returns LOCAL energy. Use mpi_reduce_sum for global total.
 """
 function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-
-    # Get local dimensions
-    uk_arr = parent(uk)
-    vk_arr = parent(vk)
+    L = _host_mask(Lmask, nx, ny)
+    uk_arr = on_host(uk)
+    vk_arr = on_host(vk)
     nz_local, nx_local, ny_local = size(uk_arr)
 
     KE_total = 0.0
-
     @inbounds for k in 1:nz_local
         ke_k = 0.0
-
-        # Sum over horizontal wavenumbers with dealiasing
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, uk)
-            j_global = local_to_global(j, 3, uk)
-
-            if L[i_global, j_global]
-                # KE contribution: |u|² + |v|²
+            if L[i, j]
                 ke_k += abs2(uk_arr[k, i, j]) + abs2(vk_arr[k, i, j])
             end
         end
-
-        # Dealiasing correction: subtract half the kh=0 mode
-        # The kh=0 mode is at global index (1,1)
-        if local_to_global(1, 2, uk) == 1 && local_to_global(1, 3, uk) == 1
-            # This process owns the (1,1) mode
-            ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
-        end
-
+        # Dealiasing correction: subtract half the kh=0 mode at index (1,1)
+        ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
         KE_total += ke_k
     end
 
     # Normalize by nz (vertical integration)
-    KE = KE_total / nz
-
-    return KE
+    return KE_total / nz
 end
 
+_potential_energy_coefficients(a_ell::AbstractVector, nz) = on_host(a_ell)
+_potential_energy_coefficients(par, nz) = fill(par.f₀^2 / par.N², nz)
+
 """
-    flow_potential_energy_spectral(bk, G, par; Lmask=nothing) -> PE
+    flow_potential_energy_spectral(bk, G, a_ell; Lmask=nothing) -> PE
 
 Compute Boussinesq potential energy in spectral space with dealiasing.
 
@@ -374,7 +326,8 @@ For QG: b = ψ_z, so PE represents available potential energy from isopycnal til
 # Arguments
 - `bk`: Spectral buoyancy field (complex)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
-- `par`: Coefficient provider for Coriolis and stratification
+- `a_ell`: The `f²/N²` profile, or an object with `f₀` and `N²` properties for
+  a constant coefficient
 - `Lmask`: Optional dealiasing mask
 
 # Returns
@@ -383,52 +336,37 @@ Total potential energy per unit reference mass, normalized by nz.
 # Fortran Correspondence
 Matches the potential energy computation in `diag_zentrum` (ps term).
 """
-function flow_potential_energy_spectral(bk, G::RuntimeGeometry, par; Lmask=nothing)
+function flow_potential_energy_spectral(bk, G::RuntimeGeometry, a_ell; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
-    L = isnothing(Lmask) ? trues(nx, ny) : Lmask
-
-    # Get z-dependent elliptic coefficient a(z) = f²/N²(z)
-    # This handles both constant_N and skewed_gaussian stratification correctly
-    a_ell = if isdefined(PARENT, :a_ell_ut) && par !== nothing
-        PARENT.a_ell_ut(par, G)
-    else
-        fill(par.f₀^2 / par.N², nz)  # Fallback to constant
-    end
-
-    # Get local dimensions
-    bk_arr = parent(bk)
+    L = _host_mask(Lmask, nx, ny)
+    a = _potential_energy_coefficients(a_ell, nz)
+    bk_arr = on_host(bk)
     nz_local, nx_local, ny_local = size(bk_arr)
 
     PE_total = 0.0
-
     @inbounds for k in 1:nz_local
-        # Use global z-index for correct profile lookup in 2D decomposition
-        k_global = local_to_global(k, 1, bk)
-        a_ell_k = k_global <= length(a_ell) ? a_ell[k_global] : a_ell[end]
-
+        a_ell_k = k <= length(a) ? a[k] : a[end]
         pe_k = 0.0
-
         for j in 1:ny_local, i in 1:nx_local
-            i_global = local_to_global(i, 2, bk)
-            j_global = local_to_global(j, 3, bk)
-
-            if L[i_global, j_global]
+            if L[i, j]
                 pe_k += a_ell_k * abs2(bk_arr[k, i, j])
             end
         end
-
         # Dealiasing correction
-        if local_to_global(1, 2, bk) == 1 && local_to_global(1, 3, bk) == 1
-            pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
-        end
-
+        pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
         PE_total += pe_k
     end
 
-    # Normalize by nz
-    PE = PE_total / nz
+    return PE_total / nz
+end
 
-    return PE
+@kernel function _vertical_mean_energy_kernel!(WE, @Const(B), nz)
+    i, j = @index(Global, NTuple)
+    total = zero(eltype(WE))
+    for k in 1:nz
+        @inbounds total += abs2(B[k, i, j]) / 2
+    end
+    @inbounds WE[i, j] = total / nz
 end
 
 """
@@ -456,35 +394,15 @@ This function returns the vertical average:
 3. Average over vertical levels
 
 # Returns
-2D array (nx_local, ny_local) of vertically-averaged wave energy density.
-
-# Note
-In MPI mode with 2D decomposition, this returns LOCAL data only.
-For full domain visualization, gather data to root first.
+Host `(nx, ny)` array of vertically-averaged wave energy density.
 """
 function wave_energy_vavg(B, G::RuntimeGeometry, plans)
-    nz = G.nz
-
-    # Get local dimensions
-    B_arr = parent(B)
-    nz_local, nx_local, ny_local = size(B_arr)
-
-    # Invert full complex field to physical space
     Br = _allocate_fft_dst(B, plans)
     fft_backward!(Br, B, plans)
-    Br_arr = parent(Br)
-
-    # Accumulate 0.5|B|^2 and average over nz
-    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
-    # so no additional normalization is needed
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(Br_arr)
-    WE = zeros(Float64, nx_phys, ny_phys)
-    @inbounds for k in 1:nz_phys, j in 1:ny_phys, i in 1:nx_phys
-        WE[i,j] += 0.5 * abs2(Br_arr[k, i, j])
-    end
-    WE ./= nz
-    return WE
+    nz, nx, ny = size(Br)
+    WE = similar(Br, real(eltype(Br)), nx, ny)
+    launch!(_vertical_mean_energy_kernel!, Br, (nx, ny), WE, Br, nz)
+    return on_host(WE)
 end
 
 #=
@@ -502,7 +420,7 @@ Extract a horizontal (x-y) slice from a spectral 3D field.
 
 # Description
 Transforms a spectral field to physical space and extracts the horizontal
-slice at LOCAL vertical index k.
+slice at vertical index k.
 
 # Use Cases
 - Top-level plots (k=nz for closest to surface)
@@ -513,35 +431,18 @@ slice at LOCAL vertical index k.
 - `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `k::Int`: LOCAL vertical index for slice (1 ≤ k ≤ nz_local)
+- `k::Int`: Vertical index for slice (1 ≤ k ≤ nz)
 
 # Returns
-2D real array (nx_local, ny_local) with values at local z[k].
-
-# Note
-In MPI mode with 2D decomposition, k is a LOCAL index.
-For full domain slices, gather data to root first.
+Host `(nx, ny)` real array with values at z[k].
 """
 function slice_horizontal(field, G::RuntimeGeometry, plans; k::Int)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Inverse FFT entire field to get real slice
     Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
-    Xr_arr = parent(Xr)
-
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(Xr_arr)
-
-    @assert 1 <= k <= nz_phys "k=$k must be within local range 1:$nz_phys"
-
-    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
-    # so no additional normalization is needed
-    sl = Array{Float64}(undef, nx_phys, ny_phys)
-    @inbounds for j in 1:ny_phys, i in 1:nx_phys
-        sl[i,j] = real(Xr_arr[k, i, j])
-    end
-    return sl
+    nz = size(Xr, 1)
+    @assert 1 <= k <= nz "k=$k must be within range 1:$nz"
+    host = on_host(Xr)
+    return Float64[real(host[k, i, j]) for i in axes(host, 2), j in axes(host, 3)]
 end
 
 """
@@ -551,7 +452,7 @@ Extract a vertical (x-z) slice from a spectral 3D field at fixed y.
 
 # Description
 Transforms a spectral field to physical space and extracts the x-z
-slice at LOCAL y-index j.
+slice at y-index j.
 
 # Use Cases
 - Vertical wave structure visualization
@@ -562,34 +463,18 @@ slice at LOCAL y-index j.
 - `field::Array{Complex,3}`: Spectral field (nz, nx, ny)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
-- `j::Int`: LOCAL Y-index for slice (1 ≤ j ≤ ny_local)
+- `j::Int`: Y-index for slice (1 ≤ j ≤ ny)
 
 # Returns
-2D real array (nx_local, nz_local) with values at local y[j].
-
-# Note
-In MPI mode with 2D decomposition, j is a LOCAL index.
-For full domain slices, gather data to root first.
+Host `(nx, nz)` real array with values at y[j].
 """
 function slice_vertical_xz(field, G::RuntimeGeometry, plans; j::Int)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
     Xr = _allocate_fft_dst(field, plans)
     fft_backward!(Xr, field, plans)
-    Xr_arr = parent(Xr)
-
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(Xr_arr)
-
-    @assert 1 <= j <= ny_phys "j=$j must be within local range 1:$ny_phys"
-
-    # Note: fft_backward! uses normalized IFFT (FFTW.ifft / PencilFFTs ldiv!)
-    # so no additional normalization is needed
-    sl = Array{Float64}(undef, nx_phys, nz_phys)
-    @inbounds for k in 1:nz_phys, i in 1:nx_phys
-        sl[i,k] = real(Xr_arr[k, i, j])
-    end
-    return sl
+    ny = size(Xr, 3)
+    @assert 1 <= j <= ny "j=$j must be within range 1:$ny"
+    host = on_host(Xr)
+    return Float64[real(host[k, i, j]) for i in axes(host, 2), k in axes(host, 1)]
 end
 
 """
@@ -621,57 +506,9 @@ Two measures of wave energy in the model:
 Tuple (E_B, E_A) of domain-summed squared magnitudes.
 
 # Note
-- These are domain SUMS, not means. For energy density, divide by grid volume.
-- In MPI mode, this returns LOCAL energy. Use mpi_reduce_sum for global total.
-- For wave energies with spectral dealiasing,
+These are domain SUMS, not means. For energy density, divide by grid volume.
 """
-function wave_energy(B, A)
-    # Works with any array (regular or PencilArray)
-    B_arr = parent(B)
-    A_arr = parent(A)
-    EB = 0.0; EA = 0.0
-    @inbounds for x in B_arr; EB += abs2(x); end
-    @inbounds for x in A_arr; EA += abs2(x); end
-    return EB, EA
-end
-
-
-#=
-================================================================================
-                    GLOBAL ENERGY DIAGNOSTICS (MPI-AWARE)
-================================================================================
-`flow_kinetic_energy` and `wave_energy` accumulate over the local portion of a
-distributed field. These wrappers add the MPI reduction, and are what the
-model-level `flow_kinetic_energy(::QGYBJModel)` / `wave_energy(::QGYBJModel)`
-entry points in core/io.jl call.
-================================================================================
-=#
-
-"""
-    flow_kinetic_energy_global(u, v, mpi_config=nothing) -> KE
-
-Domain-integrated balanced-flow kinetic energy summed across all MPI ranks.
-Pass `mpi_config=nothing` for a serial field, where the local sum is already
-the global one.
-"""
-function flow_kinetic_energy_global(u, v, mpi_config=nothing)
-    KE_local = flow_kinetic_energy(u, v)
-    mpi_config === nothing && return KE_local
-    return PARENT.mpi_reduce_sum(KE_local, mpi_config)
-end
-
-"""
-    wave_energy_global(B, A, mpi_config=nothing) -> (E_B, E_A)
-
-Wave envelope and amplitude energies summed across all MPI ranks. Pass
-`mpi_config=nothing` for a serial field.
-"""
-function wave_energy_global(B, A, mpi_config=nothing)
-    EB_local, EA_local = wave_energy(B, A)
-    mpi_config === nothing && return EB_local, EA_local
-    return PARENT.mpi_reduce_sum(EB_local, mpi_config),
-           PARENT.mpi_reduce_sum(EA_local, mpi_config)
-end
+wave_energy(B, A) = (sum(abs2, B), sum(abs2, A))
 
 end # module
 
@@ -681,6 +518,3 @@ using .Diagnostics: slice_horizontal, slice_vertical_xz
 
 # Export spectral energy diagnostics (Fortran-compatible)
 using .Diagnostics: flow_kinetic_energy_spectral, flow_potential_energy_spectral
-
-# Export MPI-aware global energy functions
-using .Diagnostics: flow_kinetic_energy_global, wave_energy_global

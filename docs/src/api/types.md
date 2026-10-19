@@ -22,6 +22,17 @@ SimulationState
 `RectilinearGrid` is immutable. `QGYBJModel` owns model data and ephemeral
 runtime resources. `Simulation` separately owns execution lifecycle.
 
+## Architectures
+
+```@docs
+CPU
+GPU
+architecture
+on_architecture
+```
+
+See [CPU and GPU execution](@ref architectures).
+
 ## Physical components
 
 ```@docs
@@ -64,5 +75,6 @@ TimeInterval
 IterationInterval
 NetCDFOutput
 EnergyDiagnosticsOutput
+restore!
 AnalyticalProfile
 ```

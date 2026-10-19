@@ -5,7 +5,7 @@ CurrentModule = QGYBJplus
 ```
 
 Public operator entry points accept a model so they can use its fields,
-geometry, coefficients, transform plans, and communicator consistently.
+geometry, coefficients, transform plans, and architecture consistently.
 
 ## Elliptic inversions
 
@@ -20,8 +20,8 @@ invert_B_to_A!(model)
 compute_velocities!(model)
 compute_vertical_velocity!(model)
 compute_ybj_vertical_velocity!(model)
-compute_total_velocities!(model)
-compute_wave_velocities!(model)
+compute_total_velocities!(model; t)   # instantaneous velocity at time t
+compute_wave_velocities!(model; t)
 ```
 
 ## Diagnostics

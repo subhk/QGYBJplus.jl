@@ -4,17 +4,21 @@
 CurrentModule = QGYBJplus
 ```
 
-Particle interpolation evaluates model-owned physical velocities at particle
-positions.
+Particle interpolation evaluates the tracker's copy of the cell-centred
+horizontal velocity at particle positions, in the advection kernel on the
+model's architecture. Every scheme reproduces the grid values exactly.
 
 ## Select a method
 
-| Value | Behavior |
-|:--|:--|
-| `TRILINEAR` | lowest communication and interpolation cost |
-| `TRICUBIC` | smoother interpolation with a wider stencil |
-| `QUINTIC` | widest stencil and highest interpolation order |
-| `ADAPTIVE` | selects trilinear or tricubic interpolation from local field smoothness |
+| Value | Stencil | Error for smooth fields | Interpolant |
+|:--|:--|:--|:--|
+| `TRILINEAR` | 2 points per direction | O(h²) | continuous |
+| `TRICUBIC` (default) | 4 points per direction, Catmull-Rom | O(h³) | continuously differentiable |
+| `QUINTIC` | 6 points per direction, degree-5 Lagrange | O(h⁶) | continuous |
+
+A three-dimensional evaluation reads 8 grid points per field for `TRILINEAR`,
+64 for `TRICUBIC`, and 216 for `QUINTIC`. `ADAPTIVE` is deprecated and now
+uses `TRICUBIC`.
 
 ```julia
 configuration = ParticleConfig{Float64}(
@@ -23,22 +27,18 @@ configuration = ParticleConfig{Float64}(
     y_min=first(model.grid.y_faces),
     y_max=last(model.grid.y_faces),
     z_level=-100.0,
-    interpolation_method=TRICUBIC,
+    interpolation_method=QUINTIC,
 )
 initialize_particles!(model, configuration)
 ```
 
-Horizontal boundaries are periodic by default. The tracker converts global
-positions to the local coordinate system and applies the configured vertical
-boundary behavior.
+## Boundaries
 
-## Distributed halos
-
-Under MPI, velocity halos are exchanged before interpolation. Trilinear,
-tricubic, and quintic interpolation require one, two, and three horizontal
-halo cells respectively; adaptive interpolation reserves three. Wider halos
-increase communication cost.
-
-Choose a topology that leaves enough interior cells on each rank for the
-selected stencil. Particle migration occurs after the trajectory update and
-periodic boundary normalization.
+Horizontally the stencils wrap periodically. Vertically, each column is
+extended past the lid and the bottom by its mirror image, evenly for the
+horizontal velocity, which has zero vertical derivative there
+(``\psi_z = 0``), so the interpolation keeps its order of accuracy up to the
+boundaries. Positions outside the column take the boundary value. The
+lower-level `interpolate_velocity_advanced` also interpolates a vertical
+velocity, mirrored oddly so that it vanishes at both boundaries; it reads
+host arrays.

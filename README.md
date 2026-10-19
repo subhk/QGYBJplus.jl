@@ -9,12 +9,14 @@ This numerical model simulates interactions between near-inertial waves and
 (Lagrangian-mean) balanced flow. It combines the YBJ⁺ equation of Asselin &
 Young (2019), the wave-feedback formulation of Xie & Vanneste (2015),
 horizontal pseudo-spectral methods, second-order vertical differences, and
-ETD-RK2 time integration.
+ETD-RK2 time integration. Every array operation is a
+[KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl)
+kernel, so the same model runs on CPUs and on a GPU.
 
 ```julia
 using QGYBJplus
 
-grid = RectilinearGrid(size=(64, 64, 32),
+grid = RectilinearGrid(CPU(); size=(64, 64, 32),
                        extent=(500e3, 500e3, 4000.0), centered=true)
 model = QGYBJModel(grid=grid,
                    coriolis=FPlane(f=1e-4),
@@ -36,6 +38,17 @@ finally
     finalize_simulation!(simulation)
 end
 ```
+
+To run on an NVIDIA GPU, load CUDA.jl and replace `CPU()` with `GPU()`:
+
+```julia
+using CUDA, QGYBJplus
+grid = RectilinearGrid(GPU(); size=(256, 256, 64),
+                       extent=(500e3, 500e3, 4000.0), centered=true)
+```
+
+On the CPU, start Julia with several threads (`julia --threads=auto`) to run
+the kernels in parallel.
 
 
 ## References

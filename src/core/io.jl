@@ -18,22 +18,6 @@ function ModelOutputManager(specification::S, ::Type{T}, start_time=zero(T)) whe
         specification, 1, nothing, nothing, next_time, false)
 end
 
-function _run_on_root(operation, model::QGYBJModel)
-    runtime = model.runtime
-    result = nothing
-    failure = nothing
-    if runtime.mpi.is_root
-        try
-            result = operation()
-        catch exception
-            failure = sprint(showerror, exception, catch_backtrace())
-        end
-    end
-    failure = MPI.bcast(failure, 0, runtime.mpi.comm)
-    failure === nothing || error(failure)
-    return result
-end
-
 function _prepare_simulation_output!(simulation::Simulation)
     specification = simulation.run_options.output
     if specification === false
@@ -48,13 +32,81 @@ function _prepare_simulation_output!(simulation::Simulation)
         return simulation
     end
 
-    _run_on_root(simulation.model) do
-        mkpath(specification.path)
-    end
-    simulation.output_manager =
-        ModelOutputManager(specification, typeof(simulation.clock.time),
-                           simulation.clock.time)
+    mkpath(specification.path)
+    manager = ModelOutputManager(specification, typeof(simulation.clock.time),
+                                 simulation.clock.time)
+    _resume_state_files!(manager, simulation.clock)
+    simulation.output_manager = manager
     return simulation
+end
+
+"""Global attribute recording that output carries the model's own units."""
+const _UNITS_CONVENTION =
+    "Quantities are in the units of the model configuration " *
+    "(for example m, s, and m/s for a dimensional setup)."
+
+"""
+The state files (`state####.nc`, regular files only) already in `path`, in
+numbering order, with the time and iteration each records. A file that cannot
+be read gets iteration `typemax(Int)`, so only `overwrite=true` removes it.
+"""
+function _existing_state_files(path::AbstractString)
+    files = NamedTuple{(:index, :path, :time, :iteration),
+                       Tuple{Int, String, Float64, Int}}[]
+    isdir(path) || return files
+    for name in readdir(path)
+        matched = match(r"^state(\d+)\.nc$", name)
+        file = joinpath(path, name)
+        (matched === nothing || !isfile(file)) && continue
+        time, iteration = try
+            NCDataset(file, "r") do dataset
+                (Float64(dataset["time"][1]), Int(dataset.attrib["iteration"]))
+            end
+        catch exception
+            exception isa InterruptException && rethrow()
+            (NaN, typemax(Int))
+        end
+        push!(files, (index=parse(Int, matched[1]), path=file, time, iteration))
+    end
+    return sort!(files; by=file -> file.index)
+end
+
+"""
+Number this run's state files after those already in its output directory.
+A restored simulation (clock past iteration 0) appends after the files up to
+its restart iteration, and does not write the restart state again. Other
+existing files are an error unless `overwrite=true`, which removes them: all
+of them for a run from iteration 0, those after the restart iteration for a
+restored run.
+"""
+function _resume_state_files!(manager::ModelOutputManager, clock::Clock)
+    specification = manager.specification
+    existing = _existing_state_files(specification.path)
+    isempty(existing) && return manager
+
+    restored = clock.iteration > 0
+    stale = filter(file -> !restored || file.iteration > clock.iteration, existing)
+    if !isempty(stale)
+        specification.overwrite || throw(ArgumentError(
+            "$(specification.path) already holds state files " *
+            "($(basename(first(stale).path)) to $(basename(last(stale).path))) " *
+            (restored ? "after this run's restart iteration $(clock.iteration)" :
+                        "from another run") *
+            "; choose a new path or pass NetCDFOutput(...; overwrite=true) " *
+            "to replace them"))
+        foreach(file -> rm(file.path), stale)
+        filter!(file -> !(file in stale), existing)
+    end
+    isempty(existing) && return manager
+
+    latest = last(existing)
+    manager.counter = latest.index + 1
+    if latest.iteration == clock.iteration
+        # The restart state is already on disk.
+        manager.last_time = clock.time
+        manager.last_iteration = clock.iteration
+    end
+    return manager
 end
 
 function _output_due(manager::ModelOutputManager, clock::Clock;
@@ -88,33 +140,11 @@ function _advance_output_deadline!(manager::ModelOutputManager, time)
     return manager
 end
 
-function _physical_field(field, runtime::ModelRuntime)
-    physical = allocate_fft_backward_dst(field, runtime)
-    fft_backward!(physical, field, runtime)
-    return physical
-end
+_spectral_LA(model::QGYBJModel) =
+    _spectral_wave_velocity!(similar(model.fields.B), model.fields, model)
 
-function _spectral_LA(model::QGYBJModel)
-    fields = model.fields
-    LA = copyto!(similar(fields.B), fields.B)
-    model.physics.formulation isa YBJ && return LA
-
-    LA_data = parent(LA)
-    A_data = parent(fields.A)
-    # B = L⁺A = LA - kₕ²A/4 for each horizontal Fourier mode.
-    @inbounds for j in axes(LA_data, 3), i in axes(LA_data, 2), k in axes(LA_data, 1)
-        LA_data[k, i, j] +=
-            0.25 * get_kh2(i, j, k, fields.B, model) * A_data[k, i, j]
-    end
-    return LA
-end
-
-function _gather_array(field, model::QGYBJModel)
-    runtime = model.runtime
-    gathered = gather_to_root(
-        field, runtime.geometry, runtime.mpi)
-    return runtime.mpi.is_root ? Array(parent(gathered)) : nothing
-end
+"""Host copy of a model array, for writing to disk."""
+_host_array(field) = Array(field)
 
 _wave_formulation_name(model::QGYBJModel) =
     string(nameof(typeof(model.physics.formulation)))
@@ -140,9 +170,22 @@ function _refresh_output_diagnostics!(model::QGYBJModel,
     return model
 end
 
-function _define_field!(dataset, name::AbstractString, values)
-    variable = NCDatasets.defVar(dataset, name, Float64, ("x", "y", "z"))
+function _define_field!(dataset, name::AbstractString, values,
+    long_name::AbstractString; dimensions=("x", "y", "z"))
+
+    variable = NCDatasets.defVar(dataset, name, Float64, dimensions)
     variable[:, :, :] = _to_xyz(values)
+    variable.attrib["long_name"] = long_name
+    return variable
+end
+
+"""Define a one-dimensional variable with its values and description."""
+function _define_vector!(dataset, name::AbstractString, dimension, values,
+    long_name::AbstractString)
+
+    variable = NCDatasets.defVar(dataset, name, Float64, (dimension,))
+    variable[:] = values
+    variable.attrib["long_name"] = long_name
     return variable
 end
 
@@ -161,86 +204,112 @@ function _write_model_state_file!(manager::ModelOutputManager,
 
     _refresh_output_diagnostics!(model, specification)
 
-    psi_physical = write_psi ? _physical_field(fields.psi, runtime) : nothing
-    LA_spectral = write_waves ? _spectral_LA(model) : nothing
-    LA_physical = write_waves ? _physical_field(LA_spectral, runtime) : nothing
-    A_physical = write_waves ? _physical_field(fields.A, runtime) : nothing
+    # Physical fields go through one scratch buffer, one at a time, straight
+    # to the host, so writing output adds no device memory.
+    psi_host, A_physical_host, LA_physical_host = with_scratch(runtime.workspace) do
+        buffer = scratch_like(runtime.workspace, fields.B)
+        physical_host(spectral) = _host_array(fft_backward!(buffer, spectral, runtime))
+        psi_host = write_psi ? physical_host(fields.psi) : nothing
+        A_host = write_waves ? physical_host(fields.A) : nothing
+        LA_host = if write_waves
+            _spectral_wave_velocity!(buffer, fields, model)
+            physical_host(buffer)
+        else
+            nothing
+        end
+        (psi_host, A_host, LA_host)
+    end
 
-    q_global = _gather_array(fields.q, model)
-    B_global = _gather_array(fields.B, model)
-    psi_global = write_psi ? _gather_array(psi_physical, model) : nothing
-    LA_physical_global = write_waves ? _gather_array(LA_physical, model) : nothing
-    A_physical_global = write_waves ? _gather_array(A_physical, model) : nothing
-    u_global = write_velocities ? _gather_array(fields.u, model) : nothing
-    v_global = write_velocities ? _gather_array(fields.v, model) : nothing
-    w_global = write_velocities ? _gather_array(fields.w, model) : nothing
+    q_host = _host_array(fields.q)
+    B_host = _host_array(fields.B)
+    u_host = write_velocities ? _host_array(fields.u) : nothing
+    v_host = write_velocities ? _host_array(fields.v) : nothing
+    w_host = write_velocities ? _host_array(fields.w) : nothing
 
     filename = @sprintf("state%04d.nc", manager.counter)
     filepath = joinpath(specification.path, filename)
-    _run_on_root(model) do
-        NCDataset(filepath, "c") do dataset
-            nx, ny, nz = grid.size
-            dataset.dim["x"] = nx
-            dataset.dim["y"] = ny
-            dataset.dim["z"] = nz
-            dataset.dim["z_face"] = nz
-            dataset.dim["time"] = 1
+    spectral = ("kx_index", "ky_index", "z")
+    fourier = "horizontal Fourier coefficients (unnormalised forward FFT, " *
+              "FFTW order; wavenumbers in kx and ky)"
+    NCDataset(filepath, "c") do dataset
+        nx, ny, nz = grid.size
+        dataset.dim["x"] = nx
+        dataset.dim["y"] = ny
+        dataset.dim["z"] = nz
+        dataset.dim["z_face"] = nz
+        dataset.dim["kx_index"] = nx
+        dataset.dim["ky_index"] = ny
+        dataset.dim["time"] = 1
 
-            x = NCDatasets.defVar(dataset, "x", Float64, ("x",))
-            y = NCDatasets.defVar(dataset, "y", Float64, ("y",))
-            z = NCDatasets.defVar(dataset, "z", Float64, ("z",))
-            z_face = NCDatasets.defVar(
-                dataset, "z_face", Float64, ("z_face",))
-            time = NCDatasets.defVar(dataset, "time", Float64, ("time",))
-            x[:] = grid.x
-            y[:] = grid.y
-            z[:] = grid.z
-            z_face[:] = grid.z_faces[2:end]
-            time[1] = simulation.clock.time
+        _define_vector!(dataset, "x", "x", grid.x, "x coordinate of the cell centres")
+        _define_vector!(dataset, "y", "y", grid.y, "y coordinate of the cell centres")
+        _define_vector!(dataset, "z", "z", grid.z, "z coordinate of the cell centres")
+        _define_vector!(dataset, "z_face", "z_face", grid.z_faces[2:end],
+            "z coordinate of the upper face of each cell")
+        _define_vector!(dataset, "kx", "kx_index", grid.kx,
+            "x wavenumber of each Fourier coefficient (FFTW order)")
+        _define_vector!(dataset, "ky", "ky_index", grid.ky,
+            "y wavenumber of each Fourier coefficient (FFTW order)")
+        _define_vector!(dataset, "time", "time", [simulation.clock.time], "time")
 
-            if write_psi
-                _define_field!(dataset, "psi", real.(psi_global))
-            end
-            if write_waves
-                _define_field!(dataset, "A_real", real.(A_physical_global))
-                _define_field!(dataset, "A_imag", imag.(A_physical_global))
-                _define_field!(dataset, "LA_real", real.(LA_physical_global))
-                _define_field!(dataset, "LA_imag", imag.(LA_physical_global))
-            end
-
-            _define_field!(dataset, "q_hat_real", real.(q_global))
-            _define_field!(dataset, "q_hat_imag", imag.(q_global))
-            _define_field!(dataset, "B_hat_real", real.(B_global))
-            _define_field!(dataset, "B_hat_imag", imag.(B_global))
-
-            if write_velocities
-                _define_field!(dataset, "u", u_global)
-                _define_field!(dataset, "v", v_global)
-                _define_field!(dataset, "w", w_global)
-            end
-
-            N² = NCDatasets.defVar(dataset, "N2", Float64, ("z",))
-            N²_face = NCDatasets.defVar(
-                dataset, "N2_face", Float64, ("z_face",))
-            a_ell = NCDatasets.defVar(
-                dataset, "a_ell", Float64, ("z_face",))
-            N²[:] = runtime.coefficients.N²
-            N²_face[:] = runtime.coefficients.N²_face
-            a_ell[:] = runtime.coefficients.a_ell
-
-            dataset.attrib["title"] = "QG-YBJ model state"
-            dataset.attrib["model_time"] = simulation.clock.time
-            dataset.attrib["iteration"] = simulation.clock.iteration
-            dataset.attrib["f0"] = model.physics.coriolis.f
-            dataset.attrib["Lx"] = grid.extent[1]
-            dataset.attrib["Ly"] = grid.extent[2]
-            dataset.attrib["Lz"] = grid.extent[3]
-            dataset.attrib["wave_formulation"] = _wave_formulation_name(model)
-            dataset.attrib["feedback_mode"] = _feedback_mode_name(model)
-            dataset.attrib["generalized_pv"] =
-                _generalized_pv_convention(model)
+        if write_psi
+            _define_field!(dataset, "psi", real.(psi_host),
+                "balanced streamfunction (the Lagrangian-mean flow)")
         end
-        filepath
+        if write_waves
+            _define_field!(dataset, "A_real", real.(A_physical_host),
+                "real part of the wave amplitude A")
+            _define_field!(dataset, "A_imag", imag.(A_physical_host),
+                "imaginary part of the wave amplitude A")
+            _define_field!(dataset, "LA_real", real.(LA_physical_host),
+                "real part of LA, the back-rotated wave velocity u + iv")
+            _define_field!(dataset, "LA_imag", imag.(LA_physical_host),
+                "imaginary part of LA, the back-rotated wave velocity u + iv")
+        end
+
+        _define_field!(dataset, "q_hat_real", real.(q_host),
+            "real part of the potential vorticity q: " * fourier;
+            dimensions=spectral)
+        _define_field!(dataset, "q_hat_imag", imag.(q_host),
+            "imaginary part of the potential vorticity q: " * fourier;
+            dimensions=spectral)
+        _define_field!(dataset, "B_hat_real", real.(B_host),
+            "real part of the wave envelope B: " * fourier;
+            dimensions=spectral)
+        _define_field!(dataset, "B_hat_imag", imag.(B_host),
+            "imaginary part of the wave envelope B: " * fourier;
+            dimensions=spectral)
+
+        if write_velocities
+            _define_field!(dataset, "u", u_host,
+                "x velocity of the balanced flow (Lagrangian mean)")
+            _define_field!(dataset, "v", v_host,
+                "y velocity of the balanced flow (Lagrangian mean)")
+            _define_field!(dataset, "w", w_host,
+                "vertical velocity of the balanced flow (omega equation, " *
+                "averaged from the faces to the centres)")
+        end
+
+        _define_vector!(dataset, "N2", "z", runtime.coefficients.N²,
+            "squared buoyancy frequency at the cell centres")
+        _define_vector!(dataset, "N2_face", "z_face",
+            runtime.coefficients.N²_face,
+            "squared buoyancy frequency at the upper cell faces")
+        _define_vector!(dataset, "a_ell", "z_face", runtime.coefficients.a_ell,
+            "f0^2 / N2 at the upper cell faces")
+
+        dataset.attrib["title"] = "QG-YBJ model state"
+        dataset.attrib["units_convention"] = _UNITS_CONVENTION
+        dataset.attrib["model_time"] = simulation.clock.time
+        dataset.attrib["iteration"] = simulation.clock.iteration
+        dataset.attrib["f0"] = model.physics.coriolis.f
+        dataset.attrib["Lx"] = grid.extent[1]
+        dataset.attrib["Ly"] = grid.extent[2]
+        dataset.attrib["Lz"] = grid.extent[3]
+        dataset.attrib["wave_formulation"] = _wave_formulation_name(model)
+        dataset.attrib["feedback_mode"] = _feedback_mode_name(model)
+        dataset.attrib["generalized_pv"] =
+            _generalized_pv_convention(model)
     end
 
     manager.counter += 1
@@ -263,7 +332,8 @@ end
 """Simulation-owned accumulator for scheduled energy diagnostics."""
 mutable struct EnergyDiagnosticsManager{T, S}
     specification::S
-    # Snapshot buffer, allocated on the first write and reused after that.
+    # Field snapshot for the original YBJ formulation, whose wave diagnostics
+    # need a full field set; allocated on the first record.
     fields::Any
     last_time::Union{Nothing, T}
     last_iteration::Union{Nothing, Int}
@@ -274,6 +344,8 @@ mutable struct EnergyDiagnosticsManager{T, S}
     wave_CE::Vector{T}
     mean_flow_KE::Vector{T}
     mean_flow_PE::Vector{T}
+    # Wall-clock time (`Base.time()`) the files were last written.
+    last_write::Float64
     closed::Bool
 end
 
@@ -284,8 +356,22 @@ function EnergyDiagnosticsManager(specification::S, ::Type{T},
                 T(start_time + specification.schedule.interval) : nothing
     return EnergyDiagnosticsManager{T, S}(
         specification, nothing, nothing, nothing, next_time,
-        T[], T[], T[], T[], T[], T[], false)
+        T[], T[], T[], T[], T[], T[], 0.0, false)
 end
+
+"""Wall-clock seconds between rewrites of the energy files during a run."""
+const _ENERGY_WRITE_INTERVAL = 10.0
+
+const _ENERGY_COMPONENTS = (
+    (:wave_KE, "wave kinetic energy"),
+    (:wave_PE, "wave potential energy"),
+    (:wave_CE, "wave correction energy"),
+    (:mean_flow_KE, "mean-flow kinetic energy"),
+    (:mean_flow_PE, "mean-flow potential energy"),
+)
+
+_energy_files(path) = [joinpath(path, "$(name).nc")
+                       for name in (first.(_ENERGY_COMPONENTS)..., :total_energy)]
 
 function _diagnostics_specification(simulation::Simulation)
     configured = simulation.run_options.diagnostics
@@ -297,7 +383,8 @@ function _diagnostics_specification(simulation::Simulation)
     base_path = output isa NetCDFOutput ? output.path :
                 simulation.run_options.output_dir
     return EnergyDiagnosticsOutput(
-        path=joinpath(base_path, "diagnostic"), schedule=configured)
+        path=joinpath(base_path, "diagnostic"), schedule=configured,
+        overwrite=output isa NetCDFOutput && output.overwrite)
 end
 
 function _prepare_simulation_diagnostics!(simulation::Simulation)
@@ -311,12 +398,65 @@ function _prepare_simulation_diagnostics!(simulation::Simulation)
     if manager !== nothing && !manager.closed
         return simulation
     end
-    _run_on_root(simulation.model) do
-        mkpath(specification.path)
-    end
-    simulation.diagnostics_manager = EnergyDiagnosticsManager(
+    mkpath(specification.path)
+    manager = EnergyDiagnosticsManager(
         specification, typeof(simulation.clock.time), simulation.clock.time)
+    _resume_energy_series!(manager, simulation.clock)
+    simulation.diagnostics_manager = manager
     return simulation
+end
+
+"""
+Continue the energy series already in the diagnostic directory. A restored
+simulation (clock past iteration 0) keeps the stored records up to its
+restart time and does not record that time again. Other existing series are
+an error unless `overwrite=true`, which drops them (for a restored run, only
+the records after the restart time).
+"""
+function _resume_energy_series!(manager::EnergyDiagnosticsManager, clock::Clock)
+    specification = manager.specification
+    existing = filter(isfile, _energy_files(specification.path))
+    isempty(existing) && return manager
+
+    summary = joinpath(specification.path, "total_energy.nc")
+    restored = clock.iteration > 0
+    stored = restored && isfile(summary) ? _read_energy_series(summary) : nothing
+    tolerance = 8eps(max(abs(clock.time), one(clock.time)))
+    keep = stored === nothing ? 0 :
+           count(time -> time <= clock.time + tolerance, stored.time)
+    if stored === nothing || keep < length(stored.time)
+        specification.overwrite || throw(ArgumentError(
+            "$(specification.path) already holds energy diagnostics " *
+            (restored ? "after this run's restart time $(clock.time)" :
+                        "from another run") *
+            "; choose a new path or pass overwrite=true to replace them"))
+    end
+    if stored === nothing
+        foreach(rm, existing)
+        return manager
+    end
+
+    T = eltype(manager.time)
+    append!(manager.time, T.(stored.time[1:keep]))
+    for (name, _) in _ENERGY_COMPONENTS
+        append!(getfield(manager, name), T.(getfield(stored, name)[1:keep]))
+    end
+    if keep > 0 && abs(stored.time[keep] - clock.time) <= tolerance
+        # The restart time is already recorded.
+        manager.last_time = T(clock.time)
+        manager.last_iteration = clock.iteration
+    end
+    return manager
+end
+
+"""Times and energy components stored in a `total_energy.nc` file."""
+function _read_energy_series(path::AbstractString)
+    return NCDataset(path, "r") do dataset
+        components = map(_ENERGY_COMPONENTS) do (name, _)
+            name => Vector{Float64}(dataset[String(name)][:])
+        end
+        (; time=Vector{Float64}(dataset["time"][:]), components...)
+    end
 end
 
 function _diagnostics_due(manager::EnergyDiagnosticsManager, clock::Clock;
@@ -350,122 +490,143 @@ function _advance_diagnostics_deadline!(manager::EnergyDiagnosticsManager,
     return manager
 end
 
-function _local_energy_components(model::QGYBJModel, fields::ModelFields)
-    runtime = model.runtime
-    geometry = runtime.geometry
-    coefficients = runtime.coefficients
-    mask = runtime.dealias_mask
-    workspace = runtime.workspace
-    psi_z, = z_scratch(workspace, :psi_z)
-    A_z, = z_scratch(workspace, :A_z)
-    C_z, = z_scratch(workspace, :C_z)
-    psi_z === nothing && (psi_z = allocate_z_pencil(geometry, eltype(fields.psi)))
-    A_z === nothing && (A_z = allocate_z_pencil(geometry, eltype(fields.A)))
-    C_z === nothing && (C_z = allocate_z_pencil(geometry, eltype(fields.C)))
-    transpose_to_z_pencil!(psi_z, fields.psi, geometry)
-    transpose_to_z_pencil!(A_z, fields.A, geometry)
-    transpose_to_z_pencil!(C_z, fields.C, geometry)
-    psi = parent(psi_z)
-    A = parent(A_z)
-    C = parent(C_z)
-    nx, ny, nz = geometry.nx, geometry.ny, geometry.nz
-    dz = nz > 1 ? abs(geometry.z[2] - geometry.z[1]) : 1.0
+@kernel function _energy_column_kernel!(energies, @Const(psi), @Const(A), @Const(C),
+                                        @Const(kx), @Const(ky), mask, @Const(a_ell),
+                                        dz, nz, include_wave_correction)
+    i, j = @index(Global, NTuple)
+    mean_flow_KE = zero(eltype(energies))
+    mean_flow_PE = zero(eltype(energies))
+    wave_KE = zero(eltype(energies))
+    wave_PE = zero(eltype(energies))
+    wave_CE = zero(eltype(energies))
+    if keep_mode(mask, i, j)
+        @inbounds kh² = kx[i]^2 + ky[j]^2
+        for k in 1:nz
+            @inbounds begin
+                a = a_ell[k]
+                # Horizontal fields use a full complex FFT, so Parseval assigns
+                # the zero mode the same weight as every other stored coefficient.
+                mean_flow_KE += kh² * abs2(psi[k, i, j])
 
-    mean_flow_KE = 0.0
-    mean_flow_PE = 0.0
-    wave_KE = 0.0
-    wave_PE = 0.0
-    wave_CE = 0.0
-    include_wave_correction = !(model.physics.formulation isa YBJ)
-    for j in axes(psi, 3), i in axes(psi, 2)
-        i_global = local_to_global_z(i, 2, geometry)
-        j_global = local_to_global_z(j, 3, geometry)
-        mask[i_global, j_global] || continue
-        kh² = geometry.kx[i_global]^2 + geometry.ky[j_global]^2
-        for k in axes(psi, 1)
-            k_global = local_to_global_z(k, 1, geometry)
-            a = coefficients.a_ell[k_global]
-            # Horizontal fields use a full complex FFT, so Parseval assigns the
-            # zero mode the same weight as every other stored coefficient.
-            mean_flow_KE += kh² * abs2(psi[k, i, j])
+                if k < nz
+                    ψz = (psi[k + 1, i, j] - psi[k, i, j]) / dz
+                    mean_flow_PE += a * abs2(ψz)
+                end
 
-            if k < last(axes(psi, 1))
-                ψz = (psi[k + 1, i, j] - psi[k, i, j]) / dz
-                mean_flow_PE += a * abs2(ψz)
-            end
+                LA = if nz == 1
+                    zero(eltype(C))
+                elseif k == 1
+                    a * C[k, i, j] / dz
+                elseif k == nz
+                    -a_ell[k - 1] * C[k - 1, i, j] / dz
+                else
+                    (a * C[k, i, j] - a_ell[k - 1] * C[k - 1, i, j]) / dz
+                end
+                # WKE is an informational phase-averaged kinetic-energy
+                # diagnostic; unlike the following two terms, it is not part
+                # of the coupled invariant in Asselin & Young (2019), (3.7).
+                wave_KE += abs2(LA)
 
-            LA = if nz == 1
-                zero(eltype(C))
-            elseif k_global == 1
-                a * C[k, i, j] / dz
-            elseif k_global == nz
-                -coefficients.a_ell[k_global - 1] * C[k - 1, i, j] / dz
-            else
-                (a * C[k, i, j] -
-                 coefficients.a_ell[k_global - 1] * C[k - 1, i, j]) / dz
-            end
-            # WKE is an informational phase-averaged kinetic-energy diagnostic;
-            # unlike the following two terms, it is not part of the coupled
-            # invariant in Asselin & Young (2019), equation (3.7).
-            wave_KE += abs2(LA)
-
-            # The shared outer factor 1/2 below turns these accumulators into
-            # (a/4)|∇A_z|² and (1/16)|ΔA|², respectively, as in (3.7).
-            wave_PE += 0.5a * kh² * abs2(C[k, i, j])
-            if include_wave_correction
-                # The correction results from L → L⁺ and is absent from the
-                # original YBJ formulation. PassiveWave keeps the existing L⁺
-                # diagnostic convention used by `_refresh_wave_diagnostics!`.
-                wave_CE += (1 / 8) * kh²^2 * abs2(A[k, i, j])
+                # The shared outer factor 1/2 turns these accumulators into
+                # (a/4)|∇A_z|² and (1/16)|ΔA|², respectively, as in (3.7).
+                wave_PE += a / 2 * kh² * abs2(C[k, i, j])
+                if include_wave_correction
+                    # The correction results from L → L⁺ and is absent from
+                    # the original YBJ formulation. PassiveWave keeps the L⁺
+                    # diagnostic convention used by `_refresh_wave_diagnostics!`.
+                    wave_CE += kh²^2 * abs2(A[k, i, j]) / 8
+                end
             end
         end
     end
-
-    normalization = 0.5 / ((nx * ny)^2 * nz)
-    return (
-        wave_KE * normalization,
-        wave_PE * normalization,
-        wave_CE * normalization,
-        mean_flow_KE * normalization,
-        mean_flow_PE * normalization,
-    )
+    @inbounds begin
+        energies[1, i, j] = wave_KE
+        energies[2, i, j] = wave_PE
+        energies[3, i, j] = wave_CE
+        energies[4, i, j] = mean_flow_KE
+        energies[5, i, j] = mean_flow_PE
+    end
 end
 
-function _energy_components(model::QGYBJModel, fields::ModelFields)
-    local_values = _local_energy_components(model, fields)
-    comm = model.runtime.mpi.comm
-    global_values = ntuple(length(local_values)) do index
-        MPI.Allreduce(local_values[index], +, comm)
+"""
+Domain-integrated energy components of `fields`, in the order wave KE, wave
+PE, wave correction energy, mean-flow KE, mean-flow PE. Each horizontal mode
+column is summed by one kernel work item, then the columns are reduced.
+"""
+_local_energy_components(model::QGYBJModel, fields::ModelFields) =
+    _local_energy_components(model, fields.psi, fields.A, fields.C, fields.u)
+
+function _local_energy_components(model::QGYBJModel, psi, A, C, real_template)
+    runtime = model.runtime
+    geometry = runtime.geometry
+    nx, ny, nz = geometry.nx, geometry.ny, geometry.nz
+    dz = nz > 1 ? abs(geometry.z[2] - geometry.z[1]) : one(eltype(geometry.z))
+
+    energies = similar(real_template, 5, nx, ny)
+    launch!(_energy_column_kernel!, energies, (nx, ny),
+            energies, psi, A, C, geometry.kx, geometry.ky,
+            runtime.dealias_mask, runtime.device_coefficients.a_ell, dz, nz,
+            !(model.physics.formulation isa YBJ))
+    totals = on_host(vec(sum(energies; dims=(2, 3))))
+
+    normalization = 0.5 / ((nx * ny)^2 * nz)
+    return Tuple(totals[index] * normalization for index in 1:5)
+end
+
+_energy_components(model::QGYBJModel, fields::ModelFields) =
+    _local_energy_components(model, fields)
+
+"""
+Energy components rebuilt from the model's prognostic `q` and `B`, so that a
+record never relies on, or mutates, the live diagnostic fields: ETD-RK2 keeps
+only q and B prognostically, and passive-wave steps clear A and C on purpose.
+
+ψ (balanced, from q - qʷ) and A, C (from B) are rebuilt in scratch buffers.
+The original YBJ formulation recovers A through the full wave tendency, which
+needs a complete field set, so it works on a snapshot of the fields instead.
+"""
+function _current_energy_components(model::QGYBJModel, manager)
+    fields = model.fields
+    runtime = model.runtime
+    workspace = runtime.workspace
+    coefficients = runtime.device_coefficients
+    options = ETDModelOptions(model.physics, model.numerics)
+
+    if model.physics.formulation isa YBJ
+        if manager.fields === nothing
+            manager.fields = copy_fields(fields)
+        else
+            copy_fields!(manager.fields, fields)
+        end
+        snapshot = manager.fields
+        # FixedFlow owns a prescribed streamfunction independently of q.
+        _fixed_flow(options) || _invert_total_q_to_psi!(snapshot, runtime.geometry,
+            options, runtime.plans, coefficients.a_ell, runtime.dealias_mask;
+            workspace)
+        _refresh_wave_diagnostics!(snapshot, model)
+        return _energy_components(model, snapshot)
     end
-    return global_values
+
+    return with_scratch(workspace) do
+        psi = if _fixed_flow(options)
+            fields.psi
+        else
+            _invert_total_q_to_psi!(scratch_like(workspace, fields.psi), fields,
+                runtime.geometry, options, runtime.plans, coefficients.a_ell,
+                runtime.dealias_mask; workspace)
+        end
+        A = scratch_like(workspace, fields.A)
+        C = scratch_like(workspace, fields.C)
+        Elliptic._invert_B_to_A!(A, C, fields.B, runtime.geometry,
+            coefficients.a_ell, workspace)
+        _local_energy_components(model, psi, A, C, fields.u)
+    end
 end
 
 function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     simulation::Simulation)
 
-    # ETD-RK2 stores only q and B prognostically. Rebuild the diagnostic fields
-    # required by the energy formulas, including for passive-wave runs whose
-    # stepping path intentionally clears A and C. Work on a copy so scheduled
-    # observation never mutates the live model's diagnostic state.
-    model = simulation.model
-    if manager.fields === nothing
-        manager.fields = copy_fields(model.fields)
-    else
-        copy_fields!(manager.fields, model.fields)
-    end
-    fields = manager.fields
-    runtime = model.runtime
-    coefficients = runtime.coefficients
-    options = ETDModelOptions(model.physics, model.numerics)
-    # FixedFlow owns a prescribed streamfunction independently of q. Preserve
-    # that copied diagnostic instead of replacing it with an elliptic inversion.
-    if !_fixed_flow(options)
-        _invert_total_q_to_psi!(fields, runtime.geometry, options,
-            runtime.plans, coefficients.a_ell, runtime.dealias_mask;
-            workspace=runtime.workspace)
-    end
-    _refresh_wave_diagnostics!(fields, model)
-    values = _energy_components(model, fields)
+    values = _current_energy_components(simulation.model, manager)
     T = eltype(manager.time)
     push!(manager.time, T(simulation.clock.time))
     push!(manager.wave_KE, T(values[1]))
@@ -486,81 +647,70 @@ function _maybe_record_simulation_diagnostics!(simulation::Simulation;
     manager === nothing && return simulation
     _diagnostics_due(manager, simulation.clock; initial) || return simulation
     _record_energy_diagnostics!(manager, simulation)
+    # Keep the files current, so that a run that is killed keeps its series.
+    Base.time() - manager.last_write >= _ENERGY_WRITE_INTERVAL &&
+        _write_energy_diagnostics!(manager, simulation.model)
     return simulation
 end
 
-function _write_energy_file(path::AbstractString, variable_name::AbstractString,
-    times, values, long_name::AbstractString)
-
-    NCDataset(path, "c"; format=:netcdf3_classic) do dataset
-        dataset.dim["time"] = length(times)
-        time = NCDatasets.defVar(dataset, "time", Float64, ("time",))
-        energy = NCDatasets.defVar(
-            dataset, variable_name, Float64, ("time",))
-        time[:] = times
-        energy[:] = values
-        time.attrib["units"] = "seconds"
-        energy.attrib["long_name"] = long_name
-        dataset.attrib["title"] = "QG-YBJ energy diagnostic"
+"""
+Write a NetCDF file through `build(dataset)` atomically: into a temporary file
+that then replaces `path`, so a reader never sees a partly written file.
+"""
+function _write_atomically(build, path::AbstractString)
+    temporary = path * ".tmp"
+    try
+        NCDataset(build, temporary, "c"; format=:netcdf3_classic)
+        mv(temporary, path; force=true)
+    finally
+        isfile(temporary) && rm(temporary)
     end
     return path
+end
+
+function _define_energy_time!(dataset, times)
+    dataset.dim["time"] = length(times)
+    _define_vector!(dataset, "time", "time", times, "time")
+    dataset.attrib["units_convention"] = _UNITS_CONVENTION
+    return dataset
 end
 
 function _write_energy_diagnostics!(manager::EnergyDiagnosticsManager,
     model::QGYBJModel)
 
+    manager.last_write = Base.time()
     isempty(manager.time) && return manager
     path = manager.specification.path
-    _run_on_root(model) do
-        _write_energy_file(joinpath(path, "wave_KE.nc"), "wave_KE",
-            manager.time, manager.wave_KE, "wave kinetic energy")
-        _write_energy_file(joinpath(path, "wave_PE.nc"), "wave_PE",
-            manager.time, manager.wave_PE, "wave potential energy")
-        _write_energy_file(joinpath(path, "wave_CE.nc"), "wave_CE",
-            manager.time, manager.wave_CE, "wave correction energy")
-        _write_energy_file(joinpath(path, "mean_flow_KE.nc"), "mean_flow_KE",
-            manager.time, manager.mean_flow_KE, "mean-flow kinetic energy")
-        _write_energy_file(joinpath(path, "mean_flow_PE.nc"), "mean_flow_PE",
-            manager.time, manager.mean_flow_PE, "mean-flow potential energy")
-
-        NCDataset(joinpath(path, "total_energy.nc"), "c";
-                  format=:netcdf3_classic) do dataset
-            dataset.dim["time"] = length(manager.time)
-            time = NCDatasets.defVar(dataset, "time", Float64, ("time",))
-            time[:] = manager.time
-            time.attrib["units"] = "seconds"
-            series = (
-                wave_KE=manager.wave_KE,
-                wave_PE=manager.wave_PE,
-                wave_CE=manager.wave_CE,
-                mean_flow_KE=manager.mean_flow_KE,
-                mean_flow_PE=manager.mean_flow_PE,
-            )
-            for (name, values) in pairs(series)
-                variable = NCDatasets.defVar(
-                    dataset, String(name), Float64, ("time",))
-                variable[:] = values
-            end
-            total_wave = manager.wave_KE .+ manager.wave_PE .+
-                         manager.wave_CE
-            total_flow = manager.mean_flow_KE .+ manager.mean_flow_PE
-            total_wave_variable = NCDatasets.defVar(
-                dataset, "total_wave_energy", Float64, ("time",))
-            total_wave_variable[:] = total_wave
-            total_flow_variable = NCDatasets.defVar(
-                dataset, "total_flow_energy", Float64, ("time",))
-            total_flow_variable[:] = total_flow
-            # Asselin & Young (2019), equation (3.7): wave kinetic energy is
-            # informational and is not part of the conserved coupled energy.
-            coupled_energy = total_flow .+ manager.wave_PE .+ manager.wave_CE
-            coupled_variable = NCDatasets.defVar(
-                dataset, "coupled_energy", Float64, ("time",))
-            coupled_variable[:] = coupled_energy
-            total_variable = NCDatasets.defVar(
-                dataset, "total_energy", Float64, ("time",))
-            total_variable[:] = total_wave .+ total_flow
-            dataset.attrib["title"] = "QG-YBJ total energy diagnostics"
+    for (name, long_name) in _ENERGY_COMPONENTS
+        _write_atomically(joinpath(path, "$(name).nc")) do dataset
+            _define_energy_time!(dataset, manager.time)
+            _define_vector!(dataset, String(name), "time",
+                            getfield(manager, name), long_name)
+            dataset.attrib["title"] = "QG-YBJ energy diagnostic"
         end
+    end
+
+    total_wave = manager.wave_KE .+ manager.wave_PE .+ manager.wave_CE
+    total_flow = manager.mean_flow_KE .+ manager.mean_flow_PE
+    # Asselin & Young (2019), equation (3.7): wave kinetic energy is
+    # informational and is not part of the conserved coupled energy.
+    coupled_energy = total_flow .+ manager.wave_PE .+ manager.wave_CE
+    _write_atomically(joinpath(path, "total_energy.nc")) do dataset
+        _define_energy_time!(dataset, manager.time)
+        for (name, long_name) in _ENERGY_COMPONENTS
+            _define_vector!(dataset, String(name), "time",
+                            getfield(manager, name), long_name)
+        end
+        _define_vector!(dataset, "total_wave_energy", "time", total_wave,
+            "wave_KE + wave_PE + wave_CE")
+        _define_vector!(dataset, "total_flow_energy", "time", total_flow,
+            "mean_flow_KE + mean_flow_PE")
+        _define_vector!(dataset, "coupled_energy", "time", coupled_energy,
+            "total_flow_energy + wave_PE + wave_CE, conserved by the ideal " *
+            "coupled system (Asselin & Young 2019, eq. 3.7)")
+        _define_vector!(dataset, "total_energy", "time", total_wave .+ total_flow,
+            "total_wave_energy + total_flow_energy")
+        dataset.attrib["title"] = "QG-YBJ total energy diagnostics"
     end
     return manager
 end
@@ -579,6 +729,8 @@ function _finish_simulation_diagnostics!(simulation::Simulation)
         rethrow()
     finally
         manager.closed = true
+        # A closed manager is replaced on the next run!, so free its snapshot.
+        manager.fields = nothing
     end
     return simulation
 end
@@ -601,79 +753,117 @@ function _finish_simulation_output!(simulation::Simulation)
     return simulation
 end
 
-function _read_restart_on_root(model::QGYBJModel, path::AbstractString)
-    return _run_on_root(model) do
-        NCDataset(path, "r") do dataset
-            if haskey(dataset.attrib, "wave_formulation")
-                stored = String(dataset.attrib["wave_formulation"])
-                expected = _wave_formulation_name(model)
-                stored == expected || throw(ArgumentError(
-                    "restart wave formulation is $stored; model uses $expected"))
-            end
-            if haskey(dataset.attrib, "generalized_pv")
-                stored = String(dataset.attrib["generalized_pv"])
-                expected = _generalized_pv_convention(model)
-                stored == expected || throw(ArgumentError(
-                    "restart generalized-PV convention is $stored; " *
-                    "model requires $expected"))
-            end
-            required = ("q_hat_real", "q_hat_imag",
-                        "B_hat_real", "B_hat_imag")
-            all(name -> haskey(dataset, name), required) ||
-                throw(ArgumentError("restart file is missing prognostic fields"))
-            q = _from_xyz(dataset["q_hat_real"][:, :, :] .+
-                          im .* dataset["q_hat_imag"][:, :, :])
-            B = _from_xyz(dataset["B_hat_real"][:, :, :] .+
-                          im .* dataset["B_hat_imag"][:, :, :])
-            size(q) == (model.grid.size[3], model.grid.size[1], model.grid.size[2]) ||
-                throw(DimensionMismatch("restart q dimensions do not match model grid"))
-            size(B) == size(q) ||
-                throw(DimensionMismatch("restart B dimensions do not match restart q"))
-            (q, B)
+function _read_restart(model::QGYBJModel, path::AbstractString)
+    return NCDataset(path, "r") do dataset
+        if haskey(dataset.attrib, "wave_formulation")
+            stored = String(dataset.attrib["wave_formulation"])
+            expected = _wave_formulation_name(model)
+            stored == expected || throw(ArgumentError(
+                "restart wave formulation is $stored; model uses $expected"))
         end
+        if haskey(dataset.attrib, "generalized_pv")
+            stored = String(dataset.attrib["generalized_pv"])
+            expected = _generalized_pv_convention(model)
+            stored == expected || throw(ArgumentError(
+                "restart generalized-PV convention is $stored; " *
+                "model requires $expected"))
+        end
+        _check_restart_configuration(model, dataset, path)
+        required = ("q_hat_real", "q_hat_imag",
+                    "B_hat_real", "B_hat_imag")
+        all(name -> haskey(dataset, name), required) ||
+            throw(ArgumentError("restart file is missing prognostic fields"))
+        q = _from_xyz(dataset["q_hat_real"][:, :, :] .+
+                      im .* dataset["q_hat_imag"][:, :, :])
+        B = _from_xyz(dataset["B_hat_real"][:, :, :] .+
+                      im .* dataset["B_hat_imag"][:, :, :])
+        size(q) == (model.grid.size[3], model.grid.size[1], model.grid.size[2]) ||
+            throw(DimensionMismatch("restart q dimensions do not match model grid"))
+        size(B) == size(q) ||
+            throw(DimensionMismatch("restart B dimensions do not match restart q"))
+        time = haskey(dataset, "time") ? Float64(dataset["time"][1]) : nothing
+        iteration = haskey(dataset.attrib, "iteration") ?
+                    Int(dataset.attrib["iteration"]) : nothing
+        (; q, B, time, iteration)
     end
 end
 
 """
+Compare the domain, f, and N² recorded in a restart file with `model`. The
+Fourier coefficients only mean the same field on a domain of the same size,
+so a different extent is an error. A different f or N² changes how q is
+inverted, which may be intended, so it only warns.
+"""
+function _check_restart_configuration(model::QGYBJModel, dataset, path)
+    attributes = dataset.attrib
+    for (name, value) in zip(("Lx", "Ly", "Lz"), model.grid.extent)
+        haskey(attributes, name) || continue
+        stored = Float64(attributes[name])
+        isapprox(stored, value; rtol=1e-6) || throw(ArgumentError(
+            "restart file $path is for a domain with $name = $stored; " *
+            "the model has $name = $value"))
+    end
+    f = model.physics.coriolis.f
+    if haskey(attributes, "f0") && !isapprox(Float64(attributes["f0"]), f; rtol=1e-6)
+        @warn "Restart file $path was written with f0 = $(attributes["f0"]); " *
+              "the model uses f0 = $f, which changes the flow inverted from q"
+    end
+    N² = model.runtime.coefficients.N²
+    if haskey(dataset, "N2")
+        stored = dataset["N2"][:]
+        length(stored) == length(N²) && isapprox(stored, N²; rtol=1e-6) ||
+            @warn "Restart file $path was written with a different N² profile, " *
+                  "which changes the flow inverted from q"
+    end
+    return nothing
+end
+
+"""
     restore!(model, path)
+    restore!(simulation, path)
 
 Restore the prognostic `q` and `B` fields from a simulation state file and
-rebuild the model's diagnostic fields.
+rebuild the model's diagnostic fields. The file must be for a domain of the
+same size and resolution; a different f or N² warns.
+
+Restoring a `Simulation` also sets its clock to the file's time and
+iteration, so output, diagnostics, and particles continue from there, and
+`stop_time` and `stop_iteration` keep counting from the original start.
 """
 function restore!(model::QGYBJModel, path::AbstractString)
-    model.runtime.finalized && error("cannot restore a finalized model")
-    root_fields = _read_restart_on_root(model, path)
-    q_root = is_root(model) ? first(root_fields) : nothing
-    B_root = is_root(model) ? last(root_fields) : nothing
-    runtime = model.runtime
-    q = scatter_from_root(q_root, runtime.geometry, runtime.mpi;
-                          plans=runtime.plans)
-    B = scatter_from_root(B_root, runtime.geometry, runtime.mpi;
-                          plans=runtime.plans)
-    copyto!(parent(model.fields.q), parent(q))
-    copyto!(parent(model.fields.B), parent(B))
-    invert_q_to_psi!(model)
-    compute_velocities!(model; compute_w=false)
-    _refresh_wave_diagnostics!(model)
+    _restore_fields!(model, path)
     return model
 end
 
 function restore!(simulation::Simulation, path::AbstractString)
     _assert_mutable(simulation)
-    restore!(simulation.model, path)
+    restart = _restore_fields!(simulation.model, path)
+    T = typeof(simulation.clock.time)
+    restart.time === nothing || (simulation.clock.time = T(restart.time))
+    restart.iteration === nothing ||
+        (simulation.clock.iteration = restart.iteration)
     return simulation
 end
 
-"""Return globally reduced balanced-flow kinetic energy for `model`."""
-function Diagnostics.flow_kinetic_energy(model::QGYBJModel)
+function _restore_fields!(model::QGYBJModel, path::AbstractString)
+    model.runtime.finalized && error("cannot restore a finalized model")
+    restart = _read_restart(model, path)
+    copyto!(model.fields.q, restart.q)
+    copyto!(model.fields.B, restart.B)
+    invert_q_to_psi!(model)
     compute_velocities!(model; compute_w=false)
-    return Diagnostics.flow_kinetic_energy_global(
-        model.fields.u, model.fields.v, model.runtime.mpi)
+    _refresh_wave_diagnostics!(model)
+    return restart
 end
 
-"""Return globally reduced envelope and amplitude energies for `model`."""
+"""Return the domain-integrated balanced-flow kinetic energy of `model`."""
+function Diagnostics.flow_kinetic_energy(model::QGYBJModel)
+    compute_velocities!(model; compute_w=false)
+    return Diagnostics.flow_kinetic_energy(model.fields.u, model.fields.v)
+end
+
+"""Return the domain-integrated envelope and amplitude energies of `model`."""
 function Diagnostics.wave_energy(model::QGYBJModel)
     _refresh_wave_diagnostics!(model)
-    return Diagnostics.wave_energy_global(
-        model.fields.B, model.fields.A, model.runtime.mpi)
+    return Diagnostics.wave_energy(model.fields.B, model.fields.A)
 end

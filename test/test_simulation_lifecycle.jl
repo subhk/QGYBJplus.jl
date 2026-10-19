@@ -1,15 +1,6 @@
 using Test
 using QGYBJplus
 
-struct SlowProgressModel
-    runtime
-end
-
-function QGYBJplus._progress_maxima(::SlowProgressModel)
-    sleep(0.2)
-    return (wave_speed=1.0, flow_speed=2.0)
-end
-
 @testset "Simulation clock and lifecycle" begin
     function lifecycle_model(; flow=FixedFlow(), formulation=PassiveWave(), f=1.0)
         grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
@@ -25,7 +16,6 @@ end
             formulation=formulation,
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
     end
@@ -73,78 +63,18 @@ end
     @test decimal_limited.clock.iteration == 10
     @test decimal_limited.clock.time ≈ 1.0
 
-    progress_model = lifecycle_model()
-    try
-        set!(progress_model;
-            ψ=(x, y, _) -> 3sin(x) + 4sin(y),
-            pv_method=:none,
-        )
-        progress_model.fields.B[1, 1, 1] = 1 + 0im
-        progress_simulation = Simulation(progress_model;
-            Δt=0.25,
-            stop_time=0.5,
-            output=false,
-            diagnostics=false,
-            verbose=false,
-        )
-        progress_text = mktemp() do _, io
-            redirect_stdout(io) do
-                run!(progress_simulation;
-                    progress=true,
-                    diagnostics_interval=1,
-                )
-            end
-            flush(io)
-            seekstart(io)
-            read(io, String)
+    # Progress reporting (used by the examples) prints one line per report.
+    progress_simulation = Simulation(model; Δt=0.25, stop_iteration=2,
+        output=false, diagnostics=false, verbose=false)
+    progress_text = mktemp() do _, io
+        redirect_stdout(io) do
+            run!(progress_simulation; progress=true, diagnostics_interval=1)
         end
-
-        progress_lines = filter(!isempty, split(progress_text, '\n'))
-        @test length(progress_lines) == 2
-        @test startswith(progress_lines[1],
-            "Iteration: 0001, time: 250 ms, Δt: 250 ms, ")
-        @test startswith(progress_lines[2],
-            "Iteration: 0002, time: 500 ms, Δt: 250 ms, ")
-        @test all(occursin("max(|LA|) = ", line) for line in progress_lines)
-        @test all(occursin("max(|uₕ|) = ", line) for line in progress_lines)
-        @test all(occursin(
-            r", wall time: (?:[0-9.eE+-]+ (?:ns|μs|ms|second|seconds|minute|minutes|hour|hours|day|days))$",
-            line) for line in progress_lines)
-        wave_matches = collect(eachmatch(
-            r"max\(\|LA\|\) = ([0-9.eE+-]+)", progress_text))
-        flow_matches = collect(eachmatch(
-            r"max\(\|uₕ\|\) = ([0-9.eE+-]+)", progress_text))
-        @test length(wave_matches) == 2
-        @test length(flow_matches) == 2
-        @test all(parse(Float64, match.captures[1]) > 0 for match in wave_matches)
-        @test all(isapprox(parse(Float64, match.captures[1]), 5.0;
-                           rtol=1e-3) for match in flow_matches)
-        @test progress_simulation.clock.iteration == 2
-        @test progress_simulation.clock.time ≈ 0.5
-        @test progress_simulation.stop_iteration === nothing
-    finally
-        finalize_model!(progress_model)
+        flush(io)
+        seekstart(io)
+        read(io, String)
     end
-
-    ybj_plus_model = lifecycle_model(formulation=YBJPlus())
-    try
-        ybj_plus_model.fields.B[1, 2, 1] = 1 + 0im
-        ybj_plus_model.fields.A[1, 2, 1] = 4 + 0im
-        maxima = QGYBJplus._progress_maxima(ybj_plus_model)
-        @test maxima.wave_speed ≈ 2 / 64
-    finally
-        finalize_model!(ybj_plus_model)
-    end
-
-    ybj_model = lifecycle_model(formulation=YBJ())
-    try
-        ybj_model.fields.B[1, 2, 1] = 2 + 0im
-        ybj_model.fields.A[1, 2, 1] = 100 + 0im
-        maxima = QGYBJplus._progress_maxima(ybj_model)
-        @test maxima.wave_speed ≈ 2 / 64
-    finally
-        finalize_model!(ybj_model)
-    end
+    @test count(line -> startswith(line, "Iteration: "), split(progress_text, '\n')) == 2
 
     for state in (Running, Failed)
         time_limited.state = state

@@ -46,14 +46,12 @@ and examples are on the linked API pages.
 - `flow_kinetic_energy`
 - `wave_energy`
 
-## Parallel helpers
+## Architectures
 
-- `get_local_range`
-- `get_local_range_physical`
-- `get_local_range_spectral`
-- `local_to_global`
-- `gather_to_root`
-- `scatter_from_root`
+- [`CPU`](@ref)
+- [`GPU`](@ref)
+- `architecture`
+- [`on_architecture`](@ref)
 
 ## Particles
 

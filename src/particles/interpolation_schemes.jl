@@ -1,560 +1,174 @@
 """
-Advanced interpolation schemes for particle advection.
+Interpolation of cell-centred velocity fields at particle positions.
 
-This module provides higher-order interpolation methods beyond trilinear
-interpolation, including tricubic and adaptive schemes for improved accuracy.
+Every scheme is a tensor product of one-dimensional interpolating stencils
+that reproduce the grid values exactly. Horizontally the fields are periodic.
+Vertically each column is extended past the lid and the bottom by its mirror
+image, even for the horizontal velocity and odd for the vertical velocity, so
+that `w` vanishes at both rigid boundaries.
 """
-
 module InterpolationSchemes
 
 export InterpolationMethod, TRILINEAR, TRICUBIC, ADAPTIVE, QUINTIC,
-       interpolate_velocity_advanced,
-       CubicSpline1D, tricubic_weights, bicubic_interpolation,
-       quintic_basis_functions, quintic_interpolation,
-       required_halo_width,
-       get_grid_index, get_grid_index_global
+       interpolate_velocity_advanced, interpolate_fields
 
 """
-Available interpolation methods.
+Available interpolation methods. The errors are for smooth fields on a grid
+of spacing h.
+
+- `TRILINEAR`: linear in each direction (2-point stencil), O(h²), continuous.
+- `TRICUBIC`: Catmull-Rom cubic (4-point stencil), O(h³), continuously
+  differentiable. The default.
+- `QUINTIC`: degree-5 Lagrange polynomial (6-point stencil), O(h⁶),
+  continuous.
+- `ADAPTIVE`: deprecated, now the same as `TRICUBIC`.
 """
 @enum InterpolationMethod begin
-    TRILINEAR = 1    # O(h²) - Fast, standard trilinear
-    TRICUBIC = 2     # O(h⁴) - High accuracy, C¹ smooth
-    ADAPTIVE = 3     # Adaptive based on local gradient
-    QUINTIC = 4      # O(h⁶) - Highest accuracy (experimental)
+    TRILINEAR = 1
+    TRICUBIC = 2
+    ADAPTIVE = 3
+    QUINTIC = 4
 end
 
-"""
-    required_halo_width(method::InterpolationMethod)
+"""Linear weights for the points at offsets 0 and 1 from the cell's lower node."""
+@inline _stencil_weights(::Val{2}, t) = (1 - t, t)
 
-Return the minimum halo width required for a given interpolation method.
-
-The halo width is the number of ghost cells needed on each side of the local
-domain to perform interpolation for particles near domain boundaries.
-
-# Stencil Requirements
-- TRILINEAR: 2×2×2 stencil, needs 1 halo cell (accesses [0, +1])
-- TRICUBIC:  4×4×4 stencil, needs 2 halo cells (accesses [-1, 0, +1, +2])
-- QUINTIC:   6×6×6 stencil, needs 3 halo cells (accesses [-2, -1, 0, +1, +2, +3])
-- ADAPTIVE:  May use any scheme, defaults to max (3)
-"""
-function required_halo_width(method::InterpolationMethod)
-    if method == TRILINEAR
-        return 1
-    elseif method == TRICUBIC
-        return 2
-    elseif method == QUINTIC
-        return 3
-    elseif method == ADAPTIVE
-        return 3  # Conservative: support all schemes
-    else
-        return 2  # Default fallback
-    end
-end
-
-"""
-1D cubic spline interpolation weights and derivatives.
-"""
-struct CubicSpline1D{T<:AbstractFloat}
-    # Cubic spline basis functions for uniform grid
-    # Using Catmull-Rom spline (C¹ continuous)
-    function CubicSpline1D{T}() where T
-        new{T}()
-    end
-end
-
-"""
-    cubic_basis_functions(t)
-
-Catmull-Rom cubic spline basis functions.
-For parameter t ∈ [0,1], returns weights for points at [-1, 0, 1, 2].
-"""
-function cubic_basis_functions(t::T) where T
+"""Catmull-Rom weights for the points at offsets -1, 0, 1, and 2."""
+@inline function _stencil_weights(::Val{4}, t)
     t2 = t * t
     t3 = t2 * t
-    
-    # Catmull-Rom basis functions
-    w0 = -0.5*t3 + t2 - 0.5*t           # Weight for point at -1
-    w1 = 1.5*t3 - 2.5*t2 + 1.0          # Weight for point at 0  
-    w2 = -1.5*t3 + 2.0*t2 + 0.5*t       # Weight for point at 1
-    w3 = 0.5*t3 - 0.5*t2                # Weight for point at 2
-    
-    return w0, w1, w2, w3
+    return ((-t3 + 2t2 - t) / 2,
+            (3t3 - 5t2 + 2) / 2,
+            (-3t3 + 4t2 + t) / 2,
+            (t3 - t2) / 2)
+end
+
+"""Degree-5 Lagrange weights for the points at offsets -2, -1, 0, 1, 2, and 3."""
+@inline function _stencil_weights(::Val{6}, t)
+    a, b, c, d, e, g = t + 2, t + 1, t, t - 1, t - 2, t - 3
+    return (-b * c * d * e * g / 120,
+            a * c * d * e * g / 24,
+            -a * b * d * e * g / 12,
+            a * b * c * e * g / 12,
+            -a * b * c * d * g / 24,
+            a * b * c * d * e / 120)
+end
+
+"""Horizontal index `i` wrapped (periodic) or clamped into `1:n`."""
+@inline get_grid_index(i::Int, n::Int, periodic::Bool) =
+    periodic ? mod(i - 1, n) + 1 : clamp(i, 1, n)
+
+"""
+Level `k` of a column of `nz` cell centres extended by mirror images about the
+bottom and the lid: the stored level it reads, and whether it is reflected an
+odd number of times.
+"""
+@inline function _mirrored_level(k::Int, nz::Int)
+    m = mod(k - 1, 2nz)
+    return m < nz ? (m + 1, false) : (2nz - m, true)
 end
 
 """
-    tricubic_weights(tx, ty, tz)
+    interpolate_fields(fields, parities, x, y, z, grid_info, boundary_conditions, method)
 
-Return Catmull-Rom weights for tricubic interpolation as three 4-tuples
-corresponding to x, y, and z directions.
+Interpolate each array of the tuple `fields` (cell centred, `(nz, nx, ny)`
+layout) at `(x, y, z)`, with `x` and `y` measured from the domain origin.
+Returns a tuple with one value per field.
+
+Above the lid `z = 0` and below the bottom `z = -Lz`, field `n` continues as
+the mirror image of its column: evenly for `parities[n] = 1` (zero normal
+derivative, as for the horizontal velocity, since ψ_z = 0 there) and oddly
+for `parities[n] = -1` (zero value, as for the vertical velocity). A position
+outside `[-Lz, 0]` takes the value at the nearer boundary.
 """
-function tricubic_weights(tx::T, ty::T, tz::T) where T
-    return cubic_basis_functions(tx), cubic_basis_functions(ty), cubic_basis_functions(tz)
-end
-
-"""
-    bicubic_interpolation(x, y, field, grid_info, boundary_conditions)
-
-High-accuracy bicubic interpolation using a 4×4 stencil.
-"""
-function bicubic_interpolation(x::T, y::T,
-                              field::Array{T,2},
-                              grid_info, boundary_conditions) where T
-
-    nx, ny = size(field)
-    dx, dy = grid_info.dx, grid_info.dy
-    Lx, Ly = grid_info.Lx, grid_info.Ly
-
-    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
-    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-
-    fx = x_periodic / dx
-    fy = y_periodic / dy
-
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-
-    tx = fx - ix
-    ty = fy - iy
-
-    wx0, wx1, wx2, wx3 = cubic_basis_functions(tx)
-    wy0, wy1, wy2, wy3 = cubic_basis_functions(ty)
-
-    interp = zero(T)
-    for j in 0:3, i in 0:3
-        gx = get_grid_index(ix + i, nx, boundary_conditions.periodic_x)
-        gy = get_grid_index(iy + j, ny, boundary_conditions.periodic_y)
-
-        weight = (i == 0 ? wx0 : i == 1 ? wx1 : i == 2 ? wx2 : wx3) *
-                 (j == 0 ? wy0 : j == 1 ? wy1 : j == 2 ? wy2 : wy3)
-
-        interp += weight * field[gx, gy]
+function interpolate_fields(fields::NTuple{N, AbstractArray{T, 3}},
+                            parities::NTuple{N, Int}, x::T, y::T, z::T,
+                            grid_info, boundary_conditions,
+                            method::InterpolationMethod) where {N, T}
+    if method == TRILINEAR
+        return _interpolate_stencil(Val(2), fields, parities, x, y, z,
+                                    grid_info, boundary_conditions)
+    elseif method == TRICUBIC || method == ADAPTIVE
+        return _interpolate_stencil(Val(4), fields, parities, x, y, z,
+                                    grid_info, boundary_conditions)
+    elseif method == QUINTIC
+        return _interpolate_stencil(Val(6), fields, parities, x, y, z,
+                                    grid_info, boundary_conditions)
     end
-
-    return interp
+    throw(ArgumentError("unknown interpolation method $method"))
 end
 
-"""
-    cubic_derivative_weights(t)
-
-Derivatives of Catmull-Rom basis functions.
-"""
-function cubic_derivative_weights(t::T) where T
-    t2 = t * t
-    
-    # Derivatives of basis functions
-    dw0 = -1.5*t2 + 2.0*t - 0.5
-    dw1 = 4.5*t2 - 5.0*t
-    dw2 = -4.5*t2 + 4.0*t + 0.5
-    dw3 = 1.5*t2 - t
-    
-    return dw0, dw1, dw2, dw3
-end
-
-"""
-    tricubic_interpolation(x, y, z, field, grid_info, boundary_conditions)
-
-High-accuracy tricubic interpolation using 4×4×4 = 64 grid points.
-Provides O(h⁴) accuracy and C¹ continuity.
-"""
-function tricubic_interpolation(x::T, y::T, z::T,
-                               u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                               grid_info, boundary_conditions) where T
-
-    nz, nx, ny = size(u_field)
+function _interpolate_stencil(::Val{S}, fields::NTuple{N, AbstractArray{T, 3}},
+                              parities::NTuple{N, Int}, x::T, y::T, z::T,
+                              grid_info, boundary_conditions) where {S, N, T}
+    nz, nx, ny = size(first(fields))
     dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
-    Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
+    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -grid_info.Lz
     z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
     z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
+    periodic_x = boundary_conditions.periodic_x
+    periodic_y = boundary_conditions.periodic_y
 
-    # Handle periodic boundaries
-    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
-    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, z_max)
-
-    # Convert to grid coordinates: z[k] = z0 + (k-1)*dz for cell centers
-    fx = x_periodic / dx
-    fy = y_periodic / dy
-    fz = (z_clamped - z0) / dz
-    
-    # Get integer parts and fractional coordinates
+    # Positions in grid units: node i (1-based) sits at (i - 1) dx, level k at
+    # z0 + (k - 1) dz.
+    fx = (periodic_x ? mod(x, grid_info.Lx) : x) / dx
+    fy = (periodic_y ? mod(y, grid_info.Ly) : y) / dy
+    fz = (clamp(z, z_min, z_max) - z0) / dz
     ix = floor(Int, fx)
     iy = floor(Int, fy)
     iz = floor(Int, fz)
-    
-    tx = fx - ix  # Parameter in [0,1]
-    ty = fy - iy
-    tz = fz - iz
-    
-    # Get cubic spline weights
-    wx0, wx1, wx2, wx3 = cubic_basis_functions(tx)
-    wy0, wy1, wy2, wy3 = cubic_basis_functions(ty)
-    wz0, wz1, wz2, wz3 = cubic_basis_functions(tz)
-    
-    # Initialize interpolated values
-    u_interp = zero(T)
-    v_interp = zero(T)
-    w_interp = zero(T)
-    
-    # 4×4×4 interpolation stencil
-    # Catmull-Rom stencil: P_{-1}, P_0, P_1, P_2 relative to interval [ix, ix+1]
-    # At t=0, w1=1 gives P_0 (start of interval)
-    # For ix (0-based), P_0 is at array index ix+1 (1-based)
-    # So stencil indices are: ix (P_{-1}), ix+1 (P_0), ix+2 (P_1), ix+3 (P_2)
-    for k in 0:3, j in 0:3, i in 0:3
-        # Mesh indices with boundary handling (convert 0-based ix to 1-based)
-        gx = get_grid_index(ix + i, nx, boundary_conditions.periodic_x)
-        gy = get_grid_index(iy + j, ny, boundary_conditions.periodic_y)
-        gz = get_grid_index(iz + k, nz, false)  # Z never periodic
-        
-        if gx > 0 && gy > 0 && gz > 0  # Valid indices
-            # Combined weight
-            weight = (i == 0 ? wx0 : i == 1 ? wx1 : i == 2 ? wx2 : wx3) *
-                    (j == 0 ? wy0 : j == 1 ? wy1 : j == 2 ? wy2 : wy3) *
-                    (k == 0 ? wz0 : k == 1 ? wz1 : k == 2 ? wz2 : wz3)
-            
-            u_interp += weight * u_field[gz, gx, gy]
-            v_interp += weight * v_field[gz, gx, gy]
-            w_interp += weight * w_field[gz, gx, gy]
+    wx = _stencil_weights(Val(S), fx - ix)
+    wy = _stencil_weights(Val(S), fy - iy)
+    wz = _stencil_weights(Val(S), fz - iz)
+
+    # The cell's lower node has index ix + 1; the stencil starts S/2 - 1
+    # nodes before it.
+    first_offset = 1 - S ÷ 2
+    levels = ntuple(k -> _mirrored_level(iz + first_offset + k, nz), Val(S))
+
+    values = ntuple(_ -> zero(T), Val(N))
+    for j in 1:S
+        gy = get_grid_index(iy + first_offset + j, ny, periodic_y)
+        for i in 1:S
+            gx = get_grid_index(ix + first_offset + i, nx, periodic_x)
+            wxy = wx[i] * wy[j]
+            for k in 1:S
+                gz, mirrored = levels[k]
+                values = _accumulate(values, fields, parities, mirrored,
+                                     wxy * wz[k], gz, gx, gy)
+            end
         end
     end
-    
-    return u_interp, v_interp, w_interp
+    return values
 end
 
-"""
-    get_grid_index(idx, n, periodic)
-
-Get valid grid index with boundary conditions.
-
-# Arguments
-- `idx`: 1-based grid index (may be outside [1, n])
-- `n`: Array size for boundary handling
-- `periodic`: If true, wraps around [1, n]; if false, clamps to [1, n]
-
-# Note on Parallel Mode
-In parallel mode, `n` should be the LOCAL array size. For periodic boundaries,
-the calling code must ensure that:
-1. For x-direction: halos are used (periodic_x=false in interpolation)
-2. For y-direction: either y is not distributed (1D x-decomposition), or
-   global ny is passed and halos are set up for y
-
-The halo-aware interpolation functions handle this correctly for 1D decomposition.
-"""
-function get_grid_index(idx::Int, n::Int, periodic::Bool)
-    if periodic
-        return mod(idx - 1, n) + 1  # Periodic wrapping (1-based)
-    else
-        return max(1, min(n, idx))  # Clamping for non-periodic
+# A separate function, so that the closure does not capture the reassigned
+# accumulator (which would box it).
+@inline function _accumulate(values::NTuple{N, T}, fields, parities, mirrored,
+                             weight, gz, gx, gy) where {N, T}
+    return ntuple(Val(N)) do n
+        sign = mirrored ? parities[n] : 1
+        @inbounds values[n] + sign * weight * fields[n][gz, gx, gy]
     end
 end
 
 """
-    get_grid_index_global(idx, n_local, n_global, periodic)
+    interpolate_velocity_advanced(x, y, z, u, v, w, grid_info, boundary_conditions, method)
 
-Get valid grid index with boundary conditions, using GLOBAL domain size for periodic wrapping.
-
-This is the preferred function for parallel mode interpolation where periodic boundaries
-must wrap around the global domain, not the local array.
-
-# Arguments
-- `idx`: 1-based grid index (may be outside [1, n_local])
-- `n_local`: Size of the local array
-- `n_global`: Size of the global domain (for periodic wrapping)
-- `periodic`: If true, wraps around [1, n_global]; if false, clamps to [1, n_local]
-
-# Returns
-- For periodic=true: Index wrapped to [1, n_global]. If result > n_local, caller
-  must use halo data or skip this point.
-- For periodic=false: Index clamped to [1, n_local]
-
-# Example
-```julia
-# 1D x-decomposition: rank 0 has x indices 1:32 of global 128
-# Particle at global x=127 needs to wrap to x=127 (or use halo from rank 3)
-gx = get_grid_index_global(127, 32, 128, true)  # Returns 127 (outside local)
-```
-"""
-function get_grid_index_global(idx::Int, n_local::Int, n_global::Int, periodic::Bool)
-    if periodic
-        # Wrap around global domain
-        idx_wrapped = mod(idx - 1, n_global) + 1
-        # Return the wrapped index (caller checks if it's in local range)
-        return idx_wrapped
-    else
-        # Clamp to local array bounds
-        return max(1, min(n_local, idx))
-    end
-end
-
-"""
-    adaptive_interpolation(x, y, z, fields, grid_info, boundary_conditions)
-
-Adaptive interpolation that chooses method based on local field smoothness.
-"""
-function adaptive_interpolation(x::T, y::T, z::T,
-                               u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                               grid_info, boundary_conditions) where T
-    
-    # Estimate local smoothness using finite differences
-    smoothness = estimate_field_smoothness(
-        x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions
-    )
-    
-    # Choose interpolation method based on smoothness
-    if smoothness > 0.1  # Rough field - use trilinear for stability
-        return trilinear_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    else  # Smooth field - use tricubic for accuracy
-        return tricubic_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    end
-end
-
-"""
-Estimate local field smoothness using second derivatives.
-"""
-function estimate_field_smoothness(x::T, y::T, z::T,
-                                  u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                                  grid_info, boundary_conditions) where T
-
-    nz, nx, ny = size(u_field)
-    dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
-    Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
-    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
-    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
-
-    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
-    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-
-    # Convert to grid indices
-    ix_raw = round(Int, x_periodic / dx) + 1
-    iy_raw = round(Int, y_periodic / dy) + 1
-    z_clamped = clamp(z, z0, z_max)
-    iz_raw = round(Int, (z_clamped - z0) / dz) + 1
-
-    ix = nx >= 3 ? clamp(ix_raw, 2, nx - 1) : clamp(ix_raw, 1, nx)
-    iy = ny >= 3 ? clamp(iy_raw, 2, ny - 1) : clamp(iy_raw, 1, ny)
-    iz = nz >= 3 ? clamp(iz_raw, 2, nz - 1) : clamp(iz_raw, 1, nz)
-    
-    # Compute second derivatives (finite differences) when stencil fits
-    d2u_dx2 = nx >= 3 ? (u_field[iz, ix+1, iy] - 2*u_field[iz, ix, iy] + u_field[iz, ix-1, iy]) / dx^2 : zero(T)
-    d2u_dy2 = ny >= 3 ? (u_field[iz, ix, iy+1] - 2*u_field[iz, ix, iy] + u_field[iz, ix, iy-1]) / dy^2 : zero(T)
-    d2u_dz2 = nz >= 3 ? (u_field[iz+1, ix, iy] - 2*u_field[iz, ix, iy] + u_field[iz-1, ix, iy]) / dz^2 : zero(T)
-    
-    # RMS curvature as smoothness indicator
-    curvature = sqrt(d2u_dx2^2 + d2u_dy2^2 + d2u_dz2^2)
-    
-    return curvature
-end
-
-"""
-    interpolate_velocity_advanced(x, y, z, fields, grid_info, boundary_conditions, method)
-
-Advanced interpolation dispatcher with multiple methods.
+Interpolate the cell-centred velocity components `u`, `v`, and `w` at
+`(x, y, z)` with `method`. `w` vanishes at the lid and the bottom, and `u`
+and `v` have zero vertical derivative there. See [`interpolate_fields`](@ref).
+The fields are read point by point, so they must be host arrays: for a model
+on a GPU, pass `Array(model.fields.u)` and so on.
 """
 function interpolate_velocity_advanced(x::T, y::T, z::T,
-                                     u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                                     grid_info, boundary_conditions, 
-                                     method::InterpolationMethod) where T
-    
-    if method == TRILINEAR
-        return trilinear_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    elseif method == TRICUBIC
-        return tricubic_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    elseif method == ADAPTIVE
-        return adaptive_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    elseif method == QUINTIC
-        return quintic_interpolation(x, y, z, u_field, v_field, w_field, grid_info, boundary_conditions)
-    else
-        error("Unknown interpolation method: $method")
-    end
-end
-
-"""
-Original trilinear interpolation for comparison.
-"""
-function trilinear_interpolation(x::T, y::T, z::T,
-                                u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                                grid_info, boundary_conditions) where T
-
-    nz, nx, ny = size(u_field)
-    dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
-    Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
-    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
-    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
-
-    # Handle periodic boundaries
-    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
-    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, z_max)
-
-    # Convert to grid indices: z[k] = z0 + (k-1)*dz for cell centers
-    fx = x_periodic / dx
-    fy = y_periodic / dy
-    fz = (z_clamped - z0) / dz
-    
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-    iz = floor(Int, fz)
-    
-    rx = fx - ix
-    ry = fy - iy
-    rz = fz - iz
-    
-    # Get grid indices with boundary handling
-    ix1 = get_grid_index(ix + 1, nx, boundary_conditions.periodic_x)
-    ix2 = get_grid_index(ix + 2, nx, boundary_conditions.periodic_x)
-    iy1 = get_grid_index(iy + 1, ny, boundary_conditions.periodic_y)
-    iy2 = get_grid_index(iy + 2, ny, boundary_conditions.periodic_y)
-    iz1 = get_grid_index(iz + 1, nz, false)
-    iz2 = get_grid_index(iz + 2, nz, false)
-    
-    # Trilinear interpolation
-    # Bottom face (z1)
-    u_z1_y1 = (1-rx) * u_field[iz1, ix1, iy1] + rx * u_field[iz1, ix2, iy1]
-    u_z1_y2 = (1-rx) * u_field[iz1, ix1, iy2] + rx * u_field[iz1, ix2, iy2]
-    u_z1 = (1-ry) * u_z1_y1 + ry * u_z1_y2
-    
-    v_z1_y1 = (1-rx) * v_field[iz1, ix1, iy1] + rx * v_field[iz1, ix2, iy1]
-    v_z1_y2 = (1-rx) * v_field[iz1, ix1, iy2] + rx * v_field[iz1, ix2, iy2]
-    v_z1 = (1-ry) * v_z1_y1 + ry * v_z1_y2
-    
-    w_z1_y1 = (1-rx) * w_field[iz1, ix1, iy1] + rx * w_field[iz1, ix2, iy1]
-    w_z1_y2 = (1-rx) * w_field[iz1, ix1, iy2] + rx * w_field[iz1, ix2, iy2]
-    w_z1 = (1-ry) * w_z1_y1 + ry * w_z1_y2
-    
-    # Top face (z2)
-    u_z2_y1 = (1-rx) * u_field[iz2, ix1, iy1] + rx * u_field[iz2, ix2, iy1]
-    u_z2_y2 = (1-rx) * u_field[iz2, ix1, iy2] + rx * u_field[iz2, ix2, iy2]
-    u_z2 = (1-ry) * u_z2_y1 + ry * u_z2_y2
-    
-    v_z2_y1 = (1-rx) * v_field[iz2, ix1, iy1] + rx * v_field[iz2, ix2, iy1]
-    v_z2_y2 = (1-rx) * v_field[iz2, ix1, iy2] + rx * v_field[iz2, ix2, iy2]
-    v_z2 = (1-ry) * v_z2_y1 + ry * v_z2_y2
-    
-    w_z2_y1 = (1-rx) * w_field[iz2, ix1, iy1] + rx * w_field[iz2, ix2, iy1]
-    w_z2_y2 = (1-rx) * w_field[iz2, ix1, iy2] + rx * w_field[iz2, ix2, iy2]
-    w_z2 = (1-ry) * w_z2_y1 + ry * w_z2_y2
-    
-    # Final interpolation in z
-    u_interp = (1-rz) * u_z1 + rz * u_z2
-    v_interp = (1-rz) * v_z1 + rz * v_z2
-    w_interp = (1-rz) * w_z1 + rz * w_z2
-    
-    return u_interp, v_interp, w_interp
-end
-
-"""
-    quintic_basis_functions(t)
-
-Quintic B-spline basis functions for uniform grid interpolation.
-For parameter t ∈ [0,1], returns weights for points at [-2, -1, 0, 1, 2, 3].
-Provides O(h⁶) accuracy with C⁴ continuity.
-"""
-function quintic_basis_functions(t::T) where T
-    t2 = t * t
-    t3 = t2 * t
-    t4 = t3 * t
-    t5 = t4 * t
-
-    # Quintic B-spline basis functions (cardinal spline form)
-    # These ensure smooth interpolation with C⁴ continuity
-    w0 = (-t5 + 5*t4 - 10*t3 + 10*t2 - 5*t + 1) / 120.0
-    w1 = (5*t5 - 20*t4 + 20*t3 + 20*t2 - 50*t + 26) / 120.0
-    w2 = (-10*t5 + 30*t4 - 60*t2 + 66) / 120.0
-    w3 = (10*t5 - 20*t4 - 20*t3 + 20*t2 + 50*t + 26) / 120.0
-    w4 = (-5*t5 + 5*t4 + 10*t3 + 10*t2 + 5*t + 1) / 120.0
-    w5 = t5 / 120.0
-
-    return w0, w1, w2, w3, w4, w5
-end
-
-"""
-Quintic interpolation (O(h⁶) accuracy).
-Uses a 6×6×6 = 216 point stencil for high-accuracy interpolation.
-Provides C⁴ continuous interpolation with excellent smoothness properties.
-"""
-function quintic_interpolation(x::T, y::T, z::T,
-                              u_field::Array{T,3}, v_field::Array{T,3}, w_field::Array{T,3},
-                              grid_info, boundary_conditions) where T
-
-    nz, nx, ny = size(u_field)
-    dx, dy, dz = grid_info.dx, grid_info.dy, grid_info.dz
-    Lx, Ly, Lz = grid_info.Lx, grid_info.Ly, grid_info.Lz
-    z_min = hasproperty(grid_info, :z_min) ? grid_info.z_min : -Lz
-    z_max = hasproperty(grid_info, :z_max) ? grid_info.z_max : zero(T)
-    z0 = hasproperty(grid_info, :z0) ? grid_info.z0 : z_min + dz / 2
-
-    # Handle periodic boundaries
-    x_periodic = boundary_conditions.periodic_x ? mod(x, Lx) : x
-    y_periodic = boundary_conditions.periodic_y ? mod(y, Ly) : y
-    z_clamped = clamp(z, z0, z_max)
-
-    # Convert to grid coordinates: z[k] = z0 + (k-1)*dz for cell centers
-    fx = x_periodic / dx
-    fy = y_periodic / dy
-    fz = (z_clamped - z0) / dz
-
-    # Get integer parts and fractional coordinates
-    ix = floor(Int, fx)
-    iy = floor(Int, fy)
-    iz = floor(Int, fz)
-
-    tx = fx - ix  # Parameter in [0,1]
-    ty = fy - iy
-    tz = fz - iz
-
-    # Get quintic spline weights (6 points: -2, -1, 0, 1, 2, 3)
-    wx = quintic_basis_functions(tx)
-    wy = quintic_basis_functions(ty)
-    wz = quintic_basis_functions(tz)
-
-    # Initialize interpolated values
-    u_interp = zero(T)
-    v_interp = zero(T)
-    w_interp = zero(T)
-
-    # 6×6×6 interpolation stencil
-    # Quintic B-spline stencil: P_{-2}, P_{-1}, P_0, P_1, P_2, P_3 relative to interval
-    # At t=0, the weights are centered on P_0 (position 0 = start of interval)
-    # For ix (0-based), P_0 is at array index ix+1 (1-based)
-    # So stencil indices are: ix-1, ix, ix+1, ix+2, ix+3, ix+4 (1-based)
-    for k in 0:5, j in 0:5, i in 0:5
-        # Mesh indices with boundary handling (convert 0-based ix to 1-based)
-        gx = get_grid_index(ix + i - 1, nx, boundary_conditions.periodic_x)
-        gy = get_grid_index(iy + j - 1, ny, boundary_conditions.periodic_y)
-        gz = get_grid_index(iz + k - 1, nz, false)  # Z never periodic
-
-        if gx > 0 && gy > 0 && gz > 0  # Valid indices
-            # Combined weight from tensor product
-            weight = wx[i+1] * wy[j+1] * wz[k+1]
-
-            u_interp += weight * u_field[gz, gx, gy]
-            v_interp += weight * v_field[gz, gx, gy]
-            w_interp += weight * w_field[gz, gx, gy]
-        end
-    end
-
-    return u_interp, v_interp, w_interp
-end
-
-"""
-    interpolation_error_estimate(method, grid_spacing)
-
-Theoretical error estimate for different interpolation methods.
-"""
-function interpolation_error_estimate(method::InterpolationMethod, h::T) where T
-    if method == TRILINEAR
-        return h^2  # O(h²)
-    elseif method == TRICUBIC
-        return h^4  # O(h⁴)
-    elseif method == QUINTIC
-        return h^6  # O(h⁶)
-    else
-        return h^2  # Conservative estimate
-    end
+                                       u_field::AbstractArray{T, 3},
+                                       v_field::AbstractArray{T, 3},
+                                       w_field::AbstractArray{T, 3},
+                                       grid_info, boundary_conditions,
+                                       method::InterpolationMethod) where T
+    return interpolate_fields((u_field, v_field, w_field), (1, 1, -1),
+                              x, y, z, grid_info, boundary_conditions, method)
 end
 
 end # module InterpolationSchemes

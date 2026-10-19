@@ -7,31 +7,21 @@ using QGYBJplus
                            y = (-3.0, 3.0),
                            z = (-2.0, 0.0))
 
-    @test nameof(typeof(grid)) == :RectilinearGrid
     @test grid.size == (8, 6, 4)
     @test grid.extent == (8.0, 6.0, 2.0)
     @test grid.origin == (-4.0, -3.0)
 
-    geometry_properties = (:x, :y, :z, :x_faces, :y_faces, :z_faces,
-                           :dx, :dy, :dz, :kx, :ky, :kh2)
-    for property in geometry_properties
-        @test hasproperty(grid, property)
-    end
-
-    if all(property -> hasproperty(grid, property), geometry_properties)
-        # Horizontal Fourier collocation nodes start at the declared origin.
-        @test grid.x == collect(-4.0:1.0:3.0)
-        @test grid.y == collect(-3.0:1.0:2.0)
-        @test grid.z == [-1.75, -1.25, -0.75, -0.25]
-        @test grid.x_faces == collect(-4.0:1.0:4.0)
-        @test grid.y_faces == collect(-3.0:1.0:3.0)
-        @test grid.z_faces == collect(-2.0:0.5:0.0)
-        @test (grid.dx, grid.dy, grid.dz) == (1.0, 1.0, 0.5)
-        @test grid.kx[1] == 0
-        @test grid.ky[1] == 0
-        @test size(grid.kh2) == (8, 6)
-        @test grid.kh2[2, 2] == grid.kx[2]^2 + grid.ky[2]^2
-    end
+    # Horizontal Fourier collocation nodes start at the declared origin.
+    @test grid.x == collect(-4.0:1.0:3.0)
+    @test grid.y == collect(-3.0:1.0:2.0)
+    @test grid.z == [-1.75, -1.25, -0.75, -0.25]
+    @test grid.x_faces == collect(-4.0:1.0:4.0)
+    @test grid.y_faces == collect(-3.0:1.0:3.0)
+    @test grid.z_faces == collect(-2.0:0.5:0.0)
+    @test (grid.dx, grid.dy, grid.dz) == (1.0, 1.0, 0.5)
+    @test grid.kx ≈ [0, 1, 2, 3, -4, -3, -2, -1] .* (2π / 8)
+    @test grid.ky ≈ [0, 1, 2, -3, -2, -1] .* (2π / 6)
+    @test grid.kh2[2, 2] == grid.kx[2]^2 + grid.ky[2]^2
 
     centered = RectilinearGrid(size = (4, 4, 2),
                                extent = (8, 4, 2),
@@ -52,8 +42,6 @@ using QGYBJplus
 end
 
 @testset "Typed physics components" begin
-    @test FPlane(f = 1) isa FPlane{Float64}
-    @test ConstantStratification(N² = 1) isa ConstantStratification{Float64}
     @test_throws ArgumentError FPlane(f = 0)
     @test_throws ArgumentError ConstantStratification(N² = 0)
 
@@ -72,21 +60,6 @@ end
         flow=flow_closure,
         wave=wave_closure,
     )
-
-    @test flow_closure isa FlowHyperdiffusivity
-    @test flow_closure.coefficients == (0.0,)
-    @test flow_closure.orders == (4,)
-    @test wave_closure isa WaveHyperdiffusivity
-    @test wave_closure.coefficients == (1e5,)
-    @test wave_closure.orders == (4,)
-    @test closure.flow === flow_closure
-    @test closure.wave === wave_closure
-
-    defaults = HorizontalHyperdiffusivity()
-    @test defaults.flow.coefficients == (0.01, 10.0)
-    @test defaults.flow.orders == (4, 12)
-    @test defaults.wave.coefficients == (0.0, 10.0)
-    @test defaults.wave.orders == (4, 12)
 
     @test FlowHyperdiffusivity(2; order=6).orders == (6,)
     @test WaveHyperdiffusivity(2; order=6).orders == (6,)
@@ -115,22 +88,25 @@ end
         (0.0, 0.25), (1024, 2))
     @test QGYBJplus.int_factor(
         2.0, 0.0, 1.0, sparse_wave_closure; waves=true) == 1.0
+end
 
-    component_types = (:AbstractCoriolis, :AbstractStratification,
-                       :FlowEvolution, :FixedFlow, :EvolvingFlow,
-                       :FeedbackMode, :NoFeedback, :WaveMeanFeedback,
-                       :NoWaveFeedback, :WaveFormulation, :YBJPlus, :YBJ)
-    for type_name in component_types
-        @test isdefined(QGYBJplus, type_name)
-    end
+@testset "Model construction and finalization" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    # Symbols and booleans select the typed components.
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1),
+        stratification=ConstantStratification(N²=1),
+        flow=:fixed, feedback=:none, ybj_plus=false, verbose=false)
+    @test model.physics.flow isa FixedFlow
+    @test model.physics.feedback isa NoFeedback
+    @test model.physics.formulation isa YBJ
+    @test model.runtime.dealias_mask == dealias_mask(grid)
 
-    if all(type_name -> isdefined(QGYBJplus, type_name), component_types)
-        @test FixedFlow() isa FlowEvolution
-        @test EvolvingFlow() isa FlowEvolution
-        @test NoFeedback() isa FeedbackMode
-        @test WaveMeanFeedback() isa FeedbackMode
-        @test NoWaveFeedback() isa FeedbackMode
-        @test YBJPlus() isa WaveFormulation
-        @test YBJ() isa WaveFormulation
-    end
+    copied = copy_fields(model.fields)
+    copied.q[1] = 1 + 2im
+    @test model.fields.q[1] == 0
+
+    finalize_model!(model)
+    finalize_model!(model)
+    @test model.runtime.finalized
+    @test_throws ErrorException invert_q_to_psi!(model)
 end

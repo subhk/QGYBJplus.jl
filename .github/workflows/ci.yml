@@ -52,9 +52,11 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-  mpi-test:
-    name: MPI regression - Julia 1.10 - Ubuntu
+  threads-test:
+    name: Multithreaded CPU kernels - Julia 1.10 - Ubuntu
     runs-on: ubuntu-latest
+    env:
+      JULIA_NUM_THREADS: 4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -68,29 +70,39 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.julia/artifacts
-          key: ${{ runner.os }}-julia-mpi-artifacts-${{ hashFiles('**/Project.toml') }}
+          key: ${{ runner.os }}-julia-artifacts-${{ hashFiles('**/Project.toml') }}
           restore-keys: |
-            ${{ runner.os }}-julia-mpi-artifacts-
+            ${{ runner.os }}-julia-artifacts-
 
       - name: Instantiate
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
-      - name: Run four-rank MPI stepping regression
-        run: >-
-          julia --project=. -e
-          'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'
+      - name: Run tests with four threads
+        run: julia --project=. -e 'using Pkg; Pkg.test()'
 
-      - name: Run distributed-z operator regression (1 and 4 ranks)
+  cuda-extension:
+    name: CUDA extension loads - Julia 1.10 - Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10'
+
+      # No GPU on the runner: this checks that the extension loads and that
+      # GPU() resolves to the CUDA backend. Kernels are tested on the CPU
+      # through JLArrays in the main test suite.
+      - name: Load QGYBJplus with CUDA
         run: |
-          julia --project=. -e 'using MPI; run(`$(MPI.mpiexec()) -n 1 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
-          julia --project=. -e 'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
-
-      - name: Run MPI particle periodic-seam regression
-        run: >-
-          julia --project=. -e
-          'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_particles_periodic.jl`)'
-
-      - name: Run distributed runtime metadata checks
-        run: >-
-          julia --project=. -e
-          'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_extension.jl`)'
+          julia -e '
+            using Pkg
+            Pkg.activate(temp=true)
+            Pkg.develop(path=pwd())
+            Pkg.add("CUDA")
+            using CUDA, QGYBJplus
+            @assert Base.get_extension(QGYBJplus, :QGYBJplusCUDAExt) !== nothing
+            @assert GPU().backend isa CUDA.CUDABackend
+          '

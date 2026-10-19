@@ -35,49 +35,93 @@ All nonlinear products are computed using the pseudo-spectral method:
 4. Apply 2/3 dealiasing mask to remove aliased modes
 
 This is more efficient than computing convolutions directly in spectral space.
+Every pointwise and spectral loop is a KernelAbstractions kernel.
 
 DEALIASING:
 -----------
 The 2/3 rule removes wavenumbers with |k| > 2/3 kmax to prevent aliasing
-from quadratic nonlinearities. The Lmask array encodes which modes to keep.
+from quadratic nonlinearities. The Lmask array encodes which modes to keep;
+`Lmask=nothing` applies the radial two-thirds rule directly.
 ================================================================================
 =#
 
 module Nonlinear
 
+using KernelAbstractions: @kernel, @index, @Const, get_backend
 using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity,
-                   FlowHyperdiffusivity, WaveHyperdiffusivity,
-                   local_to_global, z_is_local
+                   FlowHyperdiffusivity, WaveHyperdiffusivity
 using ..QGYBJplus: fft_forward!, fft_backward!
-using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJplus: allocate_z_pencil
-using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
+using ..QGYBJplus: allocate_fft_backward_dst
 using ..QGYBJplus: with_scratch, scratch_like, scratch_physical, scratch_phys_like
-using ..QGYBJplus: with_z_local, z_scratch
-import PencilArrays: PencilArray
-
-# Reference to parent module for accessing is_dealiased
-const PARENT = Base.parentmodule(@__MODULE__)
+using ..QGYBJplus: launch!, kernel_map!, kernel_mask, keep_mode, dealias!,
+                   KeepAllModes, RadialDealiasing, vertical_spacing
 
 # Alias for internal use
 const _allocate_fft_dst = allocate_fft_backward_dst
 
+"""Kernel rule for a nonlinear-term `Lmask`: `nothing` is the radial 2/3 rule."""
+_nonlinear_mask(Lmask, G::RuntimeGeometry, array) =
+    kernel_mask(Lmask, array, RadialDealiasing(G.nx, G.ny))
+
 # Prefilter spectral inputs to the 2/3 mask before nonlinear products.
 function _prefilter_spectral!(dst, src, G::RuntimeGeometry, Lmask)
-    nx, ny = G.nx, G.ny
-    src_arr = parent(src)
-    dst_arr = parent(dst)
-    nz_local, nx_local, ny_local = size(src_arr)
-
-    use_inline_dealias = isnothing(Lmask)
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, src)
-        j_global = local_to_global(j_local, 3, src)
-        keep = use_inline_dealias ? PARENT.is_dealiased(i_global, j_global, nx, ny) : Lmask[i_global, j_global]
-        dst_arr[k, i_local, j_local] = keep ? src_arr[k, i_local, j_local] : zero(eltype(dst_arr))
-    end
-    return dst
+    return dealias!(dst, src, _nonlinear_mask(Lmask, G, dst))
 end
+
+#=
+================================================================================
+                        SHARED SPECTRAL KERNELS
+================================================================================
+=#
+
+"""`∂χ/∂x` and `∂χ/∂y` in spectral space, optionally projected by `mask`."""
+@kernel function _gradient_kernel!(χx, χy, @Const(χ), @Const(kx), @Const(ky), mask)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if keep_mode(mask, i, j)
+        χx[k, i, j] = im * kx[i] * χ[k, i, j]
+        χy[k, i, j] = im * ky[j] * χ[k, i, j]
+    else
+        χx[k, i, j] = zero(eltype(χx))
+        χy[k, i, j] = zero(eltype(χy))
+    end
+end
+
+"""Divergence-form advection `i kₓ (uχ)^ + i kᵧ (vχ)^`, projected by `mask`."""
+@kernel function _divergence_kernel!(nχ, @Const(uχ), @Const(vχ), @Const(kx),
+                                     @Const(ky), mask)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if keep_mode(mask, i, j)
+        nχ[k, i, j] = im * kx[i] * uχ[k, i, j] + im * ky[j] * vχ[k, i, j]
+    else
+        nχ[k, i, j] = zero(eltype(nχ))
+    end
+end
+
+"""Relative vorticity `ζ̂ = -kₕ² ψ̂`, projected by `mask`."""
+@kernel function _vorticity_kernel!(ζ, @Const(ψ), @Const(kx), @Const(ky), mask)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if keep_mode(mask, i, j)
+        kₕ² = kx[i]^2 + ky[j]^2
+        ζ[k, i, j] = -kₕ² * ψ[k, i, j]
+    else
+        ζ[k, i, j] = zero(eltype(ζ))
+    end
+end
+
+"""`qʷ = (1/f₀)[J + (1/4)∇²|B|²]` from the transformed pieces, projected by `mask`."""
+@kernel function _wave_feedback_assembly_kernel!(qʷ, @Const(magnitude), @Const(kx),
+                                                 @Const(ky), mask, inv_f)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if keep_mode(mask, i, j)
+        kₕ² = kx[i]^2 + ky[j]^2
+        qʷ[k, i, j] = inv_f * (qʷ[k, i, j] - kₕ² * magnitude[k, i, j] / 4)
+    else
+        qʷ[k, i, j] = zero(eltype(qʷ))
+    end
+end
+
+_real_product(a, b) = real(a) * real(b)
+_jacobian_product(φx, φy, χx, χy) = real(φx) * real(χy) - real(φy) * real(χx)
 
 #=
 ================================================================================
@@ -92,6 +136,14 @@ The Jacobian conserves both φ and χ integrals (energy and enstrophy).
 
 function _component_int_factor(kₓ::Real, kᵧ::Real, Δt::Real, closure)
     kₕ² = kₓ^2 + kᵧ^2
+    return _hyperdiffusion_exponent(closure, kₕ², Δt)
+end
+
+"""
+`Δt Σ νₙ kₕ^orderₙ` for a hyperdiffusivity component. Pure scalar code, so the
+ETD coefficient kernel calls it on every backend.
+"""
+@inline function _hyperdiffusion_exponent(closure, kₕ², Δt)
     T = promote_type(typeof(kₕ²), eltype(closure.coefficients))
     rate = zero(T)
     for (coefficient, order) in zip(closure.coefficients, closure.orders)
@@ -109,9 +161,10 @@ end
 Compute the Jacobian J(φ, χ) = ∂φ/∂x ∂χ/∂y - ∂φ/∂y ∂χ/∂x using pseudo-spectral method.
 
 !!! note "Usage Note"
-    This function is exported for user convenience but is **not used** in the main
-    time-stepping code. The main code uses `convol_waqg!` instead, which computes
-    advection terms using the divergence form with precomputed velocities.
+    This function is provided for user convenience but is **not used** in the
+    main time-stepping code. The main code uses `convol_waqg_q!` instead,
+    which computes advection terms using the divergence form with
+    precomputed velocities.
 
 # Mathematical Definition
 The Jacobian (also called Poisson bracket) is:
@@ -151,96 +204,38 @@ jacobian_spectral!(Jpsi_q, psi_k, q_k, grid, plans)
 ```
 """
 function jacobian_spectral!(dstk, φₖ, χₖ, G::RuntimeGeometry, plans; Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    backend = get_backend(dstk)
+    mask = _nonlinear_mask(Lmask, G, dstk)
 
-    # Get underlying arrays (works for both Array and PencilArray)
-    φ_arr = parent(φₖ)
-    χ_arr = parent(χₖ)
-    dst_arr = parent(dstk)
-    nz_local, nx_local, ny_local = size(φ_arr)
-
-    # Dealiasing: use inline check for efficiency when Lmask not provided
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    #= Step 1: Compute spectral derivatives
-    In spectral space: ∂/∂x → ikₓ, ∂/∂y → ikᵧ =#
+    # Step 1: spectral derivatives, ∂/∂x → ikₓ and ∂/∂y → ikᵧ
     φₓₖ = similar(φₖ); φᵧₖ = similar(φₖ)
     χₓₖ = similar(χₖ); χᵧₖ = similar(χₖ)
+    launch!(_gradient_kernel!, backend, size(φₖ), φₓₖ, φᵧₖ, φₖ, G.kx, G.ky, mask)
+    launch!(_gradient_kernel!, backend, size(χₖ), χₓₖ, χᵧₖ, χₖ, G.kx, G.ky, mask)
 
-    φₓ_arr = parent(φₓₖ); φᵧ_arr = parent(φᵧₖ)
-    χₓ_arr = parent(χₓₖ); χᵧ_arr = parent(χᵧₖ)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, φₖ)
-        j_global = local_to_global(j_local, 3, φₖ)
-    
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-
-        if should_keep(i_global, j_global)
-            φₓ_arr[k, i_local, j_local] = im*kₓ*φ_arr[k, i_local, j_local]   # φ̂ₓ = ikₓ φ̂
-            φᵧ_arr[k, i_local, j_local] = im*kᵧ*φ_arr[k, i_local, j_local]   # φ̂ᵧ = ikᵧ φ̂
-            χₓ_arr[k, i_local, j_local] = im*kₓ*χ_arr[k, i_local, j_local]   # χ̂ₓ = ikₓ χ̂
-            χᵧ_arr[k, i_local, j_local] = im*kᵧ*χ_arr[k, i_local, j_local]   # χ̂ᵧ = ikᵧ χ̂
-        else
-            φₓ_arr[k, i_local, j_local] = 0
-            φᵧ_arr[k, i_local, j_local] = 0
-            χₓ_arr[k, i_local, j_local] = 0
-            χᵧ_arr[k, i_local, j_local] = 0
-        end
-    end
-
-    #= Step 2: Transform derivatives to real space =#
+    # Step 2: transform derivatives to real space
     φₓ = _allocate_fft_dst(φₓₖ, plans); φᵧ = _allocate_fft_dst(φᵧₖ, plans)
     χₓ = _allocate_fft_dst(χₓₖ, plans); χᵧ = _allocate_fft_dst(χᵧₖ, plans)
-
     fft_backward!(φₓ, φₓₖ, plans)
     fft_backward!(φᵧ, φᵧₖ, plans)
     fft_backward!(χₓ, χₓₖ, plans)
     fft_backward!(χᵧ, χᵧₖ, plans)
 
-    φₓᵣ = parent(φₓ); φᵧᵣ = parent(φᵧ)
-    χₓᵣ = parent(χₓ); χᵧᵣ = parent(χᵧ)
-
-    #= Step 3: Compute Jacobian in physical space (pointwise multiplication)
-    J = φₓχᵧ - φᵧχₓ
-
-    For real fields: IFFT(im*k*φ̂) is real (up to roundoff), so we use real()
-    to extract the physical derivative. =#
+    # Step 3: J = φₓχᵧ - φᵧχₓ in physical space. For real fields the inverse
+    # transforms of ik φ̂ are real up to roundoff, so take their real parts.
     Jᵣ = _allocate_fft_dst(φₖ, plans)
-    J_arr = parent(Jᵣ)
+    launch!(_jacobian_product_kernel!, backend, size(Jᵣ), Jᵣ, φₓ, φᵧ, χₓ, χᵧ)
 
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(φₓᵣ)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        J_arr[k, i_local, j_local] = (real(φₓᵣ[k, i_local, j_local])*real(χᵧᵣ[k, i_local, j_local]) -
-                                      real(φᵧᵣ[k, i_local, j_local])*real(χₓᵣ[k, i_local, j_local]))
-    end
-
-    #= Step 4: Transform back to spectral space and apply dealiasing =#
+    # Step 4: back to spectral space; dealias the quadratic product. The
+    # normalized inverse transforms leave the product correctly scaled.
     fft_forward!(dstk, Jᵣ, plans)
-
-    # Apply 2/3 dealiasing mask to remove aliased modes from quadratic nonlinearity
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, dstk)
-        j_global = local_to_global(j_local, 3, dstk)
-        if !should_keep(i_global, j_global)
-            dst_arr[k, i_local, j_local] = 0  # Zero aliased modes
-        end
-    end
-
-    #= Normalization note:
-    The pseudo-spectral convolution involves:
-    - 4 normalized IFFTs (each divides by N internally via FFTW.ifft)
-    - Pointwise product in physical space
-    - 1 FFT (FFTW.fft, which is already properly normalized in spectral convention)
-
-    Since fft_backward! uses normalized IFFT (divides by N), the pseudo-spectral
-    product is already correctly scaled. No additional normalization is needed.
-    Previous code incorrectly divided by nx*ny, weakening nonlinear dynamics. =#
-
+    dealias!(dstk, dstk, mask)
     return dstk
+end
+
+@kernel function _jacobian_product_kernel!(J, @Const(φx), @Const(φy), @Const(χx), @Const(χy))
+    index = @index(Global, Linear)
+    @inbounds J[index] = _jacobian_product(φx[index], φy[index], χx[index], χy[index])
 end
 
 #=
@@ -298,173 +293,38 @@ This matches `convol_waqg` in derivatives.f90.
 The velocities u, v should be precomputed and passed in real space.
 """
 function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::RuntimeGeometry, plans; Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
-
-    # Get underlying arrays (works for both Array and PencilArray)
-    u_arr = parent(u); v_arr = parent(v)
-    nqk_arr = parent(nqk); nBRk_arr = parent(nBRk); nBIk_arr = parent(nBIk)
-    # Physical array dimensions (u, v are in physical space)
-    nz_phys, nx_phys, ny_phys = size(u_arr)
-    # Spectral array dimensions (may differ in 2D decomposition)
-    nz_spec, nx_spec, ny_spec = size(nqk_arr)
-
-    # Dealiasing: use inline check for efficiency when Lmask not provided
-    # This avoids allocating a full (nx, ny) mask on each process
-    use_inline_dealias = isnothing(Lmask)
-    # Helper function: check if mode should be kept
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    #= Transform input fields to real space =#
-    qᵣ  = _allocate_fft_dst(qk, plans)
-    BRᵣ = _allocate_fft_dst(BRk, plans)
-    BIᵣ = _allocate_fft_dst(BIk, plans)
-
-    qk_f  = similar(qk)
-    BRk_f = similar(BRk)
-    BIk_f = similar(BIk)
-    _prefilter_spectral!(qk_f,  qk,  G, Lmask)
-    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
-    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
-
-    fft_backward!(qᵣ,  qk_f,  plans)
-    fft_backward!(BRᵣ, BRk_f, plans)
-    fft_backward!(BIᵣ, BIk_f, plans)
-
-    qᵣ_arr = parent(qᵣ); BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
-
-    #= ---- J(ψ, q): Advection of QGPV ---- =#
-    # Compute products u*q and v*q in real space (input pencil)
-    uterm_r = _allocate_fft_dst(qk, plans)
-    vterm_r = _allocate_fft_dst(qk, plans)
-    uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
-    uterm_k = similar(qk); vterm_k = similar(qk)
-
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
-        vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(qᵣ_arr[k, i_local, j_local])
+    # Every input is read before any output is written, so an output may alias
+    # any of the inputs.
+    results = map((qk, BRk, BIk)) do field
+        _convol_advect!(similar(field), u, v, field, G, plans;
+                        Lmask=Lmask, use_real=true, workspace=nothing)
     end
-
-    # Transform to spectral and compute divergence
-    fft_forward!(uterm_k, uterm_r, plans)
-    fft_forward!(vterm_k, vterm_r, plans)
-
-    uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, uterm_k)
-        j_global = local_to_global(j_local, 3, uterm_k)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        if should_keep(i_global, j_global)
-            # J(ψ,q) = ∂(uq)/∂x + ∂(vq)/∂y = ikₓ(ûq) + ikᵧ(v̂q)
-            nqk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
-        else
-            nqk_arr[k, i_local, j_local] = 0  # Dealiased
-        end
-    end
-
-    #= ---- J(ψ, BR): Advection of wave real part ---- =#
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
-        vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BRᵣ_arr[k, i_local, j_local])
-    end
-    fft_forward!(uterm_k, uterm_r, plans)
-    fft_forward!(vterm_k, vterm_r, plans)
-
-    uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, uterm_k)
-        j_global = local_to_global(j_local, 3, uterm_k)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        if should_keep(i_global, j_global)
-            nBRk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
-        else
-            nBRk_arr[k, i_local, j_local] = 0
-        end
-    end
-
-    #= ---- J(ψ, BI): Advection of wave imaginary part ---- =#
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
-        vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local]*real(BIᵣ_arr[k, i_local, j_local])
-    end
-    fft_forward!(uterm_k, uterm_r, plans)
-    fft_forward!(vterm_k, vterm_r, plans)
-
-    uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, uterm_k)
-        j_global = local_to_global(j_local, 3, uterm_k)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-    
-        if should_keep(i_global, j_global)
-            nBIk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
-        else
-            nBIk_arr[k, i_local, j_local] = 0
-        end
-    end
-
-    #= No additional normalization needed:
-    fft_backward! uses normalized IFFT (divides by N internally).
-    Previous code incorrectly divided by nx*ny, weakening advection terms. =#
-
+    copyto!(nqk, results[1])
+    copyto!(nBRk, results[2])
+    copyto!(nBIk, results[3])
     return nqk, nBRk, nBIk
 end
 
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
 function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans;
                          Lmask=nothing, use_real::Bool=false, workspace=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    backend = get_backend(nχk)
+    mask = _nonlinear_mask(Lmask, G, nχk)
+    product = use_real ? _real_product : *
 
-    u_arr = parent(u); v_arr = parent(v)
-    nχk_arr = parent(nχk)
-    # Physical array dimensions (u, v are in physical space)
-    nz_phys, nx_phys, ny_phys = size(u_arr)
-    # Spectral array dimensions (may differ in 2D decomposition)
-    nz_spec, nx_spec, ny_spec = size(nχk_arr)
+    # Two buffers, transformed in place: χ (then vχ) and uχ.
+    χ = scratch_like(workspace, χk)
+    dealias!(χ, χk, mask)
+    fft_backward!(χ, χ, plans)
+    uχ = scratch_like(workspace, χk)
+    kernel_map!(product, uχ, u, χ)
+    kernel_map!(product, χ, v, χ)
+    fft_forward!(uχ, uχ, plans)
+    fft_forward!(χ, χ, plans)
 
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    χᵣ = scratch_physical(workspace, χk, plans)
-    χk_f = scratch_like(workspace, χk)
-    _prefilter_spectral!(χk_f, χk, G, Lmask)
-    fft_backward!(χᵣ, χk_f, plans)
-    χᵣ_arr = parent(χᵣ)
-
-    uterm_r = scratch_physical(workspace, χk, plans)
-    vterm_r = scratch_physical(workspace, χk, plans)
-    uterm_r_arr = parent(uterm_r); vterm_r_arr = parent(vterm_r)
-    uterm_k = scratch_like(workspace, χk); vterm_k = scratch_like(workspace, χk)
-
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        χval = use_real ? real(χᵣ_arr[k, i_local, j_local]) : χᵣ_arr[k, i_local, j_local]
-        uterm_r_arr[k, i_local, j_local] = u_arr[k, i_local, j_local] * χval
-        vterm_r_arr[k, i_local, j_local] = v_arr[k, i_local, j_local] * χval
-    end
-
-    fft_forward!(uterm_k, uterm_r, plans)
-    fft_forward!(vterm_k, vterm_r, plans)
-
-    uterm_arr = parent(uterm_k); vterm_arr = parent(vterm_k)
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, uterm_k)
-        j_global = local_to_global(j_local, 3, uterm_k)
-        if should_keep(i_global, j_global)
-            kₓ = G.kx[i_global]
-            kᵧ = G.ky[j_global]
-            nχk_arr[k, i_local, j_local] = im*kₓ*uterm_arr[k, i_local, j_local] + im*kᵧ*vterm_arr[k, i_local, j_local]
-        else
-            nχk_arr[k, i_local, j_local] = 0
-        end
-    end
-
+    # The normalized inverse transform leaves the products correctly scaled.
+    launch!(_divergence_kernel!, backend, size(nχk),
+            nχk, uχ, χ, G.kx, G.ky, mask)
     return nχk
 end
 
@@ -548,81 +408,35 @@ refraction_waqg!(rBR, rBI, BR, BI, psi, grid, plans; Lmask=L)
 ```
 """
 function refraction_waqg!(rBRk, rBIk, BRk, BIk, ψₖ, G::RuntimeGeometry, plans; Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    backend = get_backend(rBRk)
+    mask = _nonlinear_mask(Lmask, G, rBRk)
 
-    # Get underlying arrays
-    ψ_arr = parent(ψₖ)
-    rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-    # Spectral array dimensions
-    nz_spec, nx_spec, ny_spec = size(ψ_arr)
+    # Relative vorticity ζ = ∇²ψ = -kₕ²ψ̂
+    ζₖ = similar(ψₖ)
+    launch!(_vorticity_kernel!, backend, size(ζₖ), ζₖ, ψₖ, G.kx, G.ky, mask)
 
-    # Dealiasing: use inline check for efficiency when Lmask not provided
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    #= Compute relative vorticity ζ = ∇²ψ = -kₕ²ψ̂ =#
-    ζₖ = scratch_like(workspace, ψₖ)
-    ζₖ_arr = parent(ζₖ)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, ψₖ)
-        j_global = local_to_global(j_local, 3, ψₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-        if should_keep(i_global, j_global)
-            ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
-        else
-            ζₖ_arr[k, i_local, j_local] = 0
-        end
-    end
-
-    #= Transform to real space =#
+    # Transform to real space
     ζᵣ = _allocate_fft_dst(ζₖ, plans)
     BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
-
     BRk_f = similar(BRk)
     BIk_f = similar(BIk)
-    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
-    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
-
+    dealias!(BRk_f, BRk, mask)
+    dealias!(BIk_f, BIk, mask)
     fft_backward!(ζᵣ, ζₖ, plans)
     fft_backward!(BRᵣ, BRk_f, plans)
     fft_backward!(BIᵣ, BIk_f, plans)
 
-    ζᵣ_arr = parent(ζᵣ)
-    BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
-
-    #= Compute products in real space: rB = ζ × B =#
+    # Products in real space: rB = ζ × B
     rBRᵣ = similar(BRᵣ); rBIᵣ = similar(BIᵣ)
-    rBRᵣ_arr = parent(rBRᵣ); rBIᵣ_arr = parent(rBIᵣ)
+    kernel_map!(_real_product, rBRᵣ, ζᵣ, BRᵣ)
+    kernel_map!(_real_product, rBIᵣ, ζᵣ, BIᵣ)
 
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(ζᵣ_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        rBRᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BRᵣ_arr[k, i_local, j_local])
-        rBIᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local])*real(BIᵣ_arr[k, i_local, j_local])
-    end
-
-    #= Transform back to spectral and apply dealiasing =#
+    # Back to spectral; the normalized inverse transform leaves the products
+    # correctly scaled, so only dealias.
     fft_forward!(rBRk, rBRᵣ, plans)
     fft_forward!(rBIk, rBIᵣ, plans)
-    rBRk_arr = parent(rBRk); rBIk_arr = parent(rBIk)
-
-    #= No additional normalization needed:
-    fft_backward! uses normalized IFFT (divides by N internally).
-    Previous code incorrectly divided by nx*ny, weakening refraction terms.
-    Just apply dealiasing mask. =#
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, rBRk)
-        j_global = local_to_global(j_local, 3, rBRk)
-        if !should_keep(i_global, j_global)
-            rBRk_arr[k, i_local, j_local] = 0  # Dealiased
-            rBIk_arr[k, i_local, j_local] = 0
-        end
-    end
-
+    dealias!(rBRk, rBRk, mask)
+    dealias!(rBIk, rBIk, mask)
     return rBRk, rBIk
 end
 
@@ -638,63 +452,23 @@ function refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans;
     end
 end
 
+_refraction_product(ζ, B) = real(ζ) * B
+
 function _refraction_waqg_B!(rBk, Bk, ψₖ, G::RuntimeGeometry, plans, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    backend = get_backend(rBk)
+    mask = _nonlinear_mask(Lmask, G, rBk)
 
-    ψ_arr = parent(ψₖ)
-    rBk_arr = parent(rBk)
-    # Spectral array dimensions
-    nz_spec, nx_spec, ny_spec = size(ψ_arr)
+    # Two buffers, transformed in place: ζ and B (then ζB).
+    ζ = scratch_like(workspace, ψₖ)
+    launch!(_vorticity_kernel!, backend, size(ζ), ζ, ψₖ, G.kx, G.ky, mask)
+    fft_backward!(ζ, ζ, plans)
+    B = scratch_like(workspace, Bk)
+    dealias!(B, Bk, mask)
+    fft_backward!(B, B, plans)
 
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    ζₖ = scratch_like(workspace, ψₖ)
-    ζₖ_arr = parent(ζₖ)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, ψₖ)
-        j_global = local_to_global(j_local, 3, ψₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-        if should_keep(i_global, j_global)
-            ζₖ_arr[k, i_local, j_local] = -kₕ²*ψ_arr[k, i_local, j_local]
-        else
-            ζₖ_arr[k, i_local, j_local] = 0
-        end
-    end
-
-    ζᵣ = scratch_physical(workspace, ζₖ, plans)
-    Bᵣ = scratch_physical(workspace, Bk, plans)
-    Bk_f = scratch_like(workspace, Bk)
-    _prefilter_spectral!(Bk_f, Bk, G, Lmask)
-    fft_backward!(ζᵣ, ζₖ, plans)
-    fft_backward!(Bᵣ, Bk_f, plans)
-
-    ζᵣ_arr = parent(ζᵣ)
-    Bᵣ_arr = parent(Bᵣ)
-
-    rBᵣ = scratch_phys_like(workspace, Bᵣ)
-    rBᵣ_arr = parent(rBᵣ)
-
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(ζᵣ_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        rBᵣ_arr[k, i_local, j_local] = real(ζᵣ_arr[k, i_local, j_local]) * Bᵣ_arr[k, i_local, j_local]
-    end
-
-    fft_forward!(rBk, rBᵣ, plans)
-    rBk_arr = parent(rBk)
-
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        i_global = local_to_global(i_local, 2, rBk)
-        j_global = local_to_global(j_local, 3, rBk)
-        if !should_keep(i_global, j_global)
-            rBk_arr[k, i_local, j_local] = 0
-        end
-    end
-
+    kernel_map!(_refraction_product, B, ζ, B)
+    fft_forward!(rBk, B, plans)
+    dealias!(rBk, rBk, mask)
     return rBk
 end
 
@@ -763,47 +537,27 @@ compute_qw!(qw, BR, BI, grid, plans; f=f₀, Lmask=L)
 """
 function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans;
                      f::Real, Lmask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
-    inv_f = inv(float(f))
-
-    # Get underlying arrays
-    qʷₖ_arr = parent(qʷₖ)
-
-    # Dealiasing: use inline check for efficiency when Lmask not provided
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
+    inv_f = convert(real(eltype(qʷₖ)), inv(float(f)))
+    backend = get_backend(qʷₖ)
+    mask = _nonlinear_mask(Lmask, G, qʷₖ)
 
     # Prefilter inputs to avoid aliasing when upstream fields are not masked
     BRk_f = similar(BRk)
     BIk_f = similar(BIk)
-    _prefilter_spectral!(BRk_f, BRk, G, Lmask)
-    _prefilter_spectral!(BIk_f, BIk, G, Lmask)
+    dealias!(BRk_f, BRk, mask)
+    dealias!(BIk_f, BIk, mask)
 
-    BRk_arr = parent(BRk_f); BIk_arr = parent(BIk_f)
-    nz_local, nx_local, ny_local = size(BRk_arr)
-
-    #= Compute derivatives of BR and BI =#
+    # Derivatives of the prefiltered BR and BI
     BRₓₖ = similar(BRk); BRᵧₖ = similar(BRk)
     BIₓₖ = similar(BIk); BIᵧₖ = similar(BIk)
-    BRₓₖ_arr = parent(BRₓₖ); BRᵧₖ_arr = parent(BRᵧₖ)
-    BIₓₖ_arr = parent(BIₓₖ); BIᵧₖ_arr = parent(BIᵧₖ)
+    launch!(_gradient_kernel!, backend, size(BRk), BRₓₖ, BRᵧₖ, BRk_f, G.kx, G.ky,
+            KeepAllModes())
+    launch!(_gradient_kernel!, backend, size(BIk), BIₓₖ, BIᵧₖ, BIk_f, G.kx, G.ky,
+            KeepAllModes())
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, BRk_f)
-        j_global = local_to_global(j_local, 3, BRk_f)
-      
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-      
-        BRₓₖ_arr[k, i_local, j_local] = im*kₓ*BRk_arr[k, i_local, j_local]  # ∂BR/∂x
-        BRᵧₖ_arr[k, i_local, j_local] = im*kᵧ*BRk_arr[k, i_local, j_local]  # ∂BR/∂y
-        BIₓₖ_arr[k, i_local, j_local] = im*kₓ*BIk_arr[k, i_local, j_local]  # ∂BI/∂x
-        BIᵧₖ_arr[k, i_local, j_local] = im*kᵧ*BIk_arr[k, i_local, j_local]  # ∂BI/∂y
-    end
-
-    #= Transform derivatives to real space =#
+    # Transform derivatives to real space
     BRₓᵣ = _allocate_fft_dst(BRₓₖ, plans); BRᵧᵣ = _allocate_fft_dst(BRᵧₖ, plans)
     BIₓᵣ = _allocate_fft_dst(BIₓₖ, plans); BIᵧᵣ = _allocate_fft_dst(BIᵧₖ, plans)
     fft_backward!(BRₓᵣ, BRₓₖ, plans)
@@ -811,68 +565,29 @@ function compute_qw!(qʷₖ, BRk, BIk, G::RuntimeGeometry, plans;
     fft_backward!(BIₓᵣ, BIₓₖ, plans)
     fft_backward!(BIᵧᵣ, BIᵧₖ, plans)
 
-    BRₓᵣ_arr = parent(BRₓᵣ); BRᵧᵣ_arr = parent(BRᵧᵣ)
-    BIₓᵣ_arr = parent(BIₓᵣ); BIᵧᵣ_arr = parent(BIᵧᵣ)
-
-    #= Compute the unscaled (i/2)J(B*, B) term
-    J(B*, B) = 2i(BRₓBIᵧ - BRᵧBIₓ)  [purely imaginary]
-    So (i/2)J(B*, B) = i² × (BRₓBIᵧ - BRᵧBIₓ) = -(BRₓBIᵧ - BRᵧBIₓ) = BRᵧBIₓ - BRₓBIᵧ =#
+    # J(B*, B) = 2i(BRₓBIᵧ - BRᵧBIₓ) is purely imaginary, so
+    # (i/2)J(B*, B) = BRᵧBIₓ - BRₓBIᵧ.
     qʷᵣ = _allocate_fft_dst(qʷₖ, plans)
-    qʷᵣ_arr = parent(qʷᵣ)
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(qʷᵣ_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        qʷᵣ_arr[k, i_local, j_local] = real(BRᵧᵣ_arr[k, i_local, j_local])*real(BIₓᵣ_arr[k, i_local, j_local]) -
-                                        real(BRₓᵣ_arr[k, i_local, j_local])*real(BIᵧᵣ_arr[k, i_local, j_local])
-    end
+    launch!(_jacobian_product_kernel!, backend, size(qʷᵣ),
+            qʷᵣ, BRᵧᵣ, BRₓᵣ, BIᵧᵣ, BIₓᵣ)
 
-    #= Compute |B|² = BR² + BI² for the ∇²|B|² term =#
+    # |B|² = BR² + BI² for the ∇²|B|² term
     BRᵣ = _allocate_fft_dst(BRk, plans); BIᵣ = _allocate_fft_dst(BIk, plans)
     fft_backward!(BRᵣ, BRk_f, plans)
     fft_backward!(BIᵣ, BIk_f, plans)
-
-    BRᵣ_arr = parent(BRᵣ); BIᵣ_arr = parent(BIᵣ)
     mag² = _allocate_fft_dst(BRk, plans)
-    mag²_arr = parent(mag²)
+    kernel_map!(_split_magnitude², mag², BRᵣ, BIᵣ)
 
-    # Physical array dimensions (already defined above as nz_phys, nx_phys, ny_phys)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        mag²_arr[k, i_local, j_local] = real(BRᵣ_arr[k, i_local, j_local])^2 + real(BIᵣ_arr[k, i_local, j_local])^2
-    end
-
-    #= Transform |B|² to spectral for ∇² operation =#
+    # Assemble qʷ = (1/f₀)[J_term + (1/4)∇²|B|²] with ∇² → -kₕ²
     tempₖ = similar(BRk)
     fft_forward!(tempₖ, mag², plans)
-    tempₖ_arr = parent(tempₖ)
-
-    #= Assemble qʷ in spectral space
-    qʷ = (1/f₀) [J_term + (1/4)∇²|B|²]
-    where ∇² → -kₕ² in spectral space =#
     fft_forward!(qʷₖ, qʷᵣ, plans)
-    qʷₖ_arr = parent(qʷₖ)
-
-    #= No additional normalization needed:
-    fft_backward! uses normalized IFFT (divides by N internally).
-    Previous code incorrectly divided by nx*ny, weakening wave feedback.
-    Just combine terms and apply dealiasing. =#
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, qʷₖ)
-        j_global = local_to_global(j_local, 3, qʷₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-      
-        if should_keep(i_global, j_global)
-            qʷₖ_arr[k, i_local, j_local] = inv_f *
-                (qʷₖ_arr[k, i_local, j_local] -
-                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
-        else
-            qʷₖ_arr[k, i_local, j_local] = 0
-        end
-    end
-
+    launch!(_wave_feedback_assembly_kernel!, backend, size(qʷₖ),
+            qʷₖ, tempₖ, G.kx, G.ky, mask, inv_f)
     return qʷₖ
 end
+
+_split_magnitude²(BR, BI) = real(BR)^2 + real(BI)^2
 
 """
     compute_qw_complex!(qʷₖ, Bk, G, plans; f, Lmask=nothing)
@@ -903,89 +618,38 @@ function compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans;
     end
 end
 
+# (i/2) J(B*, B) = -Im(J(B*, B)) / 2, as J(B*, B) is purely imaginary.
+_complex_jacobian(Bx, By) = -imag(conj(Bx) * By - conj(By) * Bx) / 2
+_complex_magnitude²(B) = real(conj(B) * B)
+
 function _compute_qw_complex!(qʷₖ, Bk, G::RuntimeGeometry, plans, f, Lmask, workspace)
-    nx, ny, nz = G.nx, G.ny, G.nz
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("wave feedback requires a finite, nonzero Coriolis frequency"))
-    inv_f = inv(float(f))
+    inv_f = convert(real(eltype(qʷₖ)), inv(float(f)))
+    backend = get_backend(qʷₖ)
+    mask = _nonlinear_mask(Lmask, G, qʷₖ)
 
-    qʷₖ_arr = parent(qʷₖ)
+    # Three buffers, transformed in place: B (prefiltered, to avoid aliasing
+    # when upstream fields are not masked, then |B|²), ∂ₓB (then the
+    # Jacobian term), and ∂ᵧB.
+    B = scratch_like(workspace, Bk)
+    dealias!(B, Bk, mask)
+    Bₓ = scratch_like(workspace, Bk); Bᵧ = scratch_like(workspace, Bk)
+    launch!(_gradient_kernel!, backend, size(Bk), Bₓ, Bᵧ, B, G.kx, G.ky,
+            KeepAllModes())
+    fft_backward!(B, B, plans)
+    fft_backward!(Bₓ, Bₓ, plans)
+    fft_backward!(Bᵧ, Bᵧ, plans)
 
-    # Prefilter inputs to avoid aliasing when upstream fields are not masked
-    Bk_f = scratch_like(workspace, Bk)
-    _prefilter_spectral!(Bk_f, Bk, G, Lmask)
+    # (i/2)J(B*, B) and |B|² in physical space
+    kernel_map!(_complex_jacobian, Bₓ, Bₓ, Bᵧ)
+    kernel_map!(_complex_magnitude², B, B)
 
-    Bk_arr = parent(Bk_f)
-    nz_local, nx_local, ny_local = size(Bk_arr)
-
-    use_inline_dealias = isnothing(Lmask)
-    @inline should_keep(i_g, j_g) = use_inline_dealias ? PARENT.is_dealiased(i_g, j_g, nx, ny) : Lmask[i_g, j_g]
-
-    # Spectral derivatives of B
-    Bₓₖ = scratch_like(workspace, Bk); Bᵧₖ = scratch_like(workspace, Bk)
-    Bₓₖ_arr = parent(Bₓₖ); Bᵧₖ_arr = parent(Bᵧₖ)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, Bk_f)
-        j_global = local_to_global(j_local, 3, Bk_f)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        Bₓₖ_arr[k, i_local, j_local] = im*kₓ*Bk_arr[k, i_local, j_local]
-        Bᵧₖ_arr[k, i_local, j_local] = im*kᵧ*Bk_arr[k, i_local, j_local]
-    end
-
-    # Transform to physical space
-    Bᵣ = scratch_physical(workspace, Bk, plans)
-    Bₓᵣ = scratch_physical(workspace, Bₓₖ, plans)
-    Bᵧᵣ = scratch_physical(workspace, Bᵧₖ, plans)
-    fft_backward!(Bᵣ, Bk_f, plans)
-    fft_backward!(Bₓᵣ, Bₓₖ, plans)
-    fft_backward!(Bᵧᵣ, Bᵧₖ, plans)
-
-    Bᵣ_arr = parent(Bᵣ)
-    Bₓᵣ_arr = parent(Bₓᵣ)
-    Bᵧᵣ_arr = parent(Bᵧᵣ)
-
-    # (i/2)J(B*, B) term in physical space
-    qʷᵣ = scratch_phys_like(workspace, Bᵣ)
-    qʷᵣ_arr = parent(qʷᵣ)
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(qʷᵣ_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        Jval = conj(Bₓᵣ_arr[k, i_local, j_local]) * Bᵧᵣ_arr[k, i_local, j_local] -
-               conj(Bᵧᵣ_arr[k, i_local, j_local]) * Bₓᵣ_arr[k, i_local, j_local]
-        qʷᵣ_arr[k, i_local, j_local] = real(0.5im * Jval)
-    end
-
-    # |B|^2 term
-    mag² = scratch_physical(workspace, Bk, plans)
-    mag²_arr = parent(mag²)
-    # Physical array dimensions (already defined above as nz_phys, nx_phys, ny_phys)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        mag²_arr[k, i_local, j_local] = real(conj(Bᵣ_arr[k, i_local, j_local]) * Bᵣ_arr[k, i_local, j_local])
-    end
-
-    # Transform to spectral
-    tempₖ = scratch_like(workspace, Bk)
-    fft_forward!(tempₖ, mag², plans)
-    fft_forward!(qʷₖ, qʷᵣ, plans)
-    tempₖ_arr = parent(tempₖ)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, qʷₖ)
-        j_global = local_to_global(j_local, 3, qʷₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-        if should_keep(i_global, j_global)
-            qʷₖ_arr[k, i_local, j_local] = inv_f *
-                (qʷₖ_arr[k, i_local, j_local] -
-                 0.25*kₕ²*tempₖ_arr[k, i_local, j_local])
-        else
-            qʷₖ_arr[k, i_local, j_local] = 0
-        end
-    end
-
+    # Transform to spectral and assemble
+    fft_forward!(B, B, plans)
+    fft_forward!(qʷₖ, Bₓ, plans)
+    launch!(_wave_feedback_assembly_kernel!, backend, size(qʷₖ),
+            qʷₖ, B, G.kx, G.ky, mask, inv_f)
     return qʷₖ
 end
 
@@ -1025,7 +689,7 @@ Boundary points (Neumann):
 - `qok`: Input q field at the current Runge-Kutta stage
 - `vertical_diffusivity`: Scalar vertical diffusivity coefficient
 - `G::RuntimeGeometry`: RuntimeGeometry struct
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `workspace`: Unused; accepted for call-site compatibility
 
 # Note
 This operates on spectral q but the vertical derivative is in physical space,
@@ -1037,48 +701,32 @@ This matches `dissipation_q_nv` in derivatives.f90.
 function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::RuntimeGeometry;
     workspace=nothing)
 
-    # A single layer has no vertical diffusion, and no transpose to arrange.
+    # A single layer has no vertical diffusion.
     if G.nz <= 1
-        fill!(parent(dqk), zero(eltype(parent(dqk))))
+        fill!(dqk, zero(eltype(dqk)))
         return dqk
     end
 
-    with_z_local(G, (dqk, qok), (:out, :in);
-                 scratch=z_scratch(workspace, :work_z, :q_z)) do dq_z, q_z
-        _dissipation_q_nv!(dq_z, q_z, vertical_diffusivity, G)
-    end
+    nz = size(dqk, 1)
+    @assert nz == G.nz "Vertical dimension must match the grid"
+    Δz = vertical_spacing(G)
+    launch!(_vertical_diffusion_kernel!, dqk, size(dqk),
+            dqk, qok, convert(typeof(Δz), vertical_diffusivity), 1 / (Δz * Δz), nz)
     return dqk
 end
 
-"""
-Second-order vertical diffusion with Neumann (q_z = 0) top and bottom.
-Requires a fully local vertical dimension, which `dissipation_q_nv!` arranges.
-"""
-function _dissipation_q_nv!(dqk, qok, vertical_diffusivity, G::RuntimeGeometry)
-    nz = G.nz
-
-    dqk_arr = parent(dqk)
-    qok_arr = parent(qok)
-    nz_local, nx_local, ny_local = size(dqk_arr)
-    @assert nz_local == nz "Vertical dimension must be fully local"
-
-    Δz = G.z[2] - G.z[1]
-    Δz⁻² = 1/(Δz*Δz)
-    νz = vertical_diffusivity
-
-    @inbounds for k in 1:nz, j_local in 1:ny_local, i_local in 1:nx_local
-        if k == 1
-            # Bottom boundary: Neumann (q_z = 0)
-            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k+1, i_local, j_local] - qok_arr[k, i_local, j_local] ) * Δz⁻²
-        elseif k == nz
-            # Top boundary: Neumann (q_z = 0)
-            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k-1, i_local, j_local] - qok_arr[k, i_local, j_local] ) * Δz⁻²
-        else
-            # Interior: standard central difference
-            dqk_arr[k, i_local, j_local] = νz * ( qok_arr[k+1, i_local, j_local] - 2qok_arr[k, i_local, j_local] + qok_arr[k-1, i_local, j_local] ) * Δz⁻²
-        end
+@kernel function _vertical_diffusion_kernel!(dq, @Const(q), νz, Δz⁻², nz)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if k == 1
+        # Bottom boundary: Neumann (q_z = 0)
+        dq[k, i, j] = νz * (q[k + 1, i, j] - q[k, i, j]) * Δz⁻²
+    elseif k == nz
+        # Top boundary: Neumann (q_z = 0)
+        dq[k, i, j] = νz * (q[k - 1, i, j] - q[k, i, j]) * Δz⁻²
+    else
+        # Interior: standard central difference
+        dq[k, i, j] = νz * (q[k + 1, i, j] - 2q[k, i, j] + q[k - 1, i, j]) * Δz⁻²
     end
-    return dqk
 end
 
 #=

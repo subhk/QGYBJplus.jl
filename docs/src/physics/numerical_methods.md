@@ -10,21 +10,24 @@ Horizontal derivatives are pseudo-spectral. Linear derivatives multiply
 Fourier coefficients by `im*kx` or `im*ky`; nonlinear products are evaluated
 in physical space and transformed back.
 
-The radial two-thirds mask retains integer mode indices satisfying
+The two-thirds mask retains the integer mode indices inside an ellipse,
 
 ```math
 \begin{aligned}
-i_x^2 + i_y^2 &< K^2, && 3 \mid \min(n_x,n_y), \\
-i_x^2 + i_y^2 &\leq K^2, && \text{otherwise},
+\frac{i_x^2}{K_x^2} + \frac{i_y^2}{K_y^2} &< 1, && 3 \mid n_x \text{ or } 3 \mid n_y, \\
+\frac{i_x^2}{K_x^2} + \frac{i_y^2}{K_y^2} &\leq 1, && \text{otherwise},
 \end{aligned}
 \qquad
-K = \left\lfloor\frac{\min(n_x,n_y)}{3}\right\rfloor.
+K_x = \left\lfloor\frac{n_x}{3}\right\rfloor,\quad
+K_y = \left\lfloor\frac{n_y}{3}\right\rfloor,
 ```
 
-The strict inequality excludes the exact ``|k|=N/3`` boundary when the
-limiting dimension is divisible by three. Retaining that boundary in an
-unpadded quadratic product would allow two cutoff modes to alias onto the
-opposite retained boundary; modes inside the radial disk remain available.
+which is a disk on a square grid. Every retained mode then has
+``|i_x| < n_x/3`` and ``|i_y| < n_y/3``, so a quadratic product of retained
+modes never aliases onto a retained mode. The strict inequality excludes the
+exact ``|k|=n/3`` boundary when a dimension is divisible by three, where two
+cutoff modes could otherwise alias onto the opposite retained boundary. A
+dimension with fewer than three points keeps only its mean.
 
 ```julia
 mask = dealias_mask(model.grid)
@@ -44,9 +47,9 @@ vertical derivatives and the variable-coefficient operator
 At every horizontal Fourier mode, elliptic inversions reduce to a tridiagonal
 vertical solve. The pointwise `N²` profile is sampled at cell centers, while
 the conservative flux uses
-`a_ell[k] = f² / N²(grid.z_faces[k + 1])` at each cell's upper face. Under MPI
-the runtime transposes between the spectral output pencil and a pencil with the
-full vertical column local.
+`a_ell[k] = f² / N²(grid.z_faces[k + 1])` at each cell's upper face. Every
+vertical column is solved by one kernel work item with the Thomas algorithm,
+so all horizontal modes are solved in parallel on the CPU or GPU.
 
 ## ETD-RK2
 
@@ -98,8 +101,20 @@ diagnostic schedules. Use `run!` for ordinary simulations.
 
 The horizontal dissipative term is integrated exactly and does not impose an
 explicit diffusion limit. Choose `Δt` for advective CFL, explicit dispersion,
-and vertical-diffusion constraints. Dimensional helper functions can target an
-e-folding time at a selected horizontal scale:
+and vertical-diffusion constraints.
+
+Dispersion is explicit, and a two-stage Runge–Kutta step amplifies an
+oscillation of frequency ``\omega`` by ``\sqrt{1+(\omega\Delta t)^4/4}`` per
+step. Under YBJ⁺ the fastest envelope frequency is ``2f``, carried by the
+depth-mean part of `B` (``LA`` has no depth mean, so ``B=\nabla^2A/4``
+there), so keep ``2f\Delta t`` small: at ``2f\Delta t = 0.1`` the
+amplification is ``1+1.3\times10^{-5}`` per step, while at ``2f\Delta t \gtrsim
+0.5`` round-off in that mode grows visibly over long runs. The original YBJ
+dispersion is unbounded at high horizontal wavenumber and weak stratification,
+which is the stiffness YBJ⁺ removes.
+
+Dimensional helper functions can target an e-folding time at a selected
+horizontal scale:
 
 ```julia
 hyperdiffusion = compute_hyperdiff_params(
@@ -113,11 +128,13 @@ hyperdiffusion = compute_hyperdiff_params(
 )
 ```
 
-## Distributed transforms
+## Transforms and kernels
 
-`ModelRuntime` owns transform plans, decomposition metadata, transpose
-destinations, and reusable work arrays. Application operators accept the model
-and select the correct local layout automatically:
+`ModelRuntime` owns the transform plans, reusable work arrays, coefficient
+profiles, and the dealiasing mask, all on the model's architecture. Horizontal
+transforms are one batched 2D FFT over every vertical level (FFTW on the CPU,
+cuFFT on CUDA GPUs), and every other array loop is a KernelAbstractions
+kernel. Application operators accept the model:
 
 ```julia
 invert_q_to_psi!(model)
@@ -125,8 +142,7 @@ invert_B_to_A!(model)
 compute_velocities!(model)
 ```
 
-Use `get_local_range_physical(model)` and
-`get_local_range_spectral(model)` only when writing custom distributed loops.
+See [CPU and GPU execution](@ref architectures).
 
 ## Array layout
 
@@ -136,5 +152,5 @@ physical velocities are real. NetCDF output converts to `(x, y, z)`.
 ## Verification
 
 The test suite checks ETD integrating-factor damping, workspace reuse,
-one-/multi-rank transform equivalence, MPI rank-independent results, and
-periodic particle migration.
+second-order convergence, conservation properties, and that the GPU code path
+(run on the CPU with JLArrays) reproduces the CPU model.

@@ -12,7 +12,7 @@ Diagnostics operate on the model that owns the fields and runtime metadata.
 kinetic_energy = flow_kinetic_energy(model)
 ```
 
-The result is reduced across the model communicator.
+The result is a host scalar, also when the model runs on a GPU.
 
 ## Wave energy
 
@@ -20,8 +20,8 @@ The result is reduced across the model communicator.
 B_energy, A_energy = wave_energy(model)
 ```
 
-The returned tuple reports globally reduced envelope and diagnosed-amplitude
-energies. The diagnostic reconstructs fields required by the selected wave
+The returned tuple reports the envelope and diagnosed-amplitude energies
+summed over the domain. The diagnostic reconstructs fields required by the selected wave
 formulation before reducing them.
 
 ## Runtime inspection
@@ -30,8 +30,7 @@ formulation before reducing them.
 simulation.clock.time
 simulation.clock.iteration
 simulation.state
-is_root(simulation)
-nprocs(simulation)
+architecture(simulation)
 ```
 
 Use an [`IterationInterval`](@ref) or [`TimeInterval`](@ref) when constructing

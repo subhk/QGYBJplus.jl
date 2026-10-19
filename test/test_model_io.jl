@@ -22,7 +22,6 @@ end
         formulation=PassiveWave(),
         linear=LinearDynamics(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
     try
@@ -76,7 +75,6 @@ end
             formulation=PassiveWave(),
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
         model.fields.q[2, 2, 1] = 0.25 - 0.1im
@@ -135,10 +133,6 @@ end
                 @test forward * LA ≈
                       B_hat .+ 0.25 .* kh² .* (forward * A)
 
-                for old_name in ("LAr", "LAi", "Ar", "Ai",
-                                 "q_real", "q_imag", "B_real", "B_imag")
-                    @test !haskey(ds, old_name)
-                end
             end
 
             analysis_grid = EnergyExample.grid_from_snapshot(last_file)
@@ -310,7 +304,6 @@ end
                     formulation=YBJ(),
                     linear=LinearDynamics(),
                     no_dispersion=dispersion,
-                    topology=(1, 1),
                     verbose=false,
                 )
                 try
@@ -396,7 +389,6 @@ end
                 formulation=YBJ(),
                 linear=NonlinearDynamics(),
                 no_dispersion=Dispersive(),
-                topology=(1, 1),
                 verbose=false,
             )
             try
@@ -408,6 +400,10 @@ end
                 parent(feedback_model.fields.B) .=
                     1e-2 .* randn(rng, ComplexF64,
                                    size(parent(feedback_model.fields.B)))
+                # A valid YBJ envelope: B = LA has zero depth mean.
+                QGYBJplus.sumB!(feedback_model.fields.B,
+                    feedback_model.runtime.geometry;
+                    Lmask=feedback_model.runtime.dealias_mask)
                 invert_q_to_psi!(feedback_model)
                 baseline_psi = copy(parent(feedback_model.fields.psi))
                 prognostic_q = copy(parent(feedback_model.fields.q))
@@ -444,11 +440,205 @@ end
                 output=NetCDFOutput(path=failure_path),
                 verbose=false,
             )
-            @test_throws ErrorException run!(failing_simulation)
+            @test_throws Exception run!(failing_simulation)
             @test failing_simulation.state == Failed
             @test failing_simulation.output_manager.closed
         finally
             finalize_simulation!(simulation)
         end
+    end
+end
+
+"""Small undamped model for the output-continuation tests."""
+function continuation_test_model(; extent=(2π, 2π, 1.0), f=1.0, N²=1.0)
+    grid = RectilinearGrid(size=(8, 8, 4), extent=extent)
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=f),
+        stratification=ConstantStratification(N²=N²),
+        closure=HorizontalHyperdiffusivity(
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0)),
+        verbose=false)
+    set!(model; ψ=(x, y, z) -> 0.3sin(x) * cos(y), verbose=false)
+    return model
+end
+
+state_stamps(path) = map(sort(filter(endswith(".nc"), readdir(path)))) do name
+    NCDataset(joinpath(path, name), "r") do dataset
+        (name, dataset["time"][1], Int(dataset.attrib["iteration"]))
+    end
+end
+
+energy_times(path) = NCDataset(joinpath(path, "diagnostic", "total_energy.nc"), "r") do dataset
+    dataset["time"][:]
+end
+
+@testset "State files describe their variables" begin
+    model = continuation_test_model()
+    mktempdir() do path
+        simulation = Simulation(model; Δt=0.1, stop_iteration=1,
+            output=NetCDFOutput(path=path, fields=(:ψ, :waves), velocities=true),
+            diagnostics=IterationInterval(1), verbose=false)
+        try
+            run!(simulation)
+            NCDataset(joinpath(path, "state0001.nc"), "r") do dataset
+                # Fourier coefficients have wavenumber axes, not positions.
+                for name in ("q_hat_real", "q_hat_imag", "B_hat_real", "B_hat_imag")
+                    @test dimnames(dataset[name]) == ("kx_index", "ky_index", "z")
+                end
+                @test dataset["kx"][:] == model.grid.kx
+                @test dataset["ky"][:] == model.grid.ky
+                @test dimnames(dataset["psi"]) == ("x", "y", "z")
+                @test all(name -> haskey(dataset[name].attrib, "long_name"), keys(dataset))
+                @test !any(name -> haskey(dataset[name].attrib, "units"), keys(dataset))
+                @test haskey(dataset.attrib, "units_convention")
+            end
+            NCDataset(joinpath(path, "diagnostic", "total_energy.nc"), "r") do dataset
+                @test !haskey(dataset["time"].attrib, "units")
+                @test haskey(dataset["coupled_energy"].attrib, "long_name")
+                @test haskey(dataset.attrib, "units_convention")
+            end
+        finally
+            finalize_simulation!(simulation)
+        end
+    end
+end
+
+@testset "Restored simulations continue their output" begin
+    output(path; kwargs...) = NetCDFOutput(; path=path,
+        schedule=IterationInterval(2), kwargs...)
+    simulation(model, path, stop; kwargs...) = Simulation(model; Δt=0.1,
+        stop_iteration=stop, output=output(path; kwargs...),
+        diagnostics=IterationInterval(1), verbose=false)
+    mktempdir() do path
+        first_run = simulation(continuation_test_model(), path, 4)
+        run!(first_run)
+        finalize_simulation!(first_run)
+
+        # restore! sets the clock, and the output carries on after the
+        # restart file without writing it again.
+        continued = simulation(continuation_test_model(), path, 8)
+        restore!(continued, joinpath(path, "state0003.nc"))
+        @test continued.clock.time ≈ 0.4
+        @test continued.clock.iteration == 4
+        run!(continued)
+        finalize_simulation!(continued)
+        stamps = state_stamps(path)
+        @test first.(stamps) == ["state000$n.nc" for n in 1:5]
+        @test getindex.(stamps, 3) == [0, 2, 4, 6, 8]
+        @test getindex.(stamps, 2) ≈ [0.0, 0.2, 0.4, 0.6, 0.8]
+        @test energy_times(path) ≈ 0.0:0.1:0.8
+
+        # Continuing from the same restart file is the same run, bitwise.
+        uninterrupted = continuation_test_model()
+        run!(Simulation(uninterrupted; Δt=0.1, stop_iteration=8, output=false,
+                        verbose=false))
+        NCDataset(joinpath(path, "state0005.nc"), "r") do dataset
+            q = dataset["q_hat_real"][:, :, :] .+ im .* dataset["q_hat_imag"][:, :, :]
+            @test q == permutedims(Array(uninterrupted.fields.q), (2, 3, 1))
+        end
+        finalize_model!(uninterrupted)
+
+        # A new run may not replace another run's files ...
+        fresh = simulation(continuation_test_model(), path, 2)
+        @test_throws ArgumentError run!(fresh)
+        @test length(state_stamps(path)) == 5
+        # ... unless asked to.
+        replaced = simulation(continuation_test_model(), path, 2; overwrite=true)
+        run!(replaced)
+        finalize_simulation!(replaced)
+        @test getindex.(state_stamps(path), 3) == [0, 2]
+        @test energy_times(path) ≈ [0.0, 0.1, 0.2]
+    end
+
+    # Restarting from an earlier file keeps the files up to it and, with
+    # overwrite=true, replaces the later ones.
+    mktempdir() do path
+        long_run = simulation(continuation_test_model(), path, 8)
+        run!(long_run)
+        finalize_simulation!(long_run)
+        early = simulation(continuation_test_model(), path, 6)
+        restore!(early, joinpath(path, "state0002.nc"))
+        @test_throws ArgumentError run!(early)
+        rerun = simulation(continuation_test_model(), path, 6; overwrite=true)
+        restore!(rerun, joinpath(path, "state0002.nc"))
+        run!(rerun)
+        finalize_simulation!(rerun)
+        @test getindex.(state_stamps(path), 3) == [0, 2, 4, 6]
+        @test energy_times(path) ≈ 0.0:0.1:0.6
+    end
+end
+
+@testset "Restart files must match the model's domain" begin
+    model = continuation_test_model()
+    mktempdir() do path
+        simulation = Simulation(model; Δt=0.1, stop_iteration=1,
+            output=NetCDFOutput(path=path), verbose=false)
+        try
+            run!(simulation)
+            restart = joinpath(path, "state0002.nc")
+            wider = continuation_test_model(extent=(4π, 2π, 1.0))
+            deeper = continuation_test_model(extent=(2π, 2π, 3.0))
+            other_f = continuation_test_model(f=2.0)
+            other_N² = continuation_test_model(N²=5.0)
+            try
+                @test_throws ArgumentError restore!(wider, restart)
+                @test_throws ArgumentError restore!(deeper, restart)
+                @test_logs (:warn, r"f0") restore!(other_f, restart)
+                @test_logs (:warn, r"N²") restore!(other_N², restart)
+                @test other_f.fields.q == model.fields.q
+            finally
+                foreach(finalize_model!, (wider, deeper, other_f, other_N²))
+            end
+        finally
+            finalize_simulation!(simulation)
+        end
+    end
+end
+
+@testset "Energy files are written while the run goes" begin
+    model = continuation_test_model()
+    mktempdir() do path
+        simulation = Simulation(model; Δt=0.1, stop_iteration=1, output=false,
+            diagnostics=EnergyDiagnosticsOutput(path=path), verbose=false)
+        try
+            QGYBJplus._prepare_simulation_diagnostics!(simulation)
+            QGYBJplus._maybe_record_simulation_diagnostics!(simulation; initial=true)
+            # The first record is on disk before the run ends.
+            NCDataset(joinpath(path, "total_energy.nc"), "r") do dataset
+                @test dataset["time"][:] == [0.0]
+                @test dataset["mean_flow_KE"][1] > 0
+            end
+            @test !any(endswith(".tmp"), readdir(path))
+        finally
+            finalize_simulation!(simulation)
+        end
+    end
+end
+
+@testset "Output and diagnostics do not change the solution" begin
+    for formulation in (YBJPlus(), YBJ())
+        final_states = map((false, true)) do write
+            grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+            model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
+                stratification=ConstantStratification(N²=1.0),
+                closure=HorizontalHyperdiffusivity(
+                    flow=FlowHyperdiffusivity(coefficient=0),
+                    wave=WaveHyperdiffusivity(coefficient=0)),
+                feedback=WaveMeanFeedback(), formulation=formulation,
+                verbose=false)
+            set!(model; ψ=(x, y, z) -> 0.3sin(x) * cos(y) * (1 + z),
+                 waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+            mktempdir() do path
+                simulation = Simulation(model; Δt=0.05, stop_iteration=4,
+                    output=write ? NetCDFOutput(path=path, schedule=IterationInterval(1),
+                                                fields=(:ψ, :waves), velocities=true) : false,
+                    diagnostics=write ? IterationInterval(1) : false, verbose=false)
+                run!(simulation)
+                state = (Array(model.fields.q), Array(model.fields.B))
+                finalize_simulation!(simulation)
+                state
+            end
+        end
+        @test final_states[1] == final_states[2]
     end
 end

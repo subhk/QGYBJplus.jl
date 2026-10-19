@@ -32,8 +32,12 @@ The lifecycle progresses through `Ready`, `Running`, and `Stopped`. An
 exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
 Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
 construct a new simulation around the same model to continue from the current
-fields. This prevents closed output managers from overwriting earlier files.
-Termination checks are collective, so all MPI ranks enter `Failed` together.
+fields. A new simulation's clock starts at zero; to continue the time axis
+and the output files of the previous run, restore its last state file into
+the new simulation with `restore!(simulation, path)`, which also sets the
+clock (see [I/O and restart](@ref io-output)).
+After every step the simulation checks for non-finite values and for a
+blowing-up streamfunction, and enters `Failed` if either occurs.
 
 ```julia
 try
@@ -60,7 +64,7 @@ until the clock first reaches or crosses that time. Output-path, interval, and
 field-selection overrides rebuild the effective `NetCDFOutput` configuration
 before its manager opens.
 
-Set `progress=true` to print global maximum wave and flow speeds at the
+Set `progress=true` to print the maximum wave and flow speeds at the
 `diagnostics_interval` cadence:
 
 ```julia
@@ -72,29 +76,15 @@ Iteration: 0100, time: 3.333 minutes, Δt: 2 seconds, max(|LA|) = 9.998e-02 m s�
 ```
 
 Here the wave speed is ``\max |LA|`` and the flow speed is
-``\max \sqrt{u^2+v^2}``. In MPI runs, the maxima are global and only rank zero
-prints. Wall time is the elapsed time for the current `run!` call.
+``\max \sqrt{u^2+v^2}``. Wall time is the elapsed time for the current
+`run!` call.
 
-By default, model construction also reports the MPI and runtime setup on rank
-zero:
+By default, model construction also reports the architecture and resolution:
 
 ```text
-┌ Info: MPI initialized with 2D decomposition
-│   nprocs = 16
-└   topology = (4, 4)
-┌ Info: Topology validation passed
-│   nx = 256
-│   ny = 256
-│   nz = 128
-│   topology = (4, 4)
-└   decomp_dims = (2, 3)
-┌ Info: Pencil decompositions created
-│   xy_decomp = (2, 3)
-│   xz_decomp = (1, 3)
-└   z_decomp = (2, 3)
 ┌ Info: QGYBJModel runtime initialized
-│   size = (256, 256, 128)
-└   ranks = 16
+│   architecture = GPU(CUDABackend)
+└   size = (256, 256, 128)
 ```
 
 ## Clock access

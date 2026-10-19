@@ -10,11 +10,13 @@ CurrentModule = QGYBJplus
 grid = RectilinearGrid(size=(64, 48, 24),
                        x=(-π, π), y=(-2π, 2π), z=(-1.0, 0.0))
 kx, ky = grid.kx, grid.ky
+architecture(grid)   # CPU()
 ```
 
 Useful properties are `size`, `extent`, `origin`, `z_bounds`, `x`, `y`, `z`,
 `x_faces`, `y_faces`, `z_faces`, scalar spacings, `kx`, `ky`, and `kh2`.
 The wavenumbers follow FFTW ordering and can be used directly with `fft`.
+These coordinate vectors always live on the host, whatever the architecture.
 
 ## Model-owned arrays
 
@@ -32,27 +34,19 @@ The wavenumbers follow FFTW ordering and can be used directly with `fft`.
 fields_copy = copy_fields(model.fields)
 ```
 
-`copy_fields` preserves distributed pencil layouts and copies every array.
-The `model.fields` container keeps its identity across time steps, so a cached
-`fields = model.fields` remains a live handle. Individual arrays are
-double-buffered and rotate; access `fields.q` (and the other properties) again
-after each step rather than caching `q = fields.q`. Use `copy_fields` when a
-fixed snapshot is needed.
+`copy_fields` copies every array and keeps the copies on the fields'
+architecture.
+Time steps update the arrays in place, so both a cached `fields = model.fields`
+and a cached array such as `q = model.fields.q` remain live handles. Use
+`copy_fields` when a fixed snapshot is needed.
 
-## Distributed metadata
+## Arrays on a GPU
 
-The public geometry has no MPI decomposition. Query the runtime or model:
+On a GPU, model arrays are device arrays such as `CuArray`. Copy one to the
+host with `Array` before indexing elements, and move host data onto the
+model's architecture with [`on_architecture`](@ref):
 
 ```julia
-get_local_range(model)
-get_local_range_physical(model)
-get_local_range_spectral(model)
-local_to_global(1, 2, model)
+q_host = Array(model.fields.q)
+copyto!(model.fields.q, on_architecture(architecture(model), q_host))
 ```
-
-`get_local_range(model)` returns the spectral range. Query physical and
-spectral layouts explicitly when a custom operation crosses transform space.
-
-Use `gather_to_root` and `scatter_from_root` for explicit
-global-array boundaries. Model-level operators generally handle distribution
-without requiring these helpers.

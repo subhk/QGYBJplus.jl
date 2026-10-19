@@ -13,8 +13,8 @@ RectilinearGrid → QGYBJModel → Simulation
 ```
 
 - [`RectilinearGrid`](@ref) defines global coordinates and wavenumbers.
-- [`QGYBJModel`](@ref) owns physical choices, numerical choices, distributed
-  fields, FFT resources, and optional particles.
+- [`QGYBJModel`](@ref) owns physical choices, numerical choices, fields and
+  FFT resources on the grid's architecture, and optional particles.
 - [`Simulation`](@ref) owns time, ETD-RK2, stopping criteria, output, and
   diagnostics.
 

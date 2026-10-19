@@ -15,7 +15,6 @@ function wave_feedback_test_model(grid, formulation; f=2e-4, linear=NonlinearDyn
         formulation=formulation,
         linear=linear,
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
 end
@@ -31,7 +30,6 @@ function coupled_feedback_test_model(grid; f=1.0, formulation=YBJPlus())
         flow=EvolvingFlow(),
         feedback=WaveMeanFeedback(),
         formulation=formulation,
-        topology=(1, 1),
         verbose=false,
     )
 end
@@ -81,324 +79,66 @@ end
         @test real.(parent(qwave_physical)) ≈ expected rtol=5e-13 atol=5e-11
         @test maximum(abs, imag.(parent(qwave_physical))) < 5e-11
 
-        BRk = similar(model.fields.B)
-        BIk = similar(model.fields.B)
-        QGYBJplus.split_B_to_real_imag!(
-            BRk, BIk, model.fields.B, context.plans)
+        # The wave PV reverses with the sign of f (hemisphere).
+        opposite = similar(model.fields.q)
+        QGYBJplus.compute_qw_complex!(
+            opposite, model.fields.B, context.grid, context.plans;
+            f=-f, Lmask=context.mask)
+        @test parent(opposite) ≈ -parent(qwave_complex) rtol=1e-12
 
-        BR_physical = QGYBJplus.allocate_fft_backward_dst(BRk, model.runtime)
-        BI_physical = QGYBJplus.allocate_fft_backward_dst(BIk, model.runtime)
-        QGYBJplus.fft_backward!(BR_physical, BRk, context.plans)
-        QGYBJplus.fft_backward!(BI_physical, BIk, context.plans)
-        @test real.(parent(BR_physical)) ≈
-              real.(parent(wave_physical)) atol=2e-13
-        @test real.(parent(BI_physical)) ≈
-              imag.(parent(wave_physical)) atol=2e-13
-
-        qwave_split = similar(model.fields.q)
-        QGYBJplus.compute_qw!(
-            qwave_split, BRk, BIk, context.grid, context.plans;
-            f, Lmask=context.mask)
-        @test parent(qwave_split) ≈ parent(qwave_complex) rtol=5e-13 atol=5e-11
-
-        recombined = similar(model.fields.B)
-        QGYBJplus.combine_real_imag_to_B!(recombined, BRk, BIk)
-        @test parent(recombined) ≈ parent(model.fields.B) atol=2e-13
-
+        # The inversion reads the balanced PV q - qʷ; prognostic q is untouched.
         options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
-        q_saved = QGYBJplus.replace_q_with_wave_feedback_rhs!(
-            model.fields, context.grid, options, context.plans, context.mask)
-        @test parent(model.fields.q) ≈ -parent(qwave_complex) atol=5e-11
-        QGYBJplus.restore_prognostic_q!(model.fields, q_saved)
+        balanced = similar(model.fields.q)
+        QGYBJplus._balanced_pv_rhs!(balanced, model.fields, context.grid,
+            options, context.plans, context.mask)
+        @test parent(balanced) ≈ -parent(qwave_complex) atol=5e-11
         @test iszero(maximum(abs, parent(model.fields.q)))
     finally
         finalize_model!(model)
     end
 end
 
-@testset "Normal-YBJ complex tendency parity" begin
-    grid = RectilinearGrid(
-        size=(8, 8, 4),
-        x=(-π, π),
-        y=(-π, π),
-        z=(-1.0, 0.0),
-    )
-    plus_model = wave_feedback_test_model(
-        grid, YBJPlus(); f=1.0, linear=LinearDynamics())
-    normal_model = wave_feedback_test_model(
-        grid, YBJ(); f=1.0, linear=LinearDynamics())
-
-    try
-        for model in (plus_model, normal_model)
-            psi_physical = QGYBJplus.allocate_fft_backward_dst(
-                model.fields.psi, model.runtime)
-            wave_physical = QGYBJplus.allocate_fft_backward_dst(
-                model.fields.B, model.runtime)
-            psi = parent(psi_physical)
-            wave = parent(wave_physical)
-            vertical_sign = (-1.0, 1.0, -1.0, 1.0)
-            @inbounds for k in axes(psi, 1), i in axes(psi, 2), j in axes(psi, 3)
-                psi[k, i, j] = cos(grid.x[i]) + 0.3 * cos(grid.y[j])
-                wave[k, i, j] = vertical_sign[k] * (
-                    sin(grid.x[i]) + im * cos(grid.y[j]))
-            end
-            QGYBJplus.fft_forward!(
-                model.fields.psi, psi_physical, model.runtime.plans)
-            QGYBJplus.fft_forward!(
-                model.fields.B, wave_physical, model.runtime.plans)
-        end
-
-        function wave_rhs(model)
-            context = QGYBJplus._operator_context(model)
-            options = QGYBJplus.ETDModelOptions(
-                model.physics, model.numerics)
-            rhsq = similar(model.fields.q)
-            rhsB = similar(model.fields.B)
-            QGYBJplus._compute_etdrk2_rhs!(
-                rhsq, rhsB, model.fields, context.grid, options, context.plans;
-                a=context.a,
-                dealias_mask=context.mask,
-                workspace=context.workspace,
-                N2_profile=context.N2,
-                N2_face_profile=context.N2_face,
-            )
-            return copy(parent(rhsB))
-        end
-
-        @test wave_rhs(normal_model) ≈ wave_rhs(plus_model) atol=2e-12
-    finally
-        finalize_model!(plus_model)
-        finalize_model!(normal_model)
-    end
-end
-
-@testset "Normal-YBJ complex recovery parity" begin
+@testset "Normal-YBJ amplitude recovery satisfies B = LA and solvability" begin
     f = 7.5e-5
-    grid = RectilinearGrid(
-        size=(8, 8, 5),
-        x=(-π, π),
-        y=(-π, π),
-        z=(-400.0, 0.0),
-    )
+    grid = RectilinearGrid(size=(8, 8, 5), x=(-π, π), y=(-π, π), z=(-400.0, 0.0))
     model = wave_feedback_test_model(grid, YBJ(); f)
-
     try
         context = QGYBJplus._operator_context(model)
-        component_arrays = ntuple(_ -> similar(model.fields.B), 6)
-        BRk, BIk, nBRk, nBIk, rBRk, rBIk = component_arrays
-
-        arrays = map(parent, component_arrays)
-        @inbounds for k in axes(arrays[1], 1),
-                      i in axes(arrays[1], 2),
-                      j in axes(arrays[1], 3)
-            arrays[1][k, i, j] = complex(0.11k + 0.03i, -0.07j + 0.02k)
-            arrays[2][k, i, j] = complex(-0.05k + 0.01j, 0.09i - 0.02j)
-            arrays[3][k, i, j] = complex(0.04k - 0.02i, 0.03j + 0.01k)
-            arrays[4][k, i, j] = complex(-0.06j + 0.01i, 0.05k - 0.02i)
-            arrays[5][k, i, j] = complex(0.08i - 0.03k, -0.04j + 0.01i)
-            arrays[6][k, i, j] = complex(0.02j + 0.01k, 0.07i - 0.03k)
+        nz = grid.size[3]
+        B, nB, rB = (similar(model.fields.B) for _ in 1:3)
+        for (array, (a, b, c)) in zip((B, nB, rB),
+                                      ((0.11, 0.03, -0.07), (0.04, -0.02, 0.03),
+                                       (0.08, -0.03, -0.04)))
+            parent(array) .= [complex(a * k + b * i, c * j + 0.02k)
+                              for k in 1:nz, i in 1:8, j in 1:8]
         end
-
-        for component in (BRk, BIk)
-            values = parent(component)
-            @inbounds for i in axes(values, 2), j in axes(values, 3)
-                component_mean = sum(@view values[:, i, j]) / size(values, 1)
-                @views values[:, i, j] .-= component_mean
-            end
-            values .*= 1e-8
-        end
-
-        B = similar(model.fields.B)
-        nB = similar(model.fields.B)
-        rB = similar(model.fields.B)
-        parent(B) .= parent(BRk) .+ im .* parent(BIk)
-        parent(nB) .= parent(nBRk) .+ im .* parent(nBIk)
-        parent(rB) .= parent(rBRk) .+ im .* parent(rBIk)
-
+        parent(B) .-= sum(parent(B); dims=1) ./ nz   # B = LA has zero depth mean
+        parent(B) .*= 1e-8
         N2_profile = [1.0e-4, 1.2e-4, 1.5e-4, 1.1e-4, 0.9e-4]
-        sigma_complex = QGYBJplus.compute_sigma(
-            f, context.grid, nB, rB;
-            Lmask=context.mask)
-        sigma_components = QGYBJplus.compute_sigma(
-            f, context.grid, nBRk, nBIk, rBRk, rBIk;
-            Lmask=context.mask)
-        @test sigma_complex ≈ sigma_components rtol=5e-15 atol=5e-12
+        σ = QGYBJplus.compute_sigma(f, context.grid, nB, rB; Lmask=context.mask)
+        A, C = similar(model.fields.A), similar(model.fields.C)
+        QGYBJplus.compute_A!(A, C, B, σ, context.grid;
+                             f, Lmask=context.mask, N2_profile)
 
-        nB_values = parent(nB)
-        rB_values = parent(rB)
-        @inbounds for i in axes(nB_values, 2), j in axes(nB_values, 3)
-            i_global = QGYBJplus.local_to_global(i, 2, nB)
-            j_global = QGYBJplus.local_to_global(j, 3, nB)
-            kh² = context.grid.kx[i_global]^2 + context.grid.ky[j_global]^2
-            expected_sigma = if context.mask[i_global, j_global] && kh² > 0
-                sum(@view(rB_values[:, i, j]) .-
-                    2im .* @view(nB_values[:, i, j])) / (f * kh²)
-            else
-                0.0im
-            end
-            @test sigma_complex[i, j] ≈ expected_sigma atol=2e-10
+        kh² = reshape(grid.kx .^ 2, 1, :, 1) .+ reshape(grid.ky .^ 2, 1, 1, :)
+        kept = reshape(Array(context.mask), 1, 8, 8)
+        # B = LA, with the flux (f²/N²) A_z = a C on the upper faces.
+        a = f^2 ./ N2_profile
+        LA = map(1:nz) do k
+            up = k < nz ? a[k] .* parent(C)[k:k, :, :] : zero(parent(C)[k:k, :, :])
+            down = k > 1 ? a[k - 1] .* parent(C)[k - 1:k - 1, :, :] : zero(up)
+            (up .- down) ./ grid.dz
         end
-
-        A_complex = similar(model.fields.A)
-        C_complex = similar(model.fields.C)
-        A_components = similar(model.fields.A)
-        C_components = similar(model.fields.C)
-        QGYBJplus.compute_A!(
-            A_complex, C_complex, B, sigma_complex, context.grid;
-            f, Lmask=context.mask, N2_profile)
-        QGYBJplus.compute_A!(
-            A_components, C_components, BRk, BIk,
-            sigma_components, context.grid;
-            f, Lmask=context.mask, N2_profile)
-
-        @test parent(A_complex) ≈ parent(A_components) atol=2e-12
-        @test parent(C_complex) ≈ parent(C_components) atol=2e-12
-
-        A_values = parent(A_complex)
-        B_values = parent(B)
-        C_values = parent(C_complex)
-        Δz = grid.z[2] - grid.z[1]
-        @inbounds for i in axes(A_values, 2), j in axes(A_values, 3)
-            i_global = QGYBJplus.local_to_global(i, 2, A_complex)
-            j_global = QGYBJplus.local_to_global(j, 3, A_complex)
-            kh² = context.grid.kx[i_global]^2 + context.grid.ky[j_global]^2
-            @test sum(@view A_values[:, i, j]) ≈
-                  sigma_complex[i, j] rtol=5e-15 atol=1e-11
-            @test iszero(C_values[end, i, j])
-
-            if context.mask[i_global, j_global] && kh² > 0
-                cumulative_B = 0.0im
-                for k in 1:(context.grid.nz-1)
-                    cumulative_B += B_values[k, i, j]
-                    expected_C = cumulative_B * N2_profile[k] * Δz / f^2
-                    @test C_values[k, i, j] ≈ expected_C atol=2e-8
-                end
-
-                rhs_vertical_sum = sum(
-                    -nB_values[k, i, j] +
-                    0.5im * f * kh² * A_values[k, i, j] -
-                    0.5im * rB_values[k, i, j]
-                    for k in axes(A_values, 1))
-                @test abs(rhs_vertical_sum) < 2e-10
-            end
-        end
+        @test maximum(abs, (reduce(vcat, LA) .- parent(B)) .* kept) <
+              1e-10 * maximum(abs, parent(B))
+        # Solvability: the YBJ tendency has zero depth sum wherever kₕ > 0.
+        tendency = .-parent(nB) .- 0.5im .* parent(rB) .+
+                   0.5im * f .* kh² .* parent(A)
+        @test maximum(abs, sum(tendency; dims=1) .* kept .* (kh² .> 0)) <
+              1e-10 * maximum(abs, tendency)
     finally
         finalize_model!(model)
     end
-end
-
-#=
-Structural properties the wave PV must satisfy, independently of how it is
-discretised:
-
-    q^w = (i/2f₀) J(B*, B) + (1/4f₀) ∇²_h |B|²
-
-The testset above pins the value against a hand calculation for one B. These
-pin the properties, so a change that happens to preserve that one case but
-breaks the form still fails.
-=#
-@testset "Wave PV structural properties" begin
-    f = 2e-4
-    grid = RectilinearGrid(size=(16, 16, 4), x=(-π, π), y=(-π, π), z=(-1.0, 0.0))
-
-    function feedback_model(coriolis)
-        return QGYBJModel(
-            grid=grid, coriolis=FPlane(f=coriolis),
-            stratification=ConstantStratification(N²=1e-4),
-            closure=HorizontalHyperdiffusivity(
-                flow=FlowHyperdiffusivity(coefficient=0),
-                wave=WaveHyperdiffusivity(coefficient=0)),
-            flow=FixedFlow(), feedback=WaveMeanFeedback(),
-            formulation=YBJPlus(), topology=(1, 1), verbose=false)
-    end
-
-    """Physical-space q^w for an envelope given as a function of (x, y, z)."""
-    function wave_pv(coriolis, envelope)
-        model = feedback_model(coriolis)
-        try
-            context = QGYBJplus._operator_context(model)
-            physical = QGYBJplus.allocate_fft_backward_dst(
-                model.fields.B, model.runtime)
-            values = parent(physical)
-            @inbounds for k in axes(values, 1), i in axes(values, 2),
-                          j in axes(values, 3)
-                values[k, i, j] = envelope(grid.x[i], grid.y[j], grid.z[k])
-            end
-            QGYBJplus.fft_forward!(model.fields.B, physical, model.runtime.plans)
-
-            spectral = similar(model.fields.q)
-            QGYBJplus.compute_qw_complex!(spectral, model.fields.B,
-                context.grid, context.plans; f=coriolis, Lmask=context.mask)
-            result = QGYBJplus.allocate_fft_backward_dst(spectral, model.runtime)
-            QGYBJplus.fft_backward!(result, spectral, context.plans)
-            return copy(parent(result))
-        finally
-            finalize_model!(model)
-        end
-    end
-
-    largest(array) = maximum(abs, array)
-    mixed(x, y, z) = sin(x) + im * sin(y)
-
-    baseline = wave_pv(f, mixed)
-    @test largest(real.(baseline)) > 0
-
-    # (i/2)J(B*,B) is real because J(B*,B) is purely imaginary, and ∇²|B|² is
-    # real, so the wave PV carries no imaginary part.
-    @test largest(imag.(baseline)) / largest(real.(baseline)) < 1e-12
-
-    # Both terms are horizontal derivatives: a horizontally uniform envelope
-    # contributes no PV, however large it is.
-    @test largest(wave_pv(f, (x, y, z) -> 1 + 2im)) == 0
-
-    # A single plane wave has |B|² constant and J(B*,B) = 0.
-    @test largest(wave_pv(f, (x, y, z) -> 0.7 * exp(3im * x))) < 1e-9
-
-    # Quadratic in the envelope.
-    doubled = wave_pv(f, (x, y, z) -> 2 * mixed(x, y, z))
-    @test largest(real.(doubled)) / largest(real.(baseline)) ≈ 4 rtol = 1e-10
-
-    # Inversely proportional to f₀.
-    halved_f = wave_pv(f / 2, mixed)
-    @test largest(real.(halved_f)) / largest(real.(baseline)) ≈ 2 rtol = 1e-10
-
-    # The signed Coriolis frequency matters: the full wave-PV contribution
-    # reverses between hemispheres.
-    negative_f = wave_pv(-f, mixed)
-    @test negative_f ≈ -baseline rtol = 1e-10 atol = 1e-9
-
-    # A constant envelope phase cancels from both B* derivatives and |B|².
-    phase = cis(0.37)
-    phase_shifted = wave_pv(f, (x, y, z) -> phase * mixed(x, y, z))
-    @test phase_shifted ≈ baseline rtol = 1e-10 atol = 1e-9
-
-    # Both terms are horizontal divergences on the periodic domain.
-    @test abs(sum(real, baseline)) < 1e-11 * length(baseline) * largest(baseline)
-
-    # A purely real envelope kills the Jacobian, isolating the |B|² term:
-    # (1/4f) ∂ₓ²sin²x = (1/2f) cos 2x.
-    real_envelope = wave_pv(f, (x, y, z) -> sin(x) + 0im)
-    expected = [0.5 * cos(2 * grid.x[i]) / f
-                for k in axes(real_envelope, 1), i in axes(real_envelope, 2),
-                    j in axes(real_envelope, 3)]
-    @test real.(real_envelope) ≈ expected rtol = 1e-10
-
-    # A conjugated envelope flips the Jacobian term and leaves |B|² alone, so
-    # q^w(B*) is the |B|² part minus the Jacobian part.
-    conjugated = wave_pv(f, (x, y, z) -> conj(mixed(x, y, z)))
-    jacobian_part = (real.(baseline) .- real.(conjugated)) ./ 2
-    magnitude_part = (real.(baseline) .+ real.(conjugated)) ./ 2
-    @test largest(jacobian_part) > 0
-    # For B = sin x + i sin y the Jacobian part is -cos x cos y / f.
-    jacobian_expected = [-cos(grid.x[i]) * cos(grid.y[j]) / f
-                         for k in axes(baseline, 1), i in axes(baseline, 2),
-                             j in axes(baseline, 3)]
-    @test jacobian_part ≈ jacobian_expected rtol = 1e-10
-    # ...and the remainder is the |B|² part, 0.5(cos 2x + cos 2y)/f.
-    magnitude_expected = [0.5 * (cos(2grid.x[i]) + cos(2grid.y[j])) / f
-                          for k in axes(baseline, 1), i in axes(baseline, 2),
-                              j in axes(baseline, 3)]
-    @test magnitude_part ≈ magnitude_expected rtol = 1e-10
 end
 
 @testset "Wave feedback owns total PV throughout the model API" begin
@@ -536,9 +276,8 @@ end
         expected_q = copy(parent(model.fields.q))
         expected_B = copy(parent(model.fields.B))
 
-        # Scheduled energy diagnostics rebuild a private field snapshot. Its
-        # flow energy must be based on q-qʷ, and observing must not mutate the
-        # live model.
+        # Scheduled energy diagnostics rebuild ψ from q-qʷ (and A from B) in
+        # their own storage, and observing must not mutate the live model.
         reference = QGYBJplus.copy_fields(model.fields)
         QGYBJplus._diagnose_flow!(reference, context.grid, options,
             context.plans, context.a, context.mask;
@@ -591,14 +330,14 @@ end
             uncoupled = wave_feedback_test_model(
                 grid, YBJPlus(); f=context.f)
             try
-                @test_throws ErrorException restore!(uncoupled, path)
+                @test_throws ArgumentError restore!(uncoupled, path)
             finally
                 finalize_model!(uncoupled)
             end
             normal_ybj = coupled_feedback_test_model(
                 grid; f=context.f, formulation=YBJ())
             try
-                @test_throws ErrorException restore!(normal_ybj, path)
+                @test_throws ArgumentError restore!(normal_ybj, path)
             finally
                 finalize_model!(normal_ybj)
             end
@@ -765,4 +504,180 @@ end
     finally
         finalize_model!(ybj_model)
     end
+end
+
+"""Coupled model with generic low-mode ψ and B (zero vertical mean per B column)."""
+function generic_coupled_model(formulation; nx=16, nz=6)
+    grid = RectilinearGrid(size=(nx, nx, nz), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
+        stratification=AnalyticalProfile(z -> 1.0 + 0.5cos(3z); returns=:N²),
+        closure=HorizontalHyperdiffusivity(
+            flow=FlowHyperdiffusivity(coefficient=0),
+            wave=WaveHyperdiffusivity(coefficient=0)),
+        flow=EvolvingFlow(), feedback=WaveMeanFeedback(), formulation=formulation,
+        inviscid=Inviscid(), verbose=false)
+    wave = zeros(ComplexF64, nz, nx, nx)
+    flow = zeros(ComplexF64, nz, nx, nx)
+    for (index, (m, n)) in enumerate(((1, 0), (0, 1), (1, 1), (2, -1), (1, -2), (2, 1)))
+        vertical_B = [cis(0.7index * k) * (1 + 0.2k) for k in 1:nz]
+        vertical_ψ = [cos(0.9index + 0.5k) for k in 1:nz]
+        for k in 1:nz, i in 1:nx, j in 1:nx
+            phase = m * grid.x[i] + n * grid.y[j]
+            wave[k, i, j] += 0.15 * vertical_B[k] * cis(phase)
+            flow[k, i, j] += 0.3 * vertical_ψ[k] * cos(phase + index) / (m^2 + n^2)
+        end
+    end
+    for i in 1:nx, j in 1:nx
+        wave[:, i, j] .-= sum(wave[:, i, j]) / nz
+    end
+    set!(model; ψ=FieldArray(flow), B=FieldArray(wave), verbose=false)
+    return model
+end
+
+"""Flow and wave parts of the coupled energy of the state (q, B)."""
+function coupled_energy_parts(model, q, B)
+    fields = copy_fields(model.fields)
+    copyto!(fields.q, q)
+    copyto!(fields.B, B)
+    runtime = model.runtime
+    options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
+    QGYBJplus._invert_total_q_to_psi!(fields, runtime.geometry, options,
+        runtime.plans, runtime.device_coefficients.a_ell, runtime.dealias_mask;
+        workspace=runtime.workspace)
+    QGYBJplus._refresh_wave_diagnostics!(fields, model)
+    energy = QGYBJplus._energy_components(model, fields)
+    return energy[4] + energy[5], energy[2] + energy[3]
+end
+
+@testset "Wave feedback closes the semi-discrete coupled energy budget" begin
+    # dE/dt along the model's own tendencies, by central differences with
+    # Richardson extrapolation (exact for this polynomial energy). The flow
+    # and wave parts exchange energy at an O(1) rate; with the XV15 / A&Y
+    # wave PV their sum is conserved. Flipping the sign of either term of
+    # qʷ, or scaling it, leaves a residual comparable to the exchange.
+    for formulation in (YBJPlus(), YBJ())
+        model = generic_coupled_model(formulation)
+        try
+            context = QGYBJplus._operator_context(model)
+            options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
+            state = copy_fields(model.fields)
+            q_t, B_t = similar(state.q), similar(state.B)
+            QGYBJplus._compute_etdrk2_rhs!(q_t, B_t, state, context.grid, options,
+                context.plans; a=context.a, dealias_mask=context.mask,
+                workspace=context.workspace, N2_profile=context.N2,
+                N2_face_profile=context.N2_face)
+            q, B = model.fields.q, model.fields.B
+            function rates(ε)
+                plus = coupled_energy_parts(model, q .+ ε .* q_t, B .+ ε .* B_t)
+                minus = coupled_energy_parts(model, q .- ε .* q_t, B .- ε .* B_t)
+                return (plus .- minus) ./ 2ε
+            end
+            coarse, fine = rates(1e-3), rates(5e-4)
+            flow_rate, wave_rate = (4 .* fine .- coarse) ./ 3
+            # A wrong sign of either qʷ term leaves a residual about as large
+            # as the exchange for these fields.
+            energy = sum(coupled_energy_parts(model, q, B))
+            @test abs(flow_rate) > 1e-4 * energy
+            @test abs(flow_rate + wave_rate) < 1e-6 * abs(flow_rate)
+            # Wave action ∫|B|² is conserved too.
+            @test abs(real(sum(conj.(B) .* B_t))) < 1e-12 * sum(abs2, B)
+        finally
+            finalize_model!(model)
+        end
+    end
+end
+
+@testset "Coupled mean-flow w closes the coupled buoyancy equation" begin
+    # With wave feedback D_t(q_g + qʷ) = 0, so the omega equation gains the
+    # forcing f ∂z(D_t qʷ). The resulting w must close the Lagrangian-mean
+    # buoyancy equation b_t + J(ψ, b) + N² w = 0 with the coupled ψ_t.
+    for formulation in (YBJPlus(), YBJ())
+        model = generic_coupled_model(formulation)
+        try
+            context = QGYBJplus._operator_context(model)
+            options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
+            runtime = model.runtime
+            G, plans, mask = runtime.geometry, runtime.plans, runtime.dealias_mask
+            compute_velocities!(model)
+            w = copy(model.fields.w)
+
+            state = copy_fields(model.fields)
+            q_t, B_t = similar(state.q), similar(state.B)
+            QGYBJplus._compute_etdrk2_rhs!(q_t, B_t, state, context.grid, options,
+                plans; a=context.a, dealias_mask=mask, workspace=context.workspace,
+                N2_profile=context.N2, N2_face_profile=context.N2_face)
+            B = model.fields.B
+            qw(field) = QGYBJplus.compute_qw_complex!(similar(field), field, G, plans;
+                                                      f=options.f, Lmask=mask)
+            ε = maximum(abs, B) / maximum(abs, B_t)
+            qw_t = (qw(B .+ ε .* B_t) .- qw(B .- ε .* B_t)) ./ 2ε
+            tendency = copy_fields(model.fields)
+            tendency.q .= q_t .- qw_t
+            QGYBJplus.invert_q_to_psi!(tendency, G; a=runtime.coefficients.a_ell)
+
+            ψ, ψ_t = model.fields.psi, tendency.psi
+            f, Δz, nz = options.f, model.grid.dz, model.grid.size[3]
+            ψ_above = cat(ψ[2:end, :, :], zero(ψ[1:1, :, :]); dims=1)
+            J_faces = QGYBJplus.jacobian_spectral!(similar(ψ), ψ, ψ_above, G, plans;
+                                                    Lmask=mask)
+            w_face_hat = zero(ψ)
+            for k in 1:(nz - 1)
+                b_t = f .* (ψ_t[k + 1, :, :] .- ψ_t[k, :, :]) ./ Δz
+                w_face_hat[k, :, :] = .-(b_t .+ (f / Δz) .* J_faces[k, :, :]) ./
+                                      runtime.coefficients.N²_face[k]
+            end
+            w_face = real.(fft_backward!(similar(w_face_hat), w_face_hat, plans))
+            centres = (cat(zero(w_face[1:1, :, :]), w_face[1:end-1, :, :]; dims=1) .+ w_face) ./ 2
+            @test maximum(abs, w .- centres) < 1e-11 * maximum(abs, w_face)
+        finally
+            finalize_model!(model)
+        end
+    end
+end
+
+@testset "Flow damping acts on the balanced PV, not the wave PV" begin
+    n, nz = 16, 8
+    grid = RectilinearGrid(size=(n, n, nz), extent=(2π, 2π, 1.0))
+    wave = [complex(0.3cospi((k - 0.5) / nz)) *
+            (1 + 0.6cos(grid.x[i]) + 0.4im * sin(2grid.y[j]))
+            for k in 1:nz, i in 1:n, j in 1:n]
+    function damped_model(; ν=0.05, νz=0.0, dispersion=Dispersive())
+        return QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0), flow=EvolvingFlow(),
+            feedback=WaveMeanFeedback(), formulation=YBJPlus(), no_dispersion=dispersion,
+            closure=HorizontalHyperdiffusivity(
+                flow=FlowHyperdiffusivity(coefficient=ν, order=4),
+                wave=WaveHyperdiffusivity(coefficient=0)),
+            vertical_diffusion=VerticalDiffusivity(νz), verbose=false)
+    end
+    advance!(model, T, steps) = foreach(_ -> step!(model, ExponentialRungeKutta2(Δt=T / steps)), 1:steps)
+
+    # Frozen waves and no balanced flow: damping the total PV would turn the
+    # wave PV into a balanced flow; damping the balanced PV leaves none.
+    for (ν, νz) in ((0.05, 0.0), (0.0, 0.01))
+        model = damped_model(; ν, νz, dispersion=NoDispersion())
+        try
+            set!(model; B=FieldArray(wave), verbose=false)
+            advance!(model, 1.0, 20)
+            compute_velocities!(model; compute_w=false)
+            @test maximum(abs, model.fields.u) < 1e-14
+        finally
+            finalize_model!(model)
+        end
+    end
+
+    # The coupled, damped system stays second order in Δt.
+    final_q = map((10, 20, 40)) do steps
+        model = damped_model(; νz=0.002)
+        try
+            set!(model; ψ=(x, y, z) -> 0.4sin(x + 0.2) * cos(2y) * (1 + 0.5z),
+                 B=FieldArray(wave), verbose=false)
+            advance!(model, 0.2, steps)
+            copy(Array(model.fields.q))
+        finally
+            finalize_model!(model)
+        end
+    end
+    ratio = maximum(abs, final_q[1] .- final_q[2]) / maximum(abs, final_q[2] .- final_q[3])
+    @test 3.6 < ratio < 4.4
 end

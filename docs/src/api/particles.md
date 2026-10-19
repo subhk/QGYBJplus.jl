@@ -26,11 +26,13 @@ configuration = ParticleConfig{Float64}(
 initialize_particles!(model, configuration)
 ```
 
-`run!(simulation)` advances installed particles after each model step. For a
-manual particle-only update:
+`run!(simulation)` advances installed particles after each model step. A
+manual update takes the model's current state as the velocity at the end of
+the particle step, so advance the model over the same interval first:
 
 ```julia
-advect_particles!(model, 10.0)
+step!(model, timestepper)
+advect_particles!(model, timestepper.Δt; current_time=t)
 ```
 
 ## Distribution helpers
@@ -46,12 +48,14 @@ particles_custom
 
 ## Interpolation
 
-Available methods are `TRILINEAR`, `TRICUBIC`, `ADAPTIVE`, and `QUINTIC`.
-Distributed trackers obtain local domains, halo plans, and migration metadata
-from `model.runtime`.
+Available methods are `TRILINEAR`, `TRICUBIC` (default), and `QUINTIC`;
+`ADAPTIVE` is deprecated and now uses `TRICUBIC`. See
+[Particle interpolation](@ref interpolation). Particles move with the
+horizontal velocity and keep their depth; they are advected on the model's
+architecture, where the tracker keeps its copy of the velocity.
 
-Use `ParticleConfig3D` or the distribution helpers for volumes, layers,
-random points, and explicit positions.
+Use `ParticleConfig3D` or the distribution helpers to release particles at
+several depths, in volumes, layers, random points, or explicit positions.
 
 ## Output
 

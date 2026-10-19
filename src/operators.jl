@@ -33,15 +33,21 @@ QG OMEGA EQUATION:
 ------------------
 The ageostrophic vertical velocity w comes from the omega equation:
 
-    N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
-
-or equivalently (dividing by N²):
-
-    ∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+    N² ∇²w + f² ∂²w/∂z² = 2∇·Q = 2f [J(ψ_z, ∇²ψ) - J(ψ_x, ψ_xz) - J(ψ_y, ψ_yz)]
 
 This is a 3D elliptic PDE solved via:
 - Horizontal: spectral differentiation (kₓ², kᵧ²)
 - Vertical: tridiagonal solver at each (kₓ, kᵧ)
+
+w is solved on the faces between levels, where the model's buoyancy f ψ_z
+lives, with w = 0 on the bottom and top faces. The discrete forcing makes it
+satisfy the model's own vorticity and buoyancy equations exactly.
+
+WHERE w IS STORED:
+------------------
+Both vertical velocities (omega equation and YBJ) are computed on the faces
+and stored at cell centres, as the average of the two faces of each cell, so
+that u, v, and w share one grid for output and particle interpolation.
 
 Physical meaning: w arises from ageostrophic convergence/divergence required
 to maintain geostrophic balance as the flow evolves.
@@ -92,50 +98,38 @@ All derivatives are computed in spectral space:
 
 Vertical derivatives use second-order finite differences.
 
+Every loop below is a KernelAbstractions kernel launched on the backend of the
+fields it writes.
+
 ================================================================================
 =#
 module Operators
 
-using LinearAlgebra
-using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local
+using KernelAbstractions: @kernel, @index, @Const, get_backend
+using ..QGYBJplus: RuntimeGeometry, ModelFields, YBJ, YBJPlus
 using ..QGYBJplus: fft_backward!, plan_transforms!
-using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJplus: local_to_global_z, allocate_z_pencil
-using ..QGYBJplus: with_z_local, z_scratch
 using ..QGYBJplus: with_scratch, scratch_like, scratch_physical
 using ..QGYBJplus: invert_B_to_A!
-using ..QGYBJplus: allocate_fft_backward_dst  # Centralized FFT allocation helper
-import PencilArrays: PencilArray
+using ..QGYBJplus: launch!, on_backend, on_host, kernel_map!, kernel_mask,
+                   vertical_spacing, tridiagonal_scratch, RadialDealiasing
+import ..QGYBJplus.Elliptic: tridiagonal_row
+using ..QGYBJplus.Elliptic: _thomas_solve!
 const PARENT = Base.parentmodule(@__MODULE__)
 
-# Alias for internal use
-const _allocate_fft_dst = allocate_fft_backward_dst
-
-# Access invert_B_to_A! through the Elliptic submodule via PARENT
-# (Direct import via `using ..QGYBJplus: invert_B_to_A!` can fail in some loading contexts)
-# @inline invert_B_to_A!(args...; kwargs...) = PARENT.Elliptic.invert_B_to_A!(args...; kwargs...)
-
+"""
+N² profile for the velocity diagnostics: `N2_profile` itself when it is a real
+vector of length `nz` (kept in its own precision, so a model's device profile
+is never copied), and otherwise a constant profile of `N2_const`.
+"""
 function _coerce_N2_profile(N2_profile, N2_const, nz, G::RuntimeGeometry)
-    N2_type = float(promote_type(eltype(G.z), typeof(N2_const)))
-    N2_const_T = N2_type(N2_const)
-
-    if N2_profile === nothing
-        return fill(N2_const_T, nz)
-    end
-
+    T = typeof(vertical_spacing(G))   # profiles share the grid's precision
+    N2_profile === nothing && return fill(T(N2_const), nz)
     if length(N2_profile) != nz
         @warn "N2_profile length ($(length(N2_profile))) != nz ($nz), using constant N²=$(N2_const)"
-        return fill(N2_const_T, nz)
+        return fill(T(N2_const), nz)
     end
-
-    if !(eltype(N2_profile) <: Real)
-        N2_profile = real.(N2_profile)
-    end
-    if eltype(N2_profile) != N2_type
-        N2_profile = N2_type.(N2_profile)
-    end
-
-    return N2_profile
+    eltype(N2_profile) === T && return N2_profile
+    return T.(real.(N2_profile))
 end
 
 #=
@@ -147,9 +141,13 @@ The primary diagnostic: horizontal and vertical velocities from streamfunction.
 =#
 
 """
-    compute_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing, pv_forcing=nothing)
 
-Compute geostrophic velocities from the spectral streamfunction ψ̂.
+Compute the velocity of the balanced flow from the spectral streamfunction ψ̂.
+As in Xie & Vanneste (2015) and Wagner & Young (2016, eq. 3.22), ψ is the
+streamfunction of the Lagrangian-mean flow, so these are Lagrangian-mean
+velocities. Wave orbital velocities and the Stokes drift that relates the
+Lagrangian to the Eulerian mean are added by `compute_wave_velocities!`.
 
 # Physical Equations
 Horizontal velocities from geostrophic balance:
@@ -158,14 +156,13 @@ u = -∂ψ/∂y  →  û(k) = -i kᵧ ψ̂(k)
 v =  ∂ψ/∂x  →  v̂(k) =  i kₓ ψ̂(k)
 ```
 
-Vertical velocity from QG omega equation:
+Vertical velocity from the QG omega equation (see
+`compute_vertical_velocity!`):
 ```
-∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+N² ∇²w + f² ∂²w/∂z² = 2f [J(ψ_z, ∇²ψ) - J(ψ_x, ψ_xz) - J(ψ_y, ψ_yz)] + f ∂z(D_t qʷ)
 ```
-or YBJ formulation:
-```
-w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
-```
+where the last term, from wave feedback, is supplied through `pv_forcing`.
+`w` is computed on the faces between levels and stored at cell centres.
 
 # Algorithm
 1. Compute û = -i kᵧ ψ̂ and v̂ = i kₓ ψ̂ in spectral space
@@ -177,115 +174,97 @@ w = -(f²/N²) [(∂A/∂x)_z - i(∂A/∂y)_z] + c.c.
 - `G::RuntimeGeometry`: RuntimeGeometry with wavenumbers kx, ky
 - `plans`: FFT plans (auto-generated if nothing)
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
-- `compute_w::Bool`: If true, compute vertical velocity
-- `use_ybj_w::Bool`: If true, use YBJ formula instead of omega equation
-- `N2_profile::Vector`: Optional cell-center N²(z) profile for pointwise
-  diagnostics and the omega-equation solve
-- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used when the
-  YBJ vertical-velocity path must recover A from B
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `compute_w::Bool`: If true, compute vertical velocity; otherwise `w` is zeroed
+- `N2_profile::Vector`: Optional cell-center N²(z) profile, the fallback when
+  no face profile is given
+- `N2_face_profile::Vector`: Optional upper-face N²(z) profile, used by the
+  vertical velocity (w lives on the faces)
+- `workspace`: Optional model workspace for scratch buffers
 - `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS (quadratic term).
   Should be the same mask used for other nonlinear terms (typically 2/3 rule).
+- `pv_forcing`: Optional function that writes the wave-PV forcing `D_t qʷ`
+  into a spectral buffer (see `compute_vertical_velocity!`)
 
 # Returns
 Modified ModelFields with updated u, v, w fields.
 
 # Note
-This computes ONLY QG velocities. For Lagrangian advection including wave
-effects, use `compute_total_velocities!` instead.
+For the instantaneous (Eulerian) velocity including the waves, use
+`compute_total_velocities!`.
 
 # Fortran Correspondence
 Matches `compute_velo` in derivatives.f90.
 """
 function compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
-    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w::Bool=false,
     N2_profile=nothing, N2_face_profile=nothing,
-    workspace=nothing, dealias_mask=nothing)
+    workspace=nothing, dealias_mask=nothing, pv_forcing=nothing)
 
+    _reject_use_ybj_w(use_ybj_w)
     return with_scratch(workspace) do
-        _compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
+        _compute_velocities!(S, G; plans, f, N2, compute_w,
                              N2_profile, N2_face_profile,
-                             workspace, dealias_mask)
+                             workspace, dealias_mask, pv_forcing)
+    end
+end
+
+"""`use_ybj_w` mixed the wave and mean vertical velocities and was removed."""
+function _reject_use_ybj_w(use_ybj_w::Bool)
+    use_ybj_w && throw(ArgumentError(
+        "use_ybj_w was removed: the mean-flow w is the omega-equation velocity, " *
+        "and the wave vertical velocity at time t is part of " *
+        "compute_total_velocities!(model; t) (or compute_ybj_vertical_velocity!)"))
+    return nothing
+end
+
+"""û = -i kᵧ ψ̂"""
+@kernel function _geostrophic_u_kernel!(uk, @Const(ψk), @Const(ky))
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        ikᵧ = im * ky[j]
+        uk[k, i, j] = -ikᵧ * ψk[k, i, j]
+    end
+end
+
+"""v̂ = i kₓ ψ̂"""
+@kernel function _geostrophic_v_kernel!(vk, @Const(ψk), @Const(kx))
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        ikₓ = im * kx[i]
+        vk[k, i, j] = ikₓ * ψk[k, i, j]
     end
 end
 
 function _compute_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
-    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+    f::Real=1.0, N2::Real=1.0, compute_w=true,
     N2_profile=nothing, N2_face_profile=nothing,
-    workspace=nothing, dealias_mask=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+    workspace=nothing, dealias_mask=nothing, pv_forcing=nothing)
 
-    # Get underlying arrays (works for both Array and PencilArray)
-    ψk_arr = parent(S.psi)
-    u_arr = parent(S.u)
-    v_arr = parent(S.v)
-    nz_local, nx_local, ny_local = size(ψk_arr)
-
-    # Spectral differentiation: û = -i ky ψ̂, v̂ = i kx ψ̂
-    ψk = S.psi
-    uk = scratch_like(workspace, ψk)
-    vk = scratch_like(workspace, ψk)
-    uk_arr = parent(uk)
-    vk_arr = parent(vk)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, ψk)
-        j_global = local_to_global(j_local, 3, ψk)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        uk_arr[k, i_local, j_local] = -ikᵧ * ψk_arr[k, i_local, j_local]
-        vk_arr[k, i_local, j_local] =  ikₓ * ψk_arr[k, i_local, j_local]
-    end
-
-    # Inverse FFT to real space
     if plans === nothing
-        # Use unified transform planning (handles both serial and parallel)
         plans = plan_transforms!(G)
     end
 
-    # Allocate destination arrays on correct pencil for fft_backward!
-    # For MPI: must be on input_pencil (physical space), not output_pencil
-    tmpu = scratch_physical(workspace, uk, plans)
-    tmpv = scratch_physical(workspace, vk, plans)
-    fft_backward!(tmpu, uk, plans)
-    fft_backward!(tmpv, vk, plans)
-
-    tmpu_arr = parent(tmpu)
-    tmpv_arr = parent(tmpv)
-
-    # Note on normalization:
-    # - FFTW.ifft and PencilFFTs ldiv! are NORMALIZED (divide by N internally)
-    # - After fft_backward!, tmpu and tmpv contain correct physical-space values
-    # - NO additional normalization is needed here
-    #
-    # This differs from pseudo-spectral convolutions (nonlinear.jl) where:
-    # - We do: IFFT → multiply → FFT → divide by N
-    # - The division compensates for unnormalized FFT output
-    # Here we're only doing IFFT, so no extra division.
-    #
-    # Use physical array dimensions (may differ from spectral in 2D decomposition)
-    nz_phys, nx_phys, ny_phys = size(tmpu_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        u_arr[k, i_local, j_local] = real(tmpu_arr[k, i_local, j_local])
-        v_arr[k, i_local, j_local] = real(tmpv_arr[k, i_local, j_local])
+    # û = -i kᵧ ψ̂ and v̂ = i kₓ ψ̂, one after the other in one buffer that is
+    # transformed in place. The normalized inverse transform gives
+    # physical-space values directly. The buffer is returned before w is
+    # computed.
+    with_scratch(workspace) do
+        buffer = scratch_like(workspace, S.psi)
+        launch!(_geostrophic_u_kernel!, buffer, size(buffer), buffer, S.psi, G.ky)
+        fft_backward!(buffer, buffer, plans)
+        kernel_map!(real, S.u, buffer)
+        launch!(_geostrophic_v_kernel!, buffer, size(buffer), buffer, S.psi, G.kx)
+        fft_backward!(buffer, buffer, plans)
+        kernel_map!(real, S.v, buffer)
     end
 
-    # Compute vertical velocity if requested
+    # The vertical velocity is a diagnostic: the omega equation, or zero
+    # (the leading-order Lagrangian-mean w).
     if compute_w
-        if use_ybj_w
-            # Use YBJ vertical velocity formulation (equation 4)
-            compute_ybj_vertical_velocity!(S, G, plans; f, N2,
-                N2_profile, N2_face_profile, workspace)
-        else
-            # Use standard QG omega equation with dealiasing
-            # The omega equation RHS is a quadratic term J(ψ_z, ∇²ψ) that needs dealiasing
-            compute_vertical_velocity!(S, G, plans; f, N2, N2_profile,
-                workspace, dealias_mask)
-        end
+        compute_vertical_velocity!(S, G, plans; f, N2, N2_profile,
+            N2_face_profile, workspace, dealias_mask, pv_forcing)
     else
-        # Set w to zero (leading-order QG approximation)
-        w_arr = parent(S.w)
-        fill!(w_arr, zero(eltype(w_arr)))
+        fill!(S.w, zero(eltype(S.w)))
     end
 
     return S
@@ -301,208 +280,197 @@ This is a 3D elliptic problem solved via tridiagonal systems.
 =#
 
 """
-    compute_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, workspace=nothing, dealias_mask=nothing)
+    compute_vertical_velocity!(S, G, plans; f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing)
 
 Solve the QG omega equation for ageostrophic vertical velocity.
 
 # Physical Background
 In quasi-geostrophic dynamics, the leading-order horizontal flow is non-divergent
 (∇·u_g = 0). Vertical motion arises from ageostrophic corrections that maintain
-thermal wind balance as the flow evolves.
+thermal wind balance as the flow evolves. Eliminating the time derivatives
+between the vorticity and buoyancy equations,
 
-The omega equation relates w to the horizontal flow:
 ```
-N² ∇²w + f² ∂²w/∂z² = 2f J(ψ_z, ∇²ψ)
-```
-
-or equivalently (dividing by N²):
-```
-∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)
+ζ_t + J(ψ, ζ) = f w_z,        b_t + J(ψ, b) + N² w = 0,        b = f ψ_z,
 ```
 
-where:
-- Left side: 3D Laplacian (horizontal + stratification-weighted vertical)
-- Right side: Jacobian forcing from vertical shear and vorticity
-- f²/N² << 1: stratification suppresses vertical motion relative to horizontal
+gives the omega equation
 
-# Physical Interpretation
-The RHS forcing J(ψ_z, ∇²ψ) represents:
-- Thermal wind tilting: vertical shear ψ_z interacting with vorticity ∇²ψ
-- Frontogenesis/frontolysis: differential advection of temperature gradients
+```
+N² ∇²w + f² ∂²w/∂z² = 2∇·Q = 2f [J(ψ_z, ∇²ψ) - J(ψ_x, ψ_xz) - J(ψ_y, ψ_yz)]
+```
 
-Strong w occurs at:
-- Fronts (sharp density gradients)
-- Edges of eddies (strong vorticity gradients)
+The first forcing term is differential vorticity advection by the thermal
+wind; the other two are the deformation part of the Q-vector forcing.
 
 # Numerical Method
-1. Compute RHS in spectral space via omega_eqn_rhs!
-2. For each horizontal wavenumber (kₓ, kᵧ):
-   - Set up tridiagonal system in z
-   - Solve using LAPACK gtsv! (O(nz) per wavenumber)
-3. Transform w to physical space
+1. Compute the forcing on the faces between levels with `omega_eqn_rhs!`
+2. For each horizontal wavenumber (kₓ, kᵧ), solve the tridiagonal system for
+   w on the interior faces with the Thomas algorithm (O(nz) per wavenumber;
+   the system is strictly diagonally dominant for kₕ > 0, so no pivoting is
+   needed). N² is sampled on the faces.
+3. Average the two faces of each cell to store w at cell centres, and
+   transform to physical space
+
+The discrete forcing and stencil are those implied by the model's flux-form
+PV inversion, so w satisfies the model's discrete vorticity and buoyancy
+equations exactly.
 
 # Boundary Conditions
 w = 0 at z = -Lz and z = 0 (rigid lid and bottom).
 
 # Arguments
-- `S::ModelFields`: ModelFields with ψ (input) and w (output)
+- `S::ModelFields`: ModelFields with ψ (input) and w (output, cell centres)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
-- `N2_profile::Vector`: Optional N²(z) profile (default: constant N² = 1)
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `N2_profile::Vector`: Optional cell-centre N²(z), used only when
+  `N2_face_profile` is not given (default: constant N² = `N2`)
+- `N2_face_profile::Vector`: Optional N²(z) on the upper face of each level,
+  where the omega equation is solved
+- `workspace`: Optional model workspace for scratch buffers
+- `pv_forcing`: Optional function `pv_forcing(D)` that writes the material
+  derivative of the wave PV following the mean flow, `D = ∂ₜqʷ + J(ψ, qʷ)`,
+  into the spectral array `D` at the levels. With wave feedback the PV
+  equation `D_t (q_g + qʷ) = 0` adds `-D_t qʷ` to the vorticity equation, so
+  the omega equation gains the forcing `f ∂z(D_t qʷ)`.
 - `dealias_mask`: 2D dealiasing mask for omega equation RHS. If `nothing` (default),
-  a standard 2/3-rule mask is computed automatically to avoid aliasing in the
+  the standard radial 2/3 rule is used to avoid aliasing in the
   quadratic Jacobian term.
 
 # Fortran Correspondence
-Matches omega equation solver in the Fortran implementation.
+Follows the omega-equation solver of the Fortran implementation, with the full
+Q-vector forcing and w on the faces.
 """
 function compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
-    f::Real=1.0, N2::Real=1.0, N2_profile=nothing,
-    workspace=nothing, dealias_mask=nothing)
-    # Compute default dealiasing mask if not provided
-    # The omega equation involves a quadratic Jacobian J(ψ, ∇²ψ) that needs dealiasing
+    f::Real=1.0, N2::Real=1.0, N2_profile=nothing, N2_face_profile=nothing,
+    workspace=nothing, dealias_mask=nothing, pv_forcing=nothing)
+    # The omega equation involves quadratic Jacobians that need dealiasing; by
+    # default use the radial two-thirds rule of `dealias_mask`.
     if dealias_mask === nothing
-        dealias_mask = PARENT.dealias_mask(G)
+        dealias_mask = RadialDealiasing(G.nx, G.ny)
     end
 
-    profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
+    # w and its equation live on the faces, so N² is needed there.
+    face_profile = _coerce_N2_profile(
+        N2_face_profile === nothing ? N2_profile : N2_face_profile, N2, G.nz, G)
     with_scratch(workspace) do
-        _compute_vertical_velocity!(S, G, plans, f, profile, workspace, dealias_mask)
+        _compute_vertical_velocity!(S, G, plans, f, face_profile, workspace,
+                                    dealias_mask, pv_forcing)
     end
     return S
 end
 
-# Direct computation when z is fully local (serial or 1D decomposition)
-# One implementation for every decomposition: the omega equation is a vertical
-# tridiagonal solve, so `with_z_local` supplies z-local views and the kernel
-# below never has to care whether the spectral pencil distributes z.
 function _compute_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, workspace, dealias_mask)
+    f, N2_face_profile, workspace, dealias_mask, pv_forcing=nothing)
 
-    nz = G.nz
-    w_arr = parent(S.w)
-
-    # RHS of the omega equation, with dealiasing for its quadratic Jacobian.
-    rhsk = scratch_like(workspace, S.psi)
-    PARENT.Diagnostics.omega_eqn_rhs!(rhsk, S.psi, G, plans;
-                                      Lmask=dealias_mask, workspace=workspace)
-
+    # One buffer holds the forcing on the faces (dealiased like the model's
+    # nonlinear terms), then w, which the column solve writes over it. With
+    # wave feedback the buffer first receives D_t qʷ at the levels, which is
+    # differenced onto the faces before the balanced forcing is added.
     wk = scratch_like(workspace, S.psi)
-    with_z_local(G, (wk, rhsk), (:out, :in);
-                 scratch=z_scratch(workspace, :psi_z, :work_z)) do wk_z, rhs_z
-        _omega_equation_solve!(wk_z, rhs_z, G, f, N2_profile)
+    if pv_forcing === nothing
+        PARENT.Diagnostics.omega_eqn_rhs!(wk, S.psi, G, plans;
+                                          Lmask=dealias_mask, workspace=workspace)
+    else
+        pv_forcing(wk)
+        launch!(_levels_to_face_difference_kernel!, wk, (G.nx, G.ny),
+                wk, vertical_spacing(G), G.nz)
+        PARENT.Diagnostics.omega_eqn_rhs!(wk, S.psi, G, plans;
+                                          Lmask=dealias_mask, workspace=workspace,
+                                          accumulate=true)
     end
+    _omega_equation_solve!(wk, wk, G, f, N2_face_profile, workspace)
 
-    # Transform to real space. fft_backward! is normalized, so nothing else.
-    tmpw = scratch_physical(workspace, wk, plans)
-    fft_backward!(tmpw, wk, plans)
-    tmpw_arr = parent(tmpw)
-
-    nz_phys, nx_phys, ny_phys = size(tmpw_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        w_arr[k, i_local, j_local] = real(tmpw_arr[k, i_local, j_local])
-    end
+    # To physical space (fft_backward! is normalized), then onto cell centres.
+    fft_backward!(wk, wk, plans)
+    launch!(_faces_to_centers_kernel!, S.w, size(S.w), S.w, wk, false)
     return S
 end
 
 """
-Solve `∇²w + (f²/N²) ∂²w/∂z² = (2f/N²) J(ψ_z, ∇²ψ)` for every local horizontal
-wavenumber. Requires `wk` and `rhsk` to have a fully local vertical dimension;
-`wk` is zeroed here because it arrives as unwritten scratch.
+Replace values at the levels by their vertical difference on the face above
+each level, `(D[k+1] - D[k]) / Δz`, and zero on the top face. One work item
+per column walks upward, so each value is read before it is overwritten.
 """
-function _omega_equation_solve!(wk, rhsk, G::RuntimeGeometry, f, N2_profile)
-    nz = G.nz
-    wk_arr = parent(wk)
-    rhsk_arr = parent(rhsk)
-    nz_local, nx_local, ny_local = size(wk_arr)
-    @assert nz_local == nz "Vertical dimension must be fully local for the omega solve"
-    fill!(wk_arr, zero(eltype(wk_arr)))
-
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-    f² = f^2
-
-    # Rigid lid and bottom (w = 0) leave nz - 2 interior unknowns.
-    n_interior = nz - 2
-    if n_interior > 0
-        d = zeros(Float64, n_interior)
-        dₗ = zeros(Float64, n_interior-1)
-        dᵤ = zeros(Float64, n_interior-1)
-        rhs = zeros(eltype(rhsk_arr), n_interior)
-        dₗ_work = zeros(Float64, n_interior-1)
-        d_work = zeros(Float64, n_interior)
-        dᵤ_work = zeros(Float64, n_interior-1)
-        rhsᵣ = zeros(Float64, n_interior)
-        rhsᵢ = zeros(Float64, n_interior)
-        solᵣ = zeros(Float64, n_interior)
-        solᵢ = zeros(Float64, n_interior)
+@kernel function _levels_to_face_difference_kernel!(D, Δz, nz)
+    i, j = @index(Global, NTuple)
+    for k in 1:(nz - 1)
+        @inbounds D[k, i, j] = (D[k + 1, i, j] - D[k, i, j]) / Δz
     end
+    @inbounds D[nz, i, j] = zero(eltype(D))
+end
 
-    @inbounds for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, wk)
-        j_global = local_to_global(j_local, 3, wk)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
+"""
+`w` at cell centres from its values `w_face[k]` on the face above each level,
+with `w = 0` on the bottom face. `w_face[nz]` is the top face, where `w = 0`.
+With `accumulate`, the centre values are added to `w`.
+"""
+@kernel function _faces_to_centers_kernel!(w, @Const(w_face), accumulate)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        below = k == 1 ? zero(eltype(w)) : real(w_face[k - 1, i, j])
+        centre = (below + real(w_face[k, i, j])) / 2
+        w[k, i, j] = accumulate ? w[k, i, j] + centre : centre
+    end
+end
 
-        if kₕ² > 0 && nz > 2  # Need at least 3 levels for a tridiagonal system
-            if n_interior > 0
-                # In spectral space: -kₕ²·w + (f²/N²)·∂²w/∂z² = RHS, with the
-                # centered stencil ∂²w/∂z² ≈ (w[k+1] - 2w[k] + w[k-1])/Δz².
-                fill!(dₗ, 0.0); fill!(dᵤ, 0.0)
-                for iz in 1:n_interior
-                    k = iz + 1  # Actual z-level (2 to nz-1)
-                    coeff_z = (f²/N2_profile[k])/(Δz*Δz)
-                    d[iz] = -2*coeff_z - kₕ²  # Diagonal
-                    if iz > 1
-                        dₗ[iz-1] = coeff_z    # Sub-diagonal
-                    end
-                    if iz < n_interior
-                        dᵤ[iz] = coeff_z      # Super-diagonal
-                    end
-                    # omega_eqn_rhs! returns 2 J(...), so scale by f/N².
-                    rhs[iz] = (f/N2_profile[k]) * rhsk_arr[k, i_local, j_local]
-                end
+"""
+Rows of `-kₕ²w + (f²/N²) ∂²w/∂z² = (f/N²) rhs` on the interior faces, with
+∂²w/∂z² ≈ (w[r+1] - 2w[r] + w[r-1])/Δz². Row `r` is the face above level `r`,
+`N²[r]` is sampled on that face, and w = 0 on the bottom and top faces.
+"""
+struct OmegaColumn{N, R, T}
+    N²::N
+    rhs::R
+    i::Int
+    j::Int
+    f::T
+    f²::T
+    Δz::T
+    kₕ²::T
+end
 
-                # gtsv! overwrites its diagonals, so refill them per solve.
-                dₗ_work .= dₗ
-                d_work .= d
-                dᵤ_work .= dᵤ
-                @inbounds for iz in 1:n_interior
-                    rhsᵣ[iz] = real(rhs[iz])
-                    rhsᵢ[iz] = imag(rhs[iz])
-                end
+@inline function tridiagonal_row(s::OmegaColumn, r)
+    @inbounds begin
+        coefficient = (s.f² / s.N²[r]) / (s.Δz * s.Δz)
+        b = (s.f / s.N²[r]) * s.rhs[r, s.i, s.j]
+    end
+    return coefficient, -2 * coefficient - s.kₕ², coefficient, b
+end
 
-                try
-                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵣ)
-                    solᵣ .= rhsᵣ
-                catch e
-                    error("LAPACK gtsv failed for vertical velocity (real part) at kx=$(kₓ), ky=$(kᵧ): $e. " *
-                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
-                end
-
-                dₗ_work .= dₗ
-                d_work .= d
-                dᵤ_work .= dᵤ
-                try
-                    LinearAlgebra.LAPACK.gtsv!(dₗ_work, d_work, dᵤ_work, rhsᵢ)
-                    solᵢ .= rhsᵢ
-                catch e
-                    error("LAPACK gtsv failed for vertical velocity (imag part) at kx=$(kₓ), ky=$(kᵧ): $e. " *
-                          "This may indicate singular matrix due to N²≈0 or ill-conditioned system.")
-                end
-
-                for iz in 1:n_interior
-                    k = iz + 1
-                    wk_arr[k, i_local, j_local] = solᵣ[iz] + im * solᵢ[iz]
-                end
-            end
+# `wk` may be `rhsk`: the Thomas sweep reads each row's right-hand side before
+# writing that row of the solution, so `rhsk` is not marked @Const.
+@kernel function _omega_solve_kernel!(wk, c, rhsk, @Const(kx), @Const(ky),
+                                      @Const(N²), f, f², Δz, nz)
+    i, j = @index(Global, NTuple)
+    @inbounds kₕ² = kx[i]^2 + ky[j]^2
+    # The horizontal mean of w vanishes, and nz = 1 has no interior face.
+    if kₕ² > 0 && nz > 1
+        system = OmegaColumn(N², rhsk, i, j, f, f², Δz, kₕ²)
+        _thomas_solve!(wk, c, i, j, 0, nz - 1, system)
+        @inbounds wk[nz, i, j] = zero(eltype(wk))
+    else
+        for k in 1:nz
+            @inbounds wk[k, i, j] = zero(eltype(wk))
         end
-        # kₕ² > 0 with nz <= 2 has no interior unknowns, so w = 0 everywhere is
-        # the only solution consistent with the rigid-lid boundary conditions;
-        # wk was already zeroed above.
     end
+end
+
+"""
+Solve `∇²w + (f²/N²) ∂²w/∂z² = (f/N²) rhs` for w on the faces above levels
+`1:(nz-1)` of every horizontal wavenumber; `wk[nz]` (the top face) is zero.
+`omega_eqn_rhs!` returns the forcing divided by f, so the rows scale it by f/N².
+"""
+function _omega_equation_solve!(wk, rhsk, G::RuntimeGeometry, f, N2_profile, workspace)
+    nz, nx, ny = size(wk)
+    @assert nz == G.nz "Vertical dimension must match the grid for the omega solve"
+    backend = get_backend(wk)
+    Δz = vertical_spacing(G)
+    f_value = convert(typeof(Δz), f)   # the column scalars share the grid's precision
+    launch!(_omega_solve_kernel!, backend, (nx, ny),
+            wk, tridiagonal_scratch(workspace, wk), rhsk, G.kx, G.ky,
+            on_backend(backend, N2_profile), f_value, f_value^2, Δz, nz)
     return wk
 end
 
@@ -538,6 +506,11 @@ Expanding this gives:
 w = -(f²/N²) * [cos(ft)·(Re(∂A_z/∂x) + Im(∂A_z/∂y)) + sin(ft)·(Im(∂A_z/∂x) - Re(∂A_z/∂y))]
 ```
 
+A_z and N² are evaluated on the faces between levels, so the face values of
+w satisfy discrete continuity, `w_z = -(u_x + v_y)`, exactly for the wave
+velocity `u + iv = e^{-ift} LA`; A_z = 0 makes w vanish on the bottom and top
+faces. The face values are averaged to cell centres for storage.
+
 # Physical Interpretation
 This represents vertical motion induced by:
 - Horizontal gradients in the wave envelope's vertical structure
@@ -563,11 +536,11 @@ This represents vertical motion induced by:
 - `G::RuntimeGeometry`: RuntimeGeometry structure
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
-- `N2_profile::Vector`: Optional cell-center N²(z) profile used by the
-  pointwise factor in the diagnosed velocity (default: constant N² = 1)
-- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used to recover
-  A from B. It falls back to `N2_profile` for backward compatibility.
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
+- `N2_profile::Vector`: Optional cell-centre N²(z), used only when
+  `N2_face_profile` is not given (default: constant N² = `N2`)
+- `N2_face_profile::Vector`: Optional N²(z) on the upper face of each level,
+  used to recover A from B and in the factor f²/N² of w
+- `workspace`: Optional model workspace for scratch buffers
 - `skip_inversion::Bool`: If true, skip B→A re-inversion and use existing S.A, S.C.
   Use this when A/C were already computed in the timestep with the correct stratification.
   Default: false (re-inverts for safety).
@@ -591,122 +564,114 @@ either:
 function compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans;
     f::Real=1.0, N2::Real=1.0, N2_profile=nothing, N2_face_profile=nothing,
     workspace=nothing, skip_inversion=false, t=nothing)
-    # Warn about potential stratification inconsistency
-    # If skip_inversion=false and no N2_profile provided, we'll re-invert B→A with constant N².
-    # This can give inconsistent results if the simulation uses variable stratification.
+    # If skip_inversion=false and no N2 profile is provided, B→A is re-inverted
+    # with constant N², which is inconsistent with variable stratification.
     if !skip_inversion && N2_face_profile === nothing && N2_profile === nothing
         @warn "compute_ybj_vertical_velocity!: Re-inverting B→A with constant N² (no N2_profile provided). " *
               "If your simulation uses variable stratification, pass N2_face_profile or use skip_inversion=true " *
               "to avoid inconsistent vertical velocity." maxlog=1
     end
 
-    center_profile = _coerce_N2_profile(N2_profile, N2, G.nz, G)
     face_profile = _coerce_N2_profile(
         N2_face_profile === nothing ? N2_profile : N2_face_profile,
         N2, G.nz, G)
     with_scratch(workspace) do
-        _compute_ybj_vertical_velocity!(S, G, plans, f, center_profile,
-            face_profile, workspace, skip_inversion, t)
+        _compute_ybj_vertical_velocity!(S, G, plans, f, face_profile,
+            workspace, skip_inversion, t)
     end
     return S
 end
 
-# Direct computation when z is fully local (serial or 1D decomposition)
-# One implementation for every decomposition. The spectral work here is
-# pointwise in z (horizontal derivatives of A_z), so no transpose is needed —
-# only the `k` bookkeeping has to be done in GLOBAL indices, because the
-# spectral pencil distributes z whenever the process topology has px > 1.
-# The physical pencil always keeps z local, so the physical loop below can use
-# its own `k` directly.
+@kernel function _ybj_w_spectral_kernel!(dAz_dx, dAz_dy, @Const(Az), @Const(kx),
+                                         @Const(ky), nz)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        # A_z is defined for levels 1:(nz-1). The top level is zeroed rather
+        # than left as scratch garbage, which would pollute the transform.
+        if k >= nz
+            dAz_dx[k, i, j] = zero(eltype(dAz_dx))
+            dAz_dy[k, i, j] = zero(eltype(dAz_dy))
+        else
+            ikₓ = im * kx[i]
+            ikᵧ = im * ky[j]
+            dAz_dx[k, i, j] = ikₓ * Az[k, i, j]
+            dAz_dy[k, i, j] = ikᵧ * Az[k, i, j]
+        end
+    end
+end
+
+"""
+YBJ w on the face above each level, written over the physical `∂ₓA_z` in
+`dAz_dx`: A_z (index `k`) and N² both live on that face. A_z = 0 on the top
+face (index `nz`), and so does w.
+"""
+@kernel function _ybj_w_face_kernel!(dAz_dx, @Const(dAz_dy), @Const(N²_face),
+                                     f², cos_ft, sin_ft, nz)
+    k, i, j = @index(Global, NTuple)
+    @inbounds if k == nz
+        dAz_dx[k, i, j] = zero(eltype(dAz_dx))
+    else
+        dx = dAz_dx[k, i, j]
+        dy = dAz_dy[k, i, j]
+        w_cos = real(dx) + imag(dy)
+        w_sin = imag(dx) - real(dy)
+        dAz_dx[k, i, j] = -(f² / N²_face[k]) * (cos_ft * w_cos + sin_ft * w_sin)
+    end
+end
+
 function _compute_ybj_vertical_velocity!(S::ModelFields, G::RuntimeGeometry, plans,
-    f, N2_profile, N2_face_profile, workspace, skip_inversion, t)
+    f, N2_face_profile, workspace, skip_inversion, t)
     nz = G.nz
+    backend = get_backend(S.w)
 
     # Step 1: Recover A from B = L⁺A using the centralized YBJ+ inversion,
     # with a(z) = f²/N²(z) as the elliptic coefficient.
     if skip_inversion
         # Reuse S.A and S.C from the timestep, which used the correct
         # stratification. All-zero A is legitimate (a run with no waves).
-        if all(iszero, parent(S.A))
+        if all(iszero, S.A)
             @warn "skip_inversion=true but S.A is all zeros - vertical velocity will be zero" maxlog=1
         end
     else
-        a_vec = similar(G.z)
         f_sq = f^2
-        @inbounds for k in eachindex(a_vec)
-            a_vec[k] = f_sq / N2_face_profile[k]
-        end
+        a_vec = [f_sq / value for value in on_host(N2_face_profile)]
         invert_B_to_A!(S, G, a_vec; workspace)
     end
 
-    # Step 2: horizontal derivatives of A_z, which invert_B_to_A! left in S.C.
-    Aₖ_z = S.C
-    Aₖ_z_arr = parent(Aₖ_z)
-    nz_spec, nx_spec, ny_spec = size(Aₖ_z_arr)
-
-    dAz_dxₖ = scratch_like(workspace, Aₖ_z)
-    dAz_dyₖ = scratch_like(workspace, Aₖ_z)
-    dAz_dxₖ_arr = parent(dAz_dxₖ)
-    dAz_dyₖ_arr = parent(dAz_dyₖ)
-
-    # A_z is defined for global levels 1:(nz-1). The top global level is zeroed
-    # rather than left as `similar` garbage, which would inject noise into the
-    # backward transform.
-    @inbounds for k in 1:nz_spec, j_local in 1:ny_spec, i_local in 1:nx_spec
-        k_global = local_to_global(k, 1, Aₖ_z)
-        if k_global >= nz
-            dAz_dxₖ_arr[k, i_local, j_local] = 0
-            dAz_dyₖ_arr[k, i_local, j_local] = 0
-            continue
-        end
-        i_global = local_to_global(i_local, 2, dAz_dxₖ)
-        j_global = local_to_global(j_local, 3, dAz_dxₖ)
-        ikₓ = im * G.kx[i_global]
-        ikᵧ = im * G.ky[j_global]
-        dAz_dxₖ_arr[k, i_local, j_local] = ikₓ * Aₖ_z_arr[k, i_local, j_local]
-        dAz_dyₖ_arr[k, i_local, j_local] = ikᵧ * Aₖ_z_arr[k, i_local, j_local]
-    end
-
-    # Step 3: YBJ vertical velocity in PHYSICAL space.
-    # Asselin & Young (2019) equation (2.10):
-    #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.,  A_{zs} = (1/2)[∂ₓA_z - i ∂ᵧA_z]
-    #   w = -(f²/N²)[cos(ft)(Re ∂ₓA_z + Im ∂ᵧA_z) + sin(ft)(Im ∂ₓA_z - Re ∂ᵧA_z)]
-    dAz_dx_phys = scratch_physical(workspace, dAz_dxₖ, plans)
-    dAz_dy_phys = scratch_physical(workspace, dAz_dyₖ, plans)
-    fft_backward!(dAz_dx_phys, dAz_dxₖ, plans)
-    fft_backward!(dAz_dy_phys, dAz_dyₖ, plans)
-    dAz_dx_phys_arr = parent(dAz_dx_phys)
-    dAz_dy_phys_arr = parent(dAz_dy_phys)
-
-    w_arr = parent(S.w)
-    nz_phys, nx_phys, ny_phys = size(dAz_dx_phys_arr)
-    @assert nz_phys == nz "Physical pencil must keep the vertical dimension local"
-    @assert size(w_arr) == (nz_phys, nx_phys, ny_phys) "Physical pencils for w and FFT output must match"
-
     cos_ft = t === nothing ? 1.0 : cos(f * t)
     sin_ft = t === nothing ? 0.0 : sin(f * t)
-
-    @inbounds for k in 1:(nz_phys-1), j_local in 1:ny_phys, i_local in 1:nx_phys
-        k_out = k + 1  # Shift to match output grid
-        ybj_factor = -(f^2) / N2_profile[k_out]
-
-        dAz_dx = dAz_dx_phys_arr[k, i_local, j_local]
-        dAz_dy = dAz_dy_phys_arr[k, i_local, j_local]
-
-        w_cos = real(dAz_dx) + imag(dAz_dy)
-        w_sin = imag(dAz_dx) - real(dAz_dy)
-
-        w_arr[k_out, i_local, j_local] = ybj_factor * (cos_ft * w_cos + sin_ft * w_sin)
-    end
-
-    # Boundary conditions: w = 0 at the top and the bottom.
-    @inbounds for j_local in 1:ny_phys, i_local in 1:nx_phys
-        w_arr[1, i_local, j_local] = 0.0
-        if nz > 1
-            w_arr[nz, i_local, j_local] = 0.0
-        end
-    end
+    _ybj_w!(S.w, S, G, plans, f, N2_face_profile, workspace, cos_ft, sin_ft, false)
     return S
+end
+
+"""
+YBJ vertical velocity of the wave at inertial phase (cos ft, sin ft), from the
+A_z in `S.C`, written to (or, with `accumulate`, added to) the real centre
+field `w`.
+"""
+function _ybj_w!(w, S::ModelFields, G::RuntimeGeometry, plans, f, N2_face_profile,
+                 workspace, cos_ft, sin_ft, accumulate::Bool)
+    nz = G.nz
+    backend = get_backend(w)
+    with_scratch(workspace) do
+        # Horizontal derivatives of A_z in two buffers, transformed in place.
+        dAz_dx = scratch_like(workspace, S.C)
+        dAz_dy = scratch_like(workspace, S.C)
+        launch!(_ybj_w_spectral_kernel!, backend, size(S.C),
+                dAz_dx, dAz_dy, S.C, G.kx, G.ky, nz)
+        fft_backward!(dAz_dx, dAz_dx, plans)
+        fft_backward!(dAz_dy, dAz_dy, plans)
+
+        # w on the faces, written over ∂ₓA_z. Asselin & Young (2019) (2.10):
+        #   w₀ = -(f²/N²) A_{zs} e^{-ift} + c.c.,  A_{zs} = (1/2)[∂ₓA_z - i ∂ᵧA_z]
+        #   w = -(f²/N²)[cos(ft)(Re ∂ₓA_z + Im ∂ᵧA_z) + sin(ft)(Im ∂ₓA_z - Re ∂ᵧA_z)]
+        T = real(eltype(dAz_dx))   # the column scalars share the grid's precision
+        launch!(_ybj_w_face_kernel!, backend, size(dAz_dx),
+                dAz_dx, dAz_dy, on_backend(backend, N2_face_profile),
+                T(float(f)^2), T(cos_ft), T(sin_ft), nz)
+        launch!(_faces_to_centers_kernel!, backend, size(w), w, dAz_dx, accumulate)
+    end
+    return w
 end
 
 #=
@@ -719,82 +684,65 @@ geostrophic flow and wave-induced motion.
 =#
 
 """
-    compute_total_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, use_ybj_w=false, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true)
+    compute_total_velocities!(S, G; t, plans=nothing, f=1, N2=1, compute_w=true, N2_profile=nothing, N2_face_profile=nothing, workspace=nothing, dealias_mask=nothing, include_wave_velocity=true, formulation=YBJPlus(), pv_forcing=nothing)
 
-Compute the TOTAL velocity field for Lagrangian particle advection.
+Instantaneous (Eulerian) velocity at time `t`: the velocity a fluid particle
+at a fixed point sees, including the near-inertial oscillation.
 
 # Physical Background
-In QG-YBJ+ dynamics, a particle is advected by:
-1. **Geostrophic flow**: u_QG = -∂ψ/∂y, v_QG = ∂ψ/∂x
-2. **Wave velocity**: From YBJ+ equation (1.2): u + iv = e^{-ift} LA
-3. **Wave-induced Stokes drift**: Second-order drift from near-inertial waves
+The QG streamfunction ψ is that of the Lagrangian-mean flow (Xie & Vanneste
+2015; Wagner & Young 2016, eq. 3.22: `ū + U^S = ∇⊥ψ`). The Eulerian-mean
+velocity is therefore the Lagrangian mean minus the Stokes drift, and the
+waves add their orbital velocity `u + iv = e^{-ift} LA` (Asselin & Young 2019,
+eq. 1.2) and vertical velocity:
+```
+u + iv = (u^L + iv^L) - (u^S + iv^S) + e^{-ift} LA
+w      = w^L - w^S + [-(f²/N²) A_{zs} e^{-ift} + c.c.]
+```
+`compute_velocities!` gives the Lagrangian mean (u^L, v^L, w^L), and
+`compute_wave_velocities!` the rest.
 
-The total velocity is:
-```
-u_total = u_QG + u_wave + u_S
-v_total = v_QG + v_wave + v_S
-w_total = w_QG + w_S (from omega equation or YBJ, plus vertical Stokes drift)
-```
-
-# Wave Velocity (Asselin & Young 2019, eq. 1.2)
-The backrotated wave velocity is LA, where L = ∂_z(f²/N²)∂_z:
-```
-u_wave = Re(LA)
-v_wave = Im(LA)
-```
-For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA.
-In spectral space: LA = B + (k_h²/4)A
-
-# Wave-Induced Stokes Drift
-Following Wagner & Young (2016) equations (3.17)-(3.18), the Stokes drift
-is computed from the wave velocity LA (not amplitude A):
-```
-u_S = (1/f₀) Im[(LA)* ∂(LA)/∂x] = (1/f₀) |LA|² ∂φ/∂x
-v_S = (1/f₀) Im[(LA)* ∂(LA)/∂y] = (1/f₀) |LA|² ∂φ/∂y
-w_S = (1/f₀) Im[(LA)* ∂(LA)/∂z] = (1/f₀) |LA|² ∂φ/∂z
-```
-
-where LA = |LA|e^{iφ} is the wave velocity and φ is the wave phase.
-Particles drift in the direction of wave propagation (phase gradient).
-The drift magnitude scales with wave velocity intensity |LA|².
-
-# Usage
-For Lagrangian particle advection, always use this function rather than
-`compute_velocities!` to include wave effects.
+Trajectories integrated with this velocity resolve the inertial oscillation,
+so their time step must be small compared with 1/f; their drift averaged over
+an inertial period is the Lagrangian mean. For phase-averaged trajectories use
+the Lagrangian-mean velocity of `compute_velocities!` instead.
 
 # Arguments
-- `S::ModelFields`: ModelFields with ψ, A, B (input) and u, v, w (output)
+- `S::ModelFields`: ModelFields with ψ, A, B, C (input) and u, v, w (output)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
+- `t`: Time for the inertial phase `e^{-ift}` (required)
 - `plans`: FFT plans
 - `f`, `N2`: Scalar Coriolis frequency and fallback buoyancy frequency squared
-- `compute_w::Bool`: If true, compute vertical velocity
-- `use_ybj_w::Bool`: If true, use YBJ formula for w
-- `N2_profile::Vector`: Optional cell-center N²(z) profile for pointwise
-  velocity terms and the omega-equation solve
-- `N2_face_profile::Vector`: Optional upper-face N²(z) profile used if the YBJ
-  vertical-velocity path recovers A from B
-- `workspace`: Optional pre-allocated workspace for 2D decomposition
-- `dealias_mask`: Optional 2D dealiasing mask for omega equation RHS
-- `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
-
-# Returns
-Modified ModelFields with total velocity fields u, v, w.
+- `compute_w::Bool`: If true, compute the vertical velocity
+- `N2_profile`, `N2_face_profile`: Optional cell-centre and upper-face N²(z)
+- `workspace`: Optional model workspace for scratch buffers
+- `dealias_mask`: Optional 2D dealiasing mask for the omega equation
+- `include_wave_velocity::Bool`: If false, omit the orbital velocity, leaving
+  the Eulerian-mean velocity
+- `formulation`: `YBJPlus()` (default) or `YBJ()`, which fixes how LA follows from B
+- `pv_forcing`: Wave-PV forcing of the mean-flow w in coupled runs (see
+  `compute_vertical_velocity!`)
 """
-function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
-    f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w=false,
+function compute_total_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing,
+    plans=nothing, f::Real=1.0, N2::Real=1.0, compute_w=true, use_ybj_w::Bool=false,
     N2_profile=nothing, N2_face_profile=nothing,
     workspace=nothing, dealias_mask=nothing,
-    include_wave_velocity=true)
-    # First compute QG velocities (pass dealias_mask for omega equation RHS dealiasing)
-    compute_velocities!(S, G; plans, f, N2, compute_w, use_ybj_w,
-        N2_profile, N2_face_profile, workspace, dealias_mask)
-
-    # Add wave velocity and Stokes drift (respecting compute_w for vertical component)
-    # Pass N2_profile for the second term in the Jacobian (f²/N²)
-    compute_wave_velocities!(S, G; plans, f, N2, compute_w,
-        include_wave_velocity, N2_profile, workspace)
-
+    include_wave_velocity=true, formulation=YBJPlus(), pv_forcing=nothing)
+    _reject_use_ybj_w(use_ybj_w)
+    _require_wave_time(t, include_wave_velocity)
+    compute_velocities!(S, G; plans, f, N2, compute_w, N2_profile,
+        N2_face_profile, workspace, dealias_mask, pv_forcing)
+    compute_wave_velocities!(S, G; t, plans, f, N2, compute_w,
+        include_wave_velocity, N2_profile, N2_face_profile, formulation, workspace)
     return S
+end
+
+"""The wave orbital velocity depends on its phase, so it needs the time."""
+function _require_wave_time(t, include_wave_velocity)
+    include_wave_velocity && t === nothing && throw(ArgumentError(
+        "the wave velocity e^{-ift} LA depends on time: pass t (the model time " *
+        "of the fields), or include_wave_velocity=false for the Eulerian mean"))
+    return nothing
 end
 
 #=
@@ -807,412 +755,242 @@ propagation. This is the Stokes drift correction.
 =#
 
 """
-    compute_wave_velocities!(S, G; plans=nothing, f=1, N2=1, compute_w=true, include_wave_velocity=true, N2_profile=nothing)
+    compute_wave_velocities!(S, G; t, plans=nothing, f=1, N2=1, compute_w=true, include_wave_velocity=true, N2_profile=nothing, N2_face_profile=nothing, formulation=YBJPlus(), workspace=nothing)
 
-Compute wave velocities and Stokes drift, adding them to existing QG velocities.
+Add the wave part of the instantaneous velocity at time `t` to the
+Lagrangian-mean velocity in `S` (from `compute_velocities!`): subtract the
+Stokes drift, which turns the Lagrangian mean into the Eulerian mean, and add
+the wave orbital velocity.
 
 # Physical Background
-Near-inertial waves contribute to particle advection through two mechanisms:
+1. **Wave velocity** (Asselin & Young 2019, eq. 1.2): `u + iv = e^{-ift} LA`,
+   with `L = ∂_z (f²/N²) ∂_z`, and the vertical velocity
+   `w = -(f²/N²) A_{zs} e^{-ift} + c.c.` (eq. 2.10). For `YBJPlus()`,
+   `B = L⁺A`, so `LA = B + (kₕ²/4)A` in spectral space; for `YBJ()`, `B = LA`.
 
-1. **Wave velocity**: Following Asselin & Young (2019) YBJ+ equation (1.2):
-   u + iv = e^{-ift} L A
-   where L = ∂_z(f²/N²)∂_z is the vertical operator.
+2. **Stokes drift** (Wagner & Young 2016, eqs. 3.16-3.20). With the buoyancy
+   action `M = (f²/N²) A_z`, so that `M_z = LA`, and `∂_s = (∂ₓ - i∂ᵧ)/2`:
 
-   The backrotated velocity (phase-averaged) is LA:
-   - u_wave = Re(LA)
-   - v_wave = Im(LA)
+       J₀ = M_z* ∂_{s*}M_z - (∂_{s*}M*) M_zz,     i f U^S = J₀,
+       K₀ = M_z* M_{ss*} - (∂_{s*}M*) M_{sz},     i f w^S = K₀* - K₀,
 
-   For YBJ+: B = L⁺A where L⁺ = L + (1/4)Δ, so LA = B - (1/4)ΔA
-   In spectral space: LA = B + (k_h²/4)A (since Δ → -k_h²)
+   that is `u^S = Im(J₀)/f`, `v^S = -Re(J₀)/f`, `w^S = -2 Im(K₀)/f`, where
+   `M_{ss*} = Δ_H M / 4`. The drift `(u^S, v^S, w^S)` is non-divergent. As ψ is
+   the Lagrangian-mean streamfunction (their eqs. 3.22-3.23), the Eulerian
+   mean is the Lagrangian mean minus this drift.
 
-2. **Stokes drift**: Following Wagner & Young (2016) equation (3.16a), the
-   horizontal Stokes drift is computed from the full Jacobian:
-
-   J₀ = ∂(M*, M_z̃)/∂(z̃, s*) = (LA)* ∂_{s*}(LA) - M*_{s*} (M_z̃)_{z̃}
-
-   where:
-   - M = (f²/N²) A_z is the "buoyancy action"
-   - M_z̃ = LA is the wave velocity
-   - ∂_{s*} = (1/2)(∂_x + i∂_y) is the complex horizontal derivative
-   - s* = x - iy is the complex conjugate horizontal coordinate
-
-   The full form (expanding M*_{s*} = (f²/N²) ∂_{s*}(A_z*)):
-   J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-
-   From equation (3.18): if₀ U^S = J₀, so:
-   - u_S = Im(J₀)/f₀
-   - v_S = -Re(J₀)/f₀
-
-   For vertical Stokes drift, equation (3.19)-(3.20) gives the full Jacobian form:
-   - if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
-   - Expanding: K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
-   - With: M*_z = a_z·A_z* + a·A_{zz}*, M_{ss*} = a·(1/4)Δ_H(A_z),
-           M*_{s*} = a·(A_{zs})*, M_{sz} = a_z·A_{zs} + a·A_{zzs}
-   - Where a = f₀²/N² and a_z = ∂_z(f₀²/N²)
-   - Final: w^S = -2·Im(K₀)/f₀
-
-# Physical Interpretation
-- Wave velocity: Direct advection by the wave orbital motion (from backrotated velocity LA)
-- Stokes drift: Net drift in the direction of wave propagation
-- The second term in J₀ accounts for vertical structure of the wave envelope
-- Both contributions are important for accurate Lagrangian transport
-
-# Algorithm
-1. Compute LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
-2. Compute ∂_{s*}(LA) = (1/2)(∂_x + i∂_y)(LA) in spectral space
-3. Compute ∂_{s*}(A_z*) = conj((1/2)(∂_x - i∂_y)(A_z)) using A_z = S.C
-4. Compute ∂_z(LA) using finite differences
-5. For vertical Stokes drift: compute A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z profile
-6. Transform all fields to physical space
-7. Compute wave velocity: u_w, v_w = Re(LA), Im(LA)
-8. Compute full Jacobian: J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-9. Extract horizontal Stokes drift: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
-10. Compute K₀ and extract vertical Stokes drift: w_S = -2·Im(K₀)/f₀
-11. Add contributions to existing u, v, w fields (in-place modification)
+# Discretization
+`M` lives on the faces between levels, with `A_z` (`S.C`) and N² there; it
+vanishes on the bottom and top faces. `M_z = LA` and `M_{sz} = ∂_s LA` are
+then exact at the cell centres, by the flux form of `L`, so no derivative of
+the stratification is needed. The second term of `J₀` is formed on the faces,
+where `M` and `M_zz = δ_z LA` both live, and averaged onto the centres; in
+`K₀`, `M` is averaged onto the centres. Every term is therefore centred at
+the level it is added to, and the drift converges at second order in Δz.
 
 # Arguments
 - `S::ModelFields`: ModelFields with A, B, C (input) and u, v, w modified (output)
 - `G::RuntimeGeometry`: RuntimeGeometry structure
+- `t`: Time for the inertial phase `e^{-ift}`; required with `include_wave_velocity`
 - `plans`: FFT plans
 - `f`, `N2`: Coriolis frequency and fallback buoyancy frequency squared
-- `compute_w::Bool`: If true (default), compute and add vertical wave Stokes drift
-- `include_wave_velocity::Bool`: If true (default), include wave velocity Re(LA), Im(LA)
-- `N2_profile::Vector`: Optional N²(z) profile for the Jacobian second term
-
-# Note
-This function modifies u, v, w in-place by adding wave contributions.
-Call after compute_velocities! to get total velocity.
+- `compute_w::Bool`: If true (default), also correct the vertical velocity
+- `include_wave_velocity::Bool`: If false, only subtract the Stokes drift,
+  which leaves the Eulerian-mean velocity
+- `N2_profile::Vector`: Optional cell-centre N²(z), used only when
+  `N2_face_profile` is not given
+- `N2_face_profile::Vector`: Optional N²(z) on the upper face of each level,
+  where `M = (f²/N²) A_z` is formed
+- `formulation`: `YBJPlus()` (default) or `YBJ()`, which fixes how LA follows from B
+- `workspace`: Optional model workspace for scratch buffers
 
 # References
-- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equation (1.2)
-- Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16a), (3.17)-(3.20)
+- Asselin & Young (2019), J. Fluid Mech. 876, 428-448, equations (1.2), (2.10)
+- Wagner & Young (2016), J. Fluid Mech. 802, 806-837, equations (3.16)-(3.23)
 - Xie & Vanneste (2015), J. Fluid Mech. 774, 143-169
 """
-function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
-    f::Real=1.0, N2::Real=1.0, compute_w=true,
-    include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
+function compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing,
+    plans=nothing, f::Real=1.0, N2::Real=1.0, compute_w=true,
+    include_wave_velocity=true, N2_profile=nothing, N2_face_profile=nothing,
+    formulation=YBJPlus(), workspace=nothing)
 
+    _require_wave_time(t, include_wave_velocity)
     return with_scratch(workspace) do
-        _compute_wave_velocities!(S, G; plans, f, N2, compute_w,
-                                  include_wave_velocity, N2_profile, workspace)
+        _compute_wave_velocities!(S, G; t, plans, f, N2, compute_w,
+                                  include_wave_velocity, N2_profile,
+                                  N2_face_profile, formulation, workspace)
     end
 end
 
-function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; plans=nothing,
-    f::Real=1.0, N2::Real=1.0, compute_w=true,
-    include_wave_velocity=true, N2_profile=nothing, workspace=nothing)
-    nx, ny, nz = G.nx, G.ny, G.nz
+"""Weight of `kₕ²A` in `LA = B + weight kₕ²A`: `B = L⁺A` for YBJ⁺, `B = LA` for YBJ."""
+_wave_velocity_weight(::YBJ) = 0.0
+_wave_velocity_weight(formulation) = 0.25
 
-    # Get underlying arrays
-    u_arr = parent(S.u)
-    v_arr = parent(S.v)
-    w_arr = parent(S.w)
-    Aₖ_arr = parent(S.A)
-    Bₖ_arr = parent(S.B)
-    Aₖ_z = S.C              # A_z = ∂A/∂z computed by invert_B_to_A!
-    Aₖ_z_arr = parent(Aₖ_z)
-    nz_local, nx_local, ny_local = size(Aₖ_arr)
+"""
+Spectral LA, ∂_s LA, and ∂_{s*} LA at the centres, and ∂_s M and Δ_H M / 4 on
+the face above each level, with `M = (f²/N²) A_z` zero on the top face.
+"""
+@kernel function _wave_spectral_kernel!(LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ,
+                                        @Const(Bₖ), @Const(Aₖ), @Const(Aₖ_z),
+                                        @Const(N²_face), @Const(kx), @Const(ky),
+                                        f², weight, nz)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        kₓ = kx[i]
+        kᵧ = ky[j]
+        kₕ² = kₓ^2 + kᵧ^2
+        ds = (im * kₓ + kᵧ) / 2            # ∂_s = (∂ₓ - i∂ᵧ)/2
+        ds_conj = (im * kₓ - kᵧ) / 2       # ∂_{s*} = (∂ₓ + i∂ᵧ)/2
 
-    # Get f₀ for Stokes drift normalization (Wagner & Young 2016, eq 3.18)
-    f₀ = f
-    f₀² = f₀^2
+        LA = Bₖ[k, i, j] + weight * kₕ² * Aₖ[k, i, j]
+        LAₖ[k, i, j] = LA
+        dLA_dsₖ[k, i, j] = ds * LA
+        dLA_ds_conjₖ[k, i, j] = ds_conj * LA
 
-    # Get N² profile, falling back to the explicitly supplied scalar N².
-    N2_profile_local = _coerce_N2_profile(N2_profile, N2, nz, G)
+        M = k < nz ? (f² / N²_face[k]) * Aₖ_z[k, i, j] : zero(eltype(Aₖ_z))
+        dM_dsₖ[k, i, j] = ds * M
+        M_ss_conjₖ[k, i, j] = -kₕ² * M / 4   # ∂_s ∂_{s*} = Δ_H / 4
+    end
+end
 
-    # Set up plans if needed
+# Without `vertical_excursions`, only the drift of horizontal orbits, the first
+# term of J₀, is subtracted: the Eulerian mean seen by particles that keep
+# their depth, whose orbits make up only that part of the Stokes drift.
+@kernel function _stokes_drift_kernel!(u, v, w, @Const(LA), @Const(dLA_ds),
+                                       @Const(dLA_ds_conj), @Const(dM_ds),
+                                       @Const(M_ss_conj), inv_f, inv_Δz, nz,
+                                       include_wave_velocity, compute_w,
+                                       cos_ft, sin_ft, vertical_excursions)
+    k, i, j = @index(Global, NTuple)
+    @inbounds begin
+        LAₖ = LA[k, i, j]
+
+        # Wave orbital velocity, YBJ⁺ eq. (1.2): u + iv = e^{-ift} LA
+        if include_wave_velocity
+            u[k, i, j] += cos_ft * real(LAₖ) + sin_ft * imag(LAₖ)
+            v[k, i, j] += cos_ft * imag(LAₖ) - sin_ft * real(LAₖ)
+        end
+
+        # ∂_s M on the faces below and above level k; M = 0 on the bottom face
+        # and, through dM_ds[nz] = 0, on the top face.
+        zero_M = zero(eltype(dM_ds))
+        dM_ds_below = k > 1 ? dM_ds[k - 1, i, j] : zero_M
+        dM_ds_above = dM_ds[k, i, j]
+
+        # J₀ = M_z* ∂_{s*}M_z - (∂_{s*}M*) M_zz with M_z = LA. The second term
+        # is formed on the faces, where M_zz = δ_z LA lives, then averaged.
+        J₀ = if vertical_excursions
+            T_below = k > 1 ?
+                conj(dM_ds_below) * (LAₖ - LA[k - 1, i, j]) * inv_Δz : zero_M
+            T_above = k < nz ?
+                conj(dM_ds_above) * (LA[k + 1, i, j] - LAₖ) * inv_Δz : zero_M
+            conj(LAₖ) * dLA_ds_conj[k, i, j] - (T_below + T_above) / 2
+        else
+            conj(LAₖ) * dLA_ds_conj[k, i, j]
+        end
+
+        # Wagner & Young (2016) eq. (3.18): i f U^S = J₀. The Stokes drift is
+        # subtracted: Eulerian mean = Lagrangian mean - Stokes drift.
+        u[k, i, j] -= inv_f * imag(J₀)
+        v[k, i, j] += inv_f * real(J₀)
+
+        # Eqs. (3.19)-(3.20): i f w^S = K₀* - K₀ with
+        # K₀ = M_z* M_{ss*} - (∂_{s*}M*) M_{sz}, M_z = LA, M_{sz} = ∂_s LA,
+        # and M averaged onto the centre.
+        if compute_w
+            M_ss_conj_below = k > 1 ? M_ss_conj[k - 1, i, j] : zero_M
+            M_ss_conj_centre = (M_ss_conj_below + M_ss_conj[k, i, j]) / 2
+            dM_ds_centre = (dM_ds_below + dM_ds_above) / 2
+            K₀ = conj(LAₖ) * M_ss_conj_centre - conj(dM_ds_centre) * dLA_ds[k, i, j]
+            w[k, i, j] += 2 * inv_f * imag(K₀)
+        end
+    end
+end
+
+function _compute_wave_velocities!(S::ModelFields, G::RuntimeGeometry; t=nothing,
+    plans=nothing, f::Real=1.0, N2::Real=1.0, compute_w=true,
+    include_wave_velocity=true, N2_profile=nothing, N2_face_profile=nothing,
+    formulation=YBJPlus(), workspace=nothing, vertical_excursions::Bool=true)
+    nz = G.nz
+    backend = get_backend(S.u)
     if plans === nothing
         plans = plan_transforms!(G)
     end
 
-    # Compute LA, ∂_{s*}(LA), and ∂_{s*}(A_z) in spectral space
-    # YBJ+ relation: B = L⁺A = LA + (1/4)ΔA, so LA = B - (1/4)ΔA
-    # In spectral space: Δ → -k_h², so LA = B + (k_h²/4)A
-    #
-    # ∂_{s*} = (1/2)(∂_x + i∂_y), so in spectral space:
-    # ∂_{s*} → (1/2)(ikₓ + i·ikᵧ) = (i/2)(kₓ - kᵧ)... wait, let me recalculate
-    # Actually: ∂_{s*}f → (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (i/2)(kₓ + i kᵧ) f̂ = (i/2) k* f̂
-    # where k* = kₓ + i kᵧ is the complex wavenumber conjugate
-    LAₖ = scratch_like(workspace, S.A)
-    dLA_ds_conjₖ = scratch_like(workspace, S.A)  # ∂_{s*}(LA)
-    dAz_ds_conjₖ = scratch_like(workspace, S.A)  # ∂_{s*}(A_z) - will take conj later for ∂_{s*}(A_z*)
-    LAₖ_arr = parent(LAₖ)
-    dLA_ds_conjₖ_arr = parent(dLA_ds_conjₖ)
-    dAz_ds_conjₖ_arr = parent(dAz_ds_conjₖ)
+    # M = (f²/N²) A_z is formed on the faces, where A_z and N² live.
+    face_profile = _coerce_N2_profile(
+        N2_face_profile === nothing ? N2_profile : N2_face_profile, N2, nz, G)
 
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, LAₖ)
-        j_global = local_to_global(j_local, 3, LAₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
+    cos_ft = t === nothing ? 1.0 : cos(f * t)
+    sin_ft = t === nothing ? 0.0 : sin(f * t)
+    T = real(eltype(S.A))   # the kernel scalars share the grid's precision
+    with_scratch(workspace) do
+        LAₖ = scratch_like(workspace, S.A)
+        dLA_dsₖ = scratch_like(workspace, S.A)
+        dLA_ds_conjₖ = scratch_like(workspace, S.A)
+        dM_dsₖ = scratch_like(workspace, S.A)
+        M_ss_conjₖ = scratch_like(workspace, S.A)
+        launch!(_wave_spectral_kernel!, backend, size(LAₖ),
+                LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ, S.B, S.A, S.C,
+                on_backend(backend, face_profile), G.kx, G.ky, T(float(f)^2),
+                T(_wave_velocity_weight(formulation)), nz)
 
-        # Wave velocity from eq (1.2): u + iv = e^{-ift} LA
-        # LA = B + (k_h²/4)A in spectral space (YBJ+ relation)
-        LA_val = Bₖ_arr[k, i_local, j_local] + (kₕ² / 4) * Aₖ_arr[k, i_local, j_local]
-        LAₖ_arr[k, i_local, j_local] = LA_val
-
-        # Complex derivative: ∂_{s*} = (1/2)(∂_x + i∂_y)
-        # In spectral space: ∂_{s*} f̂ = (1/2)(ikₓ + i²kᵧ) f̂ = (i/2)(kₓ - kᵧ)...
-        # Wait: ∂_{s*} = (1/2)(∂_x + i∂_y), so
-        # ∂_{s*} f → (1/2)(ikₓ + i·ikᵧ) f̂ = (1/2)(ikₓ - kᵧ) f̂
-        # Let's define: ds_conj_factor = (1/2)(ikₓ - kᵧ) = (i/2)(kₓ + ikᵧ)
-        # No wait, that's wrong too. Let me be more careful:
-        # ∂/∂s* = (1/2)(∂/∂x + i ∂/∂y)
-        # Applied to f: ∂f/∂s* = (1/2)(∂f/∂x + i ∂f/∂y)
-        # In spectral: = (1/2)(ikₓ f̂ + i·ikᵧ f̂) = (1/2)(ikₓ + i²kᵧ) f̂ = (1/2)(ikₓ - kᵧ) f̂
-        ds_conj_factor = 0.5 * (im * kₓ - kᵧ)  # = (1/2)(ikₓ - kᵧ)
-        dLA_ds_conjₖ_arr[k, i_local, j_local] = ds_conj_factor * LA_val
-
-        # Horizontal derivative of A_z for second Jacobian term
-        # Need ∂_{s*}(A_z*) = conj(∂_{s}(A_z)) where ∂_s = (1/2)(∂_x - i∂_y)
-        # But it's easier: ∂_{s*}(A_z*) = (∂_{s*}(A_z))* where we use complex conj
-        # Actually: ∂_{s*}(A_z*) = (1/2)(∂_x(A_z*) + i∂_y(A_z*))
-        #                       = (1/2)(∂_x(A_z)* + i∂_y(A_z)*)  [derivatives of real coords are linear]
-        #                       = ((1/2)(∂_x(A_z) - i∂_y(A_z)))*  [factor out conj]
-        #                       = (∂_s(A_z))*
-        # where ∂_s = (1/2)(∂_x - i∂_y) is the other complex derivative
-        # In spectral: ∂_s f̂ = (1/2)(ikₓ - i·ikᵧ) f̂ = (1/2)(ikₓ + kᵧ) f̂
-        ds_factor = 0.5 * (im * kₓ + kᵧ)  # = (1/2)(ikₓ + kᵧ)
-        Az_val = Aₖ_z_arr[k, i_local, j_local]
-        dAz_ds_conjₖ_arr[k, i_local, j_local] = ds_factor * Az_val  # Will take conj later
-    end
-
-    # For vertical Stokes drift (eq 3.19-3.20), we need additional derivatives:
-    # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz} where M = (f₀²/N²)A_z
-    # This requires: A_{zz}, Δ_H(A_z), A_{zs}, A_{zzs}, and a_z = ∂_z(f₀²/N²)
-
-    # Compute A_{zz} = ∂(A_z)/∂z using finite differences on A_z.
-    # This couples neighbouring vertical levels, so it has to run with z fully
-    # local: on the spectral pencil z is distributed whenever px > 1, and the
-    # boundary stencils below would otherwise be applied at every rank seam.
-    Aₖ_zz = scratch_like(workspace, S.A)
-    Δz = nz > 1 ? (G.z[2] - G.z[1]) : 1.0
-
-    with_z_local(G, (Aₖ_zz, Aₖ_z), (:out, :in);
-                 scratch=z_scratch(workspace, :work_z, :C_z)) do Azz, Az
-        Azz_arr = parent(Azz)
-        Az_arr = parent(Az)
-        nz_z, nx_z, ny_z = size(Az_arr)
-        @inbounds for j_local in 1:ny_z, i_local in 1:nx_z
-            if nz_z >= 2
-                # C[k] = A_z is the upper-face flux for cell k. The bottom
-                # Neumann flux is implicit; C[nz] stores the top value (zero).
-                Azz_arr[1, i_local, j_local] = Az_arr[1, i_local, j_local] / Δz
-                for k in 2:nz_z
-                    Azz_arr[k, i_local, j_local] = (Az_arr[k, i_local, j_local] - Az_arr[k-1, i_local, j_local]) / Δz
-                end
-            else
-                Azz_arr[1, i_local, j_local] = 0.0
-            end
-        end
-    end
-    Aₖ_zz_arr = parent(Aₖ_zz)
-
-    # Compute horizontal Laplacian Δ_H(A_z) and A_{zs}, A_{zzs} in spectral space
-    # Δ_H(A_z) = -k_h² · Â_z in spectral space
-    # A_{zs} = ∂_s(A_z) = (1/2)(ikₓ + kᵧ) · Â_z  [already computed as dAz_ds_conjₖ]
-    # A_{zzs} = ∂_s(A_{zz}) = (1/2)(ikₓ + kᵧ) · Â_{zz}
-    Δ_H_Azₖ = scratch_like(workspace, S.A)
-    A_zzsₖ = scratch_like(workspace, S.A)
-    Δ_H_Azₖ_arr = parent(Δ_H_Azₖ)
-    A_zzsₖ_arr = parent(A_zzsₖ)
-
-    @inbounds for k in 1:nz_local, j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, Δ_H_Azₖ)
-        j_global = local_to_global(j_local, 3, Δ_H_Azₖ)
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        Az_val = Aₖ_z_arr[k, i_local, j_local]
-        Azz_val = Aₖ_zz_arr[k, i_local, j_local]
-
-        # Horizontal Laplacian: Δ_H → -k_h² in spectral space
-        Δ_H_Azₖ_arr[k, i_local, j_local] = -kₕ² * Az_val
-
-        # ∂_s(A_{zz}) in spectral space: ∂_s → (1/2)(ikₓ + kᵧ)
-        ds_factor = 0.5 * (im * kₓ + kᵧ)
-        A_zzsₖ_arr[k, i_local, j_local] = ds_factor * Azz_val
-    end
-
-    # Compute a_z = ∂_z(f₀²/N²) profile
-    # a = f₀²/N², so a_z = -f₀² · (∂N²/∂z) / N⁴
-    a_profile = similar(N2_profile_local)
-    a_z_profile = similar(N2_profile_local)
-    for k in 1:nz
-        a_profile[k] = f₀² / N2_profile_local[k]
-    end
-    # Compute a_z using finite differences
-    for k in 2:(nz-1)
-        a_z_profile[k] = (a_profile[k+1] - a_profile[k-1]) / (2 * Δz)
-    end
-    if nz >= 2
-        a_z_profile[1] = (a_profile[2] - a_profile[1]) / Δz
-        a_z_profile[nz] = (a_profile[nz] - a_profile[nz-1]) / Δz
-    else
-        a_z_profile[1] = 0.0
-    end
-
-    # Compute vertical derivative of LA using finite differences
-    # ∂(LA)/∂z for full Jacobian and vertical Stokes drift
-    dLA_dzₖ = scratch_like(workspace, S.A)
-    # Note: Δz already computed above for A_{zz}. Vertical coupling again, so
-    # again with z fully local.
-
-    # Second-order centered differences for interior, one-sided at boundaries
-    with_z_local(G, (dLA_dzₖ, LAₖ), (:out, :in);
-                 scratch=z_scratch(workspace, :A_z, :B_z)) do dLA_dz, LA
-        dLA_dz_arr = parent(dLA_dz)
-        LA_arr = parent(LA)
-        nz_z, nx_z, ny_z = size(LA_arr)
-        @inbounds for j_local in 1:ny_z, i_local in 1:nx_z
-            for k in 2:(nz_z-1)
-                # Centered difference
-                dLA_dz_arr[k, i_local, j_local] = (LA_arr[k+1, i_local, j_local] - LA_arr[k-1, i_local, j_local]) / (2 * Δz)
-            end
-            # One-sided at boundaries
-            if nz_z >= 2
-                dLA_dz_arr[1, i_local, j_local] = (LA_arr[2, i_local, j_local] - LA_arr[1, i_local, j_local]) / Δz
-                dLA_dz_arr[nz_z, i_local, j_local] = (LA_arr[nz_z, i_local, j_local] - LA_arr[nz_z-1, i_local, j_local]) / Δz
-            else
-                dLA_dz_arr[1, i_local, j_local] = 0.0
-            end
-        end
-    end
-
-    # Transform all fields to physical space
-    # The Jacobian J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA) is a product of fields
-    # and MUST be computed in physical space, not spectral space
-    LAᵣ = scratch_physical(workspace, LAₖ, plans)
-    dLA_ds_conjᵣ = scratch_physical(workspace, dLA_ds_conjₖ, plans)
-    dAz_ds_conjᵣ = scratch_physical(workspace, dAz_ds_conjₖ, plans)
-    dLA_dzᵣ = scratch_physical(workspace, dLA_dzₖ, plans)
-
-    fft_backward!(LAᵣ, LAₖ, plans)
-    fft_backward!(dLA_ds_conjᵣ, dLA_ds_conjₖ, plans)
-    fft_backward!(dAz_ds_conjᵣ, dAz_ds_conjₖ, plans)
-    fft_backward!(dLA_dzᵣ, dLA_dzₖ, plans)
-
-    # Transform additional fields for vertical Stokes drift (eq 3.19-3.20)
-    Azᵣ = scratch_physical(workspace, S.C, plans)  # A_z in physical space
-    Azzᵣ = scratch_physical(workspace, Aₖ_zz, plans)  # A_{zz} in physical space
-    Δ_H_Azᵣ = scratch_physical(workspace, Δ_H_Azₖ, plans)  # Δ_H(A_z) in physical space
-    A_zzsᵣ = scratch_physical(workspace, A_zzsₖ, plans)  # A_{zzs} in physical space
-
-    fft_backward!(Azᵣ, S.C, plans)
-    fft_backward!(Azzᵣ, Aₖ_zz, plans)
-    fft_backward!(Δ_H_Azᵣ, Δ_H_Azₖ, plans)
-    fft_backward!(A_zzsᵣ, A_zzsₖ, plans)
-
-    LAᵣ_arr = parent(LAᵣ)
-    dLA_ds_conjᵣ_arr = parent(dLA_ds_conjᵣ)
-    dAz_ds_conjᵣ_arr = parent(dAz_ds_conjᵣ)
-    dLA_dzᵣ_arr = parent(dLA_dzᵣ)
-    Azᵣ_arr = parent(Azᵣ)
-    Azzᵣ_arr = parent(Azzᵣ)
-    Δ_H_Azᵣ_arr = parent(Δ_H_Azᵣ)
-    A_zzsᵣ_arr = parent(A_zzsᵣ)
-
-    # Compute wave velocity and Stokes drift in physical space
-    # Following Wagner & Young (2016) equation (3.16a):
-    #   J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-    #
-    # From equation (3.18): if₀ U^S = J₀, so:
-    #   u_S = Im(J₀)/f₀
-    #   v_S = -Re(J₀)/f₀
-    #
-    # For vertical Stokes drift from eq (3.19)-(3.20):
-    #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
-    #   This expands to: w^S = -2·Im(K₀)/f₀
-    inv_f₀ = 1.0 / f₀
-
-    # Add wave velocity and Stokes drift to existing QG velocities in physical space
-    nz_phys, nx_phys, ny_phys = size(LAᵣ_arr)
-    @inbounds for k in 1:nz_phys, j_local in 1:ny_phys, i_local in 1:nx_phys
-        LA_phys = LAᵣ_arr[k, i_local, j_local]
-        dLA_ds_conj_phys = dLA_ds_conjᵣ_arr[k, i_local, j_local]
-        dAz_ds_phys = dAz_ds_conjᵣ_arr[k, i_local, j_local]  # This is ∂_s(A_z), need conj for ∂_{s*}(A_z*)
-        dLA_dz_phys = dLA_dzᵣ_arr[k, i_local, j_local]
-        N²ₖ = N2_profile_local[k]
-
-        # Wave velocity from YBJ+ eq (1.2): u + iv = e^{-ift} LA
-        # Backrotated velocity (phase-averaged): (u,v)_wave = (Re(LA), Im(LA))
-        if include_wave_velocity
-            u_arr[k, i_local, j_local] += real(LA_phys)
-            v_arr[k, i_local, j_local] += imag(LA_phys)
+        # The drift is quadratic in the waves, so it is formed in physical
+        # space; each buffer is transformed in place.
+        for buffer in (LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ)
+            fft_backward!(buffer, buffer, plans)
         end
 
-        # Full Jacobian from Wagner & Young (2016) eq (3.16a):
-        # J₀ = (LA)* ∂_{s*}(LA) - (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-        #
-        # First term: (LA)* ∂_{s*}(LA)
-        term1 = conj(LA_phys) * dLA_ds_conj_phys
-
-        # Second term: (f²/N²)(∂_{s*} A_z*) ∂_z(LA)
-        # where ∂_{s*}(A_z*) = conj(∂_s(A_z))
-        dAz_ds_conj_phys = conj(dAz_ds_phys)  # ∂_{s*}(A_z*) = (∂_s(A_z))*
-        term2 = (f₀² / N²ₖ) * dAz_ds_conj_phys * dLA_dz_phys
-
-        # Full Jacobian
-        J₀ = term1 - term2
-
-        # Stokes drift from eq (3.18): if₀ U^S = J₀
-        # U^S = u_S + i v_S = J₀ / (if₀) = -i J₀ / f₀
-        # So: u_S = Im(J₀)/f₀, v_S = -Re(J₀)/f₀
-        u_stokes = inv_f₀ * imag(J₀)
-        v_stokes = -inv_f₀ * real(J₀)
-
-        u_arr[k, i_local, j_local] += u_stokes
-        v_arr[k, i_local, j_local] += v_stokes
-
-        # Only add vertical Stokes drift if compute_w is requested
-        # Following Wagner & Young (2016) equation (3.19)-(3.20):
-        #   if₀w^S = K₀* - K₀, where K₀ = ∂(M*, M_s)/∂(z̃, s*) and M = (f₀²/N²)A_z
-        #   Since K₀* - K₀ = -2i·Im(K₀), we have: w^S = -2·Im(K₀)/f₀
-        #
-        # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
-        # where:
-        #   M = a·A_z with a = f₀²/N²
-        #   M*_z = a_z·A_z* + a·A_{zz}*
-        #   M_{ss*} = a·(1/4)Δ_H(A_z)
-        #   M*_{s*} = a·(A_{zs})*
-        #   M_{sz} = a_z·A_{zs} + a·A_{zzs}
-        if compute_w
-            # Get local field values
-            Az_phys = Azᵣ_arr[k, i_local, j_local]
-            Azz_phys = Azzᵣ_arr[k, i_local, j_local]
-            Δ_H_Az_phys = Δ_H_Azᵣ_arr[k, i_local, j_local]
-            Azs_phys = dAz_ds_phys  # Already computed: ∂_s(A_z)
-            Azzs_phys = A_zzsᵣ_arr[k, i_local, j_local]
-
-            # Get stratification factors
-            aₖ = a_profile[k]  # f₀²/N²
-            a_zₖ = a_z_profile[k]  # ∂_z(f₀²/N²)
-
-            # Compute K₀ components
-            # M*_z = a_z·A_z* + a·A_{zz}*
-            M_star_z = a_zₖ * conj(Az_phys) + aₖ * conj(Azz_phys)
-
-            # M_{ss*} = a·(1/4)Δ_H(A_z)
-            M_ss_star = aₖ * 0.25 * Δ_H_Az_phys
-
-            # M*_{s*} = a·(A_{zs})*
-            M_star_s_star = aₖ * conj(Azs_phys)
-
-            # M_{sz} = a_z·A_{zs} + a·A_{zzs}
-            M_sz = a_zₖ * Azs_phys + aₖ * Azzs_phys
-
-            # K₀ = M*_z · M_{ss*} - M*_{s*} · M_{sz}
-            K₀ = M_star_z * M_ss_star - M_star_s_star * M_sz
-
-            # w^S = -2·Im(K₀)/f₀
-            w_stokes = -2.0 * inv_f₀ * imag(K₀)
-            w_arr[k, i_local, j_local] += w_stokes
-        end
+        launch!(_stokes_drift_kernel!, backend, size(S.u),
+                S.u, S.v, S.w, LAₖ, dLA_dsₖ, dLA_ds_conjₖ, dM_dsₖ, M_ss_conjₖ,
+                T(inv(float(f))), 1 / vertical_spacing(G), nz,
+                Bool(include_wave_velocity), Bool(compute_w), T(cos_ft), T(sin_ft),
+                vertical_excursions)
     end
 
+    # The wave vertical velocity at the same phase, once the drift buffers
+    # are returned.
+    if include_wave_velocity && compute_w
+        _ybj_w!(S.w, S, G, plans, f, face_profile, workspace, cos_ft, sin_ft, true)
+    end
     return S
+end
+
+"""Spectral wave velocity `LA = B + weight kₕ² A` (weight 1/4 for YBJ⁺, 0 for YBJ)."""
+@kernel function _wave_velocity_kernel!(LA, @Const(B), @Const(A), @Const(kx),
+                                        @Const(ky), weight)
+    k, i, j = @index(Global, NTuple)
+    @inbounds LA[k, i, j] = B[k, i, j] + weight * (kx[i]^2 + ky[j]^2) * A[k, i, j]
+end
+
+"""
+    wave_velocity_amplitude!(LA_r, LA_i, S, G; plans=nothing, formulation=YBJPlus(), workspace=nothing)
+
+Fill `LA_r` and `LA_i` with the real and imaginary parts of the wave velocity
+amplitude LA at the cell centres, so that at time `t` the horizontal wave
+velocity is `u + iv = e^{-ift} LA`, that is, with `c = cos(ft)` and
+`s = sin(ft)`,
+
+    u = c LA_r + s LA_i,    v = c LA_i - s LA_r.
+
+The destinations may have another precision than the model, and live on the
+model's architecture. A (`S.A`) must be current.
+"""
+function wave_velocity_amplitude!(LA_r, LA_i, S::ModelFields, G::RuntimeGeometry;
+                                  plans=nothing, formulation=YBJPlus(),
+                                  workspace=nothing)
+    if plans === nothing
+        plans = plan_transforms!(G)
+    end
+    with_scratch(workspace) do
+        buffer = scratch_like(workspace, S.B)
+        launch!(_wave_velocity_kernel!, buffer, size(buffer), buffer, S.B, S.A,
+                G.kx, G.ky, real(eltype(buffer))(_wave_velocity_weight(formulation)))
+        fft_backward!(buffer, buffer, plans)
+        LA_r .= real.(buffer)
+        LA_i .= imag.(buffer)
+    end
+    return LA_r, LA_i
 end
 
 end # module

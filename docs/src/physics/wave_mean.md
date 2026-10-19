@@ -26,9 +26,10 @@ model = QGYBJModel(
 )
 ```
 
-`FixedFlow()` always prevents balanced-flow evolution. Both no-feedback
-components omit wave PV from the inversion; `NoWaveFeedback()` makes the
-one-way evolving-flow intent explicit.
+`FixedFlow()` always prevents balanced-flow evolution, so it also disables
+wave feedback: combining it with `WaveMeanFeedback()` warns and runs without
+feedback. Both no-feedback components omit wave PV from the inversion;
+`NoWaveFeedback()` makes the one-way evolving-flow intent explicit.
 
 ## Wave PV
 
@@ -43,8 +44,32 @@ Here `YBJPlus()` supplies ``B=L^+A`` (the XV``^+`` PV), while `YBJ()`
 supplies ``B=LA`` (the original XV PV).
 
 Each ETD-RK2 stage diagnoses ``q^w`` from its stage-local complex wave
-field. Streamfunction inversion uses ``q-q^w``, after which the solver
-restores the prognostic total `q`.
+field. Streamfunction inversion uses ``q-q^w``; the prognostic total `q` is
+never modified.
+
+## Mean and wave velocities
+
+The balanced streamfunction is that of the Lagrangian-mean flow (Xie &
+Vanneste 2015, §2; Wagner & Young 2016, eq. 3.22): ``\nabla^\perp\psi`` already
+contains the waves' Stokes drift ``\mathbf u^S``. The velocity at a fixed point
+adds the near-inertial oscillation to the Eulerian mean,
+
+```math
+u + iv = (u^L + iv^L) - (u^S + iv^S) + e^{-if_0t}LA,
+```
+
+and its vertical velocity combines the mean ``w^L``, ``-w^S``, and the wave
+vertical velocity. Three calls give these fields:
+
+```julia
+compute_velocities!(model)                       # Lagrangian mean
+compute_total_velocities!(model; t)              # instantaneous, at time t
+compute_wave_velocities!(model; include_wave_velocity=false)  # mean → Eulerian mean
+```
+
+Particles default to phase-averaged trajectories, advected by the Lagrangian
+mean; `wave_motion=:instantaneous` follows the inertial oscillation instead
+(see [Particle advection](@ref particles)).
 
 ## Compare coupled and uncoupled runs
 

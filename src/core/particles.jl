@@ -6,8 +6,7 @@ function UnifiedParticleAdvection.ParticleTracker(
     runtime.finalized && error("cannot attach particles to a finalized model")
     return UnifiedParticleAdvection.ParticleTracker(
         configuration,
-        runtime.geometry,
-        runtime.mpi;
+        runtime.geometry;
         plans=runtime.plans,
         model=model,
     )
@@ -42,7 +41,17 @@ function UnifiedParticleAdvection.initialize_particles!(
     return model
 end
 
-"""Advect the particle state installed on `model` using model-owned fields."""
+"""
+    advect_particles!(model, Δt; current_time=nothing)
+
+Advance the particles installed on `model` from `current_time` (default: the
+particles' own time) to `current_time + Δt`. The model's state is taken as the
+velocity at the end of that interval, so call this after advancing the model
+over the same interval, as `run!` does. The velocity at the start is the one
+kept from the previous call that ended at `current_time`; integration stages
+interpolate linearly in time between the two. Without it (on the first call,
+or after a gap) the end-of-interval velocity is used for the whole step.
+"""
 function UnifiedParticleAdvection.advect_particles!(
     model::QGYBJModel, Δt::Real; current_time=nothing)
 
@@ -57,17 +66,20 @@ function UnifiedParticleAdvection.advect_particles!(
     runtime = model.runtime
     runtime.finalized && error("cannot advect particles on a finalized model")
     UnifiedParticleAdvection.advect_particles!(
-        tracker,
-        model.fields,
-        runtime.geometry,
-        value,
-        current_time;
-        f=model.physics.coriolis.f,
-        N2=first(runtime.coefficients.N²),
-        N2_profile=runtime.coefficients.N²,
-        N2_face_profile=runtime.coefficients.N²_face,
-    )
+        tracker, model.fields, runtime.geometry, value, current_time;
+        _particle_velocity_options(model)...)
     return model
+end
+
+"""Coefficients and buffers the particle velocity diagnostic takes from `model`."""
+function _particle_velocity_options(model::QGYBJModel)
+    runtime = model.runtime
+    return (; f=model.physics.coriolis.f,
+            N2=first(runtime.coefficients.N²),
+            N2_profile=runtime.device_coefficients.N²,
+            N2_face_profile=runtime.device_coefficients.N²_face,
+            formulation=model.physics.formulation,
+            workspace=runtime.workspace)
 end
 
 function _advect_model_particles!(tracker::ParticleTracker,
@@ -76,6 +88,25 @@ function _advect_model_particles!(tracker::ParticleTracker,
     tracker === model.particles ||
         error("model particle ownership is inconsistent")
     advect_particles!(model, Δt; current_time=time)
+    return tracker
+end
+
+"""
+Keep the velocity of the model's current state, at simulation time `time`, as
+the start of the next particle step, and store each particle's velocity at
+that time (unless the particles are released later, and so stay at rest).
+"""
+function _record_particle_velocity!(tracker::ParticleTracker,
+    model::QGYBJModel, time)
+
+    tracker === model.particles ||
+        error("model particle ownership is inconsistent")
+    T = typeof(tracker.particles.time)
+    T(time) < tracker.config.particle_advec_time && return tracker
+    UnifiedParticleAdvection.update_velocity_fields!(
+        tracker, model.fields, model.runtime.geometry; time=T(time),
+        _particle_velocity_options(model)...)
+    UnifiedParticleAdvection._store_particle_velocities!(tracker, T(time))
     return tracker
 end
 
@@ -89,8 +120,7 @@ function _prepare_particle_output!(simulation::Simulation)
     tracker isa ParticleTracker || throw(ArgumentError(
         "particle output requires particles initialized on the model"))
     if !manager.initialized
-        setup_particle_output!(
-            manager, tracker; rank=simulation.model.runtime.mpi.rank)
+        setup_particle_output!(manager, tracker)
         T = typeof(manager.last_save_time)
         manager.last_save_iter = simulation.clock.iteration
         manager.last_save_time = T(simulation.clock.time)

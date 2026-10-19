@@ -25,6 +25,14 @@ Time schedules keep a nominal next deadline. If a step crosses a deadline,
 one snapshot is written at that step and the next deadline advances from the
 schedule rather than from the late write, avoiding cumulative drift.
 
+A run never silently replaces files already in its output directory. A
+simulation restored from a state file (see [Restart](@ref io-restart))
+continues the numbering after the files up to its restart iteration. Any
+other existing state files raise an error, unless the output is configured
+with `NetCDFOutput(...; overwrite=true)`, which removes them first: all of
+them for a run that starts at iteration 0, and only those after the restart
+iteration for a restored run.
+
 ## Energy diagnostics
 
 Passing a schedule as `diagnostics` records initial, scheduled, and final
@@ -42,6 +50,11 @@ The directory contains `wave_KE.nc`, `wave_PE.nc`, `wave_CE.nc`,
 `mean_flow_KE.nc`, `mean_flow_PE.nc`, and `total_energy.nc`. Configure an
 independent location with
 `EnergyDiagnosticsOutput(path="energies", schedule=TimeInterval(600.0))`.
+The files are rewritten during the run, at most every ten seconds of wall
+time, and once more when it ends, so a run that is stopped early keeps its
+series. A restored simulation appends to the series already there; other
+existing series need `overwrite=true` (which a schedule passed as
+`diagnostics` takes from the `NetCDFOutput`).
 The summary file preserves the component series together with
 `total_wave_energy`, `total_flow_energy`, `coupled_energy`, and `total_energy`.
 `coupled_energy = total_flow_energy + wave_PE + wave_CE` is the
@@ -54,7 +67,12 @@ wave--mean-feedback conservation diagnostic of Asselin & Young (2019), equation
 
 Every file contains `x`, `y`, `z`, `z_face`, `time`, iteration metadata,
 spectral `q_hat_real`, `q_hat_imag`, `B_hat_real`, and `B_hat_imag`, plus
-`N2`, `N2_face`, and `a_ell`. `N2` is sampled at cell centers on `z`;
+`N2`, `N2_face`, and `a_ell`. The spectral fields are the unnormalised
+horizontal FFTs of q and B, in FFTW order, on the dimensions
+`(kx_index, ky_index, z)`; the variables `kx` and `ky` hold the wavenumbers.
+Every variable has a `long_name`. The model has no fixed units, so the files
+carry none: the `units_convention` attribute records that every quantity is
+in the units of the model configuration. `N2` is sampled at cell centers on `z`;
 `N2_face` and `a_ell = f0^2 / N2_face` are sampled at each cell's upper face
 on `z_face = grid.z_faces[2:end]`. The `Lx`, `Ly`, and `Lz` attributes record
 the domain extent.
@@ -65,7 +83,8 @@ wave contribution.
 Selecting `:ψ` adds physical `psi`. Selecting `:waves` adds physical
 `A_real`, `A_imag`, `LA_real`, and `LA_imag`, where
 ``L A = \partial_z[(f_0^2/N^2)\partial_z A]``. `velocities=true` adds `u`,
-`v`, and `w`.
+`v`, and `w`, all at cell centres on `z`; `w` is the QG omega-equation
+velocity, solved on the faces and averaged onto the centres.
 
 Array dimensions in NetCDF are `(x, y, z)`; model arrays use `(z, x, y)`.
 The `wave_formulation` attribute identifies the meaning of `B`: for
@@ -73,19 +92,14 @@ The `wave_formulation` attribute identifies the meaning of `B`: for
 
 ## Offline Fourier analysis
 
-Construct the same grid used by the simulation to obtain wavenumbers in
-FFTW order:
+Each file stores the wavenumbers of its Fourier coefficients, in FFTW order:
 
 ```julia
-using QGYBJplus
 using NCDatasets
 using FFTW
 
-grid = RectilinearGrid(size=(256, 256, 128),
-                       extent=(70e3, 70e3, 3e3), centered=true)
-kx, ky = grid.kx, grid.ky
-
 NCDataset("output/state0001.nc", "r") do ds
+    kx, ky = ds["kx"][:], ds["ky"][:]
     A = ds["A_real"][:, :, :] .+ im .* ds["A_imag"][:, :, :]
     LA = ds["LA_real"][:, :, :] .+ im .* ds["LA_imag"][:, :, :]
 
@@ -104,27 +118,41 @@ For a YBJ⁺ snapshot, `LplusA_hat` agrees with
 `B_hat_real + im * B_hat_imag`. The FFT dimensions are `(1, 2)` because
 NetCDF fields use `(x, y, z)` order.
 
-## Restart
+## [Restart](@id io-restart)
 
-Build a compatible model, then restore the prognostic arrays:
+Build a compatible model and simulation, then restore the prognostic arrays:
 
 ```julia
 model = QGYBJModel(grid=grid,
                    coriolis=FPlane(f=1e-4),
                    stratification=ConstantStratification(N²=1e-5))
-restore!(model, "output/state0011.nc")
-simulation = Simulation(model; Δt=10.0, stop_iteration=100)
+simulation = Simulation(model; Δt=10.0, stop_iteration=200,
+                        output=NetCDFOutput(path="output",
+                                            schedule=IterationInterval(10)))
+restore!(simulation, "output/state0011.nc")   # iteration 100
+run!(simulation)                               # iterations 101 to 200
 ```
 
-The restart dimensions, wave formulation, and generalized-PV convention must
-match the receiving model. New snapshots validate these attributes before
-loading; older snapshots without the metadata remain readable. Diagnostic
-arrays are reconstructed after the distributed scatter.
+`restore!(simulation, path)` also sets the simulation clock to the file's
+time and iteration, so `stop_time` and `stop_iteration` count from the start
+of the original run, and output, energy diagnostics, and particles continue
+the original time axis. Continuing into the same directory appends
+`state0012.nc` onward without writing the restart state again. Restarting
+from an earlier file of a longer run needs `overwrite=true`, which replaces
+the later files. `restore!(model, path)` restores the fields only.
+
+The restart dimensions, domain extent, wave formulation, and generalized-PV
+convention must match the receiving model; a different `f0` or `N²` profile
+is allowed but warns, since it changes the flow inverted from q. Older
+snapshots without the metadata remain readable. Diagnostic arrays are
+reconstructed after the prognostic fields are copied onto the model's
+architecture. Particle positions are not stored in state files, so particles
+start new trajectories after a restart.
 
 ## Failure behavior
 
 Output exceptions move the simulation to `Failed`, close the state,
-diagnostics, and particle managers, and are rethrown on every rank. Use
+diagnostics, and particle managers, and are rethrown. Use
 `try`/`finally` to guarantee cleanup:
 
 ```julia

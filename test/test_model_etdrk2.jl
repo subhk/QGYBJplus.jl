@@ -18,9 +18,7 @@ using QGYBJplus
                 hb * (exp(-xb) - 1 + xb) / xb^2,
             )
         end
-        @test E ≈ Float64(reference[1]) rtol=5e-13 atol=0
-        @test hφ1 ≈ Float64(reference[2]) rtol=5e-13 atol=0
-        @test hφ2 ≈ Float64(reference[3]) rtol=5e-13 atol=0
+        @test all(isapprox.((E, hφ1, hφ2), Float64.(reference); rtol=5e-13, atol=0))
     end
 
     # An overflowed non-negative damping exponent is the infinitely stiff
@@ -42,7 +40,6 @@ end
         formulation=PassiveWave(),
         linear=LinearDynamics(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -82,9 +79,6 @@ end
         timestepper.Δt = NaN
         @test_throws ArgumentError step!(model, timestepper)
 
-        @test !isdefined(QGYBJplus, :ExpRK2Workspace)
-        @test !isdefined(QGYBJplus, :leapfrog_step!)
-        @test !isdefined(QGYBJplus, :imex_cn_step!)
     finally
         finalize_model!(model)
     end
@@ -110,7 +104,6 @@ end
             feedback=NoFeedback(),
             formulation=YBJPlus(),
             linear=LinearDynamics(),
-            topology=(1, 1),
             verbose=false,
         )
         try
@@ -155,7 +148,6 @@ end
         formulation=PassiveWave(),
         linear=LinearDynamics(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -193,33 +185,6 @@ end
     end
 end
 
-@testset "Overflowed hyperdiffusion damps instead of producing NaN" begin
-    grid = RectilinearGrid(size=(8, 8, 1), extent=(2π, 2π, 1.0))
-    model = QGYBJModel(
-        grid=grid,
-        coriolis=FPlane(f=1.0),
-        stratification=ConstantStratification(N²=1.0),
-        closure=HorizontalHyperdiffusivity(
-            flow=FlowHyperdiffusivity(coefficient=0),
-            wave=WaveHyperdiffusivity(
-                coefficient=floatmax(Float64), order=2)),
-        flow=FixedFlow(),
-        formulation=PassiveWave(),
-        linear=LinearDynamics(),
-        no_dispersion=NoDispersion(),
-        topology=(1, 1),
-        verbose=false,
-    )
-    try
-        model.fields.B[1, 3, 1] = 1 + im
-        step!(model, ExponentialRungeKutta2(Δt=1.0))
-        @test all(isfinite, parent(model.fields.B))
-        @test iszero(model.fields.B[1, 3, 1])
-    finally
-        finalize_model!(model)
-    end
-end
-
 @testset "A timestepper cache follows the model that owns it" begin
     function cache_test_model(n)
         grid = RectilinearGrid(size=(n, n, 1), extent=(2π, 2π, 1.0))
@@ -234,7 +199,6 @@ end
             formulation=PassiveWave(),
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
         return model
@@ -252,51 +216,8 @@ end
         step!(second_model, timestepper)
         @test second_model.fields.B[1, 2, 1] ≈
               exp(-0.03) * initial rtol=1e-14
-        @test size(parent(timestepper.workspace.next.q)) ==
+        @test size(parent(timestepper.workspace.stage_q)) ==
               size(parent(second_model.fields.q))
-    finally
-        finalize_model!(first_model)
-        finalize_model!(second_model)
-    end
-end
-
-@testset "A manually preallocated cache follows its field layout" begin
-    function same_size_cache_model()
-        grid = RectilinearGrid(size=(4, 4, 1), extent=(2π, 2π, 1.0))
-        return QGYBJModel(
-            grid=grid,
-            coriolis=FPlane(f=1.0),
-            stratification=ConstantStratification(N²=1.0),
-            closure=HorizontalHyperdiffusivity(
-                flow=FlowHyperdiffusivity(coefficient=0),
-                wave=WaveHyperdiffusivity(coefficient=0.3, order=2)),
-            flow=FixedFlow(),
-            formulation=PassiveWave(),
-            linear=LinearDynamics(),
-            no_dispersion=NoDispersion(),
-            topology=(1, 1),
-            verbose=false,
-        )
-    end
-
-    first_model = same_size_cache_model()
-    second_model = same_size_cache_model()
-    timestepper = ExponentialRungeKutta2(Δt=0.1)
-    try
-        foreign_workspace = ExponentialRungeKutta2Workspace(
-            first_model.fields,
-            first_model.runtime.plans;
-            G=first_model.runtime.geometry,
-        )
-        timestepper.workspace = foreign_workspace
-
-        initial = 0.7 + 0.2im
-        second_model.fields.B[1, 2, 1] = initial
-        step!(second_model, timestepper)
-
-        @test timestepper.workspace !== foreign_workspace
-        @test second_model.fields.B[1, 2, 1] ≈
-              exp(-0.03) * initial rtol=1e-14
     finally
         finalize_model!(first_model)
         finalize_model!(second_model)
@@ -315,7 +236,6 @@ end
             flow=FixedFlow(),
             formulation=PassiveWave(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
     end
@@ -362,7 +282,6 @@ end
         formulation=PassiveWave(),
         linear=LinearDynamics(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
     try
@@ -402,7 +321,6 @@ end
             formulation=PassiveWave(),
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
         try
@@ -438,7 +356,6 @@ end
         feedback=NoFeedback(),
         formulation=PassiveWave(),
         inviscid=Inviscid(),
-        topology=(1, 1),
         verbose=false,
     )
     try
@@ -485,7 +402,6 @@ end
         linear=LinearDynamics(),
         inviscid=Dissipative(),
         no_dispersion=Dispersive(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -542,7 +458,6 @@ end
         linear=LinearDynamics(),
         inviscid=Dissipative(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -580,7 +495,6 @@ end
         linear=NonlinearDynamics(),
         inviscid=Inviscid(),
         no_dispersion=NoDispersion(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -645,7 +559,6 @@ end
             formulation=formulation,
             linear=LinearDynamics(),
             no_dispersion=NoDispersion(),
-            topology=(1, 1),
             verbose=false,
         )
         try

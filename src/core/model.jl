@@ -77,8 +77,9 @@ _dispersion_component(no_dispersion::Bool) = no_dispersion ? NoDispersion() : Di
 """
     QGYBJModel(; grid, coriolis, stratification, closure, ...)
 
-Build a model transactionally. Public symbols and booleans are converted to
-typed components before MPI or FFT resources are allocated.
+Build a model on the architecture of `grid` (`CPU()` or `GPU()`). Public
+symbols and booleans are converted to typed components before transform plans
+or fields are allocated.
 """
 function QGYBJModel(; grid::RectilinearGrid,
     coriolis=FPlane(f=1e-4),
@@ -92,8 +93,6 @@ function QGYBJModel(; grid::RectilinearGrid,
     inviscid=false,
     linear=false,
     no_dispersion=false,
-    topology=nothing,
-    parallel_io::Bool=false,
     verbose::Bool=true)
 
     coriolis_component = _coriolis_component(coriolis)
@@ -103,6 +102,11 @@ function QGYBJModel(; grid::RectilinearGrid,
     formulation_component = _formulation_component(formulation, ybj_plus)
     vertical_component = vertical_diffusion isa VerticalDiffusivity ?
                          vertical_diffusion : VerticalDiffusivity(vertical_diffusion)
+    flow_component isa FixedFlow && feedback_component isa WaveMeanFeedback &&
+        @warn "feedback=WaveMeanFeedback() has no effect with flow=FixedFlow(): " *
+              "the prescribed flow does not respond to the waves, so the model " *
+              "runs without wave feedback. Use flow=EvolvingFlow() for two-way " *
+              "coupling."
 
     physics = ModelPhysics(coriolis_component, stratification_component,
                            flow_component, feedback_component,
@@ -112,25 +116,15 @@ function QGYBJModel(; grid::RectilinearGrid,
                              _dynamics_component(linear),
                              _dispersion_component(no_dispersion))
 
-    runtime = nothing
-    try
-        runtime = build_runtime(grid, physics, numerics;
-                                topology, parallel_io, verbose)
-        fields = allocate_fields(grid, runtime)
-        return QGYBJModel(grid, fields, physics, numerics, runtime, nothing)
-    catch
-        runtime === nothing || finalize_runtime!(runtime; synchronize=false)
-        rethrow()
-    end
+    runtime = build_runtime(grid, physics, numerics; verbose)
+    fields = allocate_fields(grid, runtime)
+    return QGYBJModel(grid, fields, physics, numerics, runtime, nothing)
 end
 
 """Release resources owned by `model`; repeated calls are safe."""
 finalize_model!(model::QGYBJModel) = (finalize_runtime!(model.runtime); model)
 
-is_root(model::QGYBJModel) = model.runtime.mpi.is_root
-nprocs(model::QGYBJModel) = model.runtime.mpi.nprocs
-
 function Base.show(io::IO, model::QGYBJModel)
     print(io, "QGYBJModel(grid=$(model.grid.size), " *
-              "ranks=$(model.runtime.mpi.nprocs))")
+              "architecture=$(model.runtime.architecture))")
 end

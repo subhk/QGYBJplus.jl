@@ -25,21 +25,27 @@ cd QGYBJplus.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 ```
 
-## Run with MPI
+## Run on several CPU threads
 
-Install MPI.jl's launcher once for the selected Julia environment:
-
-```bash
-julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
-```
-
-Then launch the same Julia program on multiple ranks:
+Kernels use Julia's threads on the CPU:
 
 ```bash
-mpiexecjl -n 4 julia --project=. examples/asselin_jpo2020.jl
+julia --threads=auto --project=. examples/asselin_jpo2020.jl
 ```
 
-Application code does not need a separate MPI construction path. See [MPI
-parallel execution](@ref parallel) for topology and distributed-array details.
+## Run on a GPU
+
+Add CUDA.jl to the environment and pass `GPU()` to the grid:
+
+```julia
+using Pkg
+Pkg.add("CUDA")
+
+using CUDA, QGYBJplus
+grid = RectilinearGrid(GPU(); size=(128, 128, 64), extent=(500e3, 500e3, 4000.0))
+```
+
+The rest of a script is unchanged. See [CPU and GPU execution](@ref
+architectures).
 
 Next, follow the [quick start](@ref quickstart).

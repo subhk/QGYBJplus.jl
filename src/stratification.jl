@@ -7,7 +7,7 @@ Provides various stratification profiles including:
 - Tanh profiles (pycnocline-like)
 - Exponential profiles
 - Piecewise profiles
-- Custom profiles from files
+- Tabulated profiles from NetCDF or JLD2 files
 - Analytical N(z) or N²(z) profiles
 """
 
@@ -79,7 +79,9 @@ end
 """
     FileProfile{T} <: StratificationProfile{T}
 
-Stratification profile from file.
+Tabulated N² values `N2_data` at depths `z_data` (positive downward, strictly
+increasing), as returned by `load_stratification_from_file`. `evaluate_N2`
+interpolates linearly in depth and holds the end values beyond the data.
 """
 struct FileProfile{T} <: StratificationProfile{T}
     filename::String
@@ -122,7 +124,7 @@ Create stratification profile from configuration.
   - For `:constant_N`: `N0` (buoyancy frequency)
   - For `:skewed_gaussian`: `N02_sg`, `N12_sg`, `sigma_sg`, `z0_sg`, `alpha_sg`
   - For `:tanh_profile`: `N_upper`, `N_lower`, `z_pycno`, `width`
-  - For `:from_file`: `filename` (path to NetCDF file)
+  - For `:from_file`: `filename` (path to a NetCDF or JLD2 file)
   - For `:analytical`: `N_func` (N(z)) or `N2_func` (N²(z))
 
 # Returns
@@ -325,56 +327,103 @@ function _compute_stratification_face_profile(
 end
 
 """
-    load_stratification_from_file(filename::String)
+    load_stratification_from_file(filename::String; group=nothing)
 
-Load stratification profile from NetCDF file.
+Load a tabulated N² profile from a NetCDF file, or from a JLD2 file when
+`filename` ends in `.jld2`.
 
-Reads either signed vertical coordinates (`z`, positive upward) or positive
-depth coordinates (`depth`) together with N² values. Coordinates and values
-are sorted by increasing depth before constructing the profile.
+The file must hold a vertical coordinate named `z` or `depth` and N² named
+`N2`, `N²`, or `n2`, as real arrays of equal length. `depth` is positive
+downward and `z` positive upward; a `z` without negative values is read as
+depth. `group` names the NetCDF group, or the JLD2 group, NamedTuple, or Dict,
+that holds the arrays, e.g. `group="ocean/cast12"`. JLD2 arrays may be ranges.
+
+The data need not be sorted or lie on the model's levels: the model
+interpolates the profile linearly in depth to its own cell centers and faces,
+holds the end values beyond the data, and warns when that leaves more than one
+grid spacing uncovered at the top or bottom of the domain.
 """
-function load_stratification_from_file(filename::String)
+function load_stratification_from_file(filename::String;
+                                       group::Union{Nothing, AbstractString}=nothing)
     T = Float64
+    source = _source_description(filename, group)
+    read_profile = _is_jld2(filename) ? _read_jld2_profile : _read_netcdf_profile
+    coordinate_name, coordinate_data, N2_data = read_profile(filename, group)
 
-    coordinate_name, coordinate_data, N2_data = NCDataset(filename, "r") do dataset
-        z_names = ("z", "depth")
-        N2_names = ("N2", "N²", "n2")
-        z_index = findfirst(name -> haskey(dataset, name), z_names)
-        N2_index = findfirst(name -> haskey(dataset, name), N2_names)
-        z_name = z_index === nothing ? nothing : z_names[z_index]
-        N2_name = N2_index === nothing ? nothing : N2_names[N2_index]
-        z_name === nothing &&
-            throw(ArgumentError("stratification file must contain z or depth"))
-        N2_name === nothing &&
-            throw(ArgumentError("stratification file must contain N2"))
-        (z_name, vec(dataset[z_name][:]), vec(dataset[N2_name][:]))
-    end
-
-    depths = Vector{T}(coordinate_data)
-    values = Vector{T}(N2_data)
-    # Model-native z is non-positive and increases upward. Preserve the
-    # historical convention in which nonnegative data named `z` meant depth.
-    coordinate_name == "z" && any(<(zero(T)), depths) &&
-        (depths .*= -one(T))
+    depths = _file_depths(coordinate_name,
+        _real_values(coordinate_data, coordinate_name, source))
+    values = _real_values(N2_data, "N²", source)
 
     isempty(depths) &&
-        throw(ArgumentError("stratification file contains no coordinate data"))
+        throw(ArgumentError("$source contains no coordinate data"))
     length(depths) == length(values) ||
         throw(ArgumentError(
-            "stratification coordinate and N2 arrays must have equal lengths"))
+            "the coordinate and N² arrays in $source must have equal lengths"))
     all(isfinite, depths) ||
-        throw(ArgumentError("stratification coordinates must be finite"))
+        throw(ArgumentError("the coordinates in $source must be finite"))
     all(isfinite, values) ||
-        throw(ArgumentError("stratification N2 values must be finite"))
+        throw(ArgumentError("the N² values in $source must be finite"))
 
     permutation = sortperm(depths)
     depths = depths[permutation]
     values = values[permutation]
     all(>(zero(T)), diff(depths)) ||
-        throw(ArgumentError("stratification coordinates must be unique"))
+        throw(ArgumentError("the coordinates in $source must be unique"))
 
     return FileProfile{T}(filename, depths, values)
 end
+
+const _PROFILE_COORDINATE_NAMES = ("z", "depth")
+const _PROFILE_N2_NAMES = ("N2", "N²", "n2")
+
+function _read_netcdf_profile(filename, group)
+    return NCDataset(filename, "r") do dataset
+        container = _netcdf_container(dataset, filename, group)
+        z_name, N2_name = _profile_names(keys(container), filename, group)
+        (z_name, container[z_name][:], container[N2_name][:])
+    end
+end
+
+function _read_jld2_profile(filename, group)
+    return jldopen(filename, "r") do file
+        container = _jld2_container(file, filename, group)
+        z_name, N2_name = _profile_names(_entry_names(container), filename, group)
+        (z_name, _entry(container, z_name), _entry(container, N2_name))
+    end
+end
+
+function _profile_names(available, filename, group)
+    first_present(names) = (index = findfirst(in(available), names);
+                            index === nothing ? nothing : names[index])
+    z_name = first_present(_PROFILE_COORDINATE_NAMES)
+    N2_name = first_present(_PROFILE_N2_NAMES)
+    if z_name === nothing || N2_name === nothing
+        wanted = z_name === nothing ? "coordinate named z or depth" :
+                                      "N² named N2, N², or n2"
+        found = isempty(available) ? "nothing" :
+                join(sort!(String[string(name) for name in available]), ", ")
+        throw(ArgumentError("$(_source_description(filename, group)) has no " *
+                            "$wanted; it contains $found"))
+    end
+    return z_name, N2_name
+end
+
+"""
+Warn when the tabulated depths leave more than one grid spacing uncovered at
+the top or bottom of the domain, where `evaluate_N2` holds the end values.
+"""
+function _warn_uncovered_depths(profile::FileProfile, grid::RectilinearGrid)
+    top, bottom = _depth(grid.z_faces[end]), _depth(grid.z_faces[1])
+    shallowest, deepest = first(profile.z_data), last(profile.z_data)
+    if shallowest - top > grid.dz || bottom - deepest > grid.dz
+        @warn "The stratification data in $(profile.filename) cover depths " *
+              "$shallowest to $deepest, but the domain spans depths $top to " *
+              "$bottom; outside that range N² is held at the nearest data value."
+    end
+    return nothing
+end
+
+_warn_uncovered_depths(profile::StratificationProfile, grid) = nothing
 
 """
     create_standard_profiles(Lz::Real)

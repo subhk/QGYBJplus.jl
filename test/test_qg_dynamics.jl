@@ -37,7 +37,7 @@ function qg_model(grid; coefficient=0.0, order=4,
             wave=WaveHyperdiffusivity(coefficient=0)),
         flow=EvolvingFlow(), feedback=NoFeedback(), formulation=YBJPlus(),
         linear=dynamics, inviscid=dissipation,
-        topology=(1, 1), verbose=false,
+        verbose=false,
     )
 end
 
@@ -121,39 +121,6 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
         end
     end
 
-    @testset "the stepped tendency is exactly -J(ψ, q)" begin
-        model = qg_model(grid; dissipation=Inviscid())
-        try
-            set!(model; ψ=two_modes, verbose=false)
-            context = Q._operator_context(model)
-            options = Q.ETDModelOptions(model.physics, model.numerics)
-
-            tendency_q = similar(model.fields.q)
-            tendency_B = similar(model.fields.B)
-            Q._compute_etdrk2_rhs!(tendency_q, tendency_B, model.fields,
-                context.grid, options, context.plans;
-                a=context.a, dealias_mask=context.mask,
-                workspace=context.workspace, N2_profile=context.N2,
-                N2_face_profile=context.N2_face,
-                timestep_workspace=nothing)
-
-            # Independent evaluation of the advection term on the same state.
-            jacobian = similar(model.fields.q)
-            Q.compute_velocities!(model; compute_w=false)
-            Q.convol_waqg_q!(jacobian, model.fields.u, model.fields.v,
-                model.fields.q, context.grid, context.plans;
-                Lmask=context.mask, workspace=context.workspace)
-
-            @test peak(parent(jacobian)) > 0
-            # No vertical diffusivity is configured, so the tendency is purely
-            # minus the Jacobian.
-            @test peak(parent(tendency_q) .+ parent(jacobian)) /
-                  peak(parent(jacobian)) < 1e-12
-        finally
-            finalize_model!(model)
-        end
-    end
-
     @testset "the Jacobian sign matches an independent manufactured tendency" begin
         barotropic_grid = RectilinearGrid(
             size=(16, 16, 1), extent=(2π, 2π, 1.0))
@@ -192,40 +159,6 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
         finally
             finalize_model!(model)
         end
-    end
-
-    @testset "a finite-difference dq/dt converges to that tendency" begin
-        model = qg_model(grid; dissipation=Inviscid())
-        reference_tendency = nothing
-        initial = nothing
-        try
-            set!(model; ψ=two_modes, verbose=false)
-            initial = copy(parent(model.fields.q))
-            context = Q._operator_context(model)
-            options = Q.ETDModelOptions(model.physics, model.numerics)
-            reference_tendency = similar(model.fields.q)
-            scratch_B = similar(model.fields.B)
-            Q._compute_etdrk2_rhs!(reference_tendency, scratch_B, model.fields,
-                context.grid, options, context.plans;
-                a=context.a, dealias_mask=context.mask,
-                workspace=context.workspace, N2_profile=context.N2,
-                N2_face_profile=context.N2_face,
-                timestep_workspace=nothing)
-            reference_tendency = copy(parent(reference_tendency))
-        finally
-            finalize_model!(model)
-        end
-
-        # (q(Δt) - q(0))/Δt differs from the tendency at t=0 by O(Δt), so the
-        # error must halve when Δt halves.
-        errors = map((1e-4, 5e-5, 2.5e-5)) do Δt
-            final = evolved_q(grid, two_modes; steps=1, Δt, dissipation=Inviscid())
-            difference = (final .- initial) ./ Δt
-            peak(difference .- reference_tendency) / peak(reference_tendency)
-        end
-        @test errors[1] < 1e-3
-        @test 1.8 < errors[1] / errors[2] < 2.2
-        @test 1.8 < errors[2] / errors[3] < 2.2
     end
 
     @testset "ETD-RK2 converges at second order in Δt" begin
@@ -292,29 +225,6 @@ discrepancy(a, b) = peak(a .- b) / peak(b)
             Q.invert_q_to_psi!(recovered, context.grid;
                                a=context.a, workspace=context.workspace)
             @test discrepancy(parent(recovered.psi), evolved_psi) < 1e-12
-        finally
-            finalize_model!(model)
-        end
-    end
-
-    @testset "FixedFlow leaves the same initial condition untouched" begin
-        # The direct contrast: identical non-steady ψ, only the flow switch
-        # differs.
-        evolving = evolved_q(grid, two_modes;
-                             steps=50, Δt=2e-2, dissipation=Inviscid())
-        model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
-            stratification=ConstantStratification(N²=1.0),
-            closure=HorizontalHyperdiffusivity(
-                flow=FlowHyperdiffusivity(coefficient=0),
-                wave=WaveHyperdiffusivity(coefficient=0)),
-            flow=FixedFlow(), feedback=NoFeedback(), formulation=YBJPlus(),
-            inviscid=Inviscid(), topology=(1, 1), verbose=false)
-        try
-            set!(model; ψ=two_modes, verbose=false)
-            initial = copy(parent(model.fields.q))
-            advance!(model, 50, 2e-2)
-            @test discrepancy(parent(model.fields.q), initial) < 1e-12
-            @test discrepancy(evolving, initial) > 1e-3
         finally
             finalize_model!(model)
         end

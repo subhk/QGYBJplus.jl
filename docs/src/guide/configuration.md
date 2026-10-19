@@ -10,6 +10,7 @@ Build a model by composing typed physical and numerical choices.
 
 ```julia
 grid = RectilinearGrid(
+    CPU();
     size=(128, 128, 64),
     x=(-250e3, 250e3),
     y=(-250e3, 250e3),
@@ -18,7 +19,9 @@ grid = RectilinearGrid(
 ```
 
 Alternatively, provide `extent=(Lx, Ly, Lz)` and optionally
-`centered=true`.
+`centered=true`. The first argument selects the architecture: `CPU()` (the
+default when omitted) or `GPU()` after `using CUDA`; see [CPU and GPU
+execution](@ref architectures).
 
 ## Physics choices
 
@@ -67,17 +70,8 @@ term to waves. Each `order` is the total derivative order.
 
 ## Execution choices
 
-MPI topology and parallel I/O are runtime construction options:
-
-```julia
-model = QGYBJModel(
-    grid=grid,
-    topology=(2, 4),
-    parallel_io=false,
-)
-```
-
-Time integration and output belong to a separate simulation:
+Where the model runs is fixed by the grid's architecture. Time integration and
+output belong to a separate simulation:
 
 ```julia
 simulation = Simulation(

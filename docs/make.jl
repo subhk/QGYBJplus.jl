@@ -39,9 +39,8 @@ makedocs(
             "Diagnostics" => "guide/diagnostics.md",
         ],
         "Advanced Topics" => [
-            "MPI Parallelization" => "advanced/parallel.md",
+            "CPU and GPU Execution" => "advanced/architectures.md",
             "Particle Advection" => "advanced/particles.md",
-            "Parallel Particle Algorithm" => "advanced/parallel_particles.md",
             "Interpolation" => "advanced/interpolation.md",
             "Performance Tips" => "advanced/performance.md",
         ],

@@ -24,28 +24,37 @@ end
 a_ell_from_N2(N2_profile::AbstractVector, coriolis::FPlane) =
     a_ell_from_N2(N2_profile, coriolis.f)
 
-"""Return the radial two-thirds dealiasing mask for global geometry."""
+"""Return the two-thirds dealiasing mask for global geometry."""
 function dealias_mask(geometry::Union{RectilinearGrid, RuntimeGeometry})
     nx, ny = geometry isa RectilinearGrid ? geometry.size[1:2] :
                                             (geometry.nx, geometry.ny)
     return Bool[is_dealiased(i, j, nx, ny) for i in 1:nx, j in 1:ny]
 end
 
-"""Test whether a global Fourier index lies inside the radial cutoff."""
-@inline function is_dealiased(i_global::Int, j_global::Int,
-                              nx::Int, ny::Int)
-    # The exact |k| = N/3 boundary is unsafe for an unpadded quadratic
-    # product: two boundary modes can alias back onto the retained disk.
-    # Preserve the disk interior and exclude only that boundary when the
-    # limiting dimension is divisible by three.
-    nmin = min(nx, ny)
-    kmax = fld(nmin, 3)
-    ix = i_global - 1
+"""
+Test whether the Fourier mode with indices `(i, j)` lies inside the two-thirds
+cutoff: the ellipse `(iₓ/Kₓ)² + (i_y/K_y)² ≤ 1` in mode index, with
+`Kₓ = ⌊nₓ/3⌋` and `K_y = ⌊n_y/3⌋`, which is a disk on a square grid.
+"""
+@inline function is_dealiased(i::Int, j::Int, nx::Int, ny::Int)
+    ix = i - 1
     ix = ix <= nx ÷ 2 ? ix : ix - nx
-    jy = j_global - 1
+    jy = j - 1
     jy = jy <= ny ÷ 2 ? jy : jy - ny
-    radius² = ix^2 + jy^2
-    return nmin % 3 == 0 ? radius² < kmax^2 : radius² <= kmax^2
+    kx_max, ky_max = fld(nx, 3), fld(ny, 3)
+    # A dimension too short to resolve any mode keeps only its mean.
+    (kx_max == 0 && ix != 0) && return false
+    (ky_max == 0 && jy != 0) && return false
+    # The ellipse in exact integer arithmetic, so boundary modes are never
+    # decided by rounding.
+    sx, sy = max(kx_max, 1)^2, max(ky_max, 1)^2
+    radius² = ix^2 * sy + jy^2 * sx
+    # The exact |k| = n/3 boundary is unsafe for an unpadded quadratic
+    # product: two boundary modes can alias back onto the retained region.
+    # Exclude it when a dimension is divisible by three, so that every
+    # retained mode has |iₓ| < nₓ/3 and |i_y| < n_y/3 and products of
+    # retained modes never alias onto one.
+    return nx % 3 == 0 || ny % 3 == 0 ? radius² < sx * sy : radius² <= sx * sy
 end
 
 @inline is_dealiased(i::Int, j::Int, geometry::RuntimeGeometry) =

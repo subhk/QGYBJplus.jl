@@ -1,5 +1,7 @@
 # Asselin et al. (2020), JPO 50, 3439–3454.
-# Run with: mpiexecjl -n 4 julia --project=. examples/asselin_jpo2020.jl
+# Run with: julia --threads=auto --project=. examples/asselin_jpo2020.jl
+# On a GPU: add `using CUDA` and pass `GPU()` as the first argument of
+# RectilinearGrid below.
 
 using QGYBJplus
 
@@ -40,7 +42,8 @@ simulation = Simulation(model;
                         Δt=2.0,
                         stop_time=10 * inertial_period,
                         output=NetCDFOutput(path="output_asselin",
-                            schedule=TimeInterval(5 * inertial_period)))
+                            schedule=TimeInterval(5 * inertial_period),
+                            overwrite=true))   # rerunning replaces earlier output
 
 try
     run!(simulation; progress=true, diagnostics_interval=1000)

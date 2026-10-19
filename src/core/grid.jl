@@ -1,6 +1,6 @@
 """
-    RectilinearGrid(; size, extent=nothing, x=nothing, y=nothing, z=nothing,
-                      centered=false)
+    RectilinearGrid([architecture=CPU()], [FT=Float64]; size, extent=nothing,
+                    x=nothing, y=nothing, z=nothing, centered=false)
 
 Immutable owner of the model's global rectilinear geometry. Horizontal
 coordinates are periodic Fourier collocation nodes on half-open intervals;
@@ -11,8 +11,23 @@ explicit bounds `x=(x₁, x₂)`, `y=(y₁, y₂)`, and `z=(z₁, z₂)`.
 When only `extent` is supplied, the horizontal origin is zero (or centered
 when `centered=true`) and the vertical interval is `(-Lz, 0)`.
 The `kx` and `ky` properties use FFTW's spectral ordering.
+
+`architecture` selects where a model built on this grid stores and computes
+its fields: `CPU()` (default) or `GPU()`. The coordinate vectors held by the
+grid itself always live on the host. A GPU backend is stored as its arrays
+report it (see `array_architecture`).
+
+`FT` is the floating-point type of the grid and of every array of a model
+built on it. `Float32` halves the model's memory and is much faster on most
+GPUs; see the performance page for its accuracy.
+
+```julia
+grid = RectilinearGrid(GPU(); size=(128, 128, 64), extent=(1e5, 1e5, 4e3))
+grid32 = RectilinearGrid(GPU(), Float32; size=(256, 256, 128), extent=(1e5, 1e5, 4e3))
+```
 """
-struct RectilinearGrid{T}
+struct RectilinearGrid{T, A<:AbstractArchitecture}
+    architecture::A
     size::NTuple{3, Int}
     extent::NTuple{3, T}
     origin::NTuple{2, T}
@@ -31,23 +46,39 @@ struct RectilinearGrid{T}
     kh2::Matrix{T}
 end
 
-"""
-    RuntimeGeometry(base, kh2, decomposition)
+architecture(grid::RectilinearGrid) = grid.architecture
+Base.eltype(::RectilinearGrid{T}) where {T} = T
 
-Runtime-local spectral metadata derived from a [`RectilinearGrid`](@ref).
-Global geometry remains owned exactly once by `base`; only the distributed
-horizontal wavenumber field and decomposition live here.
 """
-struct RuntimeGeometry{G, K, D}
+    RuntimeGeometry(grid)
+
+Kernel-facing geometry derived from a [`RectilinearGrid`](@ref). Global
+geometry remains owned exactly once by `base`; this adds copies of the
+horizontal wavenumbers stored on the grid's architecture, which is what the
+spectral kernels index.
+"""
+struct RuntimeGeometry{G, A, V, K}
     base::G
+    architecture::A
+    kx::V
+    ky::V
     kh2::K
-    decomposition::D
+end
+
+function RuntimeGeometry(grid::RectilinearGrid)
+    architecture = grid.architecture
+    return RuntimeGeometry(grid, architecture,
+                           on_architecture(architecture, grid.kx),
+                           on_architecture(architecture, grid.ky),
+                           on_architecture(architecture, grid.kh2))
 end
 
 @inline function Base.getproperty(geometry::RuntimeGeometry, name::Symbol)
     name === :base && return getfield(geometry, :base)
+    name === :architecture && return getfield(geometry, :architecture)
+    name === :kx && return getfield(geometry, :kx)
+    name === :ky && return getfield(geometry, :ky)
     name === :kh2 && return getfield(geometry, :kh2)
-    name === :decomposition && return getfield(geometry, :decomposition)
 
     base = getfield(geometry, :base)
     name === :nx && return base.size[1]
@@ -64,47 +95,19 @@ end
     name === :x && return base.x
     name === :y && return base.y
     name === :z && return base.z
-    name === :kx && return base.kx
-    name === :ky && return base.ky
+    name === :z_faces && return base.z_faces
     return getfield(geometry, name)
 end
 
 Base.propertynames(::RuntimeGeometry, private::Bool=false) =
-    (:base, :kh2, :decomposition, :nx, :ny, :nz, :Lx, :Ly, :Lz,
-     :x0, :y0, :dx, :dy, :dz, :x, :y, :z, :kx, :ky)
+    (:base, :architecture, :kx, :ky, :kh2, :nx, :ny, :nz, :Lx, :Ly, :Lz,
+     :x0, :y0, :dx, :dy, :dz, :x, :y, :z, :z_faces)
 
-get_local_range(geometry::RectilinearGrid) =
-    (1:geometry.size[3], 1:geometry.size[1], 1:geometry.size[2])
-get_local_range(geometry::RuntimeGeometry) =
-    geometry.decomposition === nothing ? get_local_range(geometry.base) :
-                                         geometry.decomposition.local_range_xy
+architecture(geometry::RuntimeGeometry) = geometry.architecture
 
-@inline local_to_global(index::Int, dimension::Int,
-                        ::AbstractArray) = index
-@inline function local_to_global(index::Int, dimension::Int,
-                                 array::PencilArray)
-    ranges = PencilArrays.range_local(PencilArrays.pencil(array))
-    return ranges[dimension][index]
-end
-@inline local_to_global(index::Int, dimension::Int,
-                        ::RectilinearGrid) = index
-@inline function local_to_global(index::Int, dimension::Int,
-                                 geometry::RuntimeGeometry)
-    return get_local_range(geometry)[dimension][index]
-end
-
-get_local_dims(array) = size(parent(array))
-is_parallel_array(array) = array isa PencilArray
-
-@inline get_kx(index::Int, geometry::RuntimeGeometry) =
-    geometry.kx[local_to_global(index, 2, geometry)]
-@inline get_ky(index::Int, geometry::RuntimeGeometry) =
-    geometry.ky[local_to_global(index, 3, geometry)]
-@inline function get_kh2(i::Int, j::Int, k::Int, array,
-                         geometry::RuntimeGeometry)
-    geometry.decomposition === nothing && return geometry.kh2[i, j]
-    return real(parent(geometry.kh2)[k, i, j])
-end
+"""Uniform vertical spacing used by the vertical stencils (1 for one level)."""
+vertical_spacing(geometry::RuntimeGeometry) =
+    geometry.nz > 1 ? geometry.z[2] - geometry.z[1] : one(geometry.dz)
 
 function _grid_bounds(bounds, name::String)
     bounds isa Tuple && length(bounds) == 2 ||
@@ -124,7 +127,12 @@ function _spectral_wavenumbers(::Type{T}, n::Int, length::T) where T
     return T[scale * (i <= (n + 1) ÷ 2 ? i - 1 : i - 1 - n) for i in 1:n]
 end
 
-function RectilinearGrid(; size,
+RectilinearGrid(FT::Type{<:AbstractFloat}; kwargs...) =
+    RectilinearGrid(CPU(), FT; kwargs...)
+
+function RectilinearGrid(architecture::AbstractArchitecture=CPU(),
+    FT::Type{<:AbstractFloat}=Float64;
+    size,
     extent=nothing,
     x=nothing,
     y=nothing,
@@ -163,11 +171,7 @@ function RectilinearGrid(; size,
         all(>(0), raw_extent) || throw(ArgumentError("all grid extents must be positive"))
     end
 
-    numeric_values = Any[raw_extent...]
-    for bounds in (x_input, y_input, z_input)
-        bounds === nothing || append!(numeric_values, bounds)
-    end
-    T = promote_type(map(typeof, numeric_values)...)
+    T = FT
     Lx, Ly, Lz = T.(raw_extent)
 
     function check_extent(bounds, length, name)
@@ -197,13 +201,14 @@ function RectilinearGrid(; size,
     ky = _spectral_wavenumbers(T, ny, Ly)
     kh2 = T[kx_i^2 + ky_j^2 for kx_i in kx, ky_j in ky]
 
-    return RectilinearGrid{T}(
-        dimensions, (Lx, Ly, Lz), (x0, y0), (z_bottom, z_top),
+    canonical = array_architecture(architecture)
+    return RectilinearGrid{T, typeof(canonical)}(
+        canonical, dimensions, (Lx, Ly, Lz), (x0, y0), (z_bottom, z_top),
         x_nodes, y_nodes, z_nodes, x_faces, y_faces, z_faces,
         dx, dy, dz, kx, ky, kh2)
 end
 
 function Base.show(io::IO, grid::RectilinearGrid)
-    print(io, "RectilinearGrid(size=$(grid.size), extent=$(grid.extent), " *
-              "origin=$(grid.origin))")
+    print(io, "RectilinearGrid($(grid.architecture), size=$(grid.size), " *
+              "extent=$(grid.extent), origin=$(grid.origin))")
 end

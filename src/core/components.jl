@@ -207,7 +207,10 @@ function HorizontalHyperdiffusivity(;
     return HorizontalHyperdiffusivity(flow, wave)
 end
 
-"""Horizontally uniform, surface-confined wave initial condition."""
+"""
+Horizontally uniform, surface-confined wave initial condition. Its depth mean
+is removed when it is set, since the wave velocity has no barotropic part.
+"""
 struct SurfaceWave{T}
     amplitude::T
     scale::T
@@ -221,15 +224,24 @@ struct RandomStreamfunction{T}
     seed::Int
 end
 
-"""A three-dimensional field supplied directly to [`set!`](@ref)."""
-struct FieldArray{A<:AbstractArray}
+"""
+    FieldArray(values; space=:physical, layout=:zxy, x=nothing, y=nothing, z=nothing)
+
+A three-dimensional field supplied directly to [`set!`](@ref), on the model's
+grid or, when the coordinate vectors `x`, `y`, and `z` (positive upward) of
+its points are given, on any rectilinear grid, from which it is interpolated
+onto the model's.
+"""
+struct FieldArray{A<:AbstractArray, C}
     values::A
     space::Symbol
     layout::Symbol
+    coordinates::C
 end
 
 function FieldArray(values::AbstractArray;
-    space::Symbol=:physical, layout::Symbol=:zxy)
+    space::Symbol=:physical, layout::Symbol=:zxy,
+    x=nothing, y=nothing, z=nothing)
 
     ndims(values) == 3 ||
         throw(ArgumentError("field arrays must be three-dimensional"))
@@ -237,19 +249,43 @@ function FieldArray(values::AbstractArray;
         throw(ArgumentError("field space must be :physical or :spectral"))
     layout in (:zxy, :xyz) ||
         throw(ArgumentError("field layout must be :zxy or :xyz"))
-    return FieldArray(values, space, layout)
+    given = count(!isnothing, (x, y, z))
+    given in (0, 3) ||
+        throw(ArgumentError("give all three coordinates x, y, and z, or none"))
+    given == 0 && return FieldArray(values, space, layout, nothing)
+
+    space === :physical || throw(ArgumentError(
+        "only physical fields can be interpolated; give spectral fields on the model's grid"))
+    coordinates = (x=_real_values(x, "x", "the FieldArray"),
+                   y=_real_values(y, "y", "the FieldArray"),
+                   z=_real_values(z, "z", "the FieldArray"))
+    xyz_size = layout === :xyz ? size(values) : size(values)[[2, 3, 1]]
+    xyz_size == map(length, Tuple(coordinates)) || throw(DimensionMismatch(
+        "the FieldArray has size $xyz_size along x, y, and z, but its " *
+        "coordinates have lengths $(map(length, Tuple(coordinates)))"))
+    return FieldArray(values, space, layout, coordinates)
 end
 
-"""A NetCDF-backed three-dimensional field supplied to [`set!`](@ref)."""
+"""
+    FieldFile(path, variable; space=:physical, layout=:xyz, group=nothing)
+
+A three-dimensional field supplied to [`set!`](@ref), read from a NetCDF file,
+or from a JLD2 file when `path` ends in `.jld2`. `group` names the NetCDF
+group, or the JLD2 group, NamedTuple, or Dict, that holds `variable`. When the
+same place holds coordinate vectors `x`, `y`, and `z` (or `depth`), a field on
+another grid is interpolated onto the model's.
+"""
 struct FieldFile
     path::String
     variable::String
     space::Symbol
     layout::Symbol
+    group::Union{Nothing, String}
 end
 
 function FieldFile(path::AbstractString, variable::AbstractString;
-    space::Symbol=:physical, layout::Symbol=:xyz)
+    space::Symbol=:physical, layout::Symbol=:xyz,
+    group::Union{Nothing, AbstractString}=nothing)
 
     isempty(path) && throw(ArgumentError("field-file path cannot be empty"))
     isempty(variable) && throw(ArgumentError("field-file variable cannot be empty"))
@@ -257,7 +293,8 @@ function FieldFile(path::AbstractString, variable::AbstractString;
         throw(ArgumentError("field space must be :physical or :spectral"))
     layout in (:zxy, :xyz) ||
         throw(ArgumentError("field layout must be :zxy or :xyz"))
-    return FieldFile(String(path), String(variable), space, layout)
+    return FieldFile(String(path), String(variable), space, layout,
+                     group === nothing ? nothing : String(group))
 end
 
 
@@ -305,42 +342,57 @@ function IterationInterval(interval::Integer)
 end
 
 """
-    NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves), velocities=false)
+    NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves), velocities=false, overwrite=false)
 
 Declarative NetCDF output settings. `schedule` may be a [`TimeInterval`](@ref)
 or [`IterationInterval`](@ref).
+
+A run never silently replaces state files already in `path`. A simulation
+restored with [`restore!`](@ref) continues the numbering after the files up
+to its restart iteration. Any other existing files raise an error unless
+`overwrite=true`, which removes them: all state files for a run that starts
+at iteration 0, and the files after the restart iteration for a restored run.
 """
 struct NetCDFOutput{S}
     path::String
     schedule::S
     fields::Tuple
     velocities::Bool
+    overwrite::Bool
 end
 
 function NetCDFOutput(; path::AbstractString="output", schedule=nothing,
-    fields=(:ψ, :waves), velocities::Bool=false)
+    fields=(:ψ, :waves), velocities::Bool=false, overwrite::Bool=false)
 
     schedule === nothing || schedule isa AbstractSchedule ||
         throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
     isempty(path) && throw(ArgumentError("output path cannot be empty"))
     output_fields = fields isa Symbol ? (fields,) : Tuple(fields)
-    return NetCDFOutput(String(path), schedule, output_fields, velocities)
+    return NetCDFOutput(String(path), schedule, output_fields, velocities,
+                        overwrite)
 end
 
 """
-    EnergyDiagnosticsOutput(; path="output/diagnostic", schedule)
+    EnergyDiagnosticsOutput(; path="output/diagnostic", schedule, overwrite=false)
 
 Configuration for simulation-owned energy time-series files. `path` is the
 diagnostic directory itself, and `schedule` may be time- or iteration-based.
+The files are rewritten as the run goes, at most every few seconds of wall
+time, and once more when it ends.
+
+A restored simulation appends to the series already in `path`. Any other
+existing series raises an error unless `overwrite=true`, which replaces it
+(for a restored run, only the records after the restart time).
 """
 struct EnergyDiagnosticsOutput{S<:AbstractSchedule}
     path::String
     schedule::S
+    overwrite::Bool
 end
 
 function EnergyDiagnosticsOutput(; path::AbstractString="output/diagnostic",
-    schedule::AbstractSchedule=IterationInterval(1))
+    schedule::AbstractSchedule=IterationInterval(1), overwrite::Bool=false)
 
     isempty(path) && throw(ArgumentError("diagnostic path cannot be empty"))
-    return EnergyDiagnosticsOutput(String(path), schedule)
+    return EnergyDiagnosticsOutput(String(path), schedule, overwrite)
 end

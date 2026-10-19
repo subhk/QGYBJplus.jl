@@ -49,12 +49,13 @@ Second-order finite differences in z lead to a tridiagonal system:
     dl[k] * x[k-1] + d[k] * x[k] + du[k] * x[k+1] = rhs[k]
 
 Solved using the Thomas algorithm (Gaussian elimination for tridiagonal).
+Every horizontal mode is an independent column, so each solve is one
+KernelAbstractions kernel with one work item per (kₓ, kᵧ) column. The matrix
+is real, so the complex right-hand side is solved in one sweep; that is
+operation-for-operation the separate real and imaginary solves.
 
-2D DECOMPOSITION SUPPORT:
--------------------------
-For 2D parallel decomposition, vertical operations require z to be local.
-Data comes in xy-pencil format and must be transposed to z-pencil format
-before the solve, then transposed back afterward.
+The modified superdiagonal of every sweep is kept in a real `(nz, nx, ny)`
+scratch array (`tridiagonal_scratch`), borrowed from the model workspace.
 
 FORTRAN CORRESPONDENCE:
 ----------------------
@@ -67,47 +68,120 @@ FORTRAN CORRESPONDENCE:
 
 module Elliptic
 
-using ..QGYBJplus: RuntimeGeometry, ModelFields, local_to_global, z_is_local, is_parallel_array
-using ..QGYBJplus: transpose_to_z_pencil!, transpose_to_xy_pencil!
-using ..QGYBJplus: local_to_global_z, allocate_z_pencil
-using ..QGYBJplus: with_z_local, z_scratch
-const PARENT = Base.parentmodule(@__MODULE__)
+using KernelAbstractions: @kernel, @index, @Const, get_backend
+using ..QGYBJplus: RuntimeGeometry, ModelFields, launch!, on_backend,
+                   vertical_spacing, tridiagonal_scratch, first_value
 
 #=
-WORKSPACE STRUCTURE:
--------------------
-Functions in this module accept an optional `workspace` parameter to avoid
-repeated allocations in time-stepping loops. The workspace should be a
-NamedTuple or struct with the following fields (not all are needed for
-every function):
-
-For `invert_q_to_psi!`:
-  - `q_z`: z-pencil array for q (ComplexF64)
-  - `psi_z`: z-pencil array for ψ (ComplexF64)
-
-For `invert_helmholtz!`:
-  - `work_z`: z-pencil work array (ComplexF64)
-  - `psi_z`: z-pencil array for solution (ComplexF64)
-
-For `invert_B_to_A!`:
-  - `B_z`: z-pencil array for B (ComplexF64)
-  - `A_z`: z-pencil array for A (ComplexF64)
-  - `C_z`: z-pencil array for C (A_z derivative) (ComplexF64)
-
-Example:
-```julia
-workspace = (
-    q_z = allocate_z_pencil(G, ComplexF64),
-    psi_z = allocate_z_pencil(G, ComplexF64),
-    work_z = allocate_z_pencil(G, ComplexF64),
-    B_z = allocate_z_pencil(G, ComplexF64),
-    A_z = allocate_z_pencil(G, ComplexF64),
-    C_z = allocate_z_pencil(G, ComplexF64),
-)
-```
-
-If workspace is `nothing`, temporary arrays are allocated internally.
+================================================================================
+                    COLUMN THOMAS SWEEP
+================================================================================
+A tridiagonal system is described by a small isbits object answering
+`tridiagonal_row(system, r) -> (dl, d, du, b)` for rows r = 1..n. Row r is
+stored at vertical level r + offset of the column (i, j).
+================================================================================
 =#
+
+"""
+Solve one column of a tridiagonal system with the Thomas algorithm, writing
+the solution to `x[offset .+ (1:n), i, j]` and using `c` as scratch.
+"""
+@inline function _thomas_solve!(x, c, i, j, offset, n, system)
+    _, d, du, b = tridiagonal_row(system, 1)
+    @inbounds c[1 + offset, i, j] = du / d
+    @inbounds x[1 + offset, i, j] = b / d
+    for r in 2:n
+        dl, d, du, b = tridiagonal_row(system, r)
+        @inbounds begin
+            denominator = d - dl * c[r - 1 + offset, i, j]
+            c[r + offset, i, j] = du / denominator
+            x[r + offset, i, j] = (b - dl * x[r - 1 + offset, i, j]) / denominator
+        end
+    end
+    for r in (n - 1):-1:1
+        @inbounds x[r + offset, i, j] -= c[r + offset, i, j] * x[r + 1 + offset, i, j]
+    end
+    return nothing
+end
+
+"""
+`Δz² q = a[k] (ψ[k+1] - ψ[k]) - a[k-1] (ψ[k] - ψ[k-1]) - kₕ²Δz² ψ[k]`, with the
+Neumann flux removed at the bottom and top faces. `shift = kₕ²Δz²` (YBJ⁺ uses
+`kₕ²Δz²/4`), which must be positive: the kₕ = 0 columns are integrated
+directly.
+"""
+struct VerticalFluxColumn{A, R, T}
+    a::A
+    rhs::R
+    i::Int
+    j::Int
+    nz::Int
+    Δz²::T
+    shift::T
+end
+
+@inline function tridiagonal_row(s::VerticalFluxColumn, k)
+    T = typeof(s.shift)
+    nz = s.nz
+    @inbounds if k == 1
+        a_up = T(s.a[1])
+        dl, d, du = zero(T), -(a_up + s.shift), a_up
+    elseif k == nz
+        a_down = T(s.a[nz - 1])
+        dl, d, du = a_down, -(a_down + s.shift), zero(T)
+    else
+        a_up = T(s.a[k])
+        a_down = T(s.a[k - 1])
+        dl, d, du = a_down, -(a_up + a_down + s.shift), a_up
+    end
+    @inbounds b = s.Δz² * s.rhs[k, s.i, s.j]
+    return dl, d, du, b
+end
+
+"""
+Centered `helmholtzdouble` stencil with optional Neumann boundary fluxes.
+`shift = αkₕ²Δz²`. With `gauge = true`, row 1 is replaced by `φ[1] = 0`.
+"""
+struct HelmholtzColumn{A, B, R, BB, TB, T}
+    a::A
+    b::B
+    rhs::R
+    bot_bc::BB
+    top_bc::TB
+    i::Int
+    j::Int
+    nz::Int
+    Δz::T
+    Δz²::T
+    shift::T
+    gauge::Bool
+end
+
+@inline function tridiagonal_row(s::HelmholtzColumn, k)
+    a, b, Δz, nz = s.a, s.b, s.Δz, s.nz
+    @inbounds rhs = s.Δz² * s.rhs[k, s.i, s.j]
+    @inbounds if k == 1
+        dl = zero(s.shift)
+        d = -a[1] - b[1] * Δz / 2 - s.shift
+        du = a[1] + b[1] * Δz / 2
+        if s.bot_bc !== nothing
+            rhs += (a[1] - b[1] * Δz / 2) * Δz * s.bot_bc[s.i, s.j]
+        end
+        s.gauge && return zero(s.shift), one(s.shift), zero(s.shift), zero(rhs)
+    elseif k == nz
+        dl = a[nz] - b[nz] * Δz / 2
+        d = -a[nz] + b[nz] * Δz / 2 - s.shift
+        du = zero(s.shift)
+        if s.top_bc !== nothing
+            rhs -= (a[nz] + b[nz] * Δz / 2) * Δz * s.top_bc[s.i, s.j]
+        end
+    else
+        dl = a[k] - b[k] * Δz / 2
+        d = -2 * a[k] - s.shift
+        du = a[k] + b[k] * Δz / 2
+    end
+    return dl, d, du, rhs
+end
 
 #=
 ================================================================================
@@ -146,14 +220,9 @@ with Neumann boundary conditions ψ_z = 0 at top and bottom.
 - `G::RuntimeGeometry`: RuntimeGeometry struct with wavenumbers and vertical coordinates
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), length
   nz, sampled at upper cell faces `grid.z_faces[2:end]`
-- `workspace`: Optional z-pencil workspace arrays for 2D decomposition
+- `workspace`: Optional model workspace supplying the Thomas scratch
 
 # Implementation Details
-For 2D decomposition:
-1. Transpose q from xy-pencil to z-pencil (z becomes local)
-2. Perform tridiagonal solve on z-pencil data
-3. Transpose ψ from z-pencil back to xy-pencil
-
 The discrete system is tridiagonal with structure:
 - Diagonal: d[k] = -(a[k] + a[k-1]) - kₕ² dz²
 - Upper diagonal: du[k] = a[k]
@@ -187,147 +256,87 @@ function invert_q_to_psi!(S::ModelFields, G::RuntimeGeometry; a::AbstractVector,
     workspace=nothing)
     nz = G.nz
     @assert length(a) == nz "a must have length nz=$nz"
-
-    # `with_z_local` passes the fields straight through when z is already local
-    # (serial or 1D decomposition) and mirrors them onto z-pencils when the
-    # spectral pencil distributes z.
-    with_z_local(G, (S.psi, S.q), (:out, :in);
-                 scratch=z_scratch(workspace, :psi_z, :q_z)) do psi_z, q_z
-        _invert_q_to_psi!(psi_z, q_z, G, a)
-    end
+    _invert_q_to_psi!(S.psi, S.q, G, a, workspace)
     return S
 end
 
 """
-Vertical tridiagonal PV inversion. Requires `psi` and `q` to have a fully
-local vertical dimension; `with_z_local` in `invert_q_to_psi!` guarantees
-that for every decomposition.
+Warn when the horizontal-mean PV column has a depth mean beyond round-off.
+Transforms and products leave a depth mean of order eps times the largest PV
+coefficient, so the mean is measured against the whole field.
 """
-function _invert_q_to_psi!(psi, q, G::RuntimeGeometry, a::AbstractVector)
-    nz = G.nz
-
-    # Get underlying arrays (works for both Array and PencilArray)
-    ψ_arr = parent(psi)   # Output: streamfunction
-    q_arr = parent(q)     # Input: QGPV
-
-    # Get local dimensions
-    nz_local, nx_local, ny_local = size(ψ_arr)
-
-    # Verify z is fully local (required for vertical tridiagonal solve)
-    @assert nz_local == nz "Vertical dimension must be fully local (nz_local=$nz_local, nz=$nz)"
-
-    # Tridiagonal matrix diagonals (reused for each wavenumber)
-    dₗ = zeros(eltype(a), nz)   # Lower diagonal
-    d  = zeros(eltype(a), nz)   # Main diagonal
-    dᵤ = zeros(eltype(a), nz)   # Upper diagonal
-    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
-
-    # Vertical grid spacing
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δz² = Δz^2
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhs  = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
-
-    # Loop over all LOCAL horizontal wavenumbers (using local indices)
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        # Get global indices for wavenumber lookup
-        i_global = local_to_global(i_local, 2, q)
-        j_global = local_to_global(j_local, 3, q)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2   # Horizontal wavenumber squared
-
-        # Special case: kₕ² = 0 (horizontal mean mode).  The constant part
-        # of ψ is a null mode, but a vertically varying, mean-zero q column has
-        # a valid solution and must not be discarded.  Project only the
-        # incompatible depth mean of q, integrate the discrete vertical flux,
-        # and impose the gauge sum(ψ)=0.
-        if kₕ² == 0
-            q̄ = zero(eltype(q_arr))
-            q_scale = zero(typeof(abs(zero(eltype(q_arr)))))
-            @inbounds for k in 1:nz
-                value = q_arr[k, i_local, j_local]
-                q̄ += value
-                q_scale = max(q_scale, abs(value))
-            end
-            q̄ /= nz
-
-            real_type = typeof(q_scale)
-            compatibility_tolerance =
-                100 * eps(real_type) * max(one(real_type), q_scale)
-            if abs(q̄) > compatibility_tolerance
-                @warn "invert_q_to_psi!: the horizontal-mean q column violates " *
-                      "the Neumann compatibility condition (depth mean=$(q̄)); " *
-                      "projecting out that vertically constant component." maxlog=1
-            end
-
-            ψ_arr[1, i_local, j_local] = zero(eltype(ψ_arr))
-            flux = zero(eltype(q_arr))
-            @inbounds for k in 1:(nz - 1)
-                flux += q_arr[k, i_local, j_local] - q̄
-                ψ_arr[k + 1, i_local, j_local] =
-                    ψ_arr[k, i_local, j_local] + Δz² * flux / a[k]
-            end
-
-            ψ̄ = zero(eltype(ψ_arr))
-            @inbounds for k in 1:nz
-                ψ̄ += ψ_arr[k, i_local, j_local]
-            end
-            ψ̄ /= nz
-            @inbounds for k in 1:nz
-                ψ_arr[k, i_local, j_local] -= ψ̄
-            end
-            continue
-        end
-
-        # Special case: nz == 1 (single-layer / 2D mode)
-        # With only one vertical level and Neumann BCs, vertical derivative terms vanish.
-        # The equation reduces to: -kₕ² ψ = q  →  ψ = -q/kₕ²
-        if nz == 1
-            @inbounds ψ_arr[1, i_local, j_local] = -q_arr[1, i_local, j_local] / kₕ²
-            continue
-        end
-
-        # Build tridiagonal matrix for this (kₓ, kᵧ)
-        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-        # Bottom boundary (k=1): Neumann condition ψ_z = 0
-        d[1]  = -(a[1] + kₕ²*Δz²)
-        dᵤ[1] = a[1]
-
-        # Interior points (k = 2, ..., nz-1)
-        @inbounds for k in 2:nz-1
-            dₗ[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + kₕ²*Δz²)
-            dᵤ[k] = a[k]
-        end
-
-        # Top boundary (k=nz): Neumann condition ψ_z = 0
-        dₗ[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + kₕ²*Δz²)
-
-        # Solve for real and imaginary parts separately
-        @inbounds for k in 1:nz
-            rhs[k] = Δz² * real(q_arr[k, i_local, j_local])
-        end
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhs, c_work)
-
-        @inbounds for k in 1:nz
-            rhsᵢ[k] = Δz² * imag(q_arr[k, i_local, j_local])
-        end
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
-
-        # Combine into complex solution
-        @inbounds for k in 1:nz
-            ψ_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
-        end
+function _check_mean_pv_compatibility(q)
+    nz = size(q, 1)
+    # Column (kₓ, kᵧ) = (0, 0) occupies the first nz linear indices.
+    column = Vector{eltype(q)}(undef, nz)
+    copyto!(column, 1, q, 1, nz)
+    q̄ = sum(column) / nz
+    compatibility_tolerance = 100 * eps(real(eltype(q))) * maximum(abs, q)
+    if abs(q̄) > compatibility_tolerance
+        @warn "invert_q_to_psi!: the horizontal-mean q column violates " *
+              "the Neumann compatibility condition (depth mean=$(q̄)); " *
+              "projecting out that vertically constant component." maxlog=1
     end
+    return nothing
+end
+
+# The compatibility check reads from the device, so it runs for the public
+# entry points; the time stepper skips it, as the dynamics conserve the depth
+# mean of the horizontal-mean PV up to round-off.
+function _invert_q_to_psi!(psi, q, G::RuntimeGeometry, a, workspace;
+                           check_compatibility::Bool=true)
+    nz, nx, ny = size(psi)
+    nz == G.nz || throw(DimensionMismatch("ψ has $nz levels; the grid has $(G.nz)"))
+    length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
+    backend = get_backend(psi)
+    check_compatibility && _check_mean_pv_compatibility(q)
+    Δz = vertical_spacing(G)
+    launch!(_invert_q_to_psi_kernel!, backend, (nx, ny),
+            psi, tridiagonal_scratch(workspace, psi), q, G.kx, G.ky,
+            on_backend(backend, a), Δz, Δz^2, nz)
     return psi
+end
+
+@kernel function _invert_q_to_psi_kernel!(ψ, c, @Const(q), @Const(kx),
+                                          @Const(ky), @Const(a), Δz, Δz², nz)
+    i, j = @index(Global, NTuple)
+    @inbounds kₕ² = kx[i]^2 + ky[j]^2
+
+    if kₕ² == 0
+        # The constant part of ψ is a null mode, but a vertically varying,
+        # mean-zero q column has a valid solution and must not be discarded.
+        # Project only the incompatible depth mean of q, integrate the
+        # discrete vertical flux, and impose the gauge sum(ψ)=0.
+        q̄ = zero(eltype(q))
+        for k in 1:nz
+            @inbounds q̄ += q[k, i, j]
+        end
+        q̄ /= nz
+
+        @inbounds ψ[1, i, j] = zero(eltype(ψ))
+        flux = zero(eltype(q))
+        for k in 1:(nz - 1)
+            @inbounds begin
+                flux += q[k, i, j] - q̄
+                ψ[k + 1, i, j] = ψ[k, i, j] + Δz² * flux / a[k]
+            end
+        end
+
+        ψ̄ = zero(eltype(ψ))
+        for k in 1:nz
+            @inbounds ψ̄ += ψ[k, i, j]
+        end
+        ψ̄ /= nz
+        for k in 1:nz
+            @inbounds ψ[k, i, j] -= ψ̄
+        end
+    elseif nz == 1
+        # With one level and Neumann BCs the vertical terms vanish: ψ = -q/kₕ².
+        @inbounds ψ[1, i, j] = -q[1, i, j] / kₕ²
+    else
+        system = VerticalFluxColumn(a, q, i, j, nz, Δz², kₕ² * Δz²)
+        _thomas_solve!(ψ, c, i, j, 0, nz, system)
+    end
 end
 
 #=
@@ -373,17 +382,19 @@ Boundary flux terms are added to RHS:
 - `b::AbstractVector`: First derivative coefficient b(z), length nz (default zeros)
 - `scale_kh2::Real`: Multiplier α for kₕ² term (default 1.0)
 - `bot_bc`, `top_bc`: Optional boundary flux arrays (nx, ny) for non-zero Neumann BCs
-- `workspace`: Optional z-pencil workspace for 2D decomposition
+- `workspace`: Optional model workspace supplying the Thomas scratch
+
+# Singular columns
+Where `scale_kh2 × kₕ² = 0` — the horizontal-mean column, and every column when
+`scale_kh2 = 0` — the Neumann problem is singular: constants are in its null
+space, and a solution exists only for a compatible right-hand side. Such a
+column is solved with the bottom-row equation replaced by `φ[1] = 0` (that row
+is redundant when the right-hand side is compatible), and its vertical mean is
+then removed. With `nz = 1` a singular column is set to zero, with a warning
+when its right-hand side is nonzero.
 
 # Fortran Correspondence
 This matches `helmholtzdouble` in elliptic.f90 exactly.
-
-# Boundary-condition arrays
-`bot_bc` / `top_bc` may be plain global `(nx, ny)` arrays in any decomposition.
-A *distributed* BC array is only accepted when the solve needs no transpose,
-because its local (i, j) range belongs to the xy-pencil, not the z-pencil.
-Passing one when z is distributed raises an error rather than silently
-dropping the flux, which an earlier version did.
 """
 function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            a::AbstractVector,
@@ -393,171 +404,79 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            top_bc=nothing,
                            workspace=nothing)
     nz = G.nz
-
-    # `with_z_local` is a no-op when z is already local, and mirrors onto
-    # z-pencils when the spectral pencil distributes z. A distributed BC array
-    # is indexed by its own local (i, j), which only lines up in the no-op case.
-    if !z_is_local(rhs, G)
-        for (bc, name) in ((bot_bc, "bot_bc"), (top_bc, "top_bc"))
-            bc !== nothing && is_parallel_array(bc) && throw(ArgumentError(
-                "$name must be a global (nx, ny) array when the vertical " *
-                "dimension is distributed; a pencil-local array cannot be " *
-                "matched to z-pencil columns"))
-        end
-    end
-
-    with_z_local(G, (dstk, rhs), (:out, :in);
-                 scratch=z_scratch(workspace, :psi_z, :work_z)) do dst_z, rhs_z
-        _invert_helmholtz!(dst_z, rhs_z, G, a, b, scale_kh2, bot_bc, top_bc)
-    end
-
-    return dstk
-end
-
-@inline function _bc_value(bc, i_local, j_local, i_global, j_global)
-    if bc === nothing
-        return nothing
-    end
-    if is_parallel_array(bc)
-        return parent(bc)[i_local, j_local]
-    end
-    return bc[i_global, j_global]
-end
-
-"""
-Direct Helmholtz solve for serial or 1D decomposition.
-
-Matches Fortran `helmholtzdouble` discretization exactly:
-- Uses centered stencil with same a[k], b[k] for all diagonals at point k
-- Interior: d[k] = -2a[k] - kh²Δz²
-- Boundary conditions incorporated via RHS modifications
-"""
-function _invert_helmholtz!(dstk, rhs, G::RuntimeGeometry, a, b, scale_kh2, bot_bc, top_bc)
-    nz = G.nz
-
-    dst_arr = parent(dstk)
-    rhs_arr = parent(rhs)
-
-    nz_local, nx_local, ny_local = size(dst_arr)
-
-    @assert nz_local == nz "Vertical dimension must be fully local"
+    nz_local, nx, ny = size(dstk)
+    @assert nz_local == nz "Vertical dimension must match the grid"
     @assert length(a) == nz "a must have length nz=$nz"
     @assert length(b) == nz "b must have length nz=$nz"
-    if bot_bc !== nothing && is_parallel_array(bot_bc)
-        @assert size(parent(bot_bc)) == (nx_local, ny_local) "bot_bc local size must match (nx_local, ny_local)"
-    end
-    if top_bc !== nothing && is_parallel_array(top_bc)
-        @assert size(parent(top_bc)) == (nx_local, ny_local) "top_bc local size must match (nx_local, ny_local)"
+    for (bc, name) in ((bot_bc, "bot_bc"), (top_bc, "top_bc"))
+        bc === nothing || size(bc) == (nx, ny) || throw(DimensionMismatch(
+            "$name must be an (nx, ny) = ($nx, $ny) array (got size $(size(bc)))"))
     end
 
+    backend = get_backend(dstk)
+    # The column scalars share the grid's precision.
+    α = convert(typeof(vertical_spacing(G)), scale_kh2)
     if nz == 1
         if bot_bc !== nothing || top_bc !== nothing
             @warn "Helmholtz solve with nz=1 ignores boundary conditions" maxlog=1
         end
-
-        tol = sqrt(eps(real(one(eltype(rhs_arr)))))
-        singular_warned = false
-        for j_local in 1:ny_local, i_local in 1:nx_local
-            i_global = local_to_global(i_local, 2, rhs)
-            j_global = local_to_global(j_local, 3, rhs)
-
-            kₓ = G.kx[i_global]
-            kᵧ = G.ky[j_global]
-            kₕ² = kₓ^2 + kᵧ^2
-            denom = scale_kh2 * kₕ²
-
-            rhs_val = rhs_arr[1, i_local, j_local]
-            if abs(denom) < tol
-                if !singular_warned && abs(rhs_val) > tol
-                    @warn "Helmholtz solve with nz=1 has kₕ²≈0 and nonzero RHS; setting φ=0 for the mean mode." maxlog=1
-                    singular_warned = true
-                end
-                dst_arr[1, i_local, j_local] = 0
-            else
-                dst_arr[1, i_local, j_local] = -rhs_val / denom
-            end
+        # A singular column (α kₕ² = 0) cannot be inverted: its right-hand
+        # side is discarded, so say so when it is nonzero. That is the
+        # horizontal-mean column, or every column when α = 0.
+        scale = maximum(abs, rhs)
+        discarded = iszero(α) ? scale > 0 :
+                    abs(first_value(rhs)) > sqrt(eps(real(eltype(rhs)))) * scale
+        if discarded
+            @warn "Helmholtz solve with nz=1 has scale_kh2*kₕ² = 0 and a nonzero " *
+                  "right-hand side; setting φ=0 for those modes." maxlog=1
         end
+        launch!(_helmholtz_single_level_kernel!, backend, (nx, ny),
+                dstk, rhs, G.kx, G.ky, α)
         return dstk
     end
 
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δz² = Δz^2
+    Δz = vertical_spacing(G)
+    in_precision(profile) = eltype(profile) === typeof(Δz) ? profile : typeof(Δz).(profile)
+    launch!(_helmholtz_kernel!, backend, (nx, ny),
+            dstk, tridiagonal_scratch(workspace, dstk), rhs, G.kx, G.ky,
+            on_backend(backend, in_precision(a)), on_backend(backend, in_precision(b)),
+            on_backend(backend, bot_bc), on_backend(backend, top_bc),
+            Δz, Δz^2, α, nz)
+    return dstk
+end
 
-    dₗ = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    dᵤ = zeros(eltype(a), nz)
-    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
+# `rhs` may alias `φ` in the Helmholtz kernels: every column reads its own
+# right-hand side entries before overwriting them, so it is not marked @Const.
+@kernel function _helmholtz_single_level_kernel!(φ, rhs, @Const(kx),
+                                                 @Const(ky), α)
+    i, j = @index(Global, NTuple)
+    @inbounds begin
+        denominator = α * (kx[i]^2 + ky[j]^2)
+        φ[1, i, j] = iszero(denominator) ? zero(eltype(φ)) :
+                     -rhs[1, i, j] / denominator
+    end
+end
 
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhsᵣ = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
-
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, rhs)
-        j_global = local_to_global(j_local, 3, rhs)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-        #= Build tridiagonal matrix matching Fortran helmholtzdouble exactly
-           Key: uses same a[k], b[k] for all diagonals at each point k =#
-
-        # Bottom boundary (k=1): Neumann condition
-        # Fortran: d(1) = -a_helm(1) - 0.5*b_helm(1)*dz - kh2*dz*dz
-        #          du(1) = a_helm(1) + 0.5*b_helm(1)*dz
-        d[1]  = -a[1] - 0.5*b[1]*Δz - scale_kh2*kₕ²*Δz²
-        dᵤ[1] =  a[1] + 0.5*b[1]*Δz
-
-        # Interior points (k = 2, ..., nz-1)
-        # Fortran: d(iz) = -2*a_helm(iz) - kh2*dz*dz
-        #          du(iz) = a_helm(iz) + 0.5*b_helm(iz)*dz
-        #          dl(iz-1) = a_helm(iz) - 0.5*b_helm(iz)*dz
-        @inbounds for k in 2:nz-1
-            dₗ[k] = a[k] - 0.5*b[k]*Δz
-            d[k]  = -2*a[k] - scale_kh2*kₕ²*Δz²
-            dᵤ[k] =  a[k] + 0.5*b[k]*Δz
+@kernel function _helmholtz_kernel!(φ, c, rhs, @Const(kx), @Const(ky),
+                                    @Const(a), @Const(b), bot_bc, top_bc,
+                                    Δz, Δz², α, nz)
+    i, j = @index(Global, NTuple)
+    @inbounds kₕ² = kx[i]^2 + ky[j]^2
+    singular = iszero(α * kₕ²)
+    system = HelmholtzColumn(a, b, rhs, bot_bc, top_bc, i, j, nz,
+                             Δz, Δz², α * kₕ² * Δz², singular)
+    _thomas_solve!(φ, c, i, j, 0, nz, system)
+    if singular
+        # Fix the constant null mode with a zero vertical mean.
+        mean_value = zero(eltype(φ))
+        for k in 1:nz
+            @inbounds mean_value += φ[k, i, j]
         end
-
-        # Top boundary (k=nz): Neumann condition
-        # Fortran: d(n3) = -a_helm(n3) + 0.5*b_helm(n3)*dz - kh2*dz*dz
-        #          dl(n3-1) = a_helm(n3) - 0.5*b_helm(n3)*dz
-        dₗ[nz] = a[nz] - 0.5*b[nz]*Δz
-        d[nz]  = -a[nz] + 0.5*b[nz]*Δz - scale_kh2*kₕ²*Δz²
-
-        # Build RHS (reusing pre-allocated arrays)
-        @inbounds for k in 1:nz
-            rhsᵣ[k] = Δz² * real(rhs_arr[k, i_local, j_local])
-            rhsᵢ[k] = Δz² * imag(rhs_arr[k, i_local, j_local])
-        end
-
-        # Add boundary condition contributions to RHS
-        # Fortran: br(1) = br(1) + (a_helm(1) - 0.5*b_helm(1)*dz)*DBLE(b_bot)*dz
-        if bot_bc !== nothing
-            bc_val = _bc_value(bot_bc, i_local, j_local, i_global, j_global)
-            rhsᵣ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * real(bc_val)
-            rhsᵢ[1] += (a[1] - 0.5*b[1]*Δz) * Δz * imag(bc_val)
-        end
-        # Fortran: br(n3) = br(n3) - (a_helm(n3) + 0.5*b_helm(n3)*dz)*DBLE(b_top)*dz
-        if top_bc !== nothing
-            bc_val = _bc_value(top_bc, i_local, j_local, i_global, j_global)
-            rhsᵣ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * real(bc_val)
-            rhsᵢ[nz] -= (a[nz] + 0.5*b[nz]*Δz) * Δz * imag(bc_val)
-        end
-
-        # Solve tridiagonal systems for real and imaginary parts
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
-
-        @inbounds for k in 1:nz
-            dst_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
+        mean_value /= nz
+        for k in 1:nz
+            @inbounds φ[k, i, j] -= mean_value
         end
     end
-    return dstk
 end
 
 #=
@@ -593,7 +512,7 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 - `G::RuntimeGeometry`: RuntimeGeometry struct
 - `a::AbstractVector`: Elliptic coefficient a_ell(z) = f²/N²(z), sampled
   at upper cell faces `grid.z_faces[2:end]`
-- `workspace`: Optional z-pencil workspace for 2D decomposition
+- `workspace`: Optional model workspace supplying the Thomas scratch
 
 # Output Fields
 - `S.A`: Recovered wave amplitude A
@@ -601,172 +520,92 @@ with Neumann boundary conditions A_z = 0 at top and bottom.
 
 # Mean Mode (kₕ=0) Handling
 For the horizontal mean mode (kₓ=kᵧ=0), the equation reduces to:
-    a(z) ∂²A/∂z² = B
+    ∂/∂z[a(z) ∂A/∂z] = B
 
 With Neumann boundary conditions (∂A/∂z=0 at both boundaries), this operator
-is **singular** - the constant function is in its null space. To select a unique
-solution, we:
-1. Fix a gauge (A[1]=0) to obtain a particular solution.
-2. Remove the vertical mean of A (adds a constant null-space mode).
+is **singular**: the constant function is in its null space, and only a B
+with zero depth sum is in its range. The solve therefore:
+1. Projects out the depth mean of B, which no A can produce (the model also
+   removes it from B itself).
+2. Integrates the discrete vertical flux upward from the bottom.
+3. Removes the vertical mean of A, the null-space gauge.
 
-This yields a well-defined, mean-zero A for kₕ=0 while preserving the original
-equation.
+This yields the mean-zero A whose `L A` is the depth-varying part of B.
 
 # Fortran Correspondence
 This matches `A_solver_ybj_plus` in elliptic.f90.
 """
 function invert_B_to_A!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector;
     workspace=nothing)
-
-    with_z_local(G, (S.A, S.C, S.B), (:out, :out, :in);
-                 scratch=z_scratch(workspace, :A_z, :C_z, :B_z)) do A_z, C_z, B_z
-        _invert_B_to_A!(A_z, C_z, B_z, G, a)
-    end
+    nz = G.nz
+    @assert length(a) == nz "a must have length nz=$nz"
+    _invert_B_to_A!(S.A, S.C, S.B, G, a, workspace)
     return S
 end
 
 """
 Recover the wave amplitude `A` and its vertical derivative `C = A_z` from the
-evolved field `B = L⁺A`. Requires a fully local vertical dimension, which
-`with_z_local` in `invert_B_to_A!` guarantees for every decomposition.
+evolved field `B = L⁺A`.
 """
-function _invert_B_to_A!(A, C, B, G::RuntimeGeometry, a::AbstractVector)
-    nz = G.nz
-
-    A_arr = parent(A)
-    B_arr = parent(B)
-    C_arr = parent(C)
-
-    nz_local, nx_local, ny_local = size(A_arr)
-    @assert nz_local == nz "Vertical dimension must be fully local"
-
-    dₗ = zeros(eltype(a), nz)
-    d  = zeros(eltype(a), nz)
-    dᵤ = zeros(eltype(a), nz)
-    c_work = zeros(eltype(a), nz)  # Thomas scratch, reused for every mode
-
-    Δz = nz > 1 ? (G.z[2]-G.z[1]) : 1.0
-    Δz² = Δz^2
-    # NOTE: The RHS should just be B, not a*B. The a(z) profile is already
-    # incorporated into the LHS operator matrix. Removed incorrect a_ell_coeff scaling.
-
-    # Pre-allocate work arrays outside loop to reduce GC pressure
-    rhsᵣ = zeros(eltype(a), nz)
-    rhsᵢ = zeros(eltype(a), nz)
-    solᵣ = zeros(eltype(a), nz)
-    solᵢ = zeros(eltype(a), nz)
-
-    for j_local in 1:ny_local, i_local in 1:nx_local
-        i_global = local_to_global(i_local, 2, B)
-        j_global = local_to_global(j_local, 3, B)
-
-        kₓ = G.kx[i_global]
-        kᵧ = G.ky[j_global]
-        kₕ² = kₓ^2 + kᵧ^2
-
-        # Special case: kₕ² = 0 (horizontal mean mode)
-        # The operator a(z)∂²/∂z² with Neumann BCs is singular (constant null space).
-        # We resolve this by fixing one point (A[1]=0), solving the tridiagonal
-        # system, then removing the vertical mean (adds a constant null-space mode).
-        if kₕ² == 0
-            if nz == 1
-                @inbounds begin
-                    A_arr[1, i_local, j_local] = 0
-                    C_arr[1, i_local, j_local] = 0
-                end
-                continue
-            end
-
-            fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-            d[1]  = -a[1]
-            dᵤ[1] = a[1]
-
-            @inbounds for k in 2:nz-1
-                dₗ[k] = a[k-1]
-                d[k]  = -(a[k] + a[k-1])
-                dᵤ[k] = a[k]
-            end
-
-            dₗ[nz] = a[nz-1]
-            d[nz]  = -a[nz-1]
-
-            @inbounds for k in 1:nz
-                rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
-                rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
-            end
-
-            # Fix gauge: A[1] = 0 for a nonsingular solve
-            d[1] = 1
-            dᵤ[1] = 0
-            rhsᵣ[1] = 0
-            rhsᵢ[1] = 0
-
-            thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
-            thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
-
-            # Remove vertical mean to select a unique null-space representative
-            mean_val = zero(Complex{eltype(a)})
-            @inbounds for k in 1:nz
-                mean_val += solᵣ[k] + im*solᵢ[k]
-            end
-            mean_val /= nz
-
-            @inbounds for k in 1:nz
-                A_arr[k, i_local, j_local] = (solᵣ[k] + im*solᵢ[k]) - mean_val
-            end
-
-            @inbounds for k in 1:nz-1
-                C_arr[k, i_local, j_local] = (A_arr[k+1, i_local, j_local] - A_arr[k, i_local, j_local]) / Δz
-            end
-            C_arr[nz, i_local, j_local] = 0
-            continue
-        end
-
-        # Special case: nz == 1 (single-layer / 2D mode)
-        # With only one vertical level, vertical derivative terms vanish.
-        # The YBJ+ equation reduces to: -(kₕ²/4) A = B  →  A = -4B/kₕ²
-        # C = ∂A/∂z = 0 (no vertical structure)
-        if nz == 1
-            @inbounds A_arr[1, i_local, j_local] = -4 * B_arr[1, i_local, j_local] / kₕ²
-            @inbounds C_arr[1, i_local, j_local] = 0
-            continue
-        end
-
-        fill!(dₗ, 0); fill!(d, 0); fill!(dᵤ, 0)
-
-        d[1]  = -(a[1] + (kₕ²*Δz²)/4)
-        dᵤ[1] = a[1]
-
-        @inbounds for k in 2:nz-1
-            dₗ[k] = a[k-1]
-            d[k]  = -(a[k] + a[k-1] + (kₕ²*Δz²)/4)
-            dᵤ[k] = a[k]
-        end
-
-        dₗ[nz] = a[nz-1]
-        d[nz]  = -(a[nz-1] + (kₕ²*Δz²)/4)
-
-        # Build RHS
-        @inbounds for k in 1:nz
-            # RHS is just Δz² * B (no a_ell_coeff - that was incorrect)
-            rhsᵣ[k] = Δz² * real(B_arr[k, i_local, j_local])
-            rhsᵢ[k] = Δz² * imag(B_arr[k, i_local, j_local])
-        end
-
-        thomas_solve!(solᵣ, dₗ, d, dᵤ, rhsᵣ, c_work)
-        thomas_solve!(solᵢ, dₗ, d, dᵤ, rhsᵢ, c_work)
-
-        @inbounds for k in 1:nz
-            A_arr[k, i_local, j_local] = solᵣ[k] + im*solᵢ[k]
-        end
-
-        @inbounds for k in 1:nz-1
-            C_arr[k, i_local, j_local] = (A_arr[k+1, i_local, j_local] - A_arr[k, i_local, j_local])/Δz
-        end
-        C_arr[nz, i_local, j_local] = 0
-    end
+function _invert_B_to_A!(A, C, B, G::RuntimeGeometry, a::AbstractVector, workspace)
+    nz, nx, ny = size(A)
+    nz == G.nz || throw(DimensionMismatch("A has $nz levels; the grid has $(G.nz)"))
+    backend = get_backend(A)
+    Δz = vertical_spacing(G)
+    launch!(_invert_B_to_A_kernel!, backend, (nx, ny),
+            A, C, tridiagonal_scratch(workspace, A), B, G.kx, G.ky,
+            on_backend(backend, a), Δz, Δz^2, nz)
     return A, C
+end
+
+@kernel function _invert_B_to_A_kernel!(A, C, c, @Const(B), @Const(kx),
+                                        @Const(ky), @Const(a), Δz, Δz², nz)
+    i, j = @index(Global, NTuple)
+    @inbounds kₕ² = kx[i]^2 + ky[j]^2
+
+    if nz == 1
+        # With one level the vertical terms vanish: -(kₕ²/4) A = B, and C = 0.
+        # The mean mode keeps the A = 0 gauge.
+        @inbounds A[1, i, j] = kₕ² == 0 ? zero(eltype(A)) : -4 * B[1, i, j] / kₕ²
+        @inbounds C[1, i, j] = zero(eltype(C))
+    else
+        if kₕ² == 0
+            # ∂z(a ∂z) with Neumann BCs is singular: its range has zero depth
+            # sum. Project out the depth mean of B, integrate the discrete
+            # vertical flux, and fix the gauge with sum(A) = 0. (Pinning A[1]
+            # and dropping a row would instead put the whole depth mean of B
+            # into the bottom cell.)
+            B̄ = zero(eltype(B))
+            for k in 1:nz
+                @inbounds B̄ += B[k, i, j]
+            end
+            B̄ /= nz
+            @inbounds A[1, i, j] = zero(eltype(A))
+            flux = zero(eltype(B))
+            for k in 1:(nz - 1)
+                @inbounds begin
+                    flux += B[k, i, j] - B̄
+                    A[k + 1, i, j] = A[k, i, j] + Δz² * flux / a[k]
+                end
+            end
+            mean_value = zero(eltype(A))
+            for k in 1:nz
+                @inbounds mean_value += A[k, i, j]
+            end
+            mean_value /= nz
+            for k in 1:nz
+                @inbounds A[k, i, j] -= mean_value
+            end
+        else
+            system = VerticalFluxColumn(a, B, i, j, nz, Δz², (kₕ² * Δz²) / 4)
+            _thomas_solve!(A, c, i, j, 0, nz, system)
+        end
+
+        for k in 1:(nz - 1)
+            @inbounds C[k, i, j] = (A[k + 1, i, j] - A[k, i, j]) / Δz
+        end
+        @inbounds C[nz, i, j] = zero(eltype(C))
+    end
 end
 
 #=
@@ -782,6 +621,9 @@ For the system:
 Steps:
 1. Forward sweep: eliminate lower diagonal
 2. Back substitution: solve for x from bottom to top
+
+The kernels above run this per column on the device; `thomas_solve!` below is
+the same algorithm for a single host vector system.
 ================================================================================
 =#
 
@@ -807,10 +649,6 @@ thomas_solve!(x, dₗ, d, dᵤ, b) = thomas_solve!(x, dₗ, d, dᵤ, b, similar(
 
 Thomas algorithm with caller-supplied scratch. `c` is overwritten with the
 modified superdiagonal; it must be a distinct vector of the same length as `dᵤ`.
-
-Callers run this once per horizontal wavenumber, so `c` is hoisted out of that
-loop alongside the diagonals rather than copied on every solve. The main
-diagonal `d` is only ever read, so it needs no copy at all.
 """
 function thomas_solve!(x, dₗ, d, dᵤ, b, c)
     n = length(d)

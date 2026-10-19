@@ -1,6 +1,5 @@
 """High-level composition-first model initialization and simulation lifecycle."""
 
-using MPI
 using Printf
 
 _model(model::QGYBJModel) = model
@@ -8,10 +7,10 @@ _model(simulation::Simulation) = simulation.model
 
 _runtime(model::QGYBJModel) = model.runtime
 
-is_root(simulation::Simulation) = is_root(simulation.model)
-nprocs(simulation::Simulation) = nprocs(simulation.model)
+architecture(simulation::Simulation) = architecture(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
 _advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
+_record_particle_velocity!(::Nothing, model::QGYBJModel, time) = nothing
 
 _maybe_integer(value) = isinteger(value) ? Int(value) : value
 
@@ -52,36 +51,56 @@ function _before_stop_time(simulation::Simulation)
     return time < stop_time - tolerance
 end
 
+_nonfinite(value) = !isfinite(value)
+
 function _check_termination_conditions!(simulation::Simulation)
     model = simulation.model
     runtime = model.runtime
     fields = model.fields
-    local_bad = any(value -> !isfinite(value), parent(fields.q)) ||
-                any(value -> !isfinite(value), parent(fields.B)) ||
-                any(value -> !isfinite(value), parent(fields.psi))
-    bad_count = MPI.Allreduce(local_bad ? 1 : 0, +, runtime.mpi.comm)
-    bad_count == 0 || error("non-finite value detected in the model state")
+    bad = any(_nonfinite, fields.q) ||
+          any(_nonfinite, fields.B) ||
+          any(_nonfinite, fields.psi)
+    bad && error("non-finite value detected in the model state")
 
     # Borrow from the runtime scratch pool rather than writing into the FFT
     # plan's own work arrays: this check runs every step and must not allocate
-    # a grid-sized physical field, but it must not alias the transform buffers
-    # either.
-    global_maximum = with_scratch(runtime.workspace) do
+    # a grid-sized physical field.
+    maximum_psi = with_scratch(runtime.workspace) do
         psi_physical = scratch_physical(runtime.workspace, fields.psi, runtime.plans)
         fft_backward!(psi_physical, fields.psi, runtime)
-        MPI.Allreduce(maximum(abs, parent(psi_physical)), MPI.MAX, runtime.mpi.comm)
+        maximum(abs, psi_physical)
     end
-    global_maximum <= 1e10 || error(
-        "solution appears to be blowing up (max |psi| = $global_maximum)")
+    maximum_psi <= 1e10 || error(
+        "solution appears to be blowing up (max |psi| = $maximum_psi)")
     return simulation
 end
 
+@kernel function _wave_velocity_spectrum_kernel!(LA, @Const(B), @Const(A),
+                                                 @Const(kx), @Const(ky))
+    k, i, j = @index(Global, NTuple)
+    # B = L⁺A = LA - kₕ²A/4 for each horizontal Fourier mode.
+    @inbounds LA[k, i, j] = B[k, i, j] + 0.25 * (kx[i]^2 + ky[j]^2) * A[k, i, j]
+end
+
+"""
+Spectral wave velocity `LA` of `fields` stored in `LA`: `B` itself for the
+original YBJ formulation, `B + kₕ²A/4` otherwise.
+"""
+function _spectral_wave_velocity!(LA, fields::ModelFields, model::QGYBJModel)
+    if model.physics.formulation isa YBJ
+        copyto!(LA, fields.B)
+    else
+        geometry = model.runtime.geometry
+        launch!(_wave_velocity_spectrum_kernel!, LA, size(LA),
+                LA, fields.B, fields.A, geometry.kx, geometry.ky)
+    end
+    return LA
+end
+
 function _progress_maxima(model::QGYBJModel)
-    fields = model.fields
     runtime = model.runtime
 
     # Recover the physical wave velocity LA from pooled scratch.
-    # For YBJ+, B = L⁺A = LA - kₕ²A/4 in horizontal spectral space.
     return with_scratch(runtime.workspace) do
         _progress_maxima(model, runtime)
     end
@@ -89,33 +108,12 @@ end
 
 function _progress_maxima(model::QGYBJModel, runtime)
     fields = model.fields
-    LA_spectral = scratch_like(runtime.workspace, fields.B)
-    LA_physical = scratch_physical(runtime.workspace, fields.B, runtime.plans)
-    LA_spectral_data = parent(LA_spectral)
-    copyto!(LA_spectral_data, parent(fields.B))
-    if !(model.physics.formulation isa YBJ)
-        A_data = parent(fields.A)
-        @inbounds for j in axes(LA_spectral_data, 3),
-                      i in axes(LA_spectral_data, 2),
-                      k in axes(LA_spectral_data, 1)
-            LA_spectral_data[k, i, j] +=
-                0.25 * get_kh2(i, j, k, fields.B, model) * A_data[k, i, j]
-        end
-    end
-    fft_backward!(LA_physical, LA_spectral, runtime)
-    local_wave_speed = maximum(abs, parent(LA_physical))
-
-    u = parent(fields.u)
-    v = parent(fields.v)
-    local_flow_speed = zero(promote_type(eltype(u), eltype(v)))
-    @inbounds for index in eachindex(u, v)
-        local_flow_speed = max(local_flow_speed, hypot(u[index], v[index]))
-    end
-
-    comm = runtime.mpi.comm
+    LA = scratch_like(runtime.workspace, fields.B)
+    _spectral_wave_velocity!(LA, fields, model)
+    fft_backward!(LA, LA, runtime)
     return (
-        wave_speed=MPI.Allreduce(local_wave_speed, MPI.MAX, comm),
-        flow_speed=MPI.Allreduce(local_flow_speed, MPI.MAX, comm),
+        wave_speed=maximum(abs, LA),
+        flow_speed=mapreduce(hypot, max, fields.u, fields.v),
     )
 end
 
@@ -123,7 +121,6 @@ function _print_detailed_progress(
     simulation::Simulation, run_wall_start::UInt64)
 
     maxima = _progress_maxima(simulation.model)
-    simulation.model.runtime.mpi.is_root || return simulation
     wall_time = 1e-9 * (time_ns() - run_wall_start)
     @printf(stdout,
         "Iteration: %04d, time: %s, Δt: %s, max(|LA|) = %.3e m s⁻¹, max(|uₕ|) = %.3e m s⁻¹, wall time: %s\n",
@@ -298,31 +295,23 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     if method in (:function, :analytical)
         psi_func === nothing &&
             throw(ArgumentError("psi_func must be provided when method=:function"))
-        is_root(model) && verbose && println("Setting mean flow from analytical ψ(x, y, z)")
+        verbose && println("Setting mean flow from analytical ψ(x, y, z)")
 
-        local_range = get_local_range_physical(runtime)
-        psi_phys = allocate_fft_backward_dst(fields.psi, runtime)
-        psi_array = parent(psi_phys)
-        T = eltype(psi_array)
-        for k_local in axes(psi_array, 1)
-            k_global = local_range[1][k_local]
-            z = geometry.z[k_global]
-            for j_local in axes(psi_array, 3)
-                j_global = local_range[3][j_local]
-                y = geometry.y[j_global]
-                for i_local in axes(psi_array, 2)
-                    i_global = local_range[2][i_local]
-                    x = geometry.x[i_global]
-                    psi_array[k_local, i_local, j_local] = T(psi_func(x, y, z))
-                end
-            end
+        # User functions are evaluated on the host, then copied to the
+        # model's architecture and transformed there.
+        nx, ny, nz = geometry.size
+        T = eltype(fields.psi)
+        psi_host = Array{T}(undef, nz, nx, ny)
+        for j in 1:ny, i in 1:nx, k in 1:nz
+            psi_host[k, i, j] = T(psi_func(geometry.x[i], geometry.y[j], geometry.z[k]))
         end
-        fft_forward!(fields.psi, psi_phys, plans)
+        copyto!(fields.psi, psi_host)
+        fft_forward!(fields.psi, fields.psi, plans)
     elseif method === :random
-        is_root(model) && verbose &&
+        verbose &&
             println("Setting random mean flow: amplitude=$amplitude, slope=$spectral_slope")
-        init_mpi_random_psi!(fields.psi, grid, amplitude;
-                             slope=spectral_slope, seed, seed_offset=0)
+        init_random_psi!(fields.psi, grid, amplitude;
+                         slope=spectral_slope, seed, seed_offset=0)
     else
         throw(ArgumentError("method must be :function or :random"))
     end
@@ -349,28 +338,26 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     _assert_mutable(owner)
     model = _model(owner)
     runtime = model.runtime
-    grid = runtime.geometry
     geometry = model.grid
     fields = model.fields
     plans = runtime.plans
-    is_root(model) && verbose &&
+    verbose &&
         println("Setting surface waves: amplitude=$amplitude, scale=$surface_depth")
 
-    local_range = get_local_range_physical(runtime)
-    B_phys = allocate_fft_backward_dst(fields.B, runtime)
-    B_array = parent(B_phys)
-    T = typeof(real(zero(eltype(B_array))))
+    nx, ny, nz = geometry.size
+    B_host = Array{eltype(fields.B)}(undef, nz, nx, ny)
+    T = real(eltype(B_host))
     dz = geometry.dz
-    for k_local in axes(B_array, 1)
-        k_global = local_range[1][k_local]
-        depth = max(zero(T), -geometry.z[k_global] - dz / 2)
+    for k in 1:nz
+        depth = max(zero(T), -geometry.z[k] - dz / 2)
         vertical_profile = profile === :gaussian ?
             exp(-(depth^2) / surface_depth^2) : exp(-depth / surface_depth)
-        B_array[k_local, :, :] .= complex(T(amplitude) * vertical_profile)
+        B_host[k, :, :] .= complex(T(amplitude) * vertical_profile)
     end
-    fft_forward!(fields.B, B_phys, plans)
+    copyto!(fields.B, B_host)
+    fft_forward!(fields.B, fields.B, plans)
     _refresh_wave_diagnostics!(model;
-        rebuild_total_q=true, pv_method)
+        rebuild_total_q=true, pv_method, project=true)
     return owner
 end
 
@@ -391,49 +378,42 @@ end
 _field_initializer(source::AbstractArray) = FieldArray(source)
 _field_initializer(source::Union{FieldArray, FieldFile}) = source
 
-function _read_field_values(source::FieldArray)
-    return Array(source.values)
-end
+_field_description(source::FieldArray) = "the FieldArray"
+_field_description(source::FieldFile) =
+    "$(repr(source.variable)) in $(_source_description(source.path, source.group))"
 
-function _read_field_values(source::FieldFile)
-    isfile(source.path) ||
-        throw(ArgumentError("field file does not exist: $(source.path)"))
-    return NCDataset(source.path, "r") do dataset
-        haskey(dataset, source.variable) || throw(ArgumentError(
-            "field file $(source.path) has no variable $(source.variable)"))
-        Array(dataset[source.variable][:, :, :])
-    end
-end
-
+"""
+The values of `source` on the model's grid in z-x-y layout, interpolated from
+the coordinates of its points when they are given and differ from the grid.
+"""
 function _field_values_zxy(model::QGYBJModel,
     source::Union{FieldArray, FieldFile})
 
-    values = _run_on_root(model) do
-        raw = _read_field_values(source)
-        zxy = source.layout === :zxy ? raw : permutedims(raw, (3, 1, 2))
-        expected = (model.grid.size[3], model.grid.size[1], model.grid.size[2])
-        size(zxy) == expected || throw(DimensionMismatch(
-            "initial field has size $(size(zxy)); expected $expected in z-x-y layout"))
-        ComplexF64.(zxy)
+    raw, coordinates = _read_field(source)
+    zxy = source.layout === :zxy ? raw : permutedims(raw, (3, 1, 2))
+    grid = model.grid
+    if coordinates !== nothing && !_on_model_grid(coordinates, grid)
+        source.space === :physical || throw(ArgumentError(
+            "$(_field_description(source)) is spectral and not on the model's " *
+            "grid; only physical fields can be interpolated"))
+        return _interpolate_to_grid(zxy, coordinates, grid, _field_description(source))
     end
-    return values
+    expected = (grid.size[3], grid.size[1], grid.size[2])
+    size(zxy) == expected || throw(DimensionMismatch(
+        "initial field has size $(size(zxy)); expected $expected in z-x-y " *
+        "layout. A physical field on another grid is interpolated when the " *
+        "coordinates x, y, and z of its points are given."))
+    return ComplexF64.(zxy)
 end
 
 function _assign_initial_field!(destination, model::QGYBJModel,
     source::Union{AbstractArray, FieldArray, FieldFile})
 
     initializer = _field_initializer(source)
-    runtime = model.runtime
-    root_values = _field_values_zxy(model, initializer)
+    values = _field_values_zxy(model, initializer)
+    copyto!(destination, values)
     if initializer.space === :physical
-        physical = scatter_from_root(
-            root_values, runtime.geometry, runtime.mpi;
-            pencil=runtime.plans.input_pencil)
-        fft_forward!(destination, physical, runtime.plans)
-    else
-        spectral = scatter_from_root(
-            root_values, runtime.geometry, runtime.mpi; plans=runtime.plans)
-        copyto!(parent(destination), parent(spectral))
+        fft_forward!(destination, destination, model.runtime.plans)
     end
     return destination
 end
@@ -443,7 +423,7 @@ function _rebuild_total_q_from_psi!(fields::ModelFields,
 
     runtime = model.runtime
     if pv_method in (:qg, :balanced)
-        coefficients = runtime.coefficients
+        coefficients = runtime.device_coefficients
         add_balanced_component!(fields, runtime.geometry, coefficients.a_ell;
                                 workspace=runtime.workspace)
     elseif pv_method in (:barotropic, :asselin)
@@ -461,7 +441,7 @@ function _rebuild_total_q_from_psi!(fields::ModelFields,
             compute_qw_complex!(qwave, fields.B, runtime.geometry,
                 runtime.plans; f=options.f, Lmask=runtime.dealias_mask,
                 workspace=runtime.workspace)
-            parent(fields.q) .+= parent(qwave)
+            kernel_map!(+, fields.q, fields.q, qwave)
         end
     end
     return fields
@@ -475,30 +455,15 @@ end
 
 function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
     model::QGYBJModel; rebuild_total_q::Bool=false,
-    pv_method::Symbol=:qg)
+    pv_method::Symbol=:qg, project::Bool=false)
 
     context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
     mask = context.mask
     recovery_mask = _linear(options) ? nothing : mask
 
-    # The normal-YBJ solvability constraint divides by kₕ², so `sumB!` discards
-    # the kₕ = 0 column. A horizontally uniform envelope — which is exactly what
-    # `SurfaceWave` produces — lives entirely there, and would otherwise be
-    # zeroed without a word, leaving a wave-free run that looks configured.
-    comm = model.runtime.mpi.comm
-    before = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
-    sumB!(fields.B, context.grid;
-          Lmask=recovery_mask, workspace=context.workspace)
-    after = MPI.Allreduce(maximum(abs, parent(fields.B)), MPI.MAX, comm)
-    if before > 0 && after <= eps(before) && model.runtime.mpi.is_root
-        @warn "YBJ() discarded the entire wave field: it is horizontally " *
-              "uniform (all of its energy is in the kₕ = 0 column, which the " *
-              "normal-YBJ solvability constraint cannot represent). Use a wave " *
-              "initial condition with horizontal structure, or switch to " *
-              "formulation=YBJPlus(), which retains kₕ = 0." maxlog=1
-
-    end
+    project && _project_initial_envelope!(fields, context.grid, options, mask,
+                                          context.workspace)
 
     rebuild_total_q && _wave_feedback_enabled(options) &&
         _rebuild_total_q_from_psi!(fields, model, pv_method)
@@ -510,38 +475,67 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
         compute_w=false,
         use_wave_feedback=true)
 
-    arrays = _etdrk2_arrays(fields, nothing)
-    if _linear(options)
-        fill!(parent(arrays.nBk), zero(eltype(parent(arrays.nBk))))
-    else
-        convol_waqg_B!(arrays.nBk, fields.u, fields.v, fields.B,
-            context.grid, context.plans; Lmask=mask)
+    workspace = context.workspace
+    with_scratch(workspace) do
+        nBk = scratch_like(workspace, fields.B)
+        rBk = scratch_like(workspace, fields.B)
+        if _linear(options)
+            fill!(nBk, zero(eltype(nBk)))
+        else
+            convol_waqg_B!(nBk, fields.u, fields.v, fields.B,
+                context.grid, context.plans; Lmask=mask, workspace)
+        end
+        refraction_waqg_B!(rBk, fields.B, fields.psi,
+            context.grid, context.plans; Lmask=mask, workspace)
+        sigma = compute_sigma(context.f, context.grid, nBk, rBk;
+            Lmask=mask, workspace)
+        compute_A!(fields.A, fields.C, fields.B, sigma, context.grid;
+            f=context.f, Lmask=recovery_mask, workspace,
+            N2_profile=context.N2_face)
     end
-    refraction_waqg_B!(arrays.rBk, fields.B, fields.psi,
-        context.grid, context.plans; Lmask=mask)
-    sigma = compute_sigma(context.f, context.grid,
-        arrays.nBk, arrays.rBk;
-        Lmask=mask, workspace=context.workspace)
-    compute_A!(fields.A, fields.C, fields.B, sigma, context.grid;
-        f=context.f, Lmask=recovery_mask, workspace=context.workspace,
-        N2_profile=context.N2_face)
     return fields
 end
 
+"""
+Rebuild the wave amplitude `A` (and `C = A_z`) from `B`. Only a new initial
+condition (`project=true`) is restricted to the envelopes a wave amplitude can
+produce; a refresh for diagnostics, output, or a restart leaves the prognostic
+`B` untouched, so that it never changes the solution.
+"""
 function _refresh_wave_diagnostics!(fields::ModelFields,
     model::QGYBJModel; rebuild_total_q::Bool=false,
-    pv_method::Symbol=:qg)
+    pv_method::Symbol=:qg, project::Bool=false)
 
     if model.physics.formulation isa YBJ
         _refresh_normal_ybj_diagnostics!(fields, model;
-            rebuild_total_q, pv_method)
+            rebuild_total_q, pv_method, project)
     else
         context = _operator_context(model)
         options = ETDModelOptions(model.physics, model.numerics)
+        project && _project_initial_envelope!(fields, context.grid, options,
+                                              context.mask, context.workspace)
         rebuild_total_q && _wave_feedback_enabled(options) &&
             _rebuild_total_q_from_psi!(fields, model, pv_method)
         invert_B_to_A!(fields, context.grid, context.a;
             workspace=context.workspace)
+    end
+    return fields
+end
+
+"""
+Restrict `fields.B` to what a wave amplitude can produce (see
+`_project_wave_envelope!`), warning if nothing is left: a depth-uniform
+envelope carries no wave velocity in either YBJ formulation.
+"""
+function _project_initial_envelope!(fields::ModelFields, grid, options, mask,
+                                    workspace)
+    before = maximum(abs, fields.B)
+    _project_wave_envelope!(fields.B, grid, options, mask, workspace)
+    if before > 0 && maximum(abs, fields.B) <= 8eps(before)
+        @warn "The wave envelope is uniform in depth and was removed: B = L⁺A " *
+              "(or LA) has zero depth mean in the horizontally uniform column " *
+              "(every column for YBJ()), so a depth-uniform B carries no wave " *
+              "velocity. Give the waves vertical structure." maxlog=1
     end
     return fields
 end
@@ -551,9 +545,23 @@ function _refresh_wave_diagnostics!(model::QGYBJModel; kwargs...)
     return model
 end
 
-"""Set declarative initial conditions on a model or its simulation."""
+"""
+    set!(owner; ψ, ζ, mean_flow, pv_method=:qg, waves, B, particles)
+
+Set declarative initial conditions on a model or its simulation.
+
+The mean flow is given by its streamfunction `ψ` (or `psi`, or
+`mean_flow`, which also takes a `RandomStreamfunction`) or by its relative
+vorticity `ζ` (or `zeta`), from which ψ follows by inverting `∇ₕ²ψ = ζ` at
+each level. `pv_method` selects how the potential vorticity follows from ψ:
+`:qg`, `:barotropic`, or `:none`. `B` (or `waves`, which also takes a
+`SurfaceWave`) sets the wave envelope. `ψ` and `ζ` may be functions of
+`(x, y, z)`; all three may be arrays on the model's grid,
+[`FieldArray`](@ref)s, or [`FieldFile`](@ref)s.
+"""
 function set!(owner::Union{QGYBJModel, Simulation};
     ψ=nothing, psi=nothing, mean_flow=nothing,
+    ζ=nothing, zeta=nothing,
     pv_method::Symbol=:qg,
     waves=nothing, B=nothing,
     particles=nothing,
@@ -562,7 +570,16 @@ function set!(owner::Union{QGYBJModel, Simulation};
     _assert_mutable(owner)
     model = _model(owner)
     flow = _first_notnothing(mean_flow, ψ, psi)
+    vorticity = _first_notnothing(ζ, zeta)
     wave = _first_notnothing(waves, B)
+    flow !== nothing && vorticity !== nothing &&
+        throw(ArgumentError("give the mean flow by ψ or by ζ, not both"))
+    if vorticity !== nothing
+        vorticity isa Union{Function, AbstractArray, FieldArray, FieldFile} ||
+            throw(ArgumentError(
+                "ζ must be a function, array, FieldArray, or FieldFile"))
+        _set_vorticity!(model, vorticity, pv_method)
+    end
     if flow !== nothing
         if flow isa Function
             set_mean_flow!(owner; psi_func=flow, pv_method, verbose)
@@ -587,7 +604,7 @@ function set!(owner::Union{QGYBJModel, Simulation};
         elseif wave isa AbstractArray || wave isa FieldArray || wave isa FieldFile
             _assign_initial_field!(model.fields.B, model, wave)
             _refresh_wave_diagnostics!(model;
-                rebuild_total_q=true, pv_method)
+                rebuild_total_q=true, pv_method, project=true)
         else
             throw(ArgumentError(
                 "waves/B must be a SurfaceWave, array, FieldArray, or FieldFile"))
@@ -595,6 +612,56 @@ function set!(owner::Union{QGYBJModel, Simulation};
     end
     particles !== nothing && initialize_particles!(model, particles)
     return owner
+end
+
+"""
+Set ψ from the relative vorticity `source` by inverting `∇ₕ²ψ = ζ` level by
+level, then rebuild q and the velocities as for a streamfunction.
+"""
+function _set_vorticity!(model::QGYBJModel, source, pv_method::Symbol)
+    grid = model.grid
+    initializer = if source isa Function
+        nx, ny, nz = grid.size
+        FieldArray([source(grid.x[i], grid.y[j], grid.z[k])
+                    for k in 1:nz, i in 1:nx, j in 1:ny])
+    else
+        _field_initializer(source)
+    end
+    values = _field_values_zxy(model, initializer)
+    _warn_horizontal_mean(values, initializer.space)
+    psi = model.fields.psi
+    copyto!(psi, values)
+    initializer.space === :physical &&
+        fft_forward!(psi, psi, model.runtime.plans)
+    compute_psi_from_vorticity!(psi, model.runtime.geometry)
+    _refresh_flow_diagnostics!(model, pv_method)
+    return model
+end
+
+"""
+Warn when the vorticity `values` (z-x-y layout) has a horizontal mean above 1%
+of its rms at some level: the inversion drops it, since the circulation
+around a doubly periodic domain vanishes.
+"""
+function _warn_horizontal_mean(values, space::Symbol)
+    nz, nx, ny = size(values)
+    points = nx * ny
+    if space === :physical
+        means = [abs(sum(view(values, k, :, :))) / points for k in 1:nz]
+        rms = sqrt(sum(abs2, values) / length(values))
+    else
+        # Unnormalized FFT coefficients: the mean is the (0, 0) coefficient
+        # over the number of points, and Parseval gives the rms.
+        means = [abs(values[k, 1, 1]) / points for k in 1:nz]
+        rms = sqrt(sum(abs2, values) / nz) / points
+    end
+    largest = maximum(means)
+    largest > 0.01 * rms &&
+        @warn "ζ has a horizontal mean of up to $(round(largest; sigdigits=3)) " *
+              "(rms $(round(rms; sigdigits=3))), which is " *
+              "removed: the circulation around a doubly periodic domain, and " *
+              "with it the mean vorticity, vanishes."
+    return nothing
 end
 
 """Set a localized spectral wave packet."""
@@ -616,10 +683,9 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
 
     packet = create_wave_packet(grid, kx, ky, sigma_k, amplitude;
                                 z_center=z_c, z_width=z_w)
-    model.fields.B .= scatter_from_root(packet, grid, runtime.mpi;
-                                        plans=runtime.plans)
+    copyto!(model.fields.B, packet)
     _refresh_wave_diagnostics!(model;
-        rebuild_total_q=true, pv_method)
+        rebuild_total_q=true, pv_method, project=true)
     return owner
 end
 
@@ -659,7 +725,8 @@ function _apply_output_overrides!(simulation::Simulation;
             fields, (:waves, :wave, :B, :A), :waves, save_waves))
     velocities = save_velocities === nothing ?
                  current.velocities : save_velocities
-    specification = NetCDFOutput(; path, schedule, fields, velocities)
+    specification = NetCDFOutput(; path, schedule, fields, velocities,
+                                 overwrite=current.overwrite)
     return _configure_output!(simulation; output=specification)
 end
 
@@ -714,6 +781,9 @@ function run!(simulation::Simulation;
         _prepare_particle_output!(simulation)
         _maybe_write_simulation_output!(simulation; initial=true)
         _maybe_record_simulation_diagnostics!(simulation; initial=true)
+        # The velocity at the start of the first particle step, also stored
+        # with the initial particle positions.
+        _record_particle_velocity!(model.particles, model, simulation.clock.time)
         _maybe_write_particle_output!(simulation; initial=true)
 
         while (simulation.stop_iteration === nothing ||
@@ -733,10 +803,8 @@ function run!(simulation::Simulation;
             if options.verbose &&
                simulation.clock.iteration % options.diagnostics_interval == 0
                 if detailed_progress
-                    # All ranks participate in the global maxima reductions;
-                    # only the root rank writes the resulting line.
                     _print_detailed_progress(simulation, run_wall_start)
-                elseif runtime.mpi.is_root
+                else
                     @info "Simulation progress" iteration=simulation.clock.iteration time=simulation.clock.time
                 end
             end
@@ -773,6 +841,9 @@ function finalize_simulation!(simulation::Simulation)
         end
     end
     finalize_model!(simulation.model)
+    # The ETD-RK2 workspace is the largest device allocation after the fields.
+    simulation.timestepper.workspace = nothing
+    simulation.timestepper.workspace_owner = nothing
     simulation.state = Finalized
     return simulation
 end
@@ -791,7 +862,6 @@ get_duration_ip(simulation::Simulation) =
 function Base.summary(io::IO, simulation::Simulation)
     model = simulation.model
     grid = model.grid
-    is_root(model) || return
     println(io, "QGYBJplus Simulation")
     println(io, "="^40)
     @printf(io, "Resolution: %d × %d × %d\n", grid.size...)
@@ -805,7 +875,7 @@ function Base.summary(io::IO, simulation::Simulation)
         @printf(io, "Time step: Δt = %.2f s, iterations = %d\n",
                 _time_step(simulation), simulation.stop_iteration)
     end
-    println(io, "MPI processes: $(nprocs(model))")
+    println(io, "Architecture: $(architecture(model))")
     println(io, "="^40)
 end
 

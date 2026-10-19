@@ -11,33 +11,19 @@ This module extends the basic ParticleConfig to support:
 module EnhancedParticleConfig
 
 using Random
-using ..InterpolationSchemes: InterpolationMethod, TRILINEAR
+using ..InterpolationSchemes: InterpolationMethod, TRICUBIC
 
 # Access ParticleConfig from parent module (UnifiedParticleAdvection)
 const _PARENT = parentmodule(@__MODULE__)
 const ParticleConfig = _PARENT.ParticleConfig
+const _check_wave_motion = _PARENT._check_wave_motion
+const _check_horizontal_advection = _PARENT._check_horizontal_advection
 
 export ParticleConfig3D, ParticleDistribution,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
        # Simplified particle initialization constructors
        particles_in_circle, particles_in_grid_3d, particles_in_layers,
        particles_random_3d, particles_custom
-
-function _parallel_local_domain(tracker)
-    if hasproperty(tracker, :is_parallel) && getproperty(tracker, :is_parallel) &&
-       hasproperty(tracker, :local_domain)
-        return getproperty(tracker, :local_domain)
-    end
-    return nothing
-end
-
-function _within_local_domain(x, y, local_domain, x_max_global, y_max_global)
-    in_x = x >= local_domain.x_start &&
-           (x < local_domain.x_end || (x == local_domain.x_end && local_domain.x_end == x_max_global))
-    in_y = y >= local_domain.y_start &&
-           (y < local_domain.y_end || (y == local_domain.y_end && local_domain.y_end == y_max_global))
-    return in_x && in_y
-end
 
 """
 Available particle distribution patterns.
@@ -85,21 +71,23 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     custom_y::Vector{T} = T[]
     custom_z::Vector{T} = T[]
     
-    # Physics options
+    # Physics options: `wave_motion` is `:averaged` or `:instantaneous` (see
+    # ParticleConfig); `use_ybj_w` and `use_3d_advection` were removed and
+    # must stay false, since particles move horizontally.
     use_ybj_w::Bool = false
-    use_3d_advection::Bool = true
+    wave_motion::Symbol = :averaged
+    use_3d_advection::Bool = false
     
-    # Integration and interpolation methods
-    integration_method::Symbol = :euler
-    interpolation_method::InterpolationMethod = TRILINEAR
+    # Integration and interpolation methods (see ParticleConfig)
+    integration_method::Symbol = :rk2
+    interpolation_method::InterpolationMethod = TRICUBIC
     
-    # Boundary conditions
+    # Horizontal boundary conditions
     periodic_x::Bool = true
     periodic_y::Bool = true
-    reflect_z::Bool = true
     
-    # I/O configuration
-    save_interval::T = 0.1
+    # In-memory trajectory history (see ParticleConfig)
+    save_interval::T = Inf
     max_save_points::Int = 1000
 
     # Random distribution seed
@@ -109,9 +97,11 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     function ParticleConfig3D{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                                 distribution_type, nx_particles, ny_particles, nz_particles,
                                 z_levels, particles_per_level, custom_x, custom_y, custom_z,
-                                use_ybj_w, use_3d_advection, integration_method, interpolation_method,
-                                periodic_x, periodic_y, reflect_z, save_interval, max_save_points,
-                                seed) where T
+                                use_ybj_w, wave_motion, use_3d_advection, integration_method,
+                                interpolation_method, periodic_x, periodic_y,
+                                save_interval, max_save_points, seed) where T
+        _check_wave_motion(use_ybj_w, wave_motion)
+        _check_horizontal_advection(use_3d_advection)
         
         # Basic validation
         if distribution_type == CUSTOM
@@ -148,8 +138,9 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
         new{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                distribution_type, nx_particles, ny_particles, nz_particles,
                z_levels, particles_per_level, custom_x, custom_y, custom_z,
-               use_ybj_w, use_3d_advection, integration_method, interpolation_method,
-               periodic_x, periodic_y, reflect_z, save_interval, max_save_points, seed)
+               use_ybj_w, wave_motion, use_3d_advection, integration_method,
+               interpolation_method, periodic_x, periodic_y,
+               save_interval, max_save_points, seed)
     end
 end
 
@@ -453,7 +444,10 @@ end
 Initialize particles using 3D configuration.
 """
 function initialize_particles_3d!(tracker, config::ParticleConfig3D{T}) where T
-    
+    # Positions are filled on the host and moved to the model's architecture
+    # by `initialize_particles!`.
+    _PARENT._host_particle_storage!(tracker.particles)
+
     if config.distribution_type == UNIFORM_GRID
         initialize_uniform_3d_grid!(tracker, config)
     elseif config.distribution_type == LAYERED
@@ -469,7 +463,6 @@ function initialize_particles_3d!(tracker, config::ParticleConfig3D{T}) where T
     # Set initial velocities to zero
     fill!(tracker.particles.u, 0.0)
     fill!(tracker.particles.v, 0.0)
-    fill!(tracker.particles.w, 0.0)
     
     # Set initial time
     tracker.particles.time = 0.0
@@ -482,60 +475,7 @@ Initialize uniform 3D grid of particles.
 """
 function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where T
 
-    local_domain = _parallel_local_domain(tracker)
-    dxp = (config.x_max - config.x_min) / config.nx_particles
-    dyp = (config.y_max - config.y_min) / config.ny_particles
-    dzp = (config.z_max - config.z_min) / config.nz_particles
-
-    if local_domain !== nothing
-        tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
-        x_rel_min = (local_domain.x_start - config.x_min) / dxp
-        x_rel_max = (local_domain.x_end - config.x_min) / dxp
-        y_rel_min = (local_domain.y_start - config.y_min) / dyp
-        y_rel_max = (local_domain.y_end - config.y_min) / dyp
-
-        i_start = max(1, floor(Int, x_rel_min + tol) + 1)
-        i_end = min(config.nx_particles, ceil(Int, x_rel_max - tol))
-        j_start = max(1, floor(Int, y_rel_min + tol) + 1)
-        j_end = min(config.ny_particles, ceil(Int, y_rel_max - tol))
-
-        if i_start > i_end || j_start > j_end
-            resize!(tracker.particles.x, 0)
-            resize!(tracker.particles.y, 0)
-            resize!(tracker.particles.z, 0)
-            resize!(tracker.particles.id, 0)
-            resize!(tracker.particles.u, 0)
-            resize!(tracker.particles.v, 0)
-            resize!(tracker.particles.w, 0)
-            tracker.particles.np = 0
-            return tracker
-        end
-
-        total_particles = (i_end - i_start + 1) * (j_end - j_start + 1) * config.nz_particles
-
-        resize!(tracker.particles.x, total_particles)
-        resize!(tracker.particles.y, total_particles)
-        resize!(tracker.particles.z, total_particles)
-        resize!(tracker.particles.id, total_particles)
-        resize!(tracker.particles.u, total_particles)
-        resize!(tracker.particles.v, total_particles)
-        resize!(tracker.particles.w, total_particles)
-
-        idx = 1
-        for k in 1:config.nz_particles, j in j_start:j_end, i in i_start:i_end
-            tracker.particles.x[idx] = config.x_min + (i - 1) * dxp
-            tracker.particles.y[idx] = config.y_min + (j - 1) * dyp
-            tracker.particles.z[idx] = config.z_min + (k - 1) * dzp
-            tracker.particles.id[idx] = (k - 1) * config.nx_particles * config.ny_particles +
-                                        (j - 1) * config.nx_particles + i
-            idx += 1
-        end
-
-        tracker.particles.np = total_particles
-        return tracker
-    end
-
-    # Create 3D grid (serial or no local domain)
+    # Create 3D grid
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
     z_range = range(config.z_min, config.z_max, length=config.nz_particles+1)[1:end-1]
@@ -549,7 +489,6 @@ function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where
     resize!(tracker.particles.id, total_particles)
     resize!(tracker.particles.u, total_particles)
     resize!(tracker.particles.v, total_particles)
-    resize!(tracker.particles.w, total_particles)
 
     # Fill particle positions
     idx = 1
@@ -583,7 +522,6 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     end
     @assert length(particles_per_level) == length(z_levels) "particles_per_level must match number of layers"
     
-    local_domain = _parallel_local_domain(tracker)
     total_particles = 0
     n_levels = length(z_levels)
 
@@ -596,8 +534,6 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     level_counts = Vector{Int}(undef, n_levels)
     level_offsets = Vector{Int}(undef, n_levels)
 
-    tol = sqrt(eps(T)) * max(one(T), abs(config.x_max - config.x_min), abs(config.y_max - config.y_min))
-    
     offset = 0
     for level in 1:n_levels
         level_offsets[level] = offset
@@ -618,24 +554,10 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
         ny_level = max(1, round(Int, sqrt(n_level / aspect)))
         nx_level = max(1, ceil(Int, n_level / ny_level))
 
-        if local_domain !== nothing
-            dxp = (config.x_max - config.x_min) / nx_level
-            dyp = (config.y_max - config.y_min) / ny_level
-            x_rel_min = (local_domain.x_start - config.x_min) / dxp
-            x_rel_max = (local_domain.x_end - config.x_min) / dxp
-            y_rel_min = (local_domain.y_start - config.y_min) / dyp
-            y_rel_max = (local_domain.y_end - config.y_min) / dyp
-
-            i_start = max(1, floor(Int, x_rel_min + tol) + 1)
-            i_end = min(nx_level, ceil(Int, x_rel_max - tol))
-            j_start = max(1, floor(Int, y_rel_min + tol) + 1)
-            j_end = min(ny_level, ceil(Int, y_rel_max - tol))
-        else
-            i_start = 1
-            i_end = nx_level
-            j_start = 1
-            j_end = ny_level
-        end
+        i_start = 1
+        i_end = nx_level
+        j_start = 1
+        j_end = ny_level
 
         count = 0
         if i_start <= i_end && j_start <= j_end
@@ -664,7 +586,6 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     resize!(tracker.particles.id, total_particles)
     resize!(tracker.particles.u, total_particles)
     resize!(tracker.particles.v, total_particles)
-    resize!(tracker.particles.w, total_particles)
     
     # Fill particles layer by layer
     idx = 1
@@ -711,37 +632,6 @@ function initialize_custom_positions!(tracker, config::ParticleConfig3D{T}) wher
     
     n_particles = length(config.custom_x)
 
-    local_domain = _parallel_local_domain(tracker)
-    if local_domain !== nothing
-        keep = Int[]
-        for i in 1:n_particles
-            x = config.periodic_x ? tracker.x0 + mod(config.custom_x[i] - tracker.x0, tracker.Lx) : config.custom_x[i]
-            y = config.periodic_y ? tracker.y0 + mod(config.custom_y[i] - tracker.y0, tracker.Ly) : config.custom_y[i]
-            if _within_local_domain(x, y, local_domain, tracker.x0 + tracker.Lx, tracker.y0 + tracker.Ly)
-                push!(keep, i)
-            end
-        end
-
-        n_local = length(keep)
-        resize!(tracker.particles.x, n_local)
-        resize!(tracker.particles.y, n_local)
-        resize!(tracker.particles.z, n_local)
-        resize!(tracker.particles.id, n_local)
-        resize!(tracker.particles.u, n_local)
-        resize!(tracker.particles.v, n_local)
-        resize!(tracker.particles.w, n_local)
-
-        for (j, idx) in enumerate(keep)
-            tracker.particles.x[j] = config.custom_x[idx]
-            tracker.particles.y[j] = config.custom_y[idx]
-            tracker.particles.z[j] = config.custom_z[idx]
-            tracker.particles.id[j] = idx
-        end
-
-        tracker.particles.np = n_local
-        return tracker
-    end
-
     # Resize particle arrays
     resize!(tracker.particles.x, n_particles)
     resize!(tracker.particles.y, n_particles)
@@ -749,7 +639,6 @@ function initialize_custom_positions!(tracker, config::ParticleConfig3D{T}) wher
     resize!(tracker.particles.id, n_particles)
     resize!(tracker.particles.u, n_particles)
     resize!(tracker.particles.v, n_particles)
-    resize!(tracker.particles.w, n_particles)
 
     # Copy custom positions
     tracker.particles.x .= config.custom_x
@@ -774,7 +663,6 @@ function initialize_random_positions!(tracker, config::ParticleConfig3D{T}) wher
         resize!(tracker.particles.id, 0)
         resize!(tracker.particles.u, 0)
         resize!(tracker.particles.v, 0)
-        resize!(tracker.particles.w, 0)
         tracker.particles.np = 0
         return tracker
     end
@@ -784,44 +672,12 @@ function initialize_random_positions!(tracker, config::ParticleConfig3D{T}) wher
     ys = T(config.y_min) .+ (T(config.y_max) - T(config.y_min)) .* rand(rng, T, n_particles)
     zs = T(config.z_min) .+ (T(config.z_max) - T(config.z_min)) .* rand(rng, T, n_particles)
 
-    local_domain = _parallel_local_domain(tracker)
-    if local_domain !== nothing
-        keep = Int[]
-        for i in 1:n_particles
-            x = config.periodic_x ? tracker.x0 + mod(xs[i] - tracker.x0, tracker.Lx) : xs[i]
-            y = config.periodic_y ? tracker.y0 + mod(ys[i] - tracker.y0, tracker.Ly) : ys[i]
-            if _within_local_domain(x, y, local_domain, tracker.x0 + tracker.Lx, tracker.y0 + tracker.Ly)
-                push!(keep, i)
-            end
-        end
-
-        n_local = length(keep)
-        resize!(tracker.particles.x, n_local)
-        resize!(tracker.particles.y, n_local)
-        resize!(tracker.particles.z, n_local)
-        resize!(tracker.particles.id, n_local)
-        resize!(tracker.particles.u, n_local)
-        resize!(tracker.particles.v, n_local)
-        resize!(tracker.particles.w, n_local)
-
-        for (j, idx) in enumerate(keep)
-            tracker.particles.x[j] = xs[idx]
-            tracker.particles.y[j] = ys[idx]
-            tracker.particles.z[j] = zs[idx]
-            tracker.particles.id[j] = idx
-        end
-
-        tracker.particles.np = n_local
-        return tracker
-    end
-
     resize!(tracker.particles.x, n_particles)
     resize!(tracker.particles.y, n_particles)
     resize!(tracker.particles.z, n_particles)
     resize!(tracker.particles.id, n_particles)
     resize!(tracker.particles.u, n_particles)
     resize!(tracker.particles.v, n_particles)
-    resize!(tracker.particles.w, n_particles)
 
     tracker.particles.x .= xs
     tracker.particles.y .= ys
@@ -855,10 +711,10 @@ function convert_to_basic_config(config::ParticleConfig3D{T}) where T
         y_min=config.y_min, y_max=config.y_max,
         z_level=z_level,
         nx_particles=config.nx_particles, ny_particles=config.ny_particles,
-        use_ybj_w=config.use_ybj_w, use_3d_advection=config.use_3d_advection,
+        wave_motion=config.wave_motion, use_3d_advection=config.use_3d_advection,
         integration_method=config.integration_method,
         interpolation_method=config.interpolation_method,
-        periodic_x=config.periodic_x, periodic_y=config.periodic_y, reflect_z=config.reflect_z,
+        periodic_x=config.periodic_x, periodic_y=config.periodic_y,
         save_interval=config.save_interval, max_save_points=config.max_save_points
     )
 end

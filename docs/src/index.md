@@ -6,8 +6,9 @@ CurrentModule = QGYBJplus
 
 QGYBJ+.jl simulates interactions between quasigeostrophic balanced flow and
 near-inertial waves. It combines horizontally pseudo-spectral operators,
-second-order vertical differences, MPI pencil decomposition, and ETD-RK2 time
-integration.
+second-order vertical differences, and ETD-RK2 time integration, with every
+array operation written as a KernelAbstractions.jl kernel so that the same
+model runs on CPUs and GPUs.
 
 Start with [installation](@ref getting_started), then run the
 [quick-start example](@ref quickstart). The [Asselin dipole walkthrough](@ref
@@ -54,12 +55,13 @@ finally
 end
 ```
 
-The same script works in one Julia process and under `mpiexecjl`. ETD-RK2 is
-the sole production stepping scheme.
+To run the same script on a GPU, load CUDA.jl and build the grid with
+`RectilinearGrid(GPU(); ...)`. ETD-RK2 is the sole production stepping scheme.
 
 ## What owns what
 
-1. [`RectilinearGrid`](@ref) stores immutable global geometry.
+1. [`RectilinearGrid`](@ref) stores immutable global geometry and the
+   architecture (`CPU()` or `GPU()`).
 2. [`QGYBJModel`](@ref) owns physics, numerics, fields, runtime resources, and
    optional particles.
 3. [`Simulation`](@ref) owns the clock, timestepper, stopping rules, output,
@@ -73,6 +75,6 @@ the sole production stepping scheme.
 - [Asselin dipole walkthrough](@ref worked_example)
 - [Configuration](@ref configuration)
 - [Physics overview](@ref physics-overview)
-- [MPI parallel execution](@ref parallel)
+- [CPU and GPU execution](@ref architectures)
 - [Particle advection](@ref particles)
 - [Core API](@ref api-types)

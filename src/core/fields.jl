@@ -6,12 +6,11 @@ Prognostic and diagnostic arrays owned by a QG-YBJ model. All fields use
 the diagnostic fields `psi`, `A`, and `C`, are spectral and complex-valued;
 the velocity fields `u`, `v`, and `w` are real-valued.
 
-`RT` and `CT` may be ordinary arrays or distributed pencil arrays.
+`RT` and `CT` are the array types of the model's architecture: `Array` on the
+CPU, or the GPU package's device array (e.g. `CuArray`) on a GPU.
 
-The `ModelFields` container remains the same object across `step!` calls. Its
-array properties are double-buffered and rotate after a successful step, so
-keep a reference to the container rather than to an individual array when a
-live view of the model is required.
+`step!` updates these arrays in place, so references to the container and to
+its individual arrays both stay live across steps.
 """
 Base.@kwdef mutable struct ModelFields{
     T,
@@ -39,62 +38,37 @@ function _field_dimensions(dimensions)
 end
 
 """
-    ModelFields(T, dimensions)
+    ModelFields([architecture=CPU()], T, dimensions)
 
-Allocate zero-filled serial model fields with `(nz, nx, ny) == dimensions`.
+Allocate zero-filled model fields with `(nz, nx, ny) == dimensions` on
+`architecture`.
 """
-function ModelFields(::Type{T}, dimensions) where {T<:AbstractFloat}
+ModelFields(::Type{T}, dimensions) where {T<:AbstractFloat} =
+    ModelFields(CPU(), T, dimensions)
+
+function ModelFields(architecture::AbstractArchitecture, ::Type{T},
+                     dimensions) where {T<:AbstractFloat}
     dims = _field_dimensions(dimensions)
-    q = zeros(Complex{T}, dims)
-    B = zeros(Complex{T}, dims)
-    psi = zeros(Complex{T}, dims)
-    A = zeros(Complex{T}, dims)
-    C = zeros(Complex{T}, dims)
-    u = zeros(T, dims)
-    v = zeros(T, dims)
-    w = zeros(T, dims)
+    q = zeros_on(architecture, Complex{T}, dims...)
+    B = zeros_on(architecture, Complex{T}, dims...)
+    psi = zeros_on(architecture, Complex{T}, dims...)
+    A = zeros_on(architecture, Complex{T}, dims...)
+    C = zeros_on(architecture, Complex{T}, dims...)
+    u = zeros_on(architecture, T, dims...)
+    v = zeros_on(architecture, T, dims...)
+    w = zeros_on(architecture, T, dims...)
     return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
 end
 
-"""
-    allocate_field(T, grid; complex=false)
-
-Allocate an uninitialized field from an internal `RuntimeGeometry`.
-Distributed allocation is handled by `ModelRuntime`.
-"""
-function allocate_field(::Type{T}, grid::RuntimeGeometry; complex::Bool=false) where {T}
-    dimensions = (grid.nz, grid.nx, grid.ny)
-    if grid.decomposition === nothing
-        return complex ? Array{Complex{T}}(undef, dimensions) :
-                         Array{T}(undef, dimensions)
-    end
-
-    error("Parallel field allocation requires the MPI runtime")
-end
-
-"""Allocate zero-filled serial fields for a public `RectilinearGrid`."""
-function allocate_fields(grid::RectilinearGrid; T::Type{<:AbstractFloat}=Float64)
+"""Allocate zero-filled fields on the architecture, and in the precision, of a `RectilinearGrid`."""
+function allocate_fields(grid::RectilinearGrid; T::Type{<:AbstractFloat}=eltype(grid))
     nx, ny, nz = grid.size
-    return ModelFields(T, (nz, nx, ny))
+    return ModelFields(grid.architecture, T, (nz, nx, ny))
 end
 
-"""Allocate zero-filled fields for the current computational `RuntimeGeometry`."""
-function allocate_fields(grid::RuntimeGeometry; T::Type{<:AbstractFloat}=Float64)
-    q = allocate_field(T, grid; complex=true)
-    B = allocate_field(T, grid; complex=true)
-    psi = allocate_field(T, grid; complex=true)
-    A = allocate_field(T, grid; complex=true)
-    C = allocate_field(T, grid; complex=true)
-    u = allocate_field(T, grid)
-    v = allocate_field(T, grid)
-    w = allocate_field(T, grid)
-
-    for field in (q, B, psi, A, C, u, v, w)
-        fill!(field, zero(eltype(field)))
-    end
-
-    return ModelFields{T, typeof(u), typeof(q)}(q, B, psi, A, C, u, v, w)
-end
+"""Allocate zero-filled fields on the architecture of a `RuntimeGeometry`."""
+allocate_fields(grid::RuntimeGeometry; T::Type{<:AbstractFloat}=eltype(grid.base)) =
+    allocate_fields(grid.base; T)
 
 """
     copy_fields!(destination::ModelFields, source::ModelFields)
@@ -115,26 +89,11 @@ function copy_fields!(destination::ModelFields, source::ModelFields)
     return destination
 end
 
-"""Swap double-buffered arrays while preserving both `ModelFields` objects."""
-function _swap_field_storage!(first::ModelFields, second::ModelFields)
-    typeof(first) === typeof(second) ||
-        throw(ArgumentError("field buffers must have identical types"))
-    first.q, second.q = second.q, first.q
-    first.B, second.B = second.B, first.B
-    first.psi, second.psi = second.psi, first.psi
-    first.A, second.A = second.A, first.A
-    first.C, second.C = second.C, first.C
-    first.u, second.u = second.u, first.u
-    first.v, second.v = second.v, first.v
-    first.w, second.w = second.w, first.w
-    return first, second
-end
-
 """
     copy_fields(fields::ModelFields)
 
-Copy model fields with `similar`, preserving pencil decompositions for
-distributed arrays while keeping every copied array independent.
+Copy model fields with `similar`, keeping every copied array independent and
+on the same architecture as `fields`.
 """
 function copy_fields(fields::ModelFields{T, RT, CT}) where {T, RT, CT}
     q = copyto!(similar(fields.q), fields.q)
@@ -147,3 +106,5 @@ function copy_fields(fields::ModelFields{T, RT, CT}) where {T, RT, CT}
     w = copyto!(similar(fields.w), fields.w)
     return ModelFields{T, RT, CT}(q, B, psi, A, C, u, v, w)
 end
+
+architecture(fields::ModelFields) = architecture(fields.q)

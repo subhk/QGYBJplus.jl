@@ -25,7 +25,6 @@ const Q = QGYBJplus
         flow=EvolvingFlow(),
         feedback=WaveMeanFeedback(),
         formulation=YBJPlus(),
-        topology=(1, 1),
         verbose=false,
     )
 
@@ -94,5 +93,44 @@ const Q = QGYBJplus
         end
     finally
         finalize_model!(model)
+    end
+end
+
+@testset "Persistent model memory stays within budget" begin
+    # Counted in grid-sized complex arrays: the fields hold 6.5, the ETD-RK2
+    # workspace 4 (the stage q and B and their first-stage tendencies), and
+    # the scratch pool at most 5 after stepping, velocity, Stokes drift,
+    # NetCDF output, and energy diagnostics.
+    nx, ny, nz = 16, 16, 8
+    grid_array_bytes = nx * ny * nz * sizeof(ComplexF64)
+    grid = RectilinearGrid(size=(nx, ny, nz), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
+        stratification=AnalyticalProfile(z -> 1 + 0.5cos(3z); returns=:N²),
+        flow=EvolvingFlow(), feedback=WaveMeanFeedback(), formulation=YBJPlus(),
+        verbose=false)
+    mktempdir() do directory
+        set!(model; ψ=(x, y, z) -> 0.3sin(x) * cos(y) * (1 + z),
+             waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+        simulation = Simulation(model; Δt=0.01, stop_iteration=2,
+            output=NetCDFOutput(path=joinpath(directory, "out"),
+                schedule=IterationInterval(1), fields=(:ψ, :waves), velocities=true),
+            diagnostics=EnergyDiagnosticsOutput(path=joinpath(directory, "diag"),
+                schedule=IterationInterval(1)),
+            verbose=false)
+        initialize_particles!(simulation, particles_in_box(Float64, -0.5;
+            x_max=2π, y_max=2π, nx=2, ny=2))
+        q = model.fields.q
+        run!(simulation)
+        compute_total_velocities!(model; t=0.3)
+        compute_ybj_vertical_velocity!(model; t=0.3)
+
+        # step! updates the fields in place.
+        @test model.fields.q === q
+        @test length(model.runtime.workspace.pool.buffers) <= 5
+        workspace = simulation.timestepper.workspace
+        workspace_bytes = sum(sizeof, (workspace.stage_q, workspace.stage_B,
+            workspace.rhsq0, workspace.rhsB0))
+        @test workspace_bytes <= 4 * grid_array_bytes
+        finalize_simulation!(simulation)
     end
 end

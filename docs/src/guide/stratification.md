@@ -44,10 +44,30 @@ pointwise physics.
 
 ## File input
 
+`load_stratification_from_file` reads a tabulated profile from a NetCDF file,
+or from a JLD2 file when the name ends in `.jld2`:
+
 ```julia
 profile = load_stratification_from_file("stratification.nc")
+profile = load_stratification_from_file("ctd.jld2"; group="cast12")
 model = QGYBJModel(grid=grid, stratification=profile)
 ```
+
+The file holds a vertical coordinate named `z` or `depth` and N² named `N2`,
+`N²`, or `n2`, as real arrays of equal length. `depth` is positive downward
+and `z` positive upward; a `z` without negative values is read as depth.
+`group` selects a NetCDF group, or a JLD2 group, NamedTuple, or Dict; JLD2
+arrays may also be ranges. Data in any other form can be passed as
+`FileProfile{Float64}(name, depths, N²)`, with positive depths in increasing
+order.
+
+The data need not be sorted or lie on the model's levels. The model
+interpolates the profile linearly in depth to its own cell centers and upper
+faces, so one file serves any vertical resolution. Each level takes the value
+at its depth rather than an average over the cell, so smooth or bin-average a
+finely sampled profile to the model's resolution first. Beyond the data, N²
+is held at the nearest data value, and the model warns when this leaves more
+than one grid spacing uncovered at the top or bottom of the domain.
 
 Inspect external values before model construction:
 

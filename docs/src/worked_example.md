@@ -10,8 +10,11 @@ Asselin et al. (2020) with the composition-first API.
 ## Run
 
 ```bash
-mpiexecjl -n 4 julia --project=. examples/asselin_jpo2020.jl
+julia --threads=auto --project=. examples/asselin_jpo2020.jl
 ```
+
+To run on a GPU, load CUDA.jl and build the grid with
+`RectilinearGrid(GPU(); ...)`; see [CPU and GPU execution](@ref architectures).
 
 Defaults are 256×256×128 points, a 70 km square horizontal domain, 3 km depth,
 and 15 inertial periods with `Δt = 2 s`.

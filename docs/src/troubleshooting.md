@@ -9,30 +9,32 @@ CurrentModule = QGYBJplus
 - All resolution and extent values must be positive.
 - `FPlane(f=...)` requires a finite, nonzero Coriolis frequency.
 - Stratification values must be finite and positive.
-- Explicit topology factors must divide the distributed dimensions.
 
-Start with a small model and `verbose=true` to see MPI topology information.
+Start with a small model and `verbose=true` to see the runtime summary.
 
-## A second model fails after finalization
+## `GPU()` throws an `ArgumentError`
 
-When a model initializes MPI itself, finalizing it closes that MPI session.
-Applications that create multiple models should initialize MPI externally:
+`GPU()` needs a GPU package. Load CUDA.jl before building the grid:
 
 ```julia
-using MPI
-MPI.Init()
-try
-    # construct and finalize any number of models
-finally
-    MPI.Finalize()
-end
+using CUDA
+using QGYBJplus
+grid = RectilinearGrid(GPU(); size=(64, 64, 32), extent=(1e5, 1e5, 4e3))
 ```
 
-## Distributed array mismatch
+If `CUDA.functional()` is `false`, CUDA.jl cannot reach a driver or device;
+see the CUDA.jl documentation.
 
-Use `copy_fields(model.fields)` to preserve pencil layouts. Physical and
-spectral local ranges differ; query them explicitly instead of reusing array
-axes across transform spaces.
+## "Scalar indexing is disallowed"
+
+Model arrays on a GPU cannot be indexed element by element from the host.
+Copy them first, or use whole-array operations:
+
+```julia
+q = Array(model.fields.q)     # host copy
+q[1, 2, 3]
+maximum(abs, model.fields.q)  # runs on the device
+```
 
 ## Output is missing a field
 
@@ -48,26 +50,30 @@ The prognostic spectral arrays and vertical coefficients are always written.
 
 ## A run cannot be restarted
 
-`restore!` requires a fresh compatible model and matching global dimensions.
-It restores `q` and `B`; it does not rewind an existing simulation clock.
+`restore!` requires a compatible model: the same resolution, domain extent,
+wave formulation, and feedback convention. It restores `q` and `B`; restoring
+a `Simulation` also sets its clock to the file's time and iteration. State
+files written on a CPU restart on a GPU and vice versa.
+
+## Output files already exist
+
+A run never silently replaces earlier output. A restored simulation continues
+the files in its output directory; any other existing state, energy, or
+particle files raise an error. Choose a new directory, or pass
+`overwrite=true` to `NetCDFOutput`, `EnergyDiagnosticsOutput`, or
+`ParticleOutputManager` to replace them.
 
 ## A run is slow
 
 - Let one `Simulation` own the complete run instead of constructing a
   timestepper for every step.
 - Reduce output frequency and omit unused physical fields.
-- Avoid gathers inside the time loop.
-- Measure alternative MPI topologies.
-- Ensure local domains remain large enough for particle halos.
-
-## Particles disappear near a periodic seam
-
-Run `test/test_mpi_particles_periodic.jl` under the same rank count. The test
-checks global identifier conservation, wrapped coordinates, and agreement with
-a serial interpolation reference.
+- Avoid copying fields to the host inside the time loop.
+- On a CPU, start Julia with several threads; see [Performance](@ref
+  performance).
 
 ## Report a reproducible issue
 
-Include Julia and package versions, global resolution, topology, rank count,
-the focused component choices, `Δt`, and the smallest script that reproduces
-the problem.
+Include Julia and package versions, the architecture (CPU threads or GPU
+model and CUDA version), global resolution, the focused component choices,
+`Δt`, and the smallest script that reproduces the problem.
