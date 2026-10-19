@@ -53,18 +53,35 @@ end
 
 _nonfinite(value) = !isfinite(value)
 
-function _check_termination_conditions!(simulation::Simulation)
-    model = simulation.model
-    runtime = model.runtime
-    fields = model.fields
+"""Sum of the absolute real and imaginary parts; non-finite when an entry is."""
+_l1_norm(array) = sum(value -> abs(real(value)) + abs(imag(value)), array)
+
+"""Error when q, B, or ψ holds a NaN or an Inf."""
+function _check_finite_state(fields::ModelFields)
     bad = any(_nonfinite, fields.q) ||
           any(_nonfinite, fields.B) ||
           any(_nonfinite, fields.psi)
     bad && error("non-finite value detected in the model state")
+    return nothing
+end
+
+function _check_termination_conditions!(simulation::Simulation)
+    model = simulation.model
+    runtime = model.runtime
+    fields = model.fields
+    # This runs every step, so a healthy state costs one reduction per field.
+    # A NaN or Inf makes its field's sum non-finite, and since the inverse
+    # transform is ψ = Σ ψ̂ e^{ik·x} / (nx ny), Σ|ψ̂| / (nx ny) bounds max |ψ|.
+    # The exact checks, with a transform of ψ, run only when these allow a
+    # failure.
+    nx, ny, _ = model.grid.size
+    sums = (_l1_norm(fields.q), _l1_norm(fields.B), _l1_norm(fields.psi))
+    all(isfinite, sums) || _check_finite_state(fields)
+    last(sums) / (nx * ny) <= 1e10 && return simulation
 
     # Borrow from the runtime scratch pool rather than writing into the FFT
-    # plan's own work arrays: this check runs every step and must not allocate
-    # a grid-sized physical field.
+    # plan's own work arrays: this check must not allocate a grid-sized
+    # physical field.
     maximum_psi = with_scratch(runtime.workspace) do
         psi_physical = scratch_physical(runtime.workspace, fields.psi, runtime.plans)
         fft_backward!(psi_physical, fields.psi, runtime)
@@ -75,24 +92,20 @@ function _check_termination_conditions!(simulation::Simulation)
     return simulation
 end
 
-@kernel function _wave_velocity_spectrum_kernel!(LA, @Const(B), @Const(A),
-                                                 @Const(kx), @Const(ky))
-    k, i, j = @index(Global, NTuple)
-    # B = L⁺A = LA - kₕ²A/4 for each horizontal Fourier mode.
-    @inbounds LA[k, i, j] = B[k, i, j] + 0.25 * (kx[i]^2 + ky[j]^2) * A[k, i, j]
-end
-
 """
 Spectral wave velocity `LA` of `fields` stored in `LA`: `B` itself for the
-original YBJ formulation, `B + kₕ²A/4` otherwise.
+original YBJ formulation, `B + kₕ²A/4` otherwise (`B = L⁺A = LA - kₕ²A/4`).
 """
 function _spectral_wave_velocity!(LA, fields::ModelFields, model::QGYBJModel)
-    if model.physics.formulation isa YBJ
+    formulation = model.physics.formulation
+    if formulation isa YBJ
         copyto!(LA, fields.B)
     else
         geometry = model.runtime.geometry
-        launch!(_wave_velocity_spectrum_kernel!, LA, size(LA),
-                LA, fields.B, fields.A, geometry.kx, geometry.ky)
+        # The weight in the fields' precision keeps single-precision kernels single.
+        weight = real(eltype(LA))(Operators._wave_velocity_weight(formulation))
+        launch!(Operators._wave_velocity_kernel!, LA, size(LA),
+                LA, fields.B, fields.A, geometry.kx, geometry.ky, weight)
     end
     return LA
 end
@@ -321,7 +334,10 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     return owner
 end
 
-"""Set a horizontally uniform, surface-confined wave field."""
+"""
+Set a horizontally uniform, surface-confined wave field. `surface_depth` is
+measured downward from the top of the domain, its rigid lid.
+"""
 function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real,
     surface_depth::Real,
@@ -348,8 +364,10 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     B_host = Array{eltype(fields.B)}(undef, nz, nx, ny)
     T = real(eltype(B_host))
     dz = geometry.dz
+    # Depth below the lid, which need not be at z = 0.
+    top = last(geometry.z_faces)
     for k in 1:nz
-        depth = max(zero(T), -geometry.z[k] - dz / 2)
+        depth = max(zero(T), top - geometry.z[k] - dz / 2)
         vertical_profile = profile === :gaussian ?
             exp(-(depth^2) / surface_depth^2) : exp(-depth / surface_depth)
         B_host[k, :, :] .= complex(T(amplitude) * vertical_profile)
@@ -730,6 +748,27 @@ function _apply_output_overrides!(simulation::Simulation;
     return _configure_output!(simulation; output=specification)
 end
 
+"""
+Set up the output, energy diagnostics, and particle output of a run. Nothing
+is written yet, so a failure here, such as output that already exists, leaves
+the simulation ready to run again with other settings: the managers this call
+created are dropped and the error is rethrown.
+"""
+function _prepare_run_output!(simulation::Simulation)
+    output_manager = simulation.output_manager
+    diagnostics_manager = simulation.diagnostics_manager
+    try
+        _prepare_simulation_output!(simulation)
+        _prepare_simulation_diagnostics!(simulation)
+        _prepare_particle_output!(simulation)
+    catch
+        simulation.output_manager = output_manager
+        simulation.diagnostics_manager = diagnostics_manager
+        rethrow()
+    end
+    return simulation
+end
+
 """Advance a configured simulation with the current ETD-RK2 driver."""
 function run!(simulation::Simulation;
     output_dir::Union{String, Nothing}=nothing,
@@ -774,11 +813,9 @@ function run!(simulation::Simulation;
         throw(ArgumentError("diagnostics_interval must be positive"))
 
     run_wall_start = time_ns()
+    _prepare_run_output!(simulation)
     simulation.state = Running
     try
-        _prepare_simulation_output!(simulation)
-        _prepare_simulation_diagnostics!(simulation)
-        _prepare_particle_output!(simulation)
         _maybe_write_simulation_output!(simulation; initial=true)
         _maybe_record_simulation_diagnostics!(simulation; initial=true)
         # The velocity at the start of the first particle step, also stored

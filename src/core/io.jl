@@ -552,6 +552,9 @@ end
 Domain-integrated energy components of `fields`, in the order wave KE, wave
 PE, wave correction energy, mean-flow KE, mean-flow PE. Each horizontal mode
 column is summed by one kernel work item, then the columns are reduced.
+
+Nonlinear runs keep only the modes inside the two-thirds cutoff, so their
+energy is summed over those; linear runs evolve every mode, and all count.
 """
 _local_energy_components(model::QGYBJModel, fields::ModelFields) =
     _local_energy_components(model, fields.psi, fields.A, fields.C, fields.u)
@@ -561,11 +564,13 @@ function _local_energy_components(model::QGYBJModel, psi, A, C, real_template)
     geometry = runtime.geometry
     nx, ny, nz = geometry.nx, geometry.ny, geometry.nz
     dz = nz > 1 ? abs(geometry.z[2] - geometry.z[1]) : one(eltype(geometry.z))
+    mask = _linear(ETDModelOptions(model.physics, model.numerics)) ?
+           KeepAllModes() : runtime.dealias_mask
 
     energies = similar(real_template, 5, nx, ny)
     launch!(_energy_column_kernel!, energies, (nx, ny),
             energies, psi, A, C, geometry.kx, geometry.ky,
-            runtime.dealias_mask, runtime.device_coefficients.a_ell, dz, nz,
+            mask, runtime.device_coefficients.a_ell, dz, nz,
             !(model.physics.formulation isa YBJ))
     totals = on_host(vec(sum(energies; dims=(2, 3))))
 

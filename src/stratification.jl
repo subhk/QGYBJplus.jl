@@ -67,14 +67,33 @@ struct ExponentialProfile{T} <: StratificationProfile{T}
 end
 
 """
-    PiecewiseProfile{T} <: StratificationProfile{T}
+    PiecewiseProfile(z_interfaces, N_values)
 
-Piecewise constant stratification.
+Piecewise constant stratification: `N = N_values[i]` for depths from
+`z_interfaces[i]` to `z_interfaces[i + 1]` (positive below the surface,
+strictly increasing), so there is one value fewer than interfaces. Depths
+above the first interface take the top layer's value, and depths below the
+last one the bottom layer's.
 """
 struct PiecewiseProfile{T} <: StratificationProfile{T}
     z_interfaces::Vector{T}  # Interface depths (positive below surface)
     N_values::Vector{T}      # N values in each layer
+
+    function PiecewiseProfile{T}(z_interfaces::AbstractVector,
+                                 N_values::AbstractVector) where T
+        length(N_values) == length(z_interfaces) - 1 >= 1 || throw(ArgumentError(
+            "a piecewise profile needs one N value fewer than its interfaces " *
+            "and at least one layer (got $(length(z_interfaces)) interfaces " *
+            "and $(length(N_values)) values)"))
+        all(>(0), diff(z_interfaces)) || throw(ArgumentError(
+            "the interface depths of a piecewise profile must increase strictly"))
+        return new{T}(z_interfaces, N_values)
+    end
 end
+
+PiecewiseProfile(z_interfaces::AbstractVector, N_values::AbstractVector) =
+    PiecewiseProfile{float(promote_type(eltype(z_interfaces), eltype(N_values)))}(
+        z_interfaces, N_values)
 
 """
     FileProfile{T} <: StratificationProfile{T}
@@ -185,10 +204,9 @@ end
 """
     evaluate_N2(profile::SkewedGaussian, z::Real)
 
-Evaluate N² for skewed Gaussian profile.
-
-Uses the formula matching physics.jl:a_ell_ut():
-    N²(z) = N₁² exp(-(z-z₀)²/σ²) [1 + erf(α(z-z₀)/(σ√2))] + N₀²
+Evaluate N² for skewed Gaussian profile, the stratification of the Fortran
+test cases, at the depth `d = -z`:
+    N²(d) = N₁² exp(-(d-z₀)²/σ²) [1 + erf(α(d-z₀)/(σ√2))] + N₀²
 
 This creates a realistic pycnocline with:
 - Enhanced stratification near z₀
@@ -196,8 +214,6 @@ This creates a realistic pycnocline with:
 - Background N₀² in deep ocean
 """
 function evaluate_N2(profile::SkewedGaussian{T}, z::Real) where T
-    # Use the same formula as physics.jl:a_ell_ut() for consistency
-    # N²(z) = N₁² exp(-(z-z₀)²/σ²) [1 + erf(α(z-z₀)/(σ√2))] + N₀²
     z0 = profile.z0
     σ = profile.sigma
     α = profile.alpha
@@ -245,16 +261,17 @@ end
 Evaluate N² for piecewise profile.
 """
 function evaluate_N2(profile::PiecewiseProfile{T}, z::Real) where T
-    # Find which layer depth belongs to
     depth = -z
-    for i in 1:(length(profile.z_interfaces)-1)
-        if profile.z_interfaces[i] <= depth < profile.z_interfaces[i+1]
+    interfaces = profile.z_interfaces
+    # Above the first interface lies the top layer.
+    depth < first(interfaces) && return first(profile.N_values)^2
+    for i in 1:(length(interfaces) - 1)
+        if interfaces[i] <= depth < interfaces[i + 1]
             return profile.N_values[i]^2
         end
     end
-    
-    # Default to last layer if outside bounds
-    return profile.N_values[end]^2
+    # Below the last interface lies the bottom layer.
+    return last(profile.N_values)^2
 end
 
 """

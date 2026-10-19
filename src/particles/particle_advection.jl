@@ -220,6 +220,10 @@ particles' time, with the in-memory trajectory history. Positions and
 velocities live on the model's architecture (copy them with `Array` to index
 them on the host when the model runs on a GPU); the IDs and the history are
 host arrays.
+
+Positions and velocities have the particles' precision `T`, but times are
+`Float64`: in single precision, times of a few months are already rounded to
+seconds, which would distort the time interpolation of the velocity.
 """
 mutable struct ParticleState{T<:AbstractFloat}
     # Current state
@@ -229,7 +233,7 @@ mutable struct ParticleState{T<:AbstractFloat}
     id::Vector{Int}
     u::AbstractVector{T}
     v::AbstractVector{T}
-    time::T
+    time::Float64
     np::Int
 
     # Trajectory history
@@ -237,7 +241,7 @@ mutable struct ParticleState{T<:AbstractFloat}
     y_history::Vector{Vector{T}}
     z_history::Vector{Vector{T}}
     id_history::Vector{Vector{Int}}
-    time_history::Vector{T}
+    time_history::Vector{Float64}
 
     function ParticleState{T}(np::Int) where T
         ids = collect(1:np)
@@ -245,8 +249,8 @@ mutable struct ParticleState{T<:AbstractFloat}
             Vector{T}(undef, np), Vector{T}(undef, np), Vector{T}(undef, np),
             ids,
             Vector{T}(undef, np), Vector{T}(undef, np),
-            zero(T), np,
-            Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], T[]
+            0.0, np,
+            Vector{T}[], Vector{T}[], Vector{T}[], Vector{Int}[], Float64[]
         )
     end
 end
@@ -259,14 +263,14 @@ less the Stokes drift of horizontal orbits) and, for `:instantaneous` only,
 the amplitude of the wave velocity, which at
 time t is u = c LA_r + s LA_i and v = c LA_i - s LA_r, with c = cos(f t) and
 s = sin(f t). Unused arrays are empty. `valid` is false until the snapshot
-has been filled.
+has been filled. The time is `Float64`, like the particles' time.
 """
 mutable struct VelocitySnapshot{T<:AbstractFloat, A<:AbstractArray{T, 3}}
     u::A
     v::A
     LA_r::A
     LA_i::A
-    time::T
+    time::Float64
     valid::Bool
 end
 
@@ -275,7 +279,7 @@ function VelocitySnapshot{T}(architecture::AbstractArchitecture,
     return VelocitySnapshot(zeros_on(architecture, T, dims...),
                             zeros_on(architecture, T, dims...),
                             zeros_on(architecture, T, 0, 0, 0),
-                            zeros_on(architecture, T, 0, 0, 0), zero(T), false)
+                            zeros_on(architecture, T, 0, 0, 0), 0.0, false)
 end
 
 """Size the arrays of `snapshot` for `dims`, the wave amplitude only if `waves`."""
@@ -306,10 +310,12 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     model::Any
     architecture::A
 
-    # RuntimeGeometry information
+    # RuntimeGeometry information. The vertical extent is the grid's own,
+    # z_bottom to z_top, which need not end at z = 0.
     nx::Int; ny::Int; nz::Int
     Lx::T; Ly::T; Lz::T
     x0::T; y0::T
+    z_bottom::T; z_top::T
     dx::T; dy::T; dz::T
 
     # Velocity at the end of the current particle step (`current`) and at its
@@ -318,7 +324,7 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     current::S
     previous::S
     # `:instantaneous` only: the inertial frequency of the wave phase.
-    inertial_frequency::T
+    inertial_frequency::Float64
 
     # Transform plans (for velocity computation)
     plans::P
@@ -326,8 +332,8 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     # In-memory history: records saved, the last one's time, the next
     # nominal deadline, and whether max_save_points has been reached.
     save_counter::Int
-    last_save_time::T
-    next_history_time::T
+    last_save_time::Float64
+    next_history_time::Float64
     history_full::Bool
 
     # File splitting for large simulations
@@ -354,10 +360,11 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
             grid.nx, grid.ny, grid.nz,
             grid.Lx, grid.Ly, grid.Lz,
             grid.x0, grid.y0,
+            first(grid.z_faces), last(grid.z_faces),
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz,
-            current, previous, zero(T),
+            current, previous, 0.0,
             transform_plans,
-            0, zero(T), zero(T), false,
+            0, 0.0, 0.0, false,
             0, "", false  # output_file_sequence, base_output_filename, auto_file_splitting
         )
     end
@@ -484,7 +491,7 @@ See `ParticleConfig` for the two trajectory models, `wave_motion = :averaged`
 (default) and `:instantaneous`.
 """
 function advect_particles!(tracker::ParticleTracker{T},
-                          state::ModelFields, grid::RuntimeGeometry, dt::T,
+                          state::ModelFields, grid::RuntimeGeometry, dt::Real,
                           current_time=nothing;
                           f::Real=1, N2::Real=1,
                           N2_profile=nothing,
@@ -493,8 +500,8 @@ function advect_particles!(tracker::ParticleTracker{T},
                           workspace=nothing) where T
     _place_on_architecture!(tracker)
     particles = tracker.particles
-    t0 = current_time === nothing ? particles.time : T(current_time)
-    t1 = t0 + dt
+    t0 = current_time === nothing ? particles.time : Float64(current_time)
+    t1 = t0 + Float64(dt)
     particles.time = t0
     velocity_options = (; f, N2, N2_profile, N2_face_profile, formulation,
                         workspace)
@@ -537,7 +544,7 @@ function _advance_particles!(tracker::ParticleTracker{T}, t0, dt) where T
     integrator = Val(tracker.config.integration_method)
     launch!(_advect_particles_kernel!, particles.x, (particles.np,),
             particles.x, particles.y, particles.z, particles.u, particles.v,
-            _velocity_arguments(tracker), integrator, T(t0), T(dt), T(t0) + T(dt))
+            _velocity_arguments(tracker, t0), integrator, T(dt))
     return tracker
 end
 
@@ -547,16 +554,16 @@ function _store_particle_velocities!(tracker::ParticleTracker{T}, t) where T
     particles = tracker.particles
     launch!(_particle_velocity_kernel!, particles.u, (particles.np,),
             particles.u, particles.v, particles.x, particles.y, particles.z,
-            _velocity_arguments(tracker), T(t))
+            _velocity_arguments(tracker, t))
     return tracker
 end
 
 """
 Whether the snapshot time `t` is the step start `t0`, up to the rounding of
-times accumulated in the particles' precision.
+the particle time step, which a caller may give in the particles' precision.
 """
-@inline _same_time(t::T, t0::T, dt::T) where T =
-    abs(t - t0) <= max(dt / 100, 4 * eps(T) * abs(t0))
+@inline _same_time(t, t0, dt) =
+    abs(t - t0) <= max(dt / 100, 4 * eps(Float64) * abs(t0))
 
 """
     update_velocity_fields!(tracker, state, grid; time=tracker.particles.time, f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing, formulation=YBJPlus(), workspace=nothing)
@@ -602,15 +609,6 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
                             workspace)
     end
     instantaneous = config.wave_motion === :instantaneous
-    if instantaneous
-        # The Lagrangian mean minus the Stokes drift of horizontal orbits:
-        # particles that keep their depth make up that part of the drift
-        # themselves, but not the part from vertical excursions.
-        _PARENT.Operators._compute_wave_velocities!(state, grid;
-            plans=tracker.plans, f, N2, compute_w=false,
-            include_wave_velocity=false, N2_profile, N2_face_profile,
-            formulation, workspace, vertical_excursions=false)
-    end
 
     # The current snapshot becomes the previous one; refill the other.
     tracker.current, tracker.previous = tracker.previous, tracker.current
@@ -620,11 +618,21 @@ function update_velocity_fields!(tracker::ParticleTracker{T},
     snapshot.u .= state.u
     snapshot.v .= state.v
     if instantaneous
+        # The Lagrangian mean minus the Stokes drift of horizontal orbits:
+        # particles that keep their depth make up that part of the drift
+        # themselves, but not the part from vertical excursions. The drift is
+        # taken from the snapshot, so the model's velocity stays the
+        # Lagrangian mean.
+        _PARENT.Operators._compute_wave_velocities!(state, grid;
+            plans=tracker.plans, f, N2, compute_w=false,
+            include_wave_velocity=false, N2_profile, N2_face_profile,
+            formulation, workspace, vertical_excursions=false,
+            u=snapshot.u, v=snapshot.v)
         _PARENT.Operators.wave_velocity_amplitude!(snapshot.LA_r, snapshot.LA_i,
             state, grid; plans=tracker.plans, formulation, workspace)
-        tracker.inertial_frequency = T(f)
+        tracker.inertial_frequency = Float64(f)
     end
-    snapshot.time = T(time)
+    snapshot.time = Float64(time)
     snapshot.valid = true
     return tracker
 end
@@ -641,11 +649,11 @@ phase of `t`.
 function interpolate_velocity_at_position(x::T, y::T, z::T,
                                         tracker::ParticleTracker{T},
                                         t=tracker.particles.time) where T
-    velocity = _velocity_arguments(tracker)
-    tracker.architecture isa CPU && return _particle_velocity(x, y, z, T(t), velocity)
+    velocity = _velocity_arguments(tracker, t)
+    tracker.architecture isa CPU && return _particle_velocity(x, y, z, zero(T), velocity)
     # Interpolate on the device; only the two values come back.
     result = zeros_on(tracker.architecture, T, 2)
-    launch!(_point_velocity_kernel!, result, (1,), result, x, y, z, velocity, T(t))
+    launch!(_point_velocity_kernel!, result, (1,), result, x, y, z, velocity)
     u, v = Array(result)
     return u, v
 end
@@ -654,26 +662,41 @@ end
 Kernel-side velocity. `_velocity_arguments` packs the tracker's two snapshots
 and the interpolation parameters into a named tuple of device arrays and
 isbits values, which every particle kernel receives.
+
+Kernels work in the particles' precision with the time τ elapsed since a
+reference time t_ref, never with the time itself: in single precision a time
+of a few months is rounded to seconds. The weights of the two snapshots and
+the inertial phase at t_ref are formed on the host in Float64.
 =#
 
 """
-The tracker's velocity as kernel arguments: the fields of its two snapshots,
-their times, the inertial frequency, and the interpolation and domain
+The tracker's velocity as kernel arguments, for times `t_ref + τ`: the fields
+of its two snapshots, the weight `θ₀ + θ_rate τ` of the current one, the
+inertial phase `phase₀ + f τ` of the waves, and the interpolation and domain
 parameters.
 """
-function _velocity_arguments(tracker::ParticleTracker{T}) where T
+function _velocity_arguments(tracker::ParticleTracker{T}, t_ref) where T
     config = tracker.config
     waves = config.wave_motion === :instantaneous
     fields(snapshot) = waves ? (snapshot.u, snapshot.v, snapshot.LA_r, snapshot.LA_i) :
                                (snapshot.u, snapshot.v)
-    z_min = -tracker.Lz
-    return (; now=fields(tracker.current), before=fields(tracker.previous),
-            t_now=tracker.current.time, t_before=tracker.previous.time,
-            before_valid=tracker.previous.valid, f=tracker.inertial_frequency,
+    current, previous = tracker.current, tracker.previous
+    t = Float64(t_ref)
+    # Linear in time between the two snapshots; the current one alone when
+    # there is no valid start-of-step snapshot.
+    span = current.time - previous.time
+    blend = previous.valid && span > 0
+    θ₀ = blend ? (t - previous.time) / span : 1.0
+    θ_rate = blend ? 1 / span : 0.0
+    f = tracker.inertial_frequency
+    phase₀ = waves ? mod(f * t, 2π) : 0.0
+    z_min, z_max = tracker.z_bottom, tracker.z_top
+    return (; now=fields(current), before=fields(previous),
+            θ₀=T(θ₀), θ_rate=T(θ_rate), f=T(f), phase₀=T(phase₀),
             waves=Val(waves), stencil=_stencil(config.interpolation_method),
             grid_info=(dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                        Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz,
-                       z_min=z_min, z_max=zero(T), z0=z_min + tracker.dz / 2),
+                       z_min=z_min, z_max=z_max, z0=z_min + tracker.dz / 2),
             boundaries=(periodic_x=config.periodic_x, periodic_y=config.periodic_y),
             x0=tracker.x0, y0=tracker.y0)
 end
@@ -683,46 +706,49 @@ _stencil(method::InterpolationMethod) =
     method == TRILINEAR ? Val(2) : method == QUINTIC ? Val(6) : Val(4)
 
 """
-Weight of the end-of-step velocity at time `t`: linear in time between the
-two snapshots, and 1 when there is no valid start-of-step snapshot.
+Weight of the end-of-step velocity at the time τ after the reference time:
+linear in time between the two snapshots, and 1 when there is no valid
+start-of-step snapshot.
 """
-@inline function _current_weight(velocity, t::T) where T
-    span = velocity.t_now - velocity.t_before
-    (velocity.before_valid && span > 0) || return one(T)
-    return clamp((t - velocity.t_before) / span, zero(T), one(T))
-end
+@inline _current_weight(velocity, τ::T) where T =
+    clamp(velocity.θ₀ + velocity.θ_rate * τ, zero(T), one(T))
 
 """
 Horizontal velocity of one snapshot's `fields` at a position, with the wave
-phase of time `t`. Horizontal velocities have zero vertical derivative at the
-lid and the bottom, so every column is mirrored evenly there.
+phase of the time τ after the reference time. Horizontal velocities have zero
+vertical derivative at the lid and the bottom, so every column is mirrored
+evenly there.
 """
-@inline function _snapshot_velocity(fields::NTuple{N, Any}, x, y, z, t,
+@inline function _snapshot_velocity(fields::NTuple{N, Any}, x, y, z, τ,
                                     velocity) where N
     values = InterpolationSchemes._interpolate_stencil(velocity.stencil, fields,
         ntuple(_ -> 1, Val(N)), x - velocity.x0, y - velocity.y0, z,
         velocity.grid_info, velocity.boundaries)
-    return _horizontal_velocity(velocity.waves, values, t, velocity.f)
+    return _horizontal_velocity(velocity.waves, values, τ, velocity)
 end
 
-@inline _horizontal_velocity(::Val{false}, (u, v), t, f) = (u, v)
-@inline function _horizontal_velocity(::Val{true}, (u, v, LA_r, LA_i), t, f)
+@inline _horizontal_velocity(::Val{false}, (u, v), τ, velocity) = (u, v)
+@inline function _horizontal_velocity(::Val{true}, (u, v, LA_r, LA_i), τ, velocity)
     # Wave velocity at time t: u + iv = e^{-ift} LA.
-    s, c = sincos(f * t)
+    s, c = sincos(velocity.phase₀ + velocity.f * τ)
     return (u + c * LA_r + s * LA_i, v + c * LA_i - s * LA_r)
 end
 
-"""The horizontal velocity that advects a particle at `(x, y, z)` at time `t`."""
-@inline function _particle_velocity(x, y, z, t, velocity)
-    θ = _current_weight(velocity, t)
-    θ == 0 && return _snapshot_velocity(velocity.before, x, y, z, t, velocity)
-    uc, vc = _snapshot_velocity(velocity.now, x, y, z, t, velocity)
+"""
+The horizontal velocity that advects a particle at `(x, y, z)` at the time τ
+after the reference time of `velocity`.
+"""
+@inline function _particle_velocity(x, y, z, τ, velocity)
+    θ = _current_weight(velocity, τ)
+    θ == 0 && return _snapshot_velocity(velocity.before, x, y, z, τ, velocity)
+    uc, vc = _snapshot_velocity(velocity.now, x, y, z, τ, velocity)
     θ == 1 && return (uc, vc)
-    up, vp = _snapshot_velocity(velocity.before, x, y, z, t, velocity)
+    up, vp = _snapshot_velocity(velocity.before, x, y, z, τ, velocity)
     return (θ * uc + (1 - θ) * up, θ * vc + (1 - θ) * vp)
 end
 
-# Integration methods: one step from (x, y) at time t0, at the fixed depth z.
+# Integration methods: one step from (x, y) at the time t0 after the reference
+# time (zero for a particle step), at the fixed depth z.
 
 @inline function _integrate(::Val{:euler}, x, y, z, t0, dt, velocity)
     u, v = _particle_velocity(x, y, z, t0, velocity)
@@ -759,29 +785,31 @@ end
     return x, y
 end
 
-# Each work item moves one particle; z is read only, since particles keep
-# their depth.
+# Each work item moves one particle over the step [t_ref, t_ref + dt] of
+# `velocity`; z is read only, since particles keep their depth.
 @kernel function _advect_particles_kernel!(x, y, @Const(z), u, v, velocity,
-                                           integrator, t0, dt, t1)
+                                           integrator, dt)
     p = @index(Global, Linear)
     @inbounds begin
         zp = z[p]
-        xp, yp = _integrate(integrator, x[p], y[p], zp, t0, dt, velocity)
+        xp, yp = _integrate(integrator, x[p], y[p], zp, zero(dt), dt, velocity)
         xp, yp = _horizontal_boundaries(xp, yp, velocity)
         x[p] = xp
         y[p] = yp
-        u[p], v[p] = _particle_velocity(xp, yp, zp, t1, velocity)
+        u[p], v[p] = _particle_velocity(xp, yp, zp, dt, velocity)
     end
 end
 
+# The velocity at the reference time of `velocity`.
 @kernel function _particle_velocity_kernel!(u, v, @Const(x), @Const(y), @Const(z),
-                                            velocity, t)
+                                            velocity)
     p = @index(Global, Linear)
-    @inbounds u[p], v[p] = _particle_velocity(x[p], y[p], z[p], t, velocity)
+    @inbounds u[p], v[p] = _particle_velocity(x[p], y[p], z[p], zero(eltype(u)),
+                                              velocity)
 end
 
-@kernel function _point_velocity_kernel!(result, x, y, z, velocity, t)
-    u, v = _particle_velocity(x, y, z, t, velocity)
+@kernel function _point_velocity_kernel!(result, x, y, z, velocity)
+    u, v = _particle_velocity(x, y, z, zero(x), velocity)
     @inbounds result[1] = u
     @inbounds result[2] = v
 end
@@ -840,10 +868,10 @@ Move the next history deadline past the current time in whole intervals, so
 that late records do not delay later ones.
 """
 function _advance_history_deadline!(tracker::ParticleTracker{T}) where T
-    interval = tracker.config.save_interval
+    interval = Float64(tracker.config.save_interval)
     (isfinite(interval) && interval > 0) || return tracker
     time = tracker.particles.time
-    tolerance = 8eps(max(abs(time), abs(interval), one(T)))
+    tolerance = 8eps(max(abs(time), abs(interval), 1.0))
     while tracker.next_history_time <= time + tolerance
         tracker.next_history_time += interval
     end
@@ -905,11 +933,11 @@ Whether the tracker's in-memory history is due a record: never for
 nominal times `t₀ + n save_interval`, which late records do not shift.
 """
 function should_save_particles(tracker::ParticleTracker{T}) where T
-    interval = tracker.config.save_interval
+    interval = Float64(tracker.config.save_interval)
     isfinite(interval) || return false
     interval > 0 || return true
     time = tracker.particles.time
-    tolerance = 8eps(max(abs(time), abs(interval), one(T)))
+    tolerance = 8eps(max(abs(time), abs(interval), 1.0))
     return time >= tracker.next_history_time - tolerance
 end
 

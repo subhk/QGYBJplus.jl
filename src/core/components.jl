@@ -189,8 +189,18 @@ WaveHyperdiffusivity(; coefficient::Real, order::Int=4) =
     HorizontalHyperdiffusivity(; flow, wave)
 
 Horizontal damping composed from explicit balanced-flow and wave components.
-The no-argument constructor retains the model's standard fourth- and
-twelfth-order damping terms.
+
+The no-argument constructor, also the model's default closure, keeps the
+fourth- and twelfth-order terms of nondimensional setups: coefficients
+`(0.01, 10.0)` for the flow and `(0.0, 10.0)` for the waves. With dimensional
+wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) they damp nothing, so a dimensional run should
+give its own coefficients, for instance from [`compute_hyperdiff_coeff`](@ref):
+
+```julia
+ν = compute_hyperdiff_coeff(dx=grid.dx, dy=grid.dy, dt=Δt, order=8)
+closure = HorizontalHyperdiffusivity(flow=FlowHyperdiffusivity(coefficient=ν, order=8),
+                                     wave=WaveHyperdiffusivity(coefficient=ν, order=8))
+```
 """
 struct HorizontalHyperdiffusivity{F<:FlowHyperdiffusivity,
                                   W<:WaveHyperdiffusivity} <: AbstractClosure
@@ -208,8 +218,10 @@ function HorizontalHyperdiffusivity(;
 end
 
 """
-Horizontally uniform, surface-confined wave initial condition. Its depth mean
-is removed when it is set, since the wave velocity has no barotropic part.
+Horizontally uniform, surface-confined wave initial condition, whose profile
+decays over `scale` downward from the top of the domain (its rigid lid). Its
+depth mean is removed when it is set, since the wave velocity has no
+barotropic part.
 """
 struct SurfaceWave{T}
     amplitude::T

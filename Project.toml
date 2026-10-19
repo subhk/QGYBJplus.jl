@@ -1,7 +1,7 @@
 name = "QGYBJplus"
 uuid = "9782897d-e654-4714-b43b-fe3f3f944194"
 authors = ["Subhajit Kar <subhajitkar19@gmail.com>"]
-version = "1.0.30"
+version = "2.0.0"
 
 [deps]
 AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
@@ -10,7 +10,6 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -36,7 +35,8 @@ julia = "1.10"
 
 [extras]
 JLArrays = "27aeb0d3-9eb9-45fb-866b-73c2ecf80fcb"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["JLArrays", "Test"]
+test = ["JLArrays", "LinearAlgebra", "Test"]

@@ -1,6 +1,5 @@
 module QGYBJplus
 
-using LinearAlgebra
 using Random
 using SpecialFunctions: erf
 using NCDatasets

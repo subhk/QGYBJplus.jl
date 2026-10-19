@@ -26,6 +26,50 @@ using QGYBJplus
     @test QGYBJplus._etd_coefficients(Inf, h) == (0.0, 0.0, 0.0)
 end
 
+@testset "Single-precision models keep high-order hyperdiffusion" begin
+    # Dimensional wavenumbers raised to a high order underflow Float32: at
+    # the two-thirds cutoff of a 500 km, 64-point grid kₕ¹² ≈ 1e-43 is
+    # subnormal and kₕ¹⁶ is zero, which once switched the damping off.
+    k = 21 * 2π / 500e3
+    for order in (12, 16)
+        closure = FlowHyperdiffusivity(coefficient=1e40, order=order)
+        rate = QGYBJplus.Nonlinear._hyperdiffusion_exponent(closure, k^2, 1.0)
+        @test QGYBJplus.Nonlinear._hyperdiffusion_exponent(
+            closure, Float32(k)^2, 1.0) ≈ rate rtol=1e-5
+    end
+
+    Δt = 100.0
+    for order in (12, 16)
+        ν = compute_hyperdiff_coeff(dx=500e3 / 64, dy=500e3 / 64, dt=Δt, order=order)
+        closure = HorizontalHyperdiffusivity(
+            flow=FlowHyperdiffusivity(coefficient=ν, order=order),
+            wave=WaveHyperdiffusivity(coefficient=ν, order=order))
+        tables = map((Float64, Float32)) do FT
+            grid = RectilinearGrid(CPU(), FT; size=(64, 64, 2),
+                                   extent=(500e3, 500e3, 4000.0))
+            model = QGYBJModel(; grid, closure, verbose=false)
+            try
+                options = QGYBJplus.ETDModelOptions(model.physics, model.numerics)
+                table = QGYBJplus.ETDCoefficientTable(model.fields)
+                QGYBJplus.fill_etd_table!(table, model.fields,
+                                          model.runtime.geometry, options, Δt)
+                table
+            finally
+                finalize_model!(model)
+            end
+        end
+        # Factors of strongly damped modes, below 1e-30, underflow Float32.
+        for name in (:Eq, :hphi1q, :hphi2q, :EB, :hphi1B, :hphi2B)
+            @test all(isapprox.(getfield(tables[2], name),
+                                getfield(tables[1], name); rtol=2e-4, atol=1e-30))
+        end
+        # The largest wavenumber the dealiasing keeps, 21 along x, decays by
+        # about e in ten steps (compute_hyperdiff_coeff's target, 2π/3dx, is
+        # slightly larger).
+        @test 0.85 < tables[2].Eq[22, 1] < exp(-0.05)
+    end
+end
+
 @testset "Model-owned exponential Runge-Kutta 2" begin
     grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
     model = QGYBJModel(

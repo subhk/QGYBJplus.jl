@@ -18,9 +18,17 @@ using QGYBJplus
 
 grid = RectilinearGrid(CPU(); size=(64, 64, 32),
                        extent=(500e3, 500e3, 4000.0), centered=true)
+
+# Hyperdiffusion that damps the smallest resolved scale by e every 10 steps
+Δt = 20.0
+ν = compute_hyperdiff_coeff(dx=grid.dx, dy=grid.dy, dt=Δt, order=8)
+closure = HorizontalHyperdiffusivity(flow=FlowHyperdiffusivity(coefficient=ν, order=8),
+                                     wave=WaveHyperdiffusivity(coefficient=ν, order=8))
+
 model = QGYBJModel(grid=grid,
                    coriolis=FPlane(f=1e-4),
                    stratification=ConstantStratification(N²=1e-5),
+                   closure=closure,
                    flow=EvolvingFlow(),
                    feedback=WaveMeanFeedback(),
                    formulation=YBJPlus())
@@ -29,7 +37,7 @@ set!(model;
      ψ=(x, y, z) -> 1e3 * sin(2π*x/500e3) * cos(2π*y/500e3),
      waves=SurfaceWave(amplitude=0.1, scale=30.0))
 
-simulation = Simulation(model; Δt=20.0, stop_time=86400.0,
+simulation = Simulation(model; Δt, stop_time=86400.0,
                         output=NetCDFOutput(path="output",
                                             schedule=TimeInterval(3600.0)))
 try

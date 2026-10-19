@@ -1,19 +1,25 @@
-"""Compute `a(z) = f² / N²(z)` with a stable lower bound on `N²`."""
+"""
+Compute `a(z) = f² / N²(z)`, with `N²` bounded below by `√eps` times its
+largest value. The bound is relative so that it means the same in every unit
+system: an absolute `√eps ≈ 1.5e-8` would clamp realistic abyssal N² in s⁻².
+"""
 function a_ell_from_N2(N2_profile::AbstractVector, f::Real)
     isempty(N2_profile) &&
         throw(ArgumentError("the stratification profile cannot be empty"))
     T = promote_type(eltype(N2_profile), typeof(float(f)))
-    threshold = sqrt(eps(T))
+    for (k, value) in enumerate(N2_profile)
+        isfinite(value) ||
+            throw(ArgumentError("N² must be finite at vertical level $k"))
+        value > zero(value) ||
+            throw(ArgumentError("N² must be positive at vertical level $k"))
+    end
+    threshold = sqrt(eps(T)) * T(maximum(N2_profile))
     warned = false
     coefficients = Vector{T}(undef, length(N2_profile))
     @inbounds for k in eachindex(N2_profile)
         value = T(N2_profile[k])
-        isfinite(value) ||
-            throw(ArgumentError("N² must be finite at vertical level $k"))
-        value > zero(T) ||
-            throw(ArgumentError("N² must be positive at vertical level $k"))
         if value < threshold && !warned
-            @warn "N² is close to zero; clamping elliptic coefficients" level=k threshold maxlog=1
+            @warn "N² is below √eps times its largest value; clamping elliptic coefficients" level=k threshold maxlog=1
             warned = true
         end
         coefficients[k] = T(f)^2 / max(value, threshold)
@@ -62,9 +68,20 @@ end
 @inline is_dealiased(i::Int, j::Int, geometry::RectilinearGrid) =
     is_dealiased(i, j, geometry.size[1], geometry.size[2])
 
-"""Coefficient giving one e-fold of damping at the target scale."""
+"""
+    compute_hyperdiff_coeff(; dx, dy, dt, order=4, efold_steps=10, kmax_fraction=2/3)
+
+Coefficient `ν` of a hyperdiffusion term `ν kₕ^order` that damps the target
+wavenumber `kmax_fraction π / min(dx, dy)` by one e-fold every `efold_steps`
+steps of length `dt`.
+
+The default, `kmax_fraction = 2/3`, targets the largest wavenumber the
+two-thirds dealiasing keeps. `kmax_fraction = 1` targets the Nyquist
+wavenumber instead; nonlinear runs remove it, so the smallest scale they keep
+is then damped `(3/2)^order` times more weakly than intended.
+"""
 function compute_hyperdiff_coeff(; dx::Real, dy::Real, dt::Real,
-    order::Int=4, efold_steps::Int=10, kmax_fraction::Real=1)
+    order::Int=4, efold_steps::Int=10, kmax_fraction::Real=2/3)
 
     all(isfinite, (dx, dy, dt, kmax_fraction)) ||
         throw(ArgumentError("spacing, step size, and scale fraction must be finite"))
@@ -80,22 +97,27 @@ function compute_hyperdiff_coeff(; dx::Real, dy::Real, dt::Real,
     return inv(efold_steps * dt * k_max^order)
 end
 
-"""Compute a coefficient and Laplacian power from domain dimensions."""
+"""
+Compute a coefficient and Laplacian power from domain dimensions (see
+[`compute_hyperdiff_coeff`](@ref) for `kmax_fraction`).
+"""
 function compute_hyperdiff_params(; nx::Int, ny::Int,
-    Lx::Real, Ly::Real, dt::Real, order::Int=4, efold_steps::Int=10)
+    Lx::Real, Ly::Real, dt::Real, order::Int=4, efold_steps::Int=10,
+    kmax_fraction::Real=2/3)
 
     nx > 0 && ny > 0 || throw(ArgumentError("dimensions must be positive"))
     coefficient = compute_hyperdiff_coeff(
-        dx=Lx / nx, dy=Ly / ny, dt, order, efold_steps)
+        ; dx=Lx / nx, dy=Ly / ny, dt, order, efold_steps, kmax_fraction)
     return (ν=coefficient, ilap=order ÷ 2, order)
 end
 
 """Return matching typed closure coefficients for flow and waves."""
 function dimensional_hyperdiff_params(; nx::Int, ny::Int,
-    Lx::Real, Ly::Real, dt::Real, order::Int=4, efold_steps::Int=10)
+    Lx::Real, Ly::Real, dt::Real, order::Int=4, efold_steps::Int=10,
+    kmax_fraction::Real=2/3)
 
     result = compute_hyperdiff_params(
-        ; nx, ny, Lx, Ly, dt, order, efold_steps)
+        ; nx, ny, Lx, Ly, dt, order, efold_steps, kmax_fraction)
     return (
         νₕ₁=result.ν,
         ilap1=result.ilap,

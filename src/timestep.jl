@@ -373,7 +373,10 @@ function _diagnose_flow!(S::ModelFields, G::RuntimeGeometry,
                          N2_face_profile=nothing,
                          timestep_workspace=nothing, compute_w=false,
                          use_wave_feedback=true)
-    N2 = N2_profile === nothing ? 1.0 : first_value(N2_profile)
+    # The scalar N² is only the vertical velocity's fallback for a missing
+    # profile. Reading it from a device profile synchronizes the device, so
+    # the stages, which skip w, never do.
+    N2 = compute_w && N2_profile !== nothing ? first_value(N2_profile) : 1.0
     velocities!() = compute_velocities!(S, G; plans, f=options.f, N2, compute_w,
         N2_profile, N2_face_profile, workspace, dealias_mask=L)
 
@@ -730,8 +733,8 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
     # operands of each quadratic product are alias-safe. The public final
     # diagnostics, however, must correspond to the restored prescribed ψ.
     if restore_full_fixed_diagnostics
-        N2 = N2_profile === nothing ? 1.0 : first_value(N2_profile)
-        compute_velocities!(S, G; plans, f=options.f, N2, compute_w=false,
+        # Without w, no scalar N² is needed (see `_diagnose_flow!`).
+        compute_velocities!(S, G; plans, f=options.f, compute_w=false,
             N2_profile, N2_face_profile, workspace, dealias_mask=L)
     end
     return S

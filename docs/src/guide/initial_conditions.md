@@ -69,7 +69,8 @@ set!(
 )
 ```
 
-The profile may be `:gaussian` or `:exponential`. The wave is horizontally
+The profile may be `:gaussian` or `:exponential`, decaying over `scale`
+downward from the top of the domain, its rigid lid. The wave is horizontally
 uniform, and its depth mean is removed, since the wave velocity has no
 barotropic part (see [YBJ⁺ wave model](@ref ybj-plus)). For a surface layer
 much thinner than the ocean that changes the profile very little; for a
@@ -86,6 +87,10 @@ set_wave_packet!(
     sigma_k=0.5,
 )
 ```
+
+The packet's Gaussian vertical envelope is centered `z_center` below the top
+of the domain, with width `z_width`; they default to half and a quarter of
+the depth.
 
 ## Direct array access
 

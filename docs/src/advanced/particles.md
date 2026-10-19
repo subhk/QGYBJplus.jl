@@ -26,6 +26,10 @@ The tracker is available as `model.particles`. Its geometry, FFT plans, and
 velocity source all refer back to the owning model. Particles move with the
 horizontal velocity and keep their depth.
 
+Positions and velocities have the configuration's precision (`Float32` for
+the `particles_in_*` helpers unless given), while the particle time is always
+`Float64`, so that the times of long runs stay exact.
+
 Particle positions, the velocity that advects them, and the advection
 itself live on the model's architecture: on a GPU, a particle step copies the
 model's horizontal velocity within the device and advances every particle in
@@ -124,14 +128,15 @@ particle output:
 particle_output = ParticleOutputManager(
     "output";
     save_interval_iter=20,
-    save_interval_time=0.0,
     output_mode=:trajectory,
 )
 simulation = Simulation(model; particle_output=particle_output, ...)
 ```
 
-Set the unused interval to zero when selecting iteration- or time-based
-scheduling. The output modes are:
+Give a schedule: `save_interval_iter` iterations, or `save_interval_time` in
+the model's time units (seconds for a dimensional model). There is no
+default, and the iteration interval wins when both are given. The output
+modes are:
 
 - `:trajectory`: one file, written when the run ends;
 - `:streaming`: one file, extended at every save, so a run that is stopped

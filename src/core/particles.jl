@@ -58,9 +58,9 @@ function UnifiedParticleAdvection.advect_particles!(
     tracker = model.particles
     tracker isa ParticleTracker ||
         throw(ArgumentError("initialize model particles before advection"))
-    T = typeof(tracker.particles.time)
-    value = T(Δt)
-    isfinite(value) && value > zero(T) ||
+    # Particle times are Float64 whatever the particles' precision.
+    value = Float64(Δt)
+    isfinite(value) && value > 0 ||
         throw(ArgumentError("particle time step must be finite and positive"))
 
     runtime = model.runtime
@@ -101,12 +101,12 @@ function _record_particle_velocity!(tracker::ParticleTracker,
 
     tracker === model.particles ||
         error("model particle ownership is inconsistent")
-    T = typeof(tracker.particles.time)
-    T(time) < tracker.config.particle_advec_time && return tracker
+    time = Float64(time)
+    time < tracker.config.particle_advec_time && return tracker
     UnifiedParticleAdvection.update_velocity_fields!(
-        tracker, model.fields, model.runtime.geometry; time=T(time),
+        tracker, model.fields, model.runtime.geometry; time,
         _particle_velocity_options(model)...)
-    UnifiedParticleAdvection._store_particle_velocities!(tracker, T(time))
+    UnifiedParticleAdvection._store_particle_velocities!(tracker, time)
     return tracker
 end
 

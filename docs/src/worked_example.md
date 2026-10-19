@@ -17,7 +17,7 @@ To run on a GPU, load CUDA.jl and build the grid with
 `RectilinearGrid(GPU(); ...)`; see [CPU and GPU execution](@ref architectures).
 
 Defaults are 256×256×128 points, a 70 km square horizontal domain, 3 km depth,
-and 15 inertial periods with `Δt = 2 s`.
+and 10 inertial periods with `Δt = 2 s`.
 
 For a smaller run, reduce `size` and `stop_time` in the script. The setup uses
 a fixed barotropic flow, YBJ⁺ waves, no wave feedback, and wave

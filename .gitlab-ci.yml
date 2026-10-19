@@ -66,18 +66,4 @@ mpi-test:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - julia --project=. -e 'using Pkg; Pkg.instantiate()'
-    - >-
-      julia --project=. -e
-      'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_stepping_regression.jl`)'
-    - >-
-      julia --project=. -e
-      'using MPI; run(`$(MPI.mpiexec()) -n 1 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
-    - >-
-      julia --project=. -e
-      'using MPI; run(`$(MPI.mpiexec()) -n 4 $(Base.julia_cmd()) --project=. test/test_mpi_zpencil_regression.jl`)'
-    - >-
-      julia --project=. -e
-      'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_particles_periodic.jl`)'
-    - >-
-      julia --project=. -e
-      'using MPI; run(`$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()) --project=. test/test_mpi_extension.jl`)'
+    - julia --project=. -e 'using Pkg; Pkg.test()'
