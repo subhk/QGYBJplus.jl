@@ -34,6 +34,9 @@ end
 default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
     "output", nothing, 10, true, true, true, false, false, false)
 
+Base.copy(options::SimulationRunOptions{T}) where T = SimulationRunOptions{T}(
+    (getfield(options, name) for name in fieldnames(SimulationRunOptions))...)
+
 """
     Simulation
 

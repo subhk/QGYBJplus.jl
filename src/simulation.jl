@@ -42,12 +42,17 @@ function _prettytime(seconds::Real)
            @sprintf("%.3f %s", value, units)
 end
 
+"""
+Whether the clock is still short of `stop_time`. A clock within a millionth
+of a step of it has reached it: the time `t₀ + nΔt` carries rounding, and an
+exact multiple of the step must not take one step more.
+"""
 function _before_stop_time(simulation::Simulation)
     stop_time = simulation.stop_time
     stop_time === nothing && return true
     time = simulation.clock.time
-    tolerance = 8eps(max(
-        abs(time), abs(stop_time), abs(_time_step(simulation)), one(time)))
+    tolerance = max(8eps(max(abs(time), abs(stop_time), one(time))),
+                    1e-6 * _time_step(simulation))
     return time < stop_time - tolerance
 end
 
@@ -171,6 +176,19 @@ function _assert_mutable(simulation::Simulation)
     return simulation
 end
 
+"""The settings that `run!` keywords may change, to restore if one is rejected."""
+_run_settings(simulation::Simulation) =
+    (Δt=simulation.timestepper.Δt, stop_time=simulation.stop_time,
+     stop_iteration=simulation.stop_iteration, options=copy(simulation.run_options))
+
+function _restore_run_settings!(simulation::Simulation, saved)
+    simulation.timestepper.Δt = saved.Δt
+    simulation.stop_time = saved.stop_time
+    simulation.stop_iteration = saved.stop_iteration
+    simulation.run_options = saved.options
+    return simulation
+end
+
 function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
 
@@ -267,13 +285,15 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     particle_output=nothing, verbose=nothing)
 
     model.runtime.finalized && error("cannot create a simulation from a finalized model")
-    value = float(Δt)
+    # Time is kept in Float64 whatever the type of Δt: a Float32 clock rounds
+    # every step, and after months of simulated time it no longer resolves Δt.
+    value = Float64(Δt)
     isfinite(value) && value > 0 ||
         throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
-    options = default_run_options(typeof(value))
+    options = default_run_options(Float64)
     simulation = Simulation(
         model,
-        Clock(typeof(value)),
+        Clock(Float64),
         ExponentialRungeKutta2(Δt=value),
         nothing,
         nothing,
@@ -799,18 +819,26 @@ function run!(simulation::Simulation;
     runtime = model.runtime
     runtime.finalized &&
         throw(InvalidStateException("model runtime has been finalized", :finalized))
-    _configure_time_stepping!(simulation; Δt, stop_time, stop_iteration)
-    _configure_output!(simulation; output, diagnostics, verbose)
-    _apply_output_overrides!(simulation;
-        output_dir, save_interval, save_psi, save_waves, save_velocities)
-
+    # Apply the keyword overrides all together or not at all: a rejected
+    # keyword must not leave the others in place for the next run!.
+    saved = _run_settings(simulation)
+    try
+        _configure_time_stepping!(simulation; Δt, stop_time, stop_iteration)
+        _configure_output!(simulation; output, diagnostics, verbose)
+        _apply_output_overrides!(simulation;
+            output_dir, save_interval, save_psi, save_waves, save_velocities)
+        options = simulation.run_options
+        progress !== nothing && (options.verbose = progress)
+        diagnostics_interval !== nothing &&
+            (options.diagnostics_interval = diagnostics_interval)
+        options.diagnostics_interval > 0 ||
+            throw(ArgumentError("diagnostics_interval must be positive"))
+    catch
+        _restore_run_settings!(simulation, saved)
+        rethrow()
+    end
     detailed_progress = progress === true
     options = simulation.run_options
-    progress !== nothing && (options.verbose = progress)
-    diagnostics_interval !== nothing &&
-        (options.diagnostics_interval = diagnostics_interval)
-    options.diagnostics_interval > 0 ||
-        throw(ArgumentError("diagnostics_interval must be positive"))
 
     run_wall_start = time_ns()
     _prepare_run_output!(simulation)
@@ -823,16 +851,20 @@ function run!(simulation::Simulation;
         _record_particle_velocity!(model.particles, model, simulation.clock.time)
         _maybe_write_particle_output!(simulation; initial=true)
 
+        # The clock is t₀ + nΔt rather than a running sum, which would gather
+        # rounding error every step and drift from the schedules.
+        start_time, start_iteration = simulation.clock.time, simulation.clock.iteration
+        Δt_run = _time_step(simulation)
         while (simulation.stop_iteration === nothing ||
                simulation.clock.iteration < simulation.stop_iteration) &&
               _before_stop_time(simulation)
             step!(model, simulation.timestepper)
             _check_termination_conditions!(simulation)
-            _advect_model_particles!(model.particles, model,
-                                     _time_step(simulation),
+            _advect_model_particles!(model.particles, model, Δt_run,
                                      simulation.clock.time)
             simulation.clock.iteration += 1
-            simulation.clock.time += _time_step(simulation)
+            simulation.clock.time =
+                start_time + (simulation.clock.iteration - start_iteration) * Δt_run
             _maybe_write_simulation_output!(simulation)
             _maybe_record_simulation_diagnostics!(simulation)
             _maybe_write_particle_output!(simulation)

@@ -11,9 +11,22 @@ end
 @inline _to_xyz(array::AbstractArray) = permutedims(array, (2, 3, 1))
 @inline _from_xyz(array::AbstractArray) = permutedims(array, (3, 1, 2))
 
+"""
+    _next_deadline(time, interval)
+
+The first time `k * interval` (`k` a positive integer) after `time`. Every
+`TimeInterval` schedule lies on this grid of multiples from t = 0, so a
+restored run keeps the original output times, and a deadline computed in one
+multiplication does not drift as a running sum would.
+"""
+function _next_deadline(time, interval)
+    tolerance = 8eps(max(abs(time), abs(interval), one(time)))
+    return (floor((time + tolerance) / interval) + 1) * interval
+end
+
 function ModelOutputManager(specification::S, ::Type{T}, start_time=zero(T)) where {S, T}
     next_time = specification.schedule isa TimeInterval ?
-                T(start_time + specification.schedule.interval) : nothing
+                T(_next_deadline(start_time, specification.schedule.interval)) : nothing
     return ModelOutputManager{T, S}(
         specification, 1, nothing, nothing, next_time, false)
 end
@@ -72,6 +85,37 @@ function _existing_state_files(path::AbstractString)
 end
 
 """
+The existing state files a run would replace: all of them for a run from
+iteration 0, those after the restart iteration for a restored run.
+"""
+_stale_state_files(existing, clock::Clock) =
+    filter(file -> clock.iteration == 0 || file.iteration > clock.iteration, existing)
+
+"""Error, unless `overwrite=true`, when `stale` state files are in the way."""
+function _check_stale_state_files(specification::NetCDFOutput, stale, clock::Clock)
+    isempty(stale) || specification.overwrite || throw(ArgumentError(
+        "$(specification.path) already holds state files " *
+        "($(basename(first(stale).path)) to $(basename(last(stale).path))) " *
+        (clock.iteration > 0 ? "after this run's restart iteration $(clock.iteration)" :
+                               "from another run") *
+        "; choose a new path or pass NetCDFOutput(...; overwrite=true) " *
+        "to replace them"))
+    return nothing
+end
+
+"""Check, changing no file, that the run's state files can be written."""
+function _check_simulation_output(simulation::Simulation)
+    specification = simulation.run_options.output
+    specification isa NetCDFOutput || return nothing
+    manager = simulation.output_manager
+    (manager !== nothing && !manager.closed) && return nothing
+    existing = _existing_state_files(specification.path)
+    _check_stale_state_files(specification,
+        _stale_state_files(existing, simulation.clock), simulation.clock)
+    return nothing
+end
+
+"""
 Number this run's state files after those already in its output directory.
 A restored simulation (clock past iteration 0) appends after the files up to
 its restart iteration, and does not write the restart state again. Other
@@ -84,16 +128,9 @@ function _resume_state_files!(manager::ModelOutputManager, clock::Clock)
     existing = _existing_state_files(specification.path)
     isempty(existing) && return manager
 
-    restored = clock.iteration > 0
-    stale = filter(file -> !restored || file.iteration > clock.iteration, existing)
+    stale = _stale_state_files(existing, clock)
     if !isempty(stale)
-        specification.overwrite || throw(ArgumentError(
-            "$(specification.path) already holds state files " *
-            "($(basename(first(stale).path)) to $(basename(last(stale).path))) " *
-            (restored ? "after this run's restart iteration $(clock.iteration)" :
-                        "from another run") *
-            "; choose a new path or pass NetCDFOutput(...; overwrite=true) " *
-            "to replace them"))
+        _check_stale_state_files(specification, stale, clock)
         foreach(file -> rm(file.path), stale)
         filter!(file -> !(file in stale), existing)
     end
@@ -131,12 +168,7 @@ end
 function _advance_output_deadline!(manager::ModelOutputManager, time)
     schedule = manager.specification.schedule
     schedule isa TimeInterval || return manager
-    manager.next_time === nothing &&
-        (manager.next_time = time + schedule.interval)
-    tolerance = 8eps(max(abs(time), abs(schedule.interval), one(time)))
-    while manager.next_time <= time + tolerance
-        manager.next_time += schedule.interval
-    end
+    manager.next_time = _next_deadline(time, schedule.interval)
     return manager
 end
 
@@ -353,7 +385,7 @@ function EnergyDiagnosticsManager(specification::S, ::Type{T},
     start_time=zero(T)) where {S, T}
 
     next_time = specification.schedule isa TimeInterval ?
-                T(start_time + specification.schedule.interval) : nothing
+                T(_next_deadline(start_time, specification.schedule.interval)) : nothing
     return EnergyDiagnosticsManager{T, S}(
         specification, nothing, nothing, nothing, next_time,
         T[], T[], T[], T[], T[], T[], 0.0, false)
@@ -415,22 +447,8 @@ the records after the restart time).
 """
 function _resume_energy_series!(manager::EnergyDiagnosticsManager, clock::Clock)
     specification = manager.specification
-    existing = filter(isfile, _energy_files(specification.path))
+    existing, stored, keep, tolerance = _check_energy_series(specification, clock)
     isempty(existing) && return manager
-
-    summary = joinpath(specification.path, "total_energy.nc")
-    restored = clock.iteration > 0
-    stored = restored && isfile(summary) ? _read_energy_series(summary) : nothing
-    tolerance = 8eps(max(abs(clock.time), one(clock.time)))
-    keep = stored === nothing ? 0 :
-           count(time -> time <= clock.time + tolerance, stored.time)
-    if stored === nothing || keep < length(stored.time)
-        specification.overwrite || throw(ArgumentError(
-            "$(specification.path) already holds energy diagnostics " *
-            (restored ? "after this run's restart time $(clock.time)" :
-                        "from another run") *
-            "; choose a new path or pass overwrite=true to replace them"))
-    end
     if stored === nothing
         foreach(rm, existing)
         return manager
@@ -447,6 +465,42 @@ function _resume_energy_series!(manager::EnergyDiagnosticsManager, clock::Clock)
         manager.last_iteration = clock.iteration
     end
     return manager
+end
+
+"""
+The existing energy files of `specification`, the series stored in them (for a
+restored run), how many of its records precede the restart, and the time
+tolerance; an error unless `overwrite=true` when records would be replaced.
+Changes no file.
+"""
+function _check_energy_series(specification::EnergyDiagnosticsOutput, clock::Clock)
+    existing = filter(isfile, _energy_files(specification.path))
+    tolerance = 8eps(max(abs(clock.time), one(clock.time)))
+    isempty(existing) && return existing, nothing, 0, tolerance
+
+    summary = joinpath(specification.path, "total_energy.nc")
+    restored = clock.iteration > 0
+    stored = restored && isfile(summary) ? _read_energy_series(summary) : nothing
+    keep = stored === nothing ? 0 :
+           count(time -> time <= clock.time + tolerance, stored.time)
+    if stored === nothing || keep < length(stored.time)
+        specification.overwrite || throw(ArgumentError(
+            "$(specification.path) already holds energy diagnostics " *
+            (restored ? "after this run's restart time $(clock.time)" :
+                        "from another run") *
+            "; choose a new path or pass overwrite=true to replace them"))
+    end
+    return existing, stored, keep, tolerance
+end
+
+"""Check, changing no file, that the run's energy series can be written."""
+function _check_simulation_diagnostics(simulation::Simulation)
+    specification = _diagnostics_specification(simulation)
+    specification === false && return nothing
+    manager = simulation.diagnostics_manager
+    (manager !== nothing && !manager.closed) && return nothing
+    _check_energy_series(specification, simulation.clock)
+    return nothing
 end
 
 """Times and energy components stored in a `total_energy.nc` file."""
@@ -481,12 +535,7 @@ function _advance_diagnostics_deadline!(manager::EnergyDiagnosticsManager,
 
     schedule = manager.specification.schedule
     schedule isa TimeInterval || return manager
-    manager.next_time === nothing &&
-        (manager.next_time = time + schedule.interval)
-    tolerance = 8eps(max(abs(time), abs(schedule.interval), one(time)))
-    while manager.next_time <= time + tolerance
-        manager.next_time += schedule.interval
-    end
+    manager.next_time = _next_deadline(time, schedule.interval)
     return manager
 end
 
