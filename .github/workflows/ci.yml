@@ -80,19 +80,34 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.10'
+      # JLArrays, a test-only dependency, needs a newer KernelAbstractions than
+      # the compat floor, and the downgrade action resolves the test extras
+      # together with the package's dependencies. Drop them from this checkout
+      # so that the resolution reaches the package's own floors; runtests.jl
+      # then skips the emulated-GPU tests that use JLArrays.
+      - name: Leave the test-only extras out of the resolution
+        run: |
+          julia --color=yes -e '
+            using TOML
+            project = TOML.parsefile("Project.toml")
+            for name in keys(pop!(project, "extras", Dict()))
+                delete!(project["compat"], name)
+            end
+            delete!(project, "targets")
+            open(io -> TOML.print(io, project), "Project.toml", "w")'
       # Writes a Manifest.toml with the lowest versions that the [compat]
-      # bounds allow together.
+      # bounds allow together, and installs them without building them.
       - uses: julia-actions/julia-downgrade-compat@v2
         with:
           mode: deps
-      # JLArrays, a test-only dependency, needs a newer KernelAbstractions
-      # than the compat floor. The suite therefore runs in the package's own
-      # environment, where runtests.jl skips the emulated-GPU tests that use it.
+      # Old releases among those versions, such as FFTW 1.3, have build steps,
+      # which must run before anything is precompiled.
       - name: Run tests at the lowest compatible versions
         run: |
           julia --project=. --color=yes --check-bounds=yes -e '
             using Pkg
-            Pkg.instantiate()
+            Pkg.instantiate(; allow_autoprecomp=false)
+            Pkg.build()
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)
             include(joinpath(pwd(), "test", "runtests.jl"))'
 
