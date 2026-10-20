@@ -78,8 +78,8 @@ The streamfunction is diagnosed from balanced PV:
 = q-q^w.
 ```
 
-Wave PV is subtracted only for inversion. The prognostic total `q` is
-restored before each ETD-RK2 stage continues.
+Wave PV is subtracted only on the right-hand side of the inversion; the
+prognostic total `q` itself is never modified.
 
 After horizontal Fourier transformation, every ``(k_x,k_y)`` mode is a
 tridiagonal vertical problem,

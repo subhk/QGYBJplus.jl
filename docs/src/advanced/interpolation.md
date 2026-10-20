@@ -37,8 +37,12 @@ initialize_particles!(model, configuration)
 Horizontally the stencils wrap periodically. Vertically, each column is
 extended past the lid and the bottom by its mirror image, evenly for the
 horizontal velocity, which has zero vertical derivative there
-(``\psi_z = 0``), so the interpolation keeps its order of accuracy up to the
-boundaries. Positions outside the column take the boundary value. The
+(``\psi_z = 0``). The extension is smooth enough for `TRILINEAR` and
+`TRICUBIC` to keep their order up to the boundaries. `QUINTIC` does so only
+when the higher odd derivatives vanish there too, as for constant N²; with a
+varying N², ``\psi_{zzz} = -2a'\psi_{zz}/a \ne 0`` at the boundary
+(``a = f^2/N^2``), and in the cells next to the lid and the bottom its error
+falls to third order. Positions outside the column take the boundary value. The
 lower-level `interpolate_velocity_advanced` also interpolates a vertical
 velocity, mirrored oddly so that it vanishes at both boundaries; it reads
 host arrays.

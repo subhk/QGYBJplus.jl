@@ -255,6 +255,18 @@ end
     end
 end
 
+"""
+The spectral wave velocity LA of `model`, by the formulation's relation:
+`B = LA` for YBJ, `B = L⁺A = LA - kₕ²A/4` for YBJ⁺.
+"""
+function expected_wave_velocity(model)
+    fields = model.fields
+    model.physics.formulation isa YBJ && return copy(fields.B)
+    grid = model.grid
+    kh² = [grid.kx[i]^2 + grid.ky[j]^2 for k in 1:1, i in 1:grid.size[1], j in 1:grid.size[2]]
+    return fields.B .+ kh² .* fields.A ./ 4
+end
+
 @testset "Wave velocity follows B for each formulation" begin
     grid = RectilinearGrid(size=(8, 8, 6), extent=(2π, 2π, 1.0))
     for formulation in (YBJPlus(), YBJ())
@@ -267,8 +279,9 @@ end
                            for k in 1:6, i in 1:8, j in 1:8]
             set!(model; B=FieldArray(B), verbose=false)
             invert_B_to_A!(model)   # any A ≠ 0 tells the two relations apart
-            # u + iv = e^{-ift} LA: LA = B for YBJ and B + kₕ²A/4 for YBJ⁺.
-            LA = QGYBJplus._spectral_LA(model)
+            # u + iv = e^{-ift} LA: LA = B for YBJ and B + kₕ²A/4 for YBJ⁺,
+            # written out here rather than taken from the model's own helper.
+            LA = expected_wave_velocity(model)
             LA_physical = fft_backward!(similar(LA), LA, model.runtime.plans)
             t = 0.7
             fill!(fields.u, 0); fill!(fields.v, 0)
@@ -468,7 +481,7 @@ end
 
         # Wave velocity u + iv = M = e^{-ift} LA; differentiate u and v.
         plans = model.runtime.plans
-        LA = QGYBJplus._spectral_LA(model)
+        LA = expected_wave_velocity(model)
         M = fft_backward!(similar(LA), cis(-t) .* LA, plans)
         u_hat = fft_forward!(similar(LA), complex.(real.(M)), plans)
         v_hat = fft_forward!(similar(LA), complex.(imag.(M)), plans)

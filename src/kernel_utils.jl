@@ -27,6 +27,19 @@ end
     @inbounds destination[index] = f(a[index], b[index], c[index])
 end
 
+"""
+    in_precision(array, T)
+
+`array` with the element type of precision `T`: `T` for a real array and
+`Complex{T}` for a complex one; `nothing` stays `nothing`. A coefficient
+profile in another precision would make a kernel compute in that precision.
+"""
+in_precision(::Nothing, ::Type{T}) where {T<:AbstractFloat} = nothing
+function in_precision(array::AbstractArray, ::Type{T}) where {T<:AbstractFloat}
+    S = eltype(array) <: Complex ? Complex{T} : T
+    return eltype(array) === S ? array : S.(array)
+end
+
 _map_kernel(::Val{1}) = _map1_kernel!
 _map_kernel(::Val{2}) = _map2_kernel!
 _map_kernel(::Val{3}) = _map3_kernel!

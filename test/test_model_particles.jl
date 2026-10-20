@@ -70,8 +70,11 @@ using QGYBJplus
             initialize_particles!(model, configuration)
             tracker = model.particles
             # Uniform horizontal velocity is reproduced everywhere.
+            @test_throws ArgumentError interpolate_velocity_at_position(
+                Float64(π), Float64(π), -0.5, tracker)
             fill!(tracker.current.u, 1.0)
             fill!(tracker.current.v, -0.5)
+            tracker.current.valid = true
             @test all((-0.5, -0.05, 0.0, -1.0)) do z
                 velocity = interpolate_velocity_at_position(
                     Float64(π), Float64(π), z, tracker)
@@ -114,16 +117,19 @@ using QGYBJplus
             @test particles.v ≈ fill(-0.5, 6)
         end
 
-        @testset "default particle and output precisions interoperate" begin
-            default_box = particles_in_box(
+        @testset "single-precision particles and the default output interoperate" begin
+            @test particles_in_box(-0.5; x_max=grid.extent[1],
+                                   y_max=grid.extent[2]) isa ParticleConfig{Float64}
+            single_box = particles_in_box(
+                Float32,
                 -0.5;
                 x_max=grid.extent[1],
                 y_max=grid.extent[2],
                 nx=2,
                 ny=2,
             )
-            @test default_box isa ParticleConfig{Float32}
-            initialize_particles!(model, default_box)
+            @test single_box isa ParticleConfig{Float32}
+            initialize_particles!(model, single_box)
             tracker = model.particles
 
             mktempdir() do output_dir
@@ -133,16 +139,9 @@ using QGYBJplus
                     save_interval_time=0.0,
                     output_mode=:trajectory,
                 )
-                operations_succeeded = try
-                    QGYBJplus.setup_particle_output!(manager, tracker)
-                    QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0)
-                    QGYBJplus.finalize_particle_output!(manager, tracker)
-                    true
-                catch
-                    false
-                end
-
-                @test operations_succeeded
+                @test QGYBJplus.setup_particle_output!(manager, tracker) === manager
+                @test QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0) === manager
+                @test QGYBJplus.finalize_particle_output!(manager, tracker) === manager
                 @test manager.time_series == [0.0]
                 @test length(manager.x_series) == 1
                 @test eltype(only(manager.x_series)) === Float64
@@ -153,7 +152,13 @@ using QGYBJplus
         end
 
         @testset "automatic trajectory splitting is transactional" begin
+            # Splitting needs a tracker that keeps a history.
             initialize_particles!(model, box)
+            @test_throws ArgumentError QGYBJplus.UnifiedParticleAdvection.enable_auto_file_splitting!(
+                model.particles, "unused"; max_points_per_file=1)
+            history_box = particles_in_box(Float64, -0.5; x_max=grid.extent[1],
+                y_max=grid.extent[2], nx=2, ny=3, save_interval=0.0)
+            initialize_particles!(model, history_box)
             tracker = model.particles
             particles = tracker.particles
             empty!(particles.x_history)
@@ -184,7 +189,7 @@ using QGYBJplus
                 @test tracker.output_file_sequence == 1
             end
 
-            initialize_particles!(model, box)
+            initialize_particles!(model, history_box)
             tracker = model.particles
             particles = tracker.particles
             empty!(particles.x_history)
@@ -200,14 +205,8 @@ using QGYBJplus
                 QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
                 particles.time = 1.0
 
-                split_failed = try
-                    QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
-                    false
-                catch
-                    true
-                end
-
-                @test split_failed
+                # The segment's directory is missing, so writing it fails.
+                @test_throws NCDatasets.NetCDFError QGYBJplus.UnifiedParticleAdvection.save_particle_state!(tracker)
                 @test particles.time_history ≈ [0.0]
                 @test tracker.output_file_sequence == 0
             end
@@ -252,7 +251,7 @@ using QGYBJplus
             # Make the first snapshot target a directory so NetCDF creation
             # fails after manager setup has succeeded.
             blocked_snapshot = joinpath(
-                output_dir, "particles", "particles_000000.nc")
+                output_dir, "particles", "particles_00000000.nc")
             mkpath(blocked_snapshot)
             particle_output = ParticleOutputManager(
                 output_dir;
@@ -268,7 +267,8 @@ using QGYBJplus
                 particle_output=particle_output,
                 verbose=false,
             )
-            @test_throws Exception run!(failing_simulation)
+            # A directory where the snapshot goes makes NetCDF fail.
+            @test_throws NCDatasets.NetCDFError run!(failing_simulation)
             @test failing_simulation.state == Failed
             @test particle_output.save_count == 0
             @test particle_output.closed
@@ -286,9 +286,9 @@ end
         set!(model; ψ=(x, y, z) -> 0.1sin(x) * cos(y), pv_method=:barotropic,
              verbose=false)
         for method in (:euler, :rk2, :rk4)
-            # particles_in_box defaults to Float32 storage.
-            box = particles_in_box(-0.5; x_max=grid.extent[1], y_max=grid.extent[2],
-                                   nx=2, ny=2, integration_method=method)
+            box = particles_in_box(Float32, -0.5; x_max=grid.extent[1],
+                                   y_max=grid.extent[2], nx=2, ny=2,
+                                   integration_method=method)
             initialize_particles!(model, box)
             advect_particles!(model, 0.1; current_time=0.0)
             positions = model.particles.particles.x
@@ -666,9 +666,9 @@ end
                 @test dataset["u"][:, end] == tracker.particles.u
             end
             missing_directory = joinpath(path, "missing")
-            @test_throws Exception write_particle_snapshot(
+            @test_throws NCDatasets.NetCDFError write_particle_snapshot(
                 joinpath(missing_directory, "snapshot.nc"), tracker, 0.0)
-            @test_throws Exception create_particle_output_file(
+            @test_throws NCDatasets.NetCDFError create_particle_output_file(
                 joinpath(missing_directory, "series.nc"), tracker)
         end
     finally

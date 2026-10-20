@@ -158,7 +158,7 @@ end
 
 Interpolate the cell-centred velocity components `u`, `v`, and `w` at
 `(x, y, z)` with `method`. `w` vanishes at the lid and the bottom, and `u`
-and `v` have zero vertical derivative there. See [`interpolate_fields`](@ref).
+and `v` have zero vertical derivative there, as in `interpolate_fields`.
 The fields are read point by point, so they must be host arrays: for a model
 on a GPU, pass `Array(model.fields.u)` and so on.
 """

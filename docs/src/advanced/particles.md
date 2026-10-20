@@ -24,11 +24,30 @@ initialize_particles!(model, configuration)
 
 The tracker is available as `model.particles`. Its geometry, FFT plans, and
 velocity source all refer back to the owning model. Particles move with the
-horizontal velocity and keep their depth.
+horizontal velocity and keep their depth. `z` is a coordinate, negative below
+a lid at z = 0: every particle must lie within the grid's vertical extent,
+and a particle outside it is an error. A non-periodic direction checks the
+horizontal extent too.
 
-Positions and velocities have the configuration's precision (`Float32` for
-the `particles_in_*` helpers unless given), while the particle time is always
-`Float64`, so that the times of long runs stay exact.
+Positions and velocities have the configuration's precision, `Float64` by
+default for the `particles_in_*` helpers (pass `Float32`, or
+`precision=Float32`, to halve their memory). Keep `Float64` for slow
+trajectories in large domains: a `Float32` position 1000 km from the origin
+is rounded to about 6 cm, so a particle that moves a few cm per step drifts
+by the rounding. Times, including `save_interval` and `particle_advec_time`,
+are always `Float64`, like the simulation clock, so that the times of long
+runs stay exact.
+
+Particles installed through a simulation, `initialize_particles!(simulation,
+config)`, start at its clock's time. Between runs the particles keep their
+own time; each run puts them on its time axis. Particles that have not moved
+since they were initialized just take the run's start time, as after
+`restore!`. Particles that have moved continue from a new simulation's
+clock, which starts at zero: once released they keep moving, their history
+records their positions again at the new start time, and the inertial phase
+of `:instantaneous` trajectories restarts there (the model warns). To keep
+the original time axis, restore the last state file into the new
+simulation.
 
 Particle positions, the velocity that advects them, and the advection
 itself live on the model's architecture: on a GPU, a particle step copies the
@@ -99,6 +118,10 @@ for n in 0:99
 end
 ```
 
+The tracker's own `advect_particles!(tracker, fields, geometry, Δt, t)` uses
+the coefficients of the model that owns it (f, N², formulation), unless they
+are given as keywords.
+
 `integration_method` selects `:euler`, `:rk2` (default), or `:rk4`. The
 model's velocity is known only at the ends of a step, so the tracker keeps the
 velocity from the end of the previous step, and every integration stage
@@ -141,16 +164,25 @@ modes are:
 - `:trajectory`: one file, written when the run ends;
 - `:streaming`: one file, extended at every save, so a run that is stopped
   early keeps the trajectories saved so far, without holding them in memory;
-- `:snapshots`: one file per save.
+- `:snapshots`: one file per save, named by the iteration padded to 8 digits,
+  so that the names sort in time order.
 
 Each record holds the particle positions and their horizontal velocities,
-`u` and `v`, at the recorded time. A run never silently replaces existing particle files of the
-same mode and prefix: pass `overwrite=true` to the manager to replace them.
-Particle positions are not part of the model's restart files, so particles
-start new trajectories after a restart.
+`u` and `v`, at the recorded time. A run never silently replaces existing
+particle files of the same mode and prefix: pass `overwrite=true` to the
+manager to replace them. The check comes before the run starts and removes
+nothing, so a run that cannot start leaves the files as they were.
+
+A manager serves one run: the simulation closes it when the run ends, and a
+new simulation needs a new manager. Particle positions are not part of the
+model's restart files, so particles start new trajectories after a restart,
+and their files are not continued: write them to another directory or
+prefix, or pass `overwrite=true` to replace the earlier ones.
 
 Without a manager, a tracker can keep its own in-memory history of the
-positions, written with [`write_particle_trajectories`](@ref). It is off by
-default; set `save_interval` in the particle configuration (0 for every
-step) and, if needed, `max_save_points` (1000 by default; the tracker warns
-when it is reached).
+positions, written with [`write_particle_trajectories`](@ref), or one file
+per initial level with [`write_particle_trajectories_by_zlevel`](@ref). It is
+off by default; set `save_interval` in the particle configuration (0 for
+every step) and, if needed, `max_save_points` (1000 by default; the tracker
+warns when it is reached). The history records the positions when a run
+starts and then at the multiples of `save_interval`.

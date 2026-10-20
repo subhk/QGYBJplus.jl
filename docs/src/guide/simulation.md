@@ -18,11 +18,15 @@ simulation = Simulation(
 )
 ```
 
-Specify either `stop_time` or `stop_iteration`. ETD-RK2 is created
-automatically and stored in `simulation.timestepper`.
+Specify either `stop_time` or `stop_iteration`; with neither, the run stops
+after 1000 iterations (and `Δt` defaults to 1). ETD-RK2 is created
+automatically and stored in `simulation.timestepper`. The clock keeps time in
+`Float64` as ``t_0 + n\,\Delta t``, whatever the type of `Δt`, so a run whose
+`stop_time` is a whole number of steps takes exactly that many.
 
-The diagnostics schedule records energy time series under the state-output
-directory's `diagnostic/` subdirectory. Use
+A diagnostics schedule records energy time series in the `diagnostic/`
+subdirectory of the state output's path, or of `output/` when there is no
+state output (as with `output=false` above). Use
 `EnergyDiagnosticsOutput(path=..., schedule=...)` to choose that directory
 explicitly, or `diagnostics=false` to disable diagnostic files.
 
@@ -30,9 +34,10 @@ explicitly, or `diagnostics=false` to disable diagnostic files.
 
 The lifecycle progresses through `Ready`, `Running`, and `Stopped`. An
 exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
-Output is set up before the run starts, so an error there, such as files left
-by another run, leaves the simulation `Ready` to run again with other
-settings.
+Output is set up before the run starts, and every check, such as for files
+left by another run, comes before any file is removed: an error there leaves
+the files as they were and the simulation `Ready` to run again with other
+settings. `run!` keywords are likewise applied together or not at all.
 Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
 construct a new simulation around the same model to continue from the current
 fields. A new simulation's clock starts at zero; to continue the time axis
@@ -50,7 +55,11 @@ finally
 end
 ```
 
-Repeated finalization is safe. A finalized simulation cannot be run again.
+`finalize_simulation!` closes the simulation's output and releases its
+time-stepping workspace, but leaves the model intact, so a new simulation can
+still continue from the model's fields. Call `finalize_model!(model)` once the
+model is no longer needed. Repeated finalization is safe. A finalized
+simulation cannot be run again.
 
 ## Overrides at run time
 
@@ -87,7 +96,8 @@ By default, model construction also reports the architecture and resolution:
 ```text
 ┌ Info: QGYBJModel runtime initialized
 │   architecture = GPU(CUDABackend)
-└   size = (256, 256, 128)
+│   size = (256, 256, 128)
+└   precision = Float64
 ```
 
 ## Clock access

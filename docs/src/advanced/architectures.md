@@ -116,6 +116,9 @@ struct HostRoundTripPlan{P, B}
 end
 
 function Base.:*(plan::HostRoundTripPlan, x::JLArray)
+    # Like a device FFT library, transform only arrays of the plan's type.
+    eltype(x) === eltype(plan.buffer) && size(x) == size(plan.buffer) ||
+        throw(ArgumentError("plan applied to an array of another type or size"))
     copyto!(plan.buffer, x)
     plan.plan * plan.buffer
     return copyto!(x, plan.buffer)
@@ -131,8 +134,8 @@ grid = RectilinearGrid(GPU(JLBackend()); size=(16, 16, 8), extent=(2π, 2π, 1.0
 model = QGYBJModel(grid=grid)
 ```
 
-`test/test_architectures.jl` checks that such a model reproduces the CPU model
-for every wave formulation, including output, diagnostics, restart, and
-particles, and that no kernel is handed a host array. It cannot exercise
-cuFFT or a GPU math library, so run a short CUDA simulation before relying on
-a new GPU setup.
+`test/test_architectures.jl` checks that such a model reproduces the CPU
+model's steps for every wave formulation, and its output, energy diagnostics,
+restart, and particles for a coupled YBJ⁺ model, and that no kernel is handed
+a host array. It cannot exercise cuFFT or a GPU math library, so run a short
+CUDA simulation before relying on a new GPU setup.

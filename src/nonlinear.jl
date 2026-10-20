@@ -714,7 +714,11 @@ function dissipation_q_nv!(dqk, qok, vertical_diffusivity::Real, G::RuntimeGeome
     end
 
     nz = size(dqk, 1)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    nz == G.nz || throw(DimensionMismatch("dqk has $nz levels; the grid has $(G.nz)"))
+    size(qok) == size(dqk) || throw(DimensionMismatch(
+        "qok has size $(size(qok)); dqk has $(size(dqk))"))
+    # The stencil reads q at k ± 1 after dq[k] is written, so they must differ.
+    dqk === qok && throw(ArgumentError("dqk and qok must be distinct arrays"))
     Δz = vertical_spacing(G)
     launch!(_vertical_diffusion_kernel!, dqk, size(dqk),
             dqk, qok, convert(typeof(Δz), vertical_diffusivity), 1 / (Δz * Δz), nz)

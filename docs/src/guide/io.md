@@ -19,11 +19,15 @@ simulation = Simulation(model; Δt=10.0, stop_iteration=1000,
 
 `TimeInterval(seconds)` provides time-based scheduling instead. The initial
 condition is written when output is enabled, and finalization writes the last
-iteration if it was not already scheduled.
+iteration if it was not already scheduled; with `schedule=nothing` only those
+two are written. `fields` selects the physical fields: `:ψ` (or `:psi`, `:q`,
+`:flow`), `:waves` (or `:wave`, `:B`, `:A`), and `:velocities`; any other
+name is an error.
 
-Time schedules keep a nominal next deadline. If a step crosses a deadline,
-one snapshot is written at that step and the next deadline advances from the
-schedule rather than from the late write, avoiding cumulative drift.
+A time schedule's deadlines are the multiples of its interval from t = 0. A
+snapshot is written at the first step that reaches each one, and the next
+deadline is the next multiple, so late writes do not accumulate drift and a
+restored run keeps the original output times.
 
 A run never silently replaces files already in its output directory. A
 simulation restored from a state file (see [Restart](@ref io-restart))
@@ -36,7 +40,8 @@ iteration for a restored run.
 ## Energy diagnostics
 
 Passing a schedule as `diagnostics` records initial, scheduled, and final
-energy values in `diagnostic/` beneath the Eulerian output directory:
+energy values in `diagnostic/` beneath the Eulerian output directory (beneath
+`output/` when there is no state output):
 
 ```julia
 simulation = Simulation(
@@ -66,8 +71,9 @@ wave--mean-feedback conservation diagnostic of Asselin & Young (2019), equation
 ## Snapshot schema
 
 Every file contains `x`, `y`, `z`, `z_face`, `time`, iteration metadata,
-spectral `q_hat_real`, `q_hat_imag`, `B_hat_real`, and `B_hat_imag`, plus
-`N2`, `N2_face`, and `a_ell`. The spectral fields are the unnormalised
+spectral `q_hat_real`, `q_hat_imag`, `B_hat_real`, and `B_hat_imag` (and, for
+a `FixedFlow` model, the prescribed streamfunction `psi_hat_real` and
+`psi_hat_imag`), plus `N2`, `N2_face`, and `a_ell`. The spectral fields are the unnormalised
 horizontal FFTs of q and B, in FFTW order, on the dimensions
 `(kx_index, ky_index, z)`; the variables `kx` and `ky` hold the wavenumbers.
 Every variable has a `long_name`. The model has no fixed units, so the files
@@ -76,7 +82,8 @@ in the units of the model configuration. `N2` is sampled at cell centers on `z`;
 `N2_face` and `a_ell = f0^2 / N2_face` are sampled at each cell's upper face
 on `z_face = grid.z_faces[2:end]`. The `Lx`, `Ly`, and `Lz` attributes record
 the domain extent.
-`feedback_mode` records the configured feedback component, while
+`feedback_mode` records the configured feedback component and
+`flow_evolution` whether the flow is fixed or evolving, while
 `generalized_pv` distinguishes balanced-only PV from total PV containing the
 wave contribution.
 
@@ -136,10 +143,14 @@ run!(simulation)                               # iterations 101 to 200
 `restore!(simulation, path)` also sets the simulation clock to the file's
 time and iteration, so `stop_time` and `stop_iteration` count from the start
 of the original run, and output, energy diagnostics, and particles continue
-the original time axis. Continuing into the same directory appends
-`state0012.nc` onward without writing the restart state again. Restarting
-from an earlier file of a longer run needs `overwrite=true`, which replaces
-the later files. `restore!(model, path)` restores the fields only.
+the original time axis; `TimeInterval` schedules keep the original output
+times, the multiples of their interval. Continuing into the same directory
+appends `state0012.nc` onward without writing the restart state again.
+Restarting from an earlier file of a longer run needs `overwrite=true`, which
+replaces the later files. `restore!(model, path)` restores the fields only.
+A `FixedFlow` model takes its prescribed streamfunction from the file (state
+files of such models store it as `psi_hat_real` and `psi_hat_imag`, and older
+files' `psi` serves too); an evolving flow is inverted from q.
 
 The restart dimensions, domain extent, wave formulation, and generalized-PV
 convention must match the receiving model; a different `f0` or `N²` profile
@@ -147,16 +158,20 @@ is allowed but warns, since it changes the flow inverted from q. Older
 snapshots without the metadata remain readable. Diagnostic arrays are
 reconstructed after the prognostic fields are copied onto the model's
 architecture. Particle positions are not stored in state files, so particles
-start new trajectories after a restart.
+start new trajectories after a restart, and particle files are not continued:
+give the restarted simulation's `ParticleOutputManager` another directory or
+prefix, or `overwrite=true` to replace the earlier files.
 
 ## Failure behavior
 
 An error while setting up output, such as state files from another run, is
-raised before anything is written and leaves the simulation `Ready`: run it
-again with another path or `overwrite=true`. Exceptions during the run,
-including while writing, move the simulation to `Failed`, close the state,
-diagnostics, and particle managers, and are rethrown. Use `try`/`finally` to
-guarantee cleanup:
+raised before anything is written or removed and leaves the simulation
+`Ready`: run it again with another path or `overwrite=true` (for particle
+output, which is given to the constructor, build a new simulation). Exceptions
+during the run, including while writing, move the simulation to `Failed`,
+close the state, diagnostics, and particle managers, and are rethrown. Use
+`try`/`finally` to guarantee cleanup; `finalize_simulation!` leaves the model
+usable:
 
 ```julia
 try

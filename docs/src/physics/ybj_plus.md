@@ -110,7 +110,7 @@ processes of the selected YBJ formulation.
 
 ```julia
 set!(model; waves=SurfaceWave(amplitude=0.1, scale=30.0))
-B_energy, A_energy = wave_energy(model)
+energy = wave_energy(model)   # domain means: energy.kinetic, .potential, .correction
 ```
 
 ETD-RK2 evaluates the explicit wave tendency at both stages and integrates

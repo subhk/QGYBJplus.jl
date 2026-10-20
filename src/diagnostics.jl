@@ -187,7 +187,11 @@ function _omega_eqn_rhs!(rhs, psi, G::RuntimeGeometry, plans, Lmask, workspace,
     backend = get_backend(rhs)
     mask = kernel_mask(Lmask, rhs, KeepAllModes())
     Δz = vertical_spacing(G)
-    @assert size(psi, 1) == nz "Vertical dimension must match the grid for omega RHS"
+    size(psi, 1) == nz || throw(DimensionMismatch(
+        "ψ has $(size(psi, 1)) levels; the grid has $nz"))
+    size(rhs) == size(psi) || throw(DimensionMismatch(
+        "rhs has size $(size(rhs)); ψ has $(size(psi))"))
+    rhs === psi && throw(ArgumentError("rhs and ψ must be distinct arrays"))
 
     # Four buffers, transformed in place; the two products then replace ζx, ζy.
     ψx = scratch_like(workspace, psi); ψy = scratch_like(workspace, psi)
@@ -256,54 +260,25 @@ end
 """
     flow_kinetic_energy_spectral(uk, vk, G; Lmask=nothing) -> KE
 
-Compute Boussinesq kinetic energy in spectral space with dealiasing.
-
-# Physical Background (matches Fortran diag_zentrum/energy_linear)
-The kinetic energy is computed as:
-
-    KE(z) = Σₖ L(kₓ,kᵧ) × (|uₖ|² + |vₖ|²) - 0.5 × (|u₀₀|² + |v₀₀|²)
-
-The dealiasing correction subtracts half the kh=0 mode because:
-- With 2/3 dealiasing: Σₖ (1/2)|u|² = Σₖ L|u|² - 0.5|u(0,0)|²
-
-The total KE averages over the vertical levels:
-
-    KE_total = (1/nz) Σᵢ KE(zᵢ)
-
-# Arguments
-- `uk, vk`: Spectral velocity fields (complex)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `Lmask`: Optional dealiasing mask (default: all modes included)
-
-# Returns
-Total kinetic energy per unit reference mass, normalized by nz.
-
-# Fortran Correspondence
-Matches the kinetic energy computation in `diag_zentrum` (diagnostics.f90:127-161)
-and `energy_linear` (diagnostics.f90:3024-3107).
+The domain-mean kinetic energy ½⟨u² + v²⟩ of the spectral velocities `uk`,
+`vk` (horizontal Fourier coefficients of the model's unnormalised FFT), over
+the modes that `Lmask` keeps (all by default). By Parseval's theorem the
+horizontal mean of u² is Σ|û|²/(nx ny)² at each level; the levels are
+averaged. Evaluated on a host copy of the fields.
 """
 function flow_kinetic_energy_spectral(uk, vk, G::RuntimeGeometry; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = _host_mask(Lmask, nx, ny)
     uk_arr = on_host(uk)
     vk_arr = on_host(vk)
-    nz_local, nx_local, ny_local = size(uk_arr)
+    size(uk_arr) == size(vk_arr) == (nz, nx, ny) || throw(DimensionMismatch(
+        "uk and vk must have size $((nz, nx, ny))"))
 
-    KE_total = 0.0
-    @inbounds for k in 1:nz_local
-        ke_k = 0.0
-        for j in 1:ny_local, i in 1:nx_local
-            if L[i, j]
-                ke_k += abs2(uk_arr[k, i, j]) + abs2(vk_arr[k, i, j])
-            end
-        end
-        # Dealiasing correction: subtract half the kh=0 mode at index (1,1)
-        ke_k -= 0.5 * (abs2(uk_arr[k, 1, 1]) + abs2(vk_arr[k, 1, 1]))
-        KE_total += ke_k
+    total = 0.0
+    @inbounds for j in 1:ny, i in 1:nx, k in 1:nz
+        L[i, j] && (total += abs2(uk_arr[k, i, j]) + abs2(vk_arr[k, i, j]))
     end
-
-    # Normalize by nz (vertical integration)
-    return KE_total / nz
+    return 0.5 * total / ((nx * ny)^2 * nz)
 end
 
 _potential_energy_coefficients(a_ell::AbstractVector, nz) = on_host(a_ell)
@@ -312,52 +287,27 @@ _potential_energy_coefficients(par, nz) = fill(par.f₀^2 / par.N², nz)
 """
     flow_potential_energy_spectral(bk, G, a_ell; Lmask=nothing) -> PE
 
-Compute Boussinesq potential energy in spectral space with dealiasing.
-
-# Physical Background
-The potential energy from buoyancy variance:
-
-    PE(z) = Σₖ L(kₓ,kᵧ) × a_ell × |bₖ|² - 0.5 × correction
-
-where a_ell = f²/N² is the elliptic coefficient.
-
-For QG: b = ψ_z, so PE represents available potential energy from isopycnal tilting.
-
-# Arguments
-- `bk`: Spectral buoyancy field (complex)
-- `G::RuntimeGeometry`: RuntimeGeometry structure
-- `a_ell`: The `f²/N²` profile, or an object with `f₀` and `N²` properties for
-  a constant coefficient
-- `Lmask`: Optional dealiasing mask
-
-# Returns
-Total potential energy per unit reference mass, normalized by nz.
-
-# Fortran Correspondence
-Matches the potential energy computation in `diag_zentrum` (ps term).
+The domain-mean potential energy ½⟨a b²⟩ of the spectral field `bk`
+(horizontal Fourier coefficients of the model's unnormalised FFT), over the
+modes that `Lmask` keeps (all by default), with `a_ell = f²/N²` at each
+level. For QG, with `b = ψ_z`, this is ½⟨(f²/N²) ψ_z²⟩, the available
+potential energy. `a_ell` may also be an object with `f₀` and `N²`
+properties, for a constant coefficient. Evaluated on a host copy of `bk`.
 """
 function flow_potential_energy_spectral(bk, G::RuntimeGeometry, a_ell; Lmask=nothing)
     nx, ny, nz = G.nx, G.ny, G.nz
     L = _host_mask(Lmask, nx, ny)
     a = _potential_energy_coefficients(a_ell, nz)
+    length(a) == nz || throw(DimensionMismatch("a_ell must have length $nz"))
     bk_arr = on_host(bk)
-    nz_local, nx_local, ny_local = size(bk_arr)
+    size(bk_arr) == (nz, nx, ny) ||
+        throw(DimensionMismatch("bk must have size $((nz, nx, ny))"))
 
-    PE_total = 0.0
-    @inbounds for k in 1:nz_local
-        a_ell_k = k <= length(a) ? a[k] : a[end]
-        pe_k = 0.0
-        for j in 1:ny_local, i in 1:nx_local
-            if L[i, j]
-                pe_k += a_ell_k * abs2(bk_arr[k, i, j])
-            end
-        end
-        # Dealiasing correction
-        pe_k -= 0.5 * a_ell_k * abs2(bk_arr[k, 1, 1])
-        PE_total += pe_k
+    total = 0.0
+    @inbounds for j in 1:ny, i in 1:nx, k in 1:nz
+        L[i, j] && (total += a[k] * abs2(bk_arr[k, i, j]))
     end
-
-    return PE_total / nz
+    return 0.5 * total / ((nx * ny)^2 * nz)
 end
 
 @kernel function _vertical_mean_energy_kernel!(WE, @Const(B), nz)

@@ -3,92 +3,106 @@ name: CI
 on:
   push:
     branches: [ main ]
+    tags: [ '*' ]
   pull_request:
+
+# A newer push to a pull request supersedes its running checks; runs on main
+# always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # A Julia prerelease may fail for reasons outside this package.
+    continue-on-error: ${{ matrix.version == 'pre' }}
+    permissions:
+      actions: write     # julia-actions/cache removes superseded caches
+      contents: read
+      id-token: write    # Codecov upload with an OIDC token, no secret needed
     strategy:
       fail-fast: false
       matrix:
-        version: [ '1.10', '1.11', '1.12' ]
+        version: [ '1.10', '1', 'pre' ]
         os: [ ubuntu-latest, macos-latest ]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v3
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-
-      - name: Cache artifacts
-        uses: actions/cache@v4
-        with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-julia-artifacts-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-julia-artifacts-
-
-      - name: Instantiate
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
-
-      - name: Run tests
-        run: julia --project=. -e 'using Pkg; Pkg.test(coverage=true)'
-
-      - name: Generate coverage (LCOV)
-        run: |
-          julia --project=. -e '
-            using Pkg; Pkg.add("Coverage");
-            using Coverage;
-            LCOV.writefile("lcov.info", process_folder())
-          '
-
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+      - uses: julia-actions/julia-processcoverage@v1
+      # Pull requests from forks get no OIDC token, so their upload fails
+      # without failing the job.
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          file: lcov.info
+          files: lcov.info
+          disable_search: true
+          use_oidc: true
           flags: unittests
           fail_ci_if_error: false
 
   threads-test:
     name: Multithreaded CPU kernels - Julia 1.10 - Ubuntu
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
     env:
       JULIA_NUM_THREADS: 4
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v3
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1.10'
-
-      - name: Cache artifacts
-        uses: actions/cache@v4
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
         with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-julia-artifacts-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-julia-artifacts-
+          coverage: false
 
-      - name: Instantiate
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
-
-      - name: Run tests with four threads
-        run: julia --project=. -e 'using Pkg; Pkg.test()'
+  downgrade:
+    name: Lowest compatible versions - Julia 1.10 - Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10'
+      # Writes a Manifest.toml with the lowest versions that the [compat]
+      # bounds allow together.
+      - uses: julia-actions/julia-downgrade-compat@v2
+        with:
+          mode: deps
+      # JLArrays, a test-only dependency, needs a newer KernelAbstractions
+      # than the compat floor. The suite therefore runs in the package's own
+      # environment, where runtests.jl skips the emulated-GPU tests that use it.
+      - name: Run tests at the lowest compatible versions
+        run: |
+          julia --project=. --color=yes --check-bounds=yes -e '
+            using Pkg
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)
+            include(joinpath(pwd(), "test", "runtests.jl"))'
 
   cuda-extension:
     name: CUDA extension loads - Julia 1.10 - Ubuntu
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v3
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1.10'
 

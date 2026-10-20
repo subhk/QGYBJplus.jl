@@ -34,4 +34,9 @@ ExponentialRungeKutta2
 ExponentialRungeKutta2Workspace
 step!
 run!
+finalize_simulation!
+finalize_model!
+get_time
+inertial_period
+get_inertial_period
 ```

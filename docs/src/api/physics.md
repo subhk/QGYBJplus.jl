@@ -14,6 +14,12 @@ invert_q_to_psi!(model)
 invert_B_to_A!(model)
 ```
 
+```@docs
+invert_q_to_psi!
+invert_B_to_A!
+invert_helmholtz!
+```
+
 ## Velocities
 
 ```julia
@@ -21,14 +27,27 @@ compute_velocities!(model)
 compute_vertical_velocity!(model)
 compute_ybj_vertical_velocity!(model)
 compute_total_velocities!(model; t)   # instantaneous velocity at time t
-compute_wave_velocities!(model; t)
+compute_total_velocities!(model; include_wave_velocity=false)   # Eulerian mean
+```
+
+```@docs
+compute_velocities!
+compute_vertical_velocity!
+compute_ybj_vertical_velocity!
+compute_total_velocities!
+compute_wave_velocities!
 ```
 
 ## Diagnostics
 
 ```julia
-flow_energy = flow_kinetic_energy(model)
-B_energy, A_energy = wave_energy(model)
+flow_energy = flow_kinetic_energy(model)   # ½⟨u² + v²⟩
+wave = wave_energy(model)                  # (; kinetic, potential, correction)
+```
+
+```@docs
+flow_kinetic_energy
+wave_energy
 ```
 
 ## Coefficient helpers

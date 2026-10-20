@@ -46,54 +46,96 @@ end
     return sqrt(-2 * log(u1)) * cos(2 * pi * u2)
 end
 
-@kernel function _random_psi_kernel!(ψ, base_seed, amplitude, slope, nx, ny)
-    k, i, j = @index(Global, NTuple)
-    kx_max = nx ÷ 2
-    ky_max = ny ÷ 2
-    kx = i <= kx_max ? i - 1 : i - 1 - nx
-    ky = j <= ky_max ? j - 1 : j - 1 - ny
-    value = zero(ComplexF64)   # hashed in Float64, so all architectures agree
-    if !(kx == 0 && ky == 0)
-        k_total = sqrt(Float64(kx^2 + ky^2))
-        energy = amplitude * k_total^slope
-        i_conj = i == 1 ? 1 : nx - i + 2
-        j_conj = j == 1 ? 1 : ny - j + 2
-        if i == i_conj && j == j_conj
-            # Self-conjugate modes must be real for a real ψ.
-            value = complex(sqrt(2 * energy) *
-                            _hash_randn(base_seed, UInt64(0x10), k, i, j))
-        else
-            # Hash the canonical member of each conjugate pair, so both
-            # members agree and the field is Hermitian.
-            canonical = (i < i_conj) || (i == i_conj && j <= j_conj)
-            i_can = canonical ? i : i_conj
-            j_can = canonical ? j : j_conj
-            amp = sqrt(2 * energy) * _hash_randn(base_seed, UInt64(0x20), k, i_can, j_can)
-            phase = 2 * pi * _hash_u01(base_seed, UInt64(0x30), k, i_can, j_can)
-            canonical_value = amp * cis(phase)
-            value = canonical ? canonical_value : conj(canonical_value)
-        end
+"""
+The unit-amplitude random coefficient of horizontal mode `(i, j)`: a Gaussian
+amplitude of variance proportional to `|k|^slope` (`|k|` the mode index) and a
+uniform phase, both hashed from the mode, Hermitian so that ψ is real. It
+does not depend on the level, so the field built from it is vertically
+coherent.
+"""
+@inline function _random_psi_coefficient(base_seed::UInt64, slope, i, j, nx, ny)
+    # FFTW order, as for the grid's wavenumbers.
+    kx = i <= (nx + 1) ÷ 2 ? i - 1 : i - 1 - nx
+    ky = j <= (ny + 1) ÷ 2 ? j - 1 : j - 1 - ny
+    (kx == 0 && ky == 0) && return zero(ComplexF64)
+    # Hashed in Float64, so all architectures agree.
+    variance = sqrt(Float64(kx^2 + ky^2))^slope
+    i_conj = i == 1 ? 1 : nx - i + 2
+    j_conj = j == 1 ? 1 : ny - j + 2
+    if i == i_conj && j == j_conj
+        # Self-conjugate modes must be real for a real ψ.
+        return complex(sqrt(2 * variance) *
+                       _hash_randn(base_seed, UInt64(0x10), 1, i, j))
     end
+    # Hash the canonical member of each conjugate pair, so both members agree
+    # and the field is Hermitian.
+    canonical = (i < i_conj) || (i == i_conj && j <= j_conj)
+    i_can = canonical ? i : i_conj
+    j_can = canonical ? j : j_conj
+    amplitude = sqrt(2 * variance) * _hash_randn(base_seed, UInt64(0x20), 1, i_can, j_can)
+    phase = 2 * pi * _hash_u01(base_seed, UInt64(0x30), 1, i_can, j_can)
+    value = amplitude * cis(phase)
+    return canonical ? value : conj(value)
+end
+
+@kernel function _random_psi_kernel!(ψ, base_seed, slope, @Const(weights), mask, nx, ny)
+    k, i, j = @index(Global, NTuple)
+    value = keep_mode(mask, i, j) ?
+            @inbounds(weights[k]) * _random_psi_coefficient(base_seed, slope, i, j, nx, ny) :
+            zero(ComplexF64)
     @inbounds ψ[k, i, j] = value
 end
 
 """
-    init_random_psi!(psik, G, amplitude; slope=-3.0, seed=0, seed_offset=0)
+Root-mean-square horizontal velocity over the domain of the random
+streamfunction with unit coefficients, level `k` scaled by `weights[k]`,
+computed on the host from the same hashed coefficients as the kernel.
+"""
+function _random_psi_rms_velocity(G::RuntimeGeometry, base_seed, slope, weights)
+    nx, ny, nz = G.nx, G.ny, G.nz
+    kx, ky = on_host(G.kx), on_host(G.ky)
+    mask = RadialDealiasing(nx, ny)
+    total = 0.0
+    for j in 1:ny, i in 1:nx
+        keep_mode(mask, i, j) || continue
+        total += (Float64(kx[i])^2 + Float64(ky[j])^2) *
+                 abs2(_random_psi_coefficient(base_seed, slope, i, j, nx, ny))
+    end
+    # Parseval for the unnormalised FFT: over the domain, the mean of
+    # |∇ψ|² = u² + v² is Σ kₕ²|ψ̂|² / (nx ny)² per level, averaged over levels.
+    return sqrt(total * sum(abs2, weights) / nz) / (nx * ny)
+end
 
-Fill `psik` with a random streamfunction spectrum `E(k) ∝ amplitude k^slope`
-that has Hermitian symmetry (a real ψ in physical space), then apply the
-radial two-thirds mask. The values depend only on the seeds and the global
-mode indices, so every architecture produces the same field up to rounding.
+"""
+    init_random_psi!(psik, G, amplitude; slope=-3.0, seed=0, seed_offset=0, profile=nothing)
+
+Fill `psik` with a random streamfunction whose horizontal velocity has
+root-mean-square `amplitude` over the domain. Every horizontal Fourier mode
+within the radial two-thirds dealiasing radius has a random phase and a
+variance proportional to `|k|^slope`, with `|k|` the mode index. The field is
+the same at every level, times `profile[k]` at level `k` when a profile
+vector is given, and ψ is real (Hermitian coefficients). The values depend
+only on the seeds and the global mode indices, so every architecture produces
+the same field up to rounding.
 """
 function init_random_psi!(psik, G::RuntimeGeometry, amplitude::Real;
-                          slope::Real=-3.0, seed::Int=0, seed_offset::Int=0)
+                          slope::Real=-3.0, seed::Int=0, seed_offset::Int=0,
+                          profile=nothing)
     isfinite(amplitude) && isfinite(slope) ||
         throw(ArgumentError("random streamfunction parameters must be finite"))
     amplitude >= 0 || throw(ArgumentError("amplitude must be non-negative"))
+    size(psik) == (G.nz, G.nx, G.ny) || throw(DimensionMismatch(
+        "psik has size $(size(psik)); expected $((G.nz, G.nx, G.ny))"))
+    weights = profile === nothing ? ones(G.nz) : Float64.(collect(profile))
+    length(weights) == G.nz && all(isfinite, weights) || throw(ArgumentError(
+        "the profile must give a finite value at each of the $(G.nz) levels"))
     base_seed = _mix64(UInt64(seed) ⊻ UInt64(seed_offset))
-    launch!(_random_psi_kernel!, psik, size(psik), psik, base_seed,
-            Float64(amplitude), Float64(slope), G.nx, G.ny)
-    apply_dealiasing_mask!(psik, G)
+    rms = _random_psi_rms_velocity(G, base_seed, Float64(slope), weights)
+    scale = rms > 0 ? Float64(amplitude) / rms : 0.0
+    backend = get_backend(psik)
+    launch!(_random_psi_kernel!, backend, size(psik), psik, base_seed,
+            Float64(slope), on_backend(backend, scale .* weights),
+            RadialDealiasing(G.nx, G.ny), G.nx, G.ny)
     return psik
 end
 
@@ -146,47 +188,58 @@ end
 
 """
     create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
-                       z_center=G.Lz/2, z_width=G.Lz/4)
+                       center=nothing, z_center=G.Lz/2, z_width=G.Lz/4)
 
-Create a horizontally localized wave packet in spectral space with a Gaussian
-vertical envelope, as a host array. `z_center` and `z_width` are depths
-measured positively downward from the top of the domain (its rigid lid).
+The Fourier coefficients, as a host array, of a Gaussian wave packet: a plane
+wave of mode indices `(kx0, ky0)`, wavenumber `(2π kx0/Lx, 2π ky0/Ly)`, under
+a horizontal envelope centred at `center = (x, y)` (the middle of the domain
+by default) and a vertical one centred `z_center` below the top of the domain
+(its rigid lid) with width `z_width`. The coefficients are Gaussian in mode
+index around `(kx0, ky0)` with width `sigma_k`, so the packet is about
+`Lx / (2π sigma_k)` wide; their phases place it at `center`. `amplitude` is
+the packet's largest |B|. The packet involves no randomness.
 """
 function create_wave_packet(G::RuntimeGeometry, kx0::Int, ky0::Int, sigma_k::Real, amplitude::Real;
+                            center=nothing,
                             z_center::Real=G.Lz / 2,
                             z_width::Real=G.Lz / 4)
-    sigma_k > 0 || throw(ArgumentError("sigma_k must be positive"))
+    isfinite(amplitude) || throw(ArgumentError("amplitude must be finite"))
+    isfinite(sigma_k) && sigma_k > 0 || throw(ArgumentError("sigma_k must be positive"))
     0 <= z_center <= G.Lz || throw(ArgumentError("z_center must lie between 0 and Lz=$(G.Lz)"))
     z_width > 0 || throw(ArgumentError("z_width must be positive"))
+    nx, ny, nz = G.nx, G.ny, G.nz
+    x_center, y_center = center === nothing ?
+        (G.x0 + G.Lx / 2, G.y0 + G.Ly / 2) : Float64.(center)
+    isfinite(x_center) && isfinite(y_center) ||
+        throw(ArgumentError("center must be finite"))
 
-    field = zeros(ComplexF64, G.nz, G.nx, G.ny)
+    # Horizontal pattern: x_i = x0 + (i - 1) dx carries the phase
+    # 2π kx (x_i - x0)/Lx, so the phase factor below aligns every mode at
+    # the centre.
+    pattern = zeros(ComplexF64, nx, ny)
+    for j in 1:ny, i in 1:nx
+        kx = i <= (nx + 1) ÷ 2 ? i - 1 : i - 1 - nx
+        ky = j <= (ny + 1) ÷ 2 ? j - 1 : j - 1 - ny
+        weight = exp(-((kx - kx0)^2 + (ky - ky0)^2) / (2 * sigma_k^2))
+        weight > 1e-12 || continue
+        phase = 2π * (kx * (x_center - G.x0) / G.Lx + ky * (y_center - G.y0) / G.Ly)
+        pattern[i, j] = weight * cis(-phase)
+    end
+    # Scale the largest |B| on the grid to `amplitude`; the backward
+    # transform, like the model's, divides by nx ny.
+    peak = maximum(abs, FFTW.ifft(pattern))
+    peak > 0 || throw(ArgumentError(
+        "the packet has no modes on this grid: (kx, ky) = ($kx0, $ky0) is too far " *
+        "outside the resolved wavenumbers for sigma_k = $sigma_k"))
+    pattern .*= amplitude / peak
 
-    kx_max = G.nx ÷ 2
-    ky_max = G.ny ÷ 2
-
+    field = zeros(ComplexF64, nz, nx, ny)
     top = last(G.z_faces)
-    for k in 1:G.nz
+    for k in 1:nz
         depth = top - G.z[k]
         z_envelope = exp(-((depth - z_center)^2) / (2 * z_width^2))
-
-        for j in 1:G.ny
-            ky = j <= ky_max ? j-1 : j-1-G.ny
-
-            for i in 1:G.nx
-                kx = i <= kx_max ? i - 1 : i - 1 - G.nx
-
-                # Gaussian envelope in wavenumber space
-                k_dist2 = (kx - kx0)^2 + (ky - ky0)^2
-                envelope = exp(-k_dist2 / (2 * sigma_k^2))
-
-                if envelope > 1e-10
-                    phase = 2π * rand()
-                    field[k, i, j] = amplitude * envelope * z_envelope * cis(phase)
-                end
-            end
-        end
+        @views field[k, :, :] .= z_envelope .* pattern
     end
-
     return field
 end
 
@@ -238,12 +291,16 @@ with Neumann BC ∂ψ/∂z = 0 at boundaries (boundary PV sheets handled by one-
 """
 function compute_q_from_psi!(q, psi, G::RuntimeGeometry, a_ell, dz; workspace=nothing)
     nz = size(psi, 1)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    nz == G.nz || throw(DimensionMismatch("ψ has $nz levels; the grid has $(G.nz)"))
     size(q) == size(psi) ||
         throw(DimensionMismatch("q and psi must have the same size"))
+    length(a_ell) == nz || throw(DimensionMismatch("a_ell must have length $nz"))
+    # The stencil reads ψ at k ± 1 after q[k] is written, so q cannot be ψ.
+    q === psi && throw(ArgumentError("q and psi must be distinct arrays"))
     backend = get_backend(q)
+    T = real(eltype(q))
     launch!(_q_from_psi_kernel!, backend, size(q), q, psi, G.kx, G.ky,
-            on_backend(backend, a_ell), dz^2, nz)
+            on_backend(backend, in_precision(a_ell, T)), T(dz)^2, nz)
     return q
 end
 

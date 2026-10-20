@@ -12,12 +12,22 @@ function UnifiedParticleAdvection.ParticleTracker(
     )
 end
 
-function UnifiedParticleAdvection.initialize_particles!(
-    model::QGYBJModel, configuration::ParticleConfig)
+"""
+    initialize_particles!(model, config)
+    initialize_particles!(simulation, config)
 
-    tracker = ParticleTracker(configuration, model)
-    UnifiedParticleAdvection.initialize_particles!(tracker, configuration)
-    model.particles = tracker
+Install particles on `model` (or on the simulation's model), placed by `config`:
+a [`ParticleConfig`](@ref) or [`ParticleConfig3D`](@ref), usually from a helper
+such as [`particles_in_box`](@ref). They replace any particles the model had,
+and are advanced by `run!` with the model's own coefficients; read them from
+`model.particles`. Particles installed through a simulation start at its
+clock's time, which is the restart time after `restore!`.
+"""
+function UnifiedParticleAdvection.initialize_particles!(
+    model::QGYBJModel, configuration::Union{ParticleConfig, ParticleConfig3D})
+
+    _assert_mutable(model)
+    model.particles = _new_particle_tracker(model, configuration)
     return model
 end
 
@@ -26,19 +36,24 @@ function UnifiedParticleAdvection.initialize_particles!(
 
     _assert_mutable(simulation)
     UnifiedParticleAdvection.initialize_particles!(simulation.model, configuration)
+    _align_particle_time!(simulation.model.particles, simulation.clock.time)
     return simulation
 end
 
-function UnifiedParticleAdvection.initialize_particles!(
-    model::QGYBJModel, configuration::ParticleConfig3D)
+"""A tracker for `model` holding the particles of `configuration`, not yet installed."""
+function _new_particle_tracker(model::QGYBJModel, configuration::ParticleConfig)
+    tracker = ParticleTracker(configuration, model)
+    UnifiedParticleAdvection.initialize_particles!(tracker, configuration)
+    return tracker
+end
 
+function _new_particle_tracker(model::QGYBJModel, configuration::ParticleConfig3D)
     basic_configuration =
         UnifiedParticleAdvection.EnhancedParticleConfig.convert_to_basic_config(
             configuration)
     tracker = ParticleTracker(basic_configuration, model)
     UnifiedParticleAdvection.initialize_particles!(tracker, configuration)
-    model.particles = tracker
-    return model
+    return tracker
 end
 
 """
@@ -102,7 +117,7 @@ function _record_particle_velocity!(tracker::ParticleTracker,
     tracker === model.particles ||
         error("model particle ownership is inconsistent")
     time = Float64(time)
-    time < tracker.config.particle_advec_time && return tracker
+    UnifiedParticleAdvection._released(tracker, time) || return tracker
     UnifiedParticleAdvection.update_velocity_fields!(
         tracker, model.fields, model.runtime.geometry; time,
         _particle_velocity_options(model)...)
@@ -111,21 +126,46 @@ function _record_particle_velocity!(tracker::ParticleTracker,
 end
 
 
+_align_particle_time!(tracker::ParticleTracker, time) =
+    UnifiedParticleAdvection._align_particle_time!(tracker, time)
+
+"""Error unless `particle_output` is `nothing`, `false`, or a `ParticleOutputManager`."""
+function _check_particle_output_type(particle_output)
+    particle_output === nothing || particle_output === false ||
+        particle_output isa ParticleOutputManager || throw(ArgumentError(
+            "particle_output must be a ParticleOutputManager or false " *
+            "(got $(typeof(particle_output)))"))
+    return nothing
+end
+
+"""
+Check, changing no file, that the run can write its particle output: the
+model has particles, the manager has not been closed by an earlier run, and
+no file it would write is in the way unless `overwrite=true`.
+"""
+function _check_particle_output(simulation::Simulation)
+    manager = simulation.particle_output_manager
+    _check_particle_output_type(manager)
+    (manager === nothing || manager === false) && return nothing
+    manager.closed && throw(ArgumentError(
+        "this ParticleOutputManager was closed at the end of an earlier run; " *
+        "give the new simulation a new ParticleOutputManager"))
+    simulation.model.particles isa ParticleTracker || throw(ArgumentError(
+        "particle output requires particles initialized on the model"))
+    manager.initialized || ParticleIO._check_existing_particle_files(manager)
+    return nothing
+end
+
 function _prepare_particle_output!(simulation::Simulation)
     manager = simulation.particle_output_manager
     (manager === nothing || manager === false) && return simulation
-    manager isa ParticleOutputManager || throw(ArgumentError(
-        "particle_output must be a ParticleOutputManager or false"))
-    tracker = simulation.model.particles
-    tracker isa ParticleTracker || throw(ArgumentError(
-        "particle output requires particles initialized on the model"))
     if !manager.initialized
-        setup_particle_output!(manager, tracker)
-        T = typeof(manager.last_save_time)
+        setup_particle_output!(manager, simulation.model.particles)
+        time = simulation.clock.time
         manager.last_save_iter = simulation.clock.iteration
-        manager.last_save_time = T(simulation.clock.time)
-        manager.next_save_time = T(simulation.clock.time) +
-                                 manager.save_interval_time
+        manager.last_save_time = time
+        manager.save_interval_time > 0 && (manager.next_save_time =
+            _next_deadline(time, manager.save_interval_time))
     end
     return simulation
 end
@@ -136,29 +176,31 @@ function _maybe_write_particle_output!(simulation::Simulation;
     manager = simulation.particle_output_manager
     (manager === nothing || manager === false || manager.closed) &&
         return simulation
-    tracker = simulation.model.particles
-    T = typeof(manager.last_save_time)
-    time = T(simulation.clock.time)
+    clock = simulation.clock
     due = initial ? manager.save_count == 0 :
-          should_save_particles(manager, simulation.clock.iteration, time)
+          should_save_particles(manager, clock.iteration, clock.time)
     due || return simulation
     save_particle_positions!(
-        manager, tracker, simulation.clock.iteration, time)
+        manager, simulation.model.particles, clock.iteration, clock.time)
     return simulation
 end
 
+"""
+Write the final particle state and close the particle output the run opened.
+Output that was never opened, because the run failed to start, is left
+untouched, so the manager can still be given to another simulation.
+"""
 function _finish_particle_output!(simulation::Simulation)
     manager = simulation.particle_output_manager
-    (manager === nothing || manager === false || manager.closed) &&
-        return simulation
+    (manager === nothing || manager === false || manager.closed ||
+     !manager.initialized) && return simulation
     tracker = simulation.model.particles
     try
-        if simulation.state !== Failed &&
+        if simulation.state !== Failed && tracker isa ParticleTracker &&
            manager.last_save_iter != simulation.clock.iteration
-            T = typeof(manager.last_save_time)
             save_particle_positions!(
                 manager, tracker, simulation.clock.iteration,
-                T(simulation.clock.time))
+                simulation.clock.time)
         end
         finalize_particle_output!(manager, tracker)
     catch

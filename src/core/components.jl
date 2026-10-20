@@ -218,10 +218,14 @@ function HorizontalHyperdiffusivity(;
 end
 
 """
-Horizontally uniform, surface-confined wave initial condition, whose profile
-decays over `scale` downward from the top of the domain (its rigid lid). Its
-depth mean is removed when it is set, since the wave velocity has no
-barotropic part.
+    SurfaceWave(; amplitude, scale, profile=:gaussian)
+
+Horizontally uniform, surface-confined wave initial condition for
+[`set!`](@ref): `amplitude` times `exp(-d²/scale²)` (`profile=:gaussian`) or
+`exp(-d/scale)` (`:exponential`), with `d` the depth of each cell's upper face
+below the top of the domain, its rigid lid (so the top cell has the full
+amplitude). Its depth mean is removed when it is set, since the wave velocity
+has no barotropic part.
 """
 struct SurfaceWave{T}
     amplitude::T
@@ -229,20 +233,33 @@ struct SurfaceWave{T}
     profile::Symbol
 end
 
-"""Deterministic random streamfunction spectrum for model initialization."""
-struct RandomStreamfunction{T}
+"""
+    RandomStreamfunction(; amplitude, spectral_slope=-3, seed=0, profile=nothing)
+
+A random balanced flow for [`set!`](@ref): a streamfunction whose horizontal
+velocity has root-mean-square `amplitude` over the domain (m/s in a
+dimensional setup). Every horizontal Fourier mode within the two-thirds
+dealiasing radius has a random phase and a variance proportional to
+`|k|^spectral_slope`, with `|k|` the mode index. The field is the same at
+every level, or proportional to `profile(z)` at the level `z` when a profile
+function is given. The same `seed` gives the same field on every
+architecture, up to rounding in a GPU's math library.
+"""
+struct RandomStreamfunction{T, P}
     amplitude::T
     spectral_slope::T
     seed::Int
+    profile::P
 end
 
 """
     FieldArray(values; space=:physical, layout=:zxy, x=nothing, y=nothing, z=nothing)
 
 A three-dimensional field supplied directly to [`set!`](@ref), on the model's
-grid or, when the coordinate vectors `x`, `y`, and `z` (positive upward) of
-its points are given, on any rectilinear grid, from which it is interpolated
-onto the model's.
+grid or, when the coordinate vectors `x`, `y`, and `z` of its points are
+given (in the grid's coordinates, z positive upward), on any rectilinear
+grid, from which it is interpolated onto the model's. `layout` is the order
+of the array's dimensions, `:zxy` or `:xyz`. Its values must be finite.
 """
 struct FieldArray{A<:AbstractArray, C}
     values::A
@@ -283,9 +300,19 @@ end
 
 A three-dimensional field supplied to [`set!`](@ref), read from a NetCDF file,
 or from a JLD2 file when `path` ends in `.jld2`. `group` names the NetCDF
-group, or the JLD2 group, NamedTuple, or Dict, that holds `variable`. When the
-same place holds coordinate vectors `x`, `y`, and `z` (or `depth`), a field on
-another grid is interpolated onto the model's.
+group, or the JLD2 group, NamedTuple, or Dict, that holds `variable`.
+
+The dimensions of a NetCDF variable are put in order by their names when
+they name the axes (`x`, `y`, and `z` or `depth`, or common alternatives such
+as `lon`, `lat`, and `lev`); otherwise, and for JLD2 arrays, `layout` gives
+their order (`:xyz` or `:zxy`). Extra dimensions of length one, such as a
+single time, are dropped. Missing (fill) and non-finite values are errors.
+
+When the same place holds coordinate vectors `x`, `y`, and `z` (or `depth`),
+a field on another grid is interpolated onto the model's. `z` is in the
+grid's coordinates, positive upward, and `depth` is measured down from the
+top of the grid, its lid; a `z` with no point below the lid, and some above
+it, is read as depth, as in earlier versions.
 """
 struct FieldFile
     path::String
@@ -310,14 +337,17 @@ function FieldFile(path::AbstractString, variable::AbstractString;
 end
 
 
-function RandomStreamfunction(; amplitude::Real=1.0,
-    spectral_slope::Real=-3.0, seed::Integer=0)
+function RandomStreamfunction(; amplitude::Real,
+    spectral_slope::Real=-3.0, seed::Integer=0, profile=nothing)
     values = float.((amplitude, spectral_slope))
     all(isfinite, values) ||
         throw(ArgumentError("random streamfunction parameters must be finite"))
     values[1] >= 0 || throw(ArgumentError("amplitude must be non-negative"))
+    profile === nothing || profile isa Function ||
+        throw(ArgumentError("profile must be a function of z, or nothing"))
     T = promote_type(map(typeof, values)...)
-    return RandomStreamfunction{T}(T(amplitude), T(spectral_slope), Int(seed))
+    return RandomStreamfunction{T, typeof(profile)}(
+        T(amplitude), T(spectral_slope), Int(seed), profile)
 end
 
 function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
@@ -331,33 +361,68 @@ function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
     return SurfaceWave{T}(T(amplitude), T(scale), profile)
 end
 
-"""Schedule output or diagnostics at a time interval measured in seconds."""
-struct TimeInterval{T} <: AbstractSchedule
+"""
+    TimeInterval(interval)
+
+Schedule output or diagnostics every `interval` of model time (seconds in a
+dimensional setup). The scheduled times are the multiples of `interval` from
+t = 0, so a restored run keeps the times of the original one; each is written
+at the first step that reaches it. The interval is kept in `Float64`, like
+the simulation clock.
+"""
+struct TimeInterval{T<:AbstractFloat} <: AbstractSchedule
     interval::T
+
+    function TimeInterval{T}(interval::Real) where T<:AbstractFloat
+        value = T(interval)
+        isfinite(value) || throw(ArgumentError("interval must be finite (got $interval)"))
+        value > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
+        return new{T}(value)
+    end
 end
 
-function TimeInterval(interval::Real)
-    value = float(interval)
-    isfinite(value) || throw(ArgumentError("interval must be finite (got $interval)"))
-    value > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
-    return TimeInterval{typeof(value)}(value)
-end
+TimeInterval(interval::Real) = TimeInterval{Float64}(interval)
 
-"""Schedule output or diagnostics every `interval` model iterations."""
+"""
+    IterationInterval(interval)
+
+Schedule output or diagnostics every `interval` model iterations.
+"""
 struct IterationInterval <: AbstractSchedule
     interval::Int
+
+    function IterationInterval(interval::Integer)
+        interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
+        return new(Int(interval))
+    end
 end
 
-function IterationInterval(interval::Integer)
-    interval > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
-    return IterationInterval(Int(interval))
+"""
+    _next_deadline(time, interval)
+
+The first multiple of `interval` after `time`, up to rounding. Every
+`TimeInterval` schedule lies on this grid of multiples from t = 0, so a
+restored run keeps the original output times, and a deadline computed with
+one multiplication does not drift as a running sum would.
+"""
+function _next_deadline(time, interval)
+    tolerance = 8eps(max(abs(time), abs(interval), one(time)))
+    return (floor((time + tolerance) / interval) + 1) * interval
 end
 
 """
     NetCDFOutput(; path="output", schedule=nothing, fields=(:ψ, :waves), velocities=false, overwrite=false)
 
-Declarative NetCDF output settings. `schedule` may be a [`TimeInterval`](@ref)
-or [`IterationInterval`](@ref).
+Declarative NetCDF output settings: one state file `stateNNNN.nc` in `path` per
+write. `schedule` may be a [`TimeInterval`](@ref) or
+[`IterationInterval`](@ref); with `schedule=nothing` only the initial and
+final states are written.
+
+Every file holds the prognostic `q` and `B` needed for a restart (and ψ for a
+`FixedFlow` model). `fields` adds physical-space fields: `:ψ` (or `:psi`,
+`:q`, `:flow`) for the streamfunction, `:waves` (or `:wave`, `:B`, `:A`) for
+the wave amplitude `A` and velocity `LA`, and `:velocities` for u, v, and w,
+which `velocities=true` also adds.
 
 A run never silently replaces state files already in `path`. A simulation
 restored with [`restore!`](@ref) continues the numbering after the files up
@@ -380,9 +445,16 @@ function NetCDFOutput(; path::AbstractString="output", schedule=nothing,
         throw(ArgumentError("schedule must be a TimeInterval or IterationInterval"))
     isempty(path) && throw(ArgumentError("output path cannot be empty"))
     output_fields = fields isa Symbol ? (fields,) : Tuple(fields)
+    unknown = filter(field -> !(field in _OUTPUT_FIELDS), output_fields)
+    isempty(unknown) || throw(ArgumentError(
+        "unknown output field(s) $(join(repr.(unknown), ", ")); choose from " *
+        ":ψ (or :psi, :q, :flow), :waves (or :wave, :B, :A), and :velocities"))
     return NetCDFOutput(String(path), schedule, output_fields, velocities,
                         overwrite)
 end
+
+"""Field names that [`NetCDFOutput`](@ref) accepts."""
+const _OUTPUT_FIELDS = (:ψ, :psi, :q, :flow, :waves, :wave, :B, :A, :velocities)
 
 """
     EnergyDiagnosticsOutput(; path="output/diagnostic", schedule, overwrite=false)

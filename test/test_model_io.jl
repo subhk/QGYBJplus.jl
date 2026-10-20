@@ -161,17 +161,20 @@ end
             @test parent(model.fields.B) ≈ B_saved
             @test simulation.output_manager.closed
 
-            expected_flow_energy = 0.5 * sum(
-                abs2.(parent(model.fields.u)) .+
-                abs2.(parent(model.fields.v)))
-            expected_wave_energy = (
-                sum(abs2, parent(model.fields.B)),
-                sum(abs2, parent(model.fields.A)),
-            )
-            @test flow_kinetic_energy(model) ≈ expected_flow_energy
-            model_wave_energy = wave_energy(model)
-            @test first(model_wave_energy) ≈ first(expected_wave_energy)
-            @test last(model_wave_energy) ≈ last(expected_wave_energy)
+            # The model's energies are domain means: the wave kinetic energy
+            # is ½⟨|LA|²⟩ of the wave velocity the state file records, and
+            # the prescribed flow (ψ = 0, restored from the file) has none.
+            LA = NCDataset(last_file, "r") do ds
+                ds["LA_real"][:, :, :] .+ im .* ds["LA_imag"][:, :, :]
+            end
+            @test maximum(abs, LA) > 0
+            @test wave_energy(model).kinetic ≈ 0.5 * sum(abs2, LA) / length(LA)
+            @test flow_kinetic_energy(model) == 0
+            # Computing them changes no field.
+            fill!(parent(model.fields.A), 0)
+            @test wave_energy(model).kinetic ≈ 0.5 * sum(abs2, LA) / length(LA)
+            @test all(iszero, parent(model.fields.A))
+            restore!(model, last_file)
 
             selected_path = joinpath(output_dir, "selected")
             selected_simulation = Simulation(
@@ -316,9 +319,12 @@ end
 
                     fill!(parent(ybj_model.fields.A), 0)
                     fill!(parent(ybj_model.fields.C), 0)
-                    envelope_energy, amplitude_energy = wave_energy(ybj_model)
-                    @test envelope_energy > 0
-                    @test amplitude_energy > 0
+                    # The energies are rebuilt from B, leaving A as it is.
+                    energy = wave_energy(ybj_model)
+                    @test energy.kinetic > 0
+                    @test energy.potential > 0
+                    @test energy.correction == 0
+                    @test all(iszero, parent(ybj_model.fields.A))
 
                     state_path = joinpath(output_dir, "normal_ybj_state_$tag")
                     state_simulation = Simulation(
@@ -440,7 +446,8 @@ end
                 output=NetCDFOutput(path=failure_path),
                 verbose=false,
             )
-            @test_throws Exception run!(failing_simulation)
+            # A directory where the state file goes makes NetCDF fail.
+            @test_throws NCDatasets.NetCDFError run!(failing_simulation)
             @test failing_simulation.state == Failed
             @test failing_simulation.output_manager.closed
         finally

@@ -63,7 +63,7 @@ module YBJNormal
 
 using KernelAbstractions: @kernel, @index, @Const, get_backend
 using ..QGYBJplus: RuntimeGeometry, launch!, kernel_mask, keep_mode, on_backend,
-                   KeepAllModes, vertical_spacing
+                   KeepAllModes, vertical_spacing, in_precision
 
 """Kernel rule for a normal-YBJ `Lmask`: `nothing` keeps every mode."""
 _column_mask(Lmask, array) = kernel_mask(Lmask, array, KeepAllModes())
@@ -191,7 +191,9 @@ function compute_sigma(f::Real, G::RuntimeGeometry, nBk, rBk;
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ sigma requires a finite, nonzero Coriolis frequency"))
     nz, nx, ny = size(nBk)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    nz == G.nz || throw(DimensionMismatch("nBk has $nz levels; the grid has $(G.nz)"))
+    size(rBk) == size(nBk) || throw(DimensionMismatch(
+        "rBk has size $(size(rBk)); nBk has $(size(nBk))"))
     σ = similar(nBk, eltype(nBk), nx, ny)
     launch!(_sigma_kernel!, σ, (nx, ny), σ, nBk, rBk, G.kx, G.ky,
             _column_mask(Lmask, nBk), convert(real(eltype(σ)), f), nz)
@@ -217,7 +219,9 @@ function compute_sigma(f::Real, G::RuntimeGeometry,
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ sigma requires a finite, nonzero Coriolis frequency"))
     nz, nx, ny = size(nBRk)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    nz == G.nz || throw(DimensionMismatch("nBRk has $nz levels; the grid has $(G.nz)"))
+    all(array -> size(array) == size(nBRk), (nBIk, rBRk, rBIk)) ||
+        throw(DimensionMismatch("the split spectra must have the same size"))
     σ = similar(nBRk, eltype(nBRk), nx, ny)
     launch!(_split_sigma_kernel!, σ, (nx, ny), σ, nBRk, nBIk, rBRk, rBIk,
             G.kx, G.ky, _column_mask(Lmask, nBRk), convert(real(eltype(σ)), f), nz)
@@ -327,12 +331,13 @@ function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3}
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ recovery requires a finite, nonzero Coriolis frequency"))
     nz, nx, ny = size(A)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    _check_recovery_sizes(A, C, sigma, G, B)
     backend = get_backend(A)
     launch!(_compute_A_kernel!, backend, (nx, ny), A, C, B, nothing,
             on_backend(backend, sigma), G.kx, G.ky, _column_mask(Lmask, A),
-            on_backend(backend, _recovery_N²(N2_profile, nz)),
-            convert(real(eltype(A)), inv(float(f))^2), vertical_spacing(G), nz)
+            on_backend(backend, _recovery_N²(N2_profile, nz, real(eltype(A)))),
+            convert(real(eltype(A)), inv(float(f))^2),
+            real(eltype(A))(vertical_spacing(G)), nz)
     return A, C
 end
 
@@ -344,17 +349,36 @@ function compute_A!(A::AbstractArray{<:Complex,3}, C::AbstractArray{<:Complex,3}
     isfinite(f) && !iszero(f) ||
         throw(ArgumentError("normal-YBJ recovery requires a finite, nonzero Coriolis frequency"))
     nz, nx, ny = size(A)
-    @assert nz == G.nz "Vertical dimension must match the grid"
+    _check_recovery_sizes(A, C, sigma, G, BRk, BIk)
     backend = get_backend(A)
     launch!(_compute_A_kernel!, backend, (nx, ny), A, C, BRk, BIk,
             on_backend(backend, sigma), G.kx, G.ky, _column_mask(Lmask, A),
-            on_backend(backend, _recovery_N²(N2_profile, nz)),
-            convert(real(eltype(A)), inv(float(f))^2), vertical_spacing(G), nz)
+            on_backend(backend, _recovery_N²(N2_profile, nz, real(eltype(A)))),
+            convert(real(eltype(A)), inv(float(f))^2),
+            real(eltype(A))(vertical_spacing(G)), nz)
     return A, C
 end
 
-_recovery_N²(N2_profile, nz) =
-    (N2_profile !== nothing && length(N2_profile) == nz) ? N2_profile : ones(nz)
+"""
+Error unless `A`, `C`, and the envelope spectra share one size on the grid and
+`sigma` is one horizontal plane of it; the envelope must not be `A` or `C`.
+"""
+function _check_recovery_sizes(A, C, sigma, G::RuntimeGeometry, envelopes...)
+    nz, nx, ny = size(A)
+    nz == G.nz || throw(DimensionMismatch("A has $nz levels; the grid has $(G.nz)"))
+    size(C) == size(A) && all(B -> size(B) == size(A), envelopes) ||
+        throw(DimensionMismatch("A, C, and B must have the same size"))
+    size(sigma) == (nx, ny) || throw(DimensionMismatch(
+        "sigma has size $(size(sigma)); expected $((nx, ny))"))
+    any(B -> B === A || B === C, envelopes) &&
+        throw(ArgumentError("B must be distinct from A and C"))
+    return nothing
+end
+
+"""The N² profile of the recovery in precision `T`: unit N² when none fits."""
+_recovery_N²(N2_profile, nz, ::Type{T}) where T =
+    (N2_profile !== nothing && length(N2_profile) == nz) ?
+    in_precision(N2_profile, T) : ones(T, nz)
 
 """Envelope value used by the recovery: `B`, or `BR + i BI` for split spectra."""
 @inline _envelope_increment(B, ::Nothing, k, i, j) = @inbounds B[k, i, j]

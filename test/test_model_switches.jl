@@ -130,11 +130,11 @@ relative(a, b) = maximum(abs, a .- b) /
         @test relative(plus.B, normal.B) > 1e-3
         @test relative(plus.B, passive.B) > 1e-3
 
-        # YBJ⁺ recovers an amplitude; the passive envelope has none.
+        # Every formulation recovers an amplitude; the passive envelope keeps
+        # the YBJ⁺ relation B = L⁺A after a step, as set! and output define it.
         @test magnitude(plus.A) > 1e-3
         @test magnitude(normal.A) > 1e-3
-        @test all(iszero, passive.A)
-        @test all(iszero, passive.C)
+        @test magnitude(passive.A) > 1e-3
     end
 
     @testset "FixedFlow with WaveMeanFeedback warns that feedback is inactive" begin

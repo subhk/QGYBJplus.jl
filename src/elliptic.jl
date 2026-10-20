@@ -70,7 +70,8 @@ module Elliptic
 
 using KernelAbstractions: @kernel, @index, @Const, get_backend
 using ..QGYBJplus: RuntimeGeometry, ModelFields, launch!, on_backend,
-                   vertical_spacing, tridiagonal_scratch, first_value
+                   vertical_spacing, tridiagonal_scratch, first_value,
+                   in_precision
 
 #=
 ================================================================================
@@ -247,15 +248,18 @@ depth mean of q is nonzero, that incompatible constant component is projected
 out (with a warning); no Neumann solution exists for it.
 
 # Example
+For a model, `invert_q_to_psi!(model)` uses its own coefficients. With the
+low-level arguments:
 ```julia
-a_vec = a_ell_from_N2(N2_face_profile, FPlane(f=1e-4))
-invert_q_to_psi!(state, grid; a=a_vec)
+geometry = model.runtime.geometry
+a_vec = model.runtime.coefficients.a_ell   # f²/N² at the upper faces
+invert_q_to_psi!(model.fields, geometry; a=a_vec)
 ```
 """
 function invert_q_to_psi!(S::ModelFields, G::RuntimeGeometry; a::AbstractVector,
     workspace=nothing)
     nz = G.nz
-    @assert length(a) == nz "a must have length nz=$nz"
+    length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
     _invert_q_to_psi!(S.psi, S.q, G, a, workspace)
     return S
 end
@@ -288,12 +292,16 @@ function _invert_q_to_psi!(psi, q, G::RuntimeGeometry, a, workspace;
     nz, nx, ny = size(psi)
     nz == G.nz || throw(DimensionMismatch("ψ has $nz levels; the grid has $(G.nz)"))
     length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
+    size(q) == size(psi) || throw(DimensionMismatch(
+        "q has size $(size(q)); ψ has $(size(psi))"))
+    q === psi && throw(ArgumentError("q and ψ must be distinct arrays"))
     backend = get_backend(psi)
     check_compatibility && _check_mean_pv_compatibility(q)
-    Δz = vertical_spacing(G)
+    T = real(eltype(psi))
+    Δz = T(vertical_spacing(G))
     launch!(_invert_q_to_psi_kernel!, backend, (nx, ny),
             psi, tridiagonal_scratch(workspace, psi), q, G.kx, G.ky,
-            on_backend(backend, a), Δz, Δz^2, nz)
+            on_backend(backend, in_precision(a, T)), Δz, Δz^2, nz)
     return psi
 end
 
@@ -405,9 +413,12 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            workspace=nothing)
     nz = G.nz
     nz_local, nx, ny = size(dstk)
-    @assert nz_local == nz "Vertical dimension must match the grid"
-    @assert length(a) == nz "a must have length nz=$nz"
-    @assert length(b) == nz "b must have length nz=$nz"
+    nz_local == nz || throw(DimensionMismatch(
+        "dstk has $nz_local levels; the grid has $nz"))
+    size(rhs) == size(dstk) || throw(DimensionMismatch(
+        "rhs has size $(size(rhs)); dstk has $(size(dstk))"))
+    length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
+    length(b) == nz || throw(DimensionMismatch("b must have length nz=$nz"))
     for (bc, name) in ((bot_bc, "bot_bc"), (top_bc, "top_bc"))
         bc === nothing || size(bc) == (nx, ny) || throw(DimensionMismatch(
             "$name must be an (nx, ny) = ($nx, $ny) array (got size $(size(bc)))"))
@@ -436,11 +447,13 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
     end
 
     Δz = vertical_spacing(G)
-    in_precision(profile) = eltype(profile) === typeof(Δz) ? profile : typeof(Δz).(profile)
+    T = typeof(Δz)
     launch!(_helmholtz_kernel!, backend, (nx, ny),
             dstk, tridiagonal_scratch(workspace, dstk), rhs, G.kx, G.ky,
-            on_backend(backend, in_precision(a)), on_backend(backend, in_precision(b)),
-            on_backend(backend, bot_bc), on_backend(backend, top_bc),
+            on_backend(backend, in_precision(a, T)),
+            on_backend(backend, in_precision(b, T)),
+            on_backend(backend, in_precision(bot_bc, T)),
+            on_backend(backend, in_precision(top_bc, T)),
             Δz, Δz^2, α, nz)
     return dstk
 end
@@ -537,8 +550,6 @@ This matches `A_solver_ybj_plus` in elliptic.f90.
 """
 function invert_B_to_A!(S::ModelFields, G::RuntimeGeometry, a::AbstractVector;
     workspace=nothing)
-    nz = G.nz
-    @assert length(a) == nz "a must have length nz=$nz"
     _invert_B_to_A!(S.A, S.C, S.B, G, a, workspace)
     return S
 end
@@ -550,11 +561,16 @@ evolved field `B = L⁺A`.
 function _invert_B_to_A!(A, C, B, G::RuntimeGeometry, a::AbstractVector, workspace)
     nz, nx, ny = size(A)
     nz == G.nz || throw(DimensionMismatch("A has $nz levels; the grid has $(G.nz)"))
+    size(B) == size(C) == size(A) || throw(DimensionMismatch(
+        "A, C, and B must have the same size; got $(size(A)), $(size(C)), $(size(B))"))
+    (B === A || B === C) && throw(ArgumentError("B must be distinct from A and C"))
+    length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
     backend = get_backend(A)
-    Δz = vertical_spacing(G)
+    T = real(eltype(A))
+    Δz = T(vertical_spacing(G))
     launch!(_invert_B_to_A_kernel!, backend, (nx, ny),
             A, C, tridiagonal_scratch(workspace, A), B, G.kx, G.ky,
-            on_backend(backend, a), Δz, Δz^2, nz)
+            on_backend(backend, in_precision(a, T)), Δz, Δz^2, nz)
     return A, C
 end
 

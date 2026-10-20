@@ -314,7 +314,9 @@ wind; the other two are the deformation part of the Q-vector forcing.
 
 The discrete forcing and stencil are those implied by the model's flux-form
 PV inversion, so w satisfies the model's discrete vorticity and buoyancy
-equations exactly.
+equations exactly. A `LinearDynamics()` model does not advect its flow, but
+its w is still that of the full QG equations: the vertical motion that the
+flow's own advection drives.
 
 # Boundary Conditions
 w = 0 at z = -Lz and z = 0 (rigid lid and bottom).

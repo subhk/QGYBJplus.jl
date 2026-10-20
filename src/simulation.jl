@@ -11,6 +11,7 @@ architecture(simulation::Simulation) = architecture(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
 _advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
 _record_particle_velocity!(::Nothing, model::QGYBJModel, time) = nothing
+_align_particle_time!(::Nothing, time) = nothing
 
 _maybe_integer(value) = isinteger(value) ? Int(value) : value
 
@@ -290,6 +291,7 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     value = Float64(Δt)
     isfinite(value) && value > 0 ||
         throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
+    _check_particle_output_type(particle_output)
     options = default_run_options(Float64)
     simulation = Simulation(
         model,
@@ -307,7 +309,17 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     return _configure_output!(simulation; output, diagnostics, verbose)
 end
 
-"""Set the balanced streamfunction and derive potential vorticity."""
+"""
+    set_mean_flow!(owner; psi_func, pv_method=:qg, verbose=true)
+    set_mean_flow!(owner; method=:random, amplitude, spectral_slope=-3, seed=0, profile=nothing, pv_method=:qg)
+
+Set the balanced streamfunction ψ of a model or its simulation, from a
+function `psi_func(x, y, z)` (`method=:function`, the default) or as a random
+flow (`method=:random`, see [`RandomStreamfunction`](@ref): `amplitude` is
+the rms horizontal velocity). `pv_method` selects how the potential vorticity
+follows from ψ: `:qg` (with vortex stretching), `:barotropic` (relative
+vorticity only), or `:none` (q unchanged, for a `FixedFlow` model).
+"""
 function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     psi_func=nothing,
     method::Symbol=:function,
@@ -315,10 +327,12 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real=1.0,
     spectral_slope::Real=-3.0,
     seed::Int=0,
+    profile=nothing,
     verbose::Bool=true)
 
     _assert_mutable(owner)
     model = _model(owner)
+    _check_pv_method(model, pv_method; sets_flow=true)
     runtime = model.runtime
     grid = runtime.geometry
     geometry = model.grid
@@ -342,9 +356,11 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
         fft_forward!(fields.psi, fields.psi, plans)
     elseif method === :random
         verbose &&
-            println("Setting random mean flow: amplitude=$amplitude, slope=$spectral_slope")
+            println("Setting random mean flow: rms velocity=$amplitude, slope=$spectral_slope")
+        weights = profile === nothing ? nothing : [profile(z) for z in geometry.z]
         init_random_psi!(fields.psi, grid, amplitude;
-                         slope=spectral_slope, seed, seed_offset=0)
+                         slope=spectral_slope, seed, seed_offset=0,
+                         profile=weights)
     else
         throw(ArgumentError("method must be :function or :random"))
     end
@@ -355,17 +371,23 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
 end
 
 """
-Set a horizontally uniform, surface-confined wave field. `surface_depth` is
-measured downward from the top of the domain, its rigid lid.
+    set_surface_waves!(owner; amplitude, surface_depth, profile=:gaussian, pv_method=:qg, verbose=true)
+
+Set a horizontally uniform, surface-confined wave envelope B, as
+[`SurfaceWave`](@ref) does in [`set!`](@ref): `amplitude` times
+`exp(-d²/surface_depth²)` (`profile=:gaussian`) or `exp(-d/surface_depth)`
+(`:exponential`), with `d` the depth of each cell's upper face below the top
+of the domain, its rigid lid (so the top cell has the full amplitude). The
+depth mean of B is then removed (see [YBJ⁺ wave model](@ref ybj-plus)).
 """
 function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real,
     surface_depth::Real,
-    uniform::Bool=true,
     profile::Symbol=:gaussian,
     pv_method::Symbol=:qg,
     verbose::Bool=true)
 
+    isfinite(amplitude) || throw(ArgumentError("amplitude must be finite"))
     surface_depth > 0 ||
         throw(ArgumentError("surface_depth must be positive (got $surface_depth)"))
     profile in (:gaussian, :exponential) ||
@@ -373,6 +395,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
 
     _assert_mutable(owner)
     model = _model(owner)
+    _check_pv_method(model, pv_method; sets_flow=false)
     runtime = model.runtime
     geometry = model.grid
     fields = model.fields
@@ -399,11 +422,37 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
     return owner
 end
 
+"""
+    set_exponential_surface_waves!(owner; amplitude, efold_depth, pv_method=:qg, verbose=true)
+
+[`set_surface_waves!`](@ref) with the exponential profile
+`amplitude * exp(-d/efold_depth)`.
+"""
 function set_exponential_surface_waves!(owner::Union{QGYBJModel, Simulation};
-    amplitude::Real, efold_depth::Real, uniform::Bool=true,
+    amplitude::Real, efold_depth::Real,
     pv_method::Symbol=:qg, verbose::Bool=true)
     return set_surface_waves!(owner; amplitude, surface_depth=efold_depth,
-                              uniform, profile=:exponential, pv_method, verbose)
+                              profile=:exponential, pv_method, verbose)
+end
+
+"""Potential-vorticity rules that the setters accept."""
+const _PV_METHODS = (:qg, :balanced, :barotropic, :asselin, :none)
+
+"""
+Error unless `pv_method` is known and, when the call sets the mean flow,
+keeps that flow: `:none` leaves q unchanged, and an evolving flow is inverted
+from q, so the streamfunction just set would be lost.
+"""
+function _check_pv_method(model::QGYBJModel, pv_method::Symbol; sets_flow::Bool)
+    pv_method in _PV_METHODS || throw(ArgumentError(
+        "pv_method must be :qg, :barotropic, or :none (got :$pv_method)"))
+    sets_flow && pv_method === :none && !(model.physics.flow isa FixedFlow) &&
+        throw(ArgumentError(
+            "pv_method=:none leaves q unchanged, but an evolving flow is " *
+            "inverted from q, so the streamfunction set here would be lost; " *
+            "use pv_method=:qg or :barotropic, or flow=FixedFlow() to " *
+            "prescribe ψ"))
+    return nothing
 end
 
 _first_notnothing(values...) = begin
@@ -427,9 +476,8 @@ the coordinates of its points when they are given and differ from the grid.
 function _field_values_zxy(model::QGYBJModel,
     source::Union{FieldArray, FieldFile})
 
-    raw, coordinates = _read_field(source)
-    zxy = source.layout === :zxy ? raw : permutedims(raw, (3, 1, 2))
     grid = model.grid
+    zxy, coordinates = _read_field(source, grid)
     if coordinates !== nothing && !_on_model_grid(coordinates, grid)
         source.space === :physical || throw(ArgumentError(
             "$(_field_description(source)) is spectral and not on the model's " *
@@ -444,15 +492,23 @@ function _field_values_zxy(model::QGYBJModel,
     return ComplexF64.(zxy)
 end
 
-function _assign_initial_field!(destination, model::QGYBJModel,
+"""
+The values of an initial field on the model's grid (z-x-y layout) and their
+space (`:physical` or `:spectral`), read and checked without changing the
+model.
+"""
+function _initial_values(model::QGYBJModel,
     source::Union{AbstractArray, FieldArray, FieldFile})
 
     initializer = _field_initializer(source)
-    values = _field_values_zxy(model, initializer)
-    copyto!(destination, values)
-    if initializer.space === :physical
+    return (values=_field_values_zxy(model, initializer), space=initializer.space)
+end
+
+"""Store initial `values` (from `_initial_values`) as the spectral `destination`."""
+function _assign_values!(destination, model::QGYBJModel, initial)
+    copy_from_host!(destination, initial.values)
+    initial.space === :physical &&
         fft_forward!(destination, destination, model.runtime.plans)
-    end
     return destination
 end
 
@@ -531,6 +587,12 @@ function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
             f=context.f, Lmask=recovery_mask, workspace,
             N2_profile=context.N2_face)
     end
+    # As after a step: the velocity of a nonlinear fixed flow, diagnosed above
+    # from its projected ψ, is that of the full prescribed ψ.
+    _fixed_flow(options) && !_linear(options) &&
+        compute_velocities!(fields, context.grid; plans=context.plans,
+            f=context.f, compute_w=false, N2_profile=context.N2,
+            N2_face_profile=context.N2_face, workspace, dealias_mask=mask)
     return fields
 end
 
@@ -595,7 +657,12 @@ each level. `pv_method` selects how the potential vorticity follows from ψ:
 `:qg`, `:barotropic`, or `:none`. `B` (or `waves`, which also takes a
 `SurfaceWave`) sets the wave envelope. `ψ` and `ζ` may be functions of
 `(x, y, z)`; all three may be arrays on the model's grid,
-[`FieldArray`](@ref)s, or [`FieldFile`](@ref)s.
+[`FieldArray`](@ref)s, or [`FieldFile`](@ref)s. `particles` takes a
+[`ParticleConfig`](@ref) or [`ParticleConfig3D`](@ref) (see
+[`initialize_particles!`](@ref)).
+
+Every argument is checked, and every array and file read, before the model
+changes, so a rejected call leaves it as it was.
 """
 function set!(owner::Union{QGYBJModel, Simulation};
     ψ=nothing, psi=nothing, mean_flow=nothing,
@@ -612,51 +679,65 @@ function set!(owner::Union{QGYBJModel, Simulation};
     wave = _first_notnothing(waves, B)
     flow !== nothing && vorticity !== nothing &&
         throw(ArgumentError("give the mean flow by ψ or by ζ, not both"))
-    if vorticity !== nothing
+    _check_pv_method(model, pv_method;
+                     sets_flow=flow !== nothing || vorticity !== nothing)
+    vorticity === nothing ||
         vorticity isa Union{Function, AbstractArray, FieldArray, FieldFile} ||
-            throw(ArgumentError(
-                "ζ must be a function, array, FieldArray, or FieldFile"))
-        _set_vorticity!(model, vorticity, pv_method)
+        throw(ArgumentError("ζ must be a function, array, FieldArray, or FieldFile"))
+    flow === nothing || flow isa Union{Function, RandomStreamfunction,
+                                       AbstractArray, FieldArray, FieldFile} ||
+        throw(ArgumentError(
+            "mean_flow/ψ must be a function, RandomStreamfunction, " *
+            "array, FieldArray, or FieldFile"))
+    wave === nothing || wave isa Union{SurfaceWave, AbstractArray, FieldArray, FieldFile} ||
+        throw(ArgumentError(
+            "waves/B must be a SurfaceWave, array, FieldArray, or FieldFile"))
+    particles === nothing || particles isa Union{ParticleConfig, ParticleConfig3D} ||
+        throw(ArgumentError("particles must be a ParticleConfig or ParticleConfig3D"))
+
+    # Read the fields and place the particles before anything is assigned.
+    vorticity_values = vorticity === nothing ? nothing :
+                       _vorticity_values(model, vorticity)
+    flow_values = flow isa Union{AbstractArray, FieldArray, FieldFile} ?
+                  _initial_values(model, flow) : nothing
+    wave_values = wave isa Union{AbstractArray, FieldArray, FieldFile} ?
+                  _initial_values(model, wave) : nothing
+    tracker = particles === nothing ? nothing :
+              _new_particle_tracker(model, particles)
+
+    vorticity_values === nothing ||
+        _set_vorticity!(model, vorticity_values, pv_method)
+    if flow isa Function
+        set_mean_flow!(owner; psi_func=flow, pv_method, verbose)
+    elseif flow isa RandomStreamfunction
+        set_mean_flow!(owner; method=:random, pv_method,
+            amplitude=flow.amplitude, spectral_slope=flow.spectral_slope,
+            seed=flow.seed, profile=flow.profile, verbose)
+    elseif flow_values !== nothing
+        _assign_values!(model.fields.psi, model, flow_values)
+        _refresh_flow_diagnostics!(model, pv_method)
     end
-    if flow !== nothing
-        if flow isa Function
-            set_mean_flow!(owner; psi_func=flow, pv_method, verbose)
-        elseif flow isa RandomStreamfunction
-            set_mean_flow!(owner; method=:random, pv_method,
-                amplitude=flow.amplitude, spectral_slope=flow.spectral_slope,
-                seed=flow.seed, verbose)
-        elseif flow isa AbstractArray || flow isa FieldArray || flow isa FieldFile
-            _assign_initial_field!(model.fields.psi, model, flow)
-            _refresh_flow_diagnostics!(model, pv_method)
-        else
-            throw(ArgumentError(
-                "mean_flow/ψ must be a function, RandomStreamfunction, " *
-                "array, FieldArray, or FieldFile"))
-        end
+    if wave isa SurfaceWave
+        set_surface_waves!(owner; amplitude=wave.amplitude,
+                           surface_depth=wave.scale,
+                           profile=wave.profile, pv_method, verbose)
+    elseif wave_values !== nothing
+        _assign_values!(model.fields.B, model, wave_values)
+        _refresh_wave_diagnostics!(model;
+            rebuild_total_q=true, pv_method, project=true)
     end
-    if wave !== nothing
-        if wave isa SurfaceWave
-            set_surface_waves!(owner; amplitude=wave.amplitude,
-                               surface_depth=wave.scale,
-                               profile=wave.profile, pv_method, verbose)
-        elseif wave isa AbstractArray || wave isa FieldArray || wave isa FieldFile
-            _assign_initial_field!(model.fields.B, model, wave)
-            _refresh_wave_diagnostics!(model;
-                rebuild_total_q=true, pv_method, project=true)
-        else
-            throw(ArgumentError(
-                "waves/B must be a SurfaceWave, array, FieldArray, or FieldFile"))
-        end
+    if tracker !== nothing
+        model.particles = tracker
+        owner isa Simulation && _align_particle_time!(tracker, owner.clock.time)
     end
-    particles !== nothing && initialize_particles!(model, particles)
     return owner
 end
 
 """
-Set ψ from the relative vorticity `source` by inverting `∇ₕ²ψ = ζ` level by
-level, then rebuild q and the velocities as for a streamfunction.
+The relative vorticity `source` on the model's grid, as `_initial_values`
+gives it, warning when its horizontal mean will be dropped.
 """
-function _set_vorticity!(model::QGYBJModel, source, pv_method::Symbol)
+function _vorticity_values(model::QGYBJModel, source)
     grid = model.grid
     initializer = if source isa Function
         nx, ny, nz = grid.size
@@ -665,12 +746,19 @@ function _set_vorticity!(model::QGYBJModel, source, pv_method::Symbol)
     else
         _field_initializer(source)
     end
-    values = _field_values_zxy(model, initializer)
-    _warn_horizontal_mean(values, initializer.space)
+    initial = _initial_values(model, initializer)
+    _warn_horizontal_mean(initial.values, initial.space)
+    return initial
+end
+
+"""
+Set ψ from the relative vorticity `initial` (from `_vorticity_values`) by
+inverting `∇ₕ²ψ = ζ` level by level, then rebuild q and the velocities as for
+a streamfunction.
+"""
+function _set_vorticity!(model::QGYBJModel, initial, pv_method::Symbol)
     psi = model.fields.psi
-    copyto!(psi, values)
-    initializer.space === :physical &&
-        fft_forward!(psi, psi, model.runtime.plans)
+    _assign_values!(psi, model, initial)
     compute_psi_from_vorticity!(psi, model.runtime.geometry)
     _refresh_flow_diagnostics!(model, pv_method)
     return model
@@ -702,26 +790,37 @@ function _warn_horizontal_mean(values, space::Symbol)
     return nothing
 end
 
-"""Set a localized spectral wave packet."""
+"""
+    set_wave_packet!(owner; amplitude, kx, ky, sigma_k, center=nothing, z_center=nothing, z_width=nothing, pv_method=:qg)
+
+Set the wave envelope B to a Gaussian wave packet: a plane wave of
+wavenumber `(2π kx/Lx, 2π ky/Ly)` (`kx` and `ky` are integer mode indices)
+under a horizontal Gaussian envelope centred at `center = (x, y)`, the middle
+of the domain by default. The spectral width `sigma_k`, in mode indices,
+sets the packet's width, about `Lx / (2π sigma_k)`. Vertically the envelope
+is Gaussian, centred `z_center` below the top of the domain with width
+`z_width` (half and a quarter of the depth by default). `amplitude` is the
+packet's largest |B|, before the envelope is restricted to the modes a wave
+amplitude can produce. The packet involves no randomness.
+"""
 function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real, kx::Int, ky::Int, sigma_k::Real,
+    center=nothing,
     z_center::Union{Real, Nothing}=nothing,
     z_width::Union{Real, Nothing}=nothing,
     pv_method::Symbol=:qg)
 
     _assert_mutable(owner)
     model = _model(owner)
+    _check_pv_method(model, pv_method; sets_flow=false)
     runtime = model.runtime
     grid = runtime.geometry
     z_c = z_center === nothing ? grid.Lz / 2 : z_center
     z_w = z_width === nothing ? grid.Lz / 4 : z_width
-    0 <= z_c <= grid.Lz ||
-        throw(ArgumentError("z_center must lie between 0 and Lz=$(grid.Lz)"))
-    z_w > 0 || throw(ArgumentError("z_width must be positive"))
 
     packet = create_wave_packet(grid, kx, ky, sigma_k, amplitude;
-                                z_center=z_c, z_width=z_w)
-    copyto!(model.fields.B, packet)
+                                center, z_center=z_c, z_width=z_w)
+    copy_from_host!(model.fields.B, packet)
     _refresh_wave_diagnostics!(model;
         rebuild_total_q=true, pv_method, project=true)
     return owner
@@ -769,12 +868,16 @@ function _apply_output_overrides!(simulation::Simulation;
 end
 
 """
-Set up the output, energy diagnostics, and particle output of a run. Nothing
-is written yet, so a failure here, such as output that already exists, leaves
-the simulation ready to run again with other settings: the managers this call
-created are dropped and the error is rethrown.
+Set up the output, energy diagnostics, and particle output of a run. Every
+check, such as for output that already exists, runs before any existing file
+is removed, so a run that cannot start leaves the files as they were and the
+simulation ready to run again with other settings. If setting up still fails,
+the managers this call created are dropped and the error is rethrown.
 """
 function _prepare_run_output!(simulation::Simulation)
+    _check_simulation_output(simulation)
+    _check_simulation_diagnostics(simulation)
+    _check_particle_output(simulation)
     output_manager = simulation.output_manager
     diagnostics_manager = simulation.diagnostics_manager
     try
@@ -789,7 +892,32 @@ function _prepare_run_output!(simulation::Simulation)
     return simulation
 end
 
-"""Advance a configured simulation with the current ETD-RK2 driver."""
+"""
+    run!(simulation; Δt, stop_time, stop_iteration, output, diagnostics,
+         output_dir, save_interval, save_psi, save_waves, save_velocities,
+         diagnostics_interval, verbose, progress)
+
+Advance `simulation` with ETD-RK2 until its stop criterion, writing the
+scheduled output, energy diagnostics, and particle output, and advancing the
+model's particles after each step. After every step the state is checked for
+non-finite values and a blowing-up streamfunction, which move the simulation
+to `Failed`.
+
+The keywords override the constructor's settings for this run (see
+[`Simulation`](@ref)), all together or, if one is rejected, none:
+- `Δt`, `stop_time`, `stop_iteration`, `output`, `diagnostics`: as for
+  `Simulation`.
+- `output_dir`, `save_interval`, `save_psi`, `save_waves`, `save_velocities`:
+  change the path, a `TimeInterval` schedule, or the fields of the
+  `NetCDFOutput`, which they require.
+- `diagnostics_interval`: iterations between progress reports (10 by default).
+- `verbose`: log progress; `progress=true` prints detailed progress lines
+  with the largest wave and flow speeds.
+
+Output setup checks everything, such as for files left by another run, before
+it removes a file, so a run that cannot start leaves the files as they were
+and the simulation `Ready`.
+"""
 function run!(simulation::Simulation;
     output_dir::Union{String, Nothing}=nothing,
     Δt=nothing,
@@ -846,8 +974,10 @@ function run!(simulation::Simulation;
     try
         _maybe_write_simulation_output!(simulation; initial=true)
         _maybe_record_simulation_diagnostics!(simulation; initial=true)
-        # The velocity at the start of the first particle step, also stored
-        # with the initial particle positions.
+        # The particles take the run's time axis, then the velocity at the
+        # start of the first particle step, also stored with the initial
+        # particle positions.
+        _align_particle_time!(model.particles, simulation.clock.time)
         _record_particle_velocity!(model.particles, model, simulation.clock.time)
         _maybe_write_particle_output!(simulation; initial=true)
 
@@ -896,6 +1026,18 @@ function run!(simulation::Simulation;
     return simulation
 end
 
+"""
+    finalize_simulation!(simulation)
+
+Close the simulation's state output, energy diagnostics, and particle output
+(writing the final records of a run that stopped normally), and release its
+time-stepping workspace. The simulation cannot run again, but its model is
+left intact: a new simulation can continue from the model's fields. Release
+the model's own memory with [`finalize_model!`](@ref) when it is no longer
+needed. Repeated calls are safe; a running simulation cannot be finalized.
+
+`finalize_simulation!(model)` is the same as `finalize_model!(model)`.
+"""
 function finalize_simulation!(simulation::Simulation)
     simulation.state === Finalized && return simulation
     simulation.state === Running &&
@@ -909,7 +1051,6 @@ function finalize_simulation!(simulation::Simulation)
             _finish_particle_output!(simulation)
         end
     end
-    finalize_model!(simulation.model)
     # The ETD-RK2 workspace is the largest device allocation after the fields.
     simulation.timestepper.workspace = nothing
     simulation.timestepper.workspace_owner = nothing
@@ -918,11 +1059,32 @@ function finalize_simulation!(simulation::Simulation)
 end
 finalize_simulation!(model::QGYBJModel) = finalize_model!(model)
 
+"""
+    get_time(simulation, step)
+
+The time after `step` steps of the simulation's time step `Δt` from t = 0,
+`step * Δt`. The current time is `simulation.clock.time`.
+"""
 get_time(simulation::Simulation, step::Int) = step * _time_step(simulation)
-get_inertial_period(model::QGYBJModel) = 2π / abs(model.physics.coriolis.f)
-get_inertial_period(simulation::Simulation) = get_inertial_period(simulation.model)
+
+"""
+    inertial_period(model)
+    inertial_period(simulation)
+
+The inertial period `2π / |f|` of the model's Coriolis parameter, in its time
+units. `get_inertial_period` is the same.
+"""
 inertial_period(model::QGYBJModel) = get_inertial_period(model)
 inertial_period(simulation::Simulation) = get_inertial_period(simulation)
+
+"""
+    get_inertial_period(model)
+    get_inertial_period(simulation)
+
+The inertial period `2π / |f|`; see [`inertial_period`](@ref).
+"""
+get_inertial_period(model::QGYBJModel) = 2π / abs(model.physics.coriolis.f)
+get_inertial_period(simulation::Simulation) = get_inertial_period(simulation.model)
 get_duration(simulation::Simulation) = simulation.stop_time === nothing ?
     simulation.stop_iteration * _time_step(simulation) : simulation.stop_time
 get_duration_ip(simulation::Simulation) =

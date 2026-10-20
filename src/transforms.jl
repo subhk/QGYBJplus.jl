@@ -29,11 +29,11 @@ import KernelAbstractions
 """
     Plans
 
-Cached horizontal FFT plans for `(nz, nx, ny)` complex fields on one
-architecture. `forward` and `backward` are in-place plans over dimensions
-`(2, 3)`; `backward` is normalized, so no manual scaling is needed.
+Cached horizontal FFT plans for `(nz, nx, ny)` complex fields of element type
+`T` on one architecture. `forward` and `backward` are in-place plans over
+dimensions `(2, 3)`; `backward` is normalized, so no manual scaling is needed.
 """
-struct Plans{F, B}
+struct Plans{F, B, T<:Complex}
     forward::F
     backward::B
     size::NTuple{3, Int}
@@ -73,19 +73,30 @@ function Plans(architecture::AbstractArchitecture, nz::Integer, nx::Integer,
                ny::Integer, ::Type{T}=ComplexF64) where {T<:Complex}
     buffer = KernelAbstractions.zeros(device(architecture), T, nz, nx, ny)
     forward, backward = horizontal_fft_plans(buffer)
-    return Plans(forward, backward, (Int(nz), Int(nx), Int(ny)))
+    return Plans{typeof(forward), typeof(backward), T}(
+        forward, backward, (Int(nz), Int(nx), Int(ny)))
 end
 
 """
     plan_transforms!(G::RuntimeGeometry) -> Plans
 
-Create horizontal FFT plans for the fields of `G` on its architecture.
+Create horizontal FFT plans for the fields of `G`, on its architecture and in
+its precision.
 """
-plan_transforms!(G::RuntimeGeometry) = Plans(G.architecture, G.nz, G.nx, G.ny)
+plan_transforms!(G::RuntimeGeometry) =
+    Plans(G.architecture, G.nz, G.nx, G.ny, Complex{eltype(G.base)})
 
-function _check_transform_size(P::Plans, array)
+"""
+Error unless `array` has the size and element type of the plans: a plan given
+an array of another element type would transform a converted copy and leave
+the array itself unchanged.
+"""
+function _check_transform_size(P::Plans{F, B, T}, array) where {F, B, T}
     size(array) == P.size || throw(DimensionMismatch(
         "transform plans are for size $(P.size); got an array of size $(size(array))"))
+    eltype(array) === T || throw(ArgumentError(
+        "transform plans are for $T arrays; got $(eltype(array)). Build plans " *
+        "in the fields' precision (plan_transforms! uses the grid's)."))
     return nothing
 end
 

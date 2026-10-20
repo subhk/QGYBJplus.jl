@@ -11,6 +11,7 @@ updates:
       - "dependencies"
       - "github-actions"
 
+  # Standard libraries ship with Julia, so their compat entries stay "1".
   - package-ecosystem: "julia"
     directory: "/"
     schedule:
@@ -20,6 +21,12 @@ updates:
     labels:
       - "dependencies"
       - "julia"
+    ignore:
+      - dependency-name: "Dates"
+      - dependency-name: "LinearAlgebra"
+      - dependency-name: "Printf"
+      - dependency-name: "Random"
+      - dependency-name: "Test"
 
   - package-ecosystem: "julia"
     directory: "/docs"
@@ -31,3 +38,5 @@ updates:
       - "dependencies"
       - "documentation"
       - "julia"
+    ignore:
+      - dependency-name: "LinearAlgebra"

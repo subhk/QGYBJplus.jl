@@ -36,6 +36,13 @@ fields_copy = copy_fields(model.fields)
 
 `copy_fields` copies every array and keeps the copies on the fields'
 architecture.
+
+```@docs
+allocate_fields
+copy_fields
+fft_forward!
+fft_backward!
+```
 Time steps update the arrays in place, so both a cached `fields = model.fields`
 and a cached array such as `q = model.fields.q` remain live handles. Use
 `copy_fields` when a fixed snapshot is needed.

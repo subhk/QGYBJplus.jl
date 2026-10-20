@@ -75,11 +75,13 @@ _dispersion_component(mode::DispersionMode) = mode
 _dispersion_component(no_dispersion::Bool) = no_dispersion ? NoDispersion() : Dispersive()
 
 """
-Warn when the default closure barely damps the smallest scale the grid keeps.
-Its coefficients come from nondimensional setups: with dimensional
-wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) they damp nothing, and a nonlinear run is
-effectively inviscid. The damping is measured against the inertial period,
-the one time scale every model has.
+Warn when the default closure barely damps the smallest scale the grid keeps:
+when that scale takes more than 100 inertial periods to decay by e. Its
+coefficients come from nondimensional setups, where that decay takes a tiny
+fraction of an inertial period; with dimensional wavenumbers (kₕ ~ 10⁻⁴ m⁻¹)
+they damp almost nothing, and a nonlinear run is effectively inviscid. The
+damping is measured against the inertial period, the one time scale every
+model has.
 """
 function _warn_inert_default_closure(grid::RectilinearGrid,
                                      closure::HorizontalHyperdiffusivity, f::Real)
@@ -88,8 +90,8 @@ function _warn_inert_default_closure(grid::RectilinearGrid,
     iszero(k²) && return nothing
     rate = max(Nonlinear._hyperdiffusion_exponent(closure.flow, k², 1.0),
                Nonlinear._hyperdiffusion_exponent(closure.wave, k², 1.0))
-    rate < 1e-6 * abs(f) || return nothing
     periods = abs(f) / (2π * rate)
+    periods > 100 || return nothing
     @warn "The default closure, HorizontalHyperdiffusivity(), barely damps this " *
           "grid: the smallest scale it keeps, at kₕ = $(round(sqrt(k²); sigdigits=3)), " *
           "decays by e in $(round(periods; sigdigits=3)) inertial periods. Its " *
@@ -100,15 +102,34 @@ function _warn_inert_default_closure(grid::RectilinearGrid,
 end
 
 """
-    QGYBJModel(; grid, coriolis, stratification, closure, ...)
+    QGYBJModel(; grid, coriolis=FPlane(f=1e-4),
+               stratification=ConstantStratification(N²=1e-5), closure,
+               vertical_diffusion=VerticalDiffusivity(), flow=EvolvingFlow(),
+               feedback=NoFeedback(), formulation=YBJPlus(), inviscid=false,
+               linear=false, no_dispersion=false, verbose=true)
 
-Build a model on the architecture of `grid` (`CPU()` or `GPU()`). Public
-symbols and booleans are converted to typed components before transform plans
-or fields are allocated.
+Build a model on the architecture of `grid` (`CPU()` or `GPU()`), in the
+precision of the grid. Public symbols and booleans are converted to typed
+components before transform plans or fields are allocated:
 
-`closure` defaults to `HorizontalHyperdiffusivity()`, whose coefficients suit
-nondimensional setups; with `verbose`, a nonlinear, dissipative model warns
-when they barely damp its grid, as they do for dimensional wavenumbers.
+- `coriolis`: an `FPlane`, or the Coriolis parameter f itself.
+- `stratification`: a `ConstantStratification`, a [`StratificationProfile`](@ref),
+  or the constant N² itself.
+- `closure`: horizontal hyperdiffusion. The default,
+  `HorizontalHyperdiffusivity()`, has coefficients for nondimensional setups;
+  with `verbose`, a nonlinear, dissipative model warns when they barely damp
+  its grid, as they do for dimensional wavenumbers.
+- `vertical_diffusion`: a `VerticalDiffusivity`, or its coefficient.
+- `flow`: `EvolvingFlow()` (or `:evolving`), or `FixedFlow()` (`:fixed`,
+  `true`) for a prescribed streamfunction.
+- `feedback`: `NoFeedback()` (`:none`), `WaveMeanFeedback()` (`:wave_mean`),
+  or `NoWaveFeedback()`.
+- `formulation`: `YBJPlus()` (`:ybj_plus`), `YBJ()` (`:ybj`, or
+  `ybj_plus=false`), or `PassiveWave()` (`:passive`).
+- `inviscid`, `linear`, `no_dispersion`: `true` (or `Inviscid()`,
+  `LinearDynamics()`, `NoDispersion()`) removes dissipation, the nonlinear
+  terms, or wave dispersion.
+- `verbose`: report the architecture and size, and warn about inert closures.
 """
 function QGYBJModel(; grid::RectilinearGrid,
     coriolis=FPlane(f=1e-4),
@@ -154,7 +175,12 @@ function QGYBJModel(; grid::RectilinearGrid,
     return QGYBJModel(grid, fields, physics, numerics, runtime, nothing)
 end
 
-"""Release resources owned by `model`; repeated calls are safe."""
+"""
+    finalize_model!(model)
+
+Release the scratch buffers of `model`'s workspace and mark the model
+finalized: it cannot be used afterwards. Repeated calls are safe.
+"""
 finalize_model!(model::QGYBJModel) = (finalize_runtime!(model.runtime); model)
 
 function Base.show(io::IO, model::QGYBJModel)

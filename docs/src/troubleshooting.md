@@ -58,10 +58,11 @@ files written on a CPU restart on a GPU and vice versa.
 ## Output files already exist
 
 A run never silently replaces earlier output. A restored simulation continues
-the files in its output directory; any other existing state, energy, or
-particle files raise an error. Choose a new directory, or pass
-`overwrite=true` to `NetCDFOutput`, `EnergyDiagnosticsOutput`, or
-`ParticleOutputManager` to replace them.
+the state and energy files in its output directory; any other existing state,
+energy, or particle files raise an error (particle files are never continued,
+since particles start new trajectories after a restart). Choose a new
+directory, or pass `overwrite=true` to `NetCDFOutput`,
+`EnergyDiagnosticsOutput`, or `ParticleOutputManager` to replace them.
 
 ## A run is slow
 

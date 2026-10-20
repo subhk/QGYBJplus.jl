@@ -10,6 +10,12 @@ construction:
 ```@docs
 ParticleConfig
 ParticleConfig3D
+ParticleTracker
+ParticleState
+ParticleDistribution
+initialize_particles!
+advect_particles!
+interpolate_velocity_at_position
 ```
 
 ```julia
@@ -48,6 +54,11 @@ particles_custom
 
 ## Interpolation
 
+```@docs
+InterpolationMethod
+interpolate_velocity_advanced
+```
+
 Available methods are `TRILINEAR`, `TRICUBIC` (default), and `QUINTIC`;
 `ADAPTIVE` is deprecated and now uses `TRICUBIC`. See
 [Particle interpolation](@ref interpolation). Particles move with the
@@ -66,4 +77,6 @@ ParticleOutputManager
 write_particle_trajectories
 read_particle_trajectories
 write_particle_snapshot
+write_particle_trajectories_by_zlevel
+create_particle_output_file
 ```

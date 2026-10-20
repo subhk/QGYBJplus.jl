@@ -27,6 +27,11 @@ struct HostRoundTripPlan{P, B}
 end
 
 function Base.:*(plan::HostRoundTripPlan, x::JLArray)
+    # Like a device FFT library, transform only arrays of the plan's own
+    # element type and size, rather than converting them silently.
+    eltype(x) === eltype(plan.buffer) && size(x) == size(plan.buffer) ||
+        throw(ArgumentError("a plan for $(eltype(plan.buffer)) $(size(plan.buffer)) " *
+                            "arrays was applied to a $(eltype(x)) $(size(x)) array"))
     copyto!(plan.buffer, x)
     plan.plan * plan.buffer
     copyto!(x, plan.buffer)

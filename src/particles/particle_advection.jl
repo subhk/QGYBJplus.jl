@@ -46,6 +46,7 @@ const CPU = _PARENT.CPU
 const launch! = _PARENT.launch!
 const on_architecture = _PARENT.on_architecture
 const zeros_on = _PARENT.zeros_on
+const _next_deadline = _PARENT._next_deadline
 
 """Validate the particle wave-motion options."""
 function _check_wave_motion(use_ybj_w::Bool, wave_motion::Symbol)
@@ -97,9 +98,13 @@ end
 """
     ParticleConfig{T}(; x_min=0, x_max, y_min=0, y_max, z_level, kwargs...)
 
-Configure a regular horizontal particle grid at `z_level`. `nx_particles` and
-`ny_particles` default to 10. A positive `particle_advec_time` delays release.
+Configure a regular horizontal particle grid at `z_level`, with positions
+stored in precision `T`. `nx_particles` and `ny_particles` default to 10.
 Particles move with the horizontal velocity and keep their depth.
+
+`particle_advec_time` delays the release until the simulation time reaches
+it; once released, particles keep moving in later runs. It and
+`save_interval` are times, kept in `Float64` whatever `T` is.
 
 `integration_method` selects the trajectory integrator: `:euler`, `:rk2`
 (default), or `:rk4`. Each integration stage interpolates the velocity
@@ -113,9 +118,10 @@ strongly.
 Lagrange, O(h⁶)). `ADAPTIVE` is deprecated and now uses `TRICUBIC`.
 
 A finite `save_interval` makes the tracker keep an in-memory history of the
-positions every `save_interval` (every step for 0), up to `max_save_points`
-records, for `write_particle_trajectories`. The default, `Inf`, keeps
-none: simulations write trajectories with a `ParticleOutputManager`.
+positions, up to `max_save_points` records, for
+`write_particle_trajectories`: when a run starts and then at the multiples of
+`save_interval` (every step for 0). The default, `Inf`, keeps none:
+simulations write trajectories with a `ParticleOutputManager`.
 
 `wave_motion` selects how particles feel the near-inertial waves:
 
@@ -151,8 +157,8 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     wave_motion::Symbol = :averaged   # :averaged or :instantaneous
     use_3d_advection::Bool = false    # Removed (must stay false): particles move horizontally
 
-    # Advection timing control
-    particle_advec_time::T = 0.0      # Start advecting particles at this time (0.0 = from beginning)
+    # Advection timing control (times are Float64, like the simulation clock)
+    particle_advec_time::Float64 = 0.0  # Start advecting particles at this time (0.0 = from beginning)
 
     # Integration method
     integration_method::Symbol = :rk2  # :euler, :rk2, :rk4
@@ -165,21 +171,56 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     periodic_y::Bool = true
 
     # In-memory trajectory history (see the docstring)
-    save_interval::T = Inf           # History interval: Inf = no history, 0 = every step
+    save_interval::Float64 = Inf     # History interval: Inf = no history, 0 = every step
     max_save_points::Int = 1000      # Most history records kept (per file when splitting)
     auto_split_files::Bool = false   # Automatically create new files when max_save_points is reached
+
+    function ParticleConfig{T}(x_min, x_max, y_min, y_max, z_level,
+                               nx_particles, ny_particles,
+                               use_ybj_w, wave_motion, use_3d_advection,
+                               particle_advec_time, integration_method,
+                               interpolation_method, periodic_x, periodic_y,
+                               save_interval, max_save_points,
+                               auto_split_files) where T<:AbstractFloat
+        all(isfinite, (x_min, x_max, y_min, y_max, z_level)) ||
+            throw(ArgumentError("particle bounds and z_level must be finite"))
+        x_max >= x_min || throw(ArgumentError("x_max must not be below x_min"))
+        y_max >= y_min || throw(ArgumentError("y_max must not be below y_min"))
+        nx_particles > 0 && ny_particles > 0 ||
+            throw(ArgumentError("nx_particles and ny_particles must be positive"))
+        _check_particle_times(particle_advec_time, save_interval, max_save_points)
+        return new{T}(x_min, x_max, y_min, y_max, z_level,
+                      nx_particles, ny_particles,
+                      use_ybj_w, wave_motion, use_3d_advection,
+                      particle_advec_time, integration_method,
+                      interpolation_method, periodic_x, periodic_y,
+                      save_interval, max_save_points, auto_split_files)
+    end
+end
+
+"""Validate the release time and history settings of a particle configuration."""
+function _check_particle_times(particle_advec_time, save_interval, max_save_points)
+    isfinite(particle_advec_time) ||
+        throw(ArgumentError("particle_advec_time must be finite"))
+    save_interval >= 0 || throw(ArgumentError(
+        "save_interval must be non-negative: 0 records every step, Inf none " *
+        "(got $save_interval)"))
+    max_save_points > 0 ||
+        throw(ArgumentError("max_save_points must be positive (got $max_save_points)"))
+    return nothing
 end
 
 """
-    particles_in_box([T=Float32], z_level;
+    particles_in_box([T=Float64], z_level;
                      x_min=0, x_max, y_min=0, y_max, nx=10, ny=10, kwargs...)
 
-Create an `nx` by `ny` particle grid at the coordinate `z_level`. The default
-storage type is `Float32`; pass `Float64` as the first argument when needed.
+Create an `nx` by `ny` particle grid at the coordinate `z_level`, with
+positions stored in precision `T`. Keep the default `Float64` for long or
+slow trajectories in large domains: a `Float32` position 1000 km from the
+origin is rounded to about 6 cm, so steps of a few cm are rounded away.
 
 ```julia
 config = particles_in_box(
-    Float64,
     -500.0;
     x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
     y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
@@ -198,13 +239,12 @@ function particles_in_box(::Type{T}, z_level::Real;
         kwargs...)
 end
 
-# Default method uses Float32 for memory efficiency (50% less than Float64)
 function particles_in_box(z_level::Real;
                           x_max::Real, y_max::Real,  # REQUIRED
                           x_min::Real=0.0, y_min::Real=0.0,
                           nx::Int=10, ny::Int=10,
                           kwargs...)
-    return particles_in_box(Float32, z_level;
+    return particles_in_box(Float64, z_level;
         x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
         nx=nx, ny=ny, kwargs...)
 end
@@ -326,6 +366,12 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     # `:instantaneous` only: the inertial frequency of the wave phase.
     inertial_frequency::Float64
 
+    # Whether the particles have been released (they then keep moving, even
+    # when a later run's clock starts before `particle_advec_time`), and
+    # whether their time has advanced since they were initialized.
+    released::Bool
+    advanced::Bool
+
     # Transform plans (for velocity computation)
     plans::P
 
@@ -363,6 +409,7 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
             first(grid.z_faces), last(grid.z_faces),
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz,
             current, previous, 0.0,
+            false, false,
             transform_plans,
             0, 0.0, 0.0, false,
             0, "", false  # output_file_sequence, base_output_filename, auto_file_splitting
@@ -400,32 +447,95 @@ function _host_particle_storage!(particles::ParticleState{T}) where T
     return particles
 end
 
+"""Host storage for `np` particles."""
+function _host_particle_storage!(particles::ParticleState, np::Int)
+    _host_particle_storage!(particles)
+    foreach(array -> resize!(array, np),
+            (particles.x, particles.y, particles.z, particles.id,
+             particles.u, particles.v))
+    particles.np = np
+    return particles
+end
+
 """
     initialize_particles!(tracker, config)
 
-Initialize particles uniformly in the configured region.
+Place the particles of `config` (a `ParticleConfig` or `ParticleConfig3D`) on
+`tracker`, which adopts the configuration. Particles from an earlier
+initialization are replaced, with their history, release, and velocity.
+Every particle must lie within the grid's vertical extent: `z` is a
+coordinate, negative below a lid at z = 0, not a depth.
 """
 function initialize_particles!(tracker::ParticleTracker{T},
                               config::ParticleConfig{T}) where T
-    _host_particle_storage!(tracker.particles)
+    _adopt_config!(tracker, config)
+    _host_particle_storage!(tracker.particles,
+                            config.nx_particles * config.ny_particles)
     initialize_particles_serial!(tracker, config)
+    return _finish_initialization!(tracker)
+end
+
+function initialize_particles!(tracker::ParticleTracker{T},
+                              config::ParticleConfig3D{T}) where T
+    _adopt_config!(tracker, EnhancedParticleConfig.convert_to_basic_config(config))
+    initialize_particles_3d!(tracker, config)
+    return _finish_initialization!(tracker)
+end
+
+"""Use `config` for later steps, and forget the particles of an earlier one."""
+function _adopt_config!(tracker::ParticleTracker{T}, config::ParticleConfig{T}) where T
+    _check_wave_motion(config.use_ybj_w, config.wave_motion)
+    _check_horizontal_advection(config.use_3d_advection)
+    # The tracker's constructor has checked (and warned about) its own config.
+    config === tracker.config ||
+        _check_particle_methods(config.integration_method, config.interpolation_method)
+    tracker.config = config
+    particles = tracker.particles
+    foreach(empty!, (particles.x_history, particles.y_history, particles.z_history,
+                     particles.id_history, particles.time_history))
+    tracker.save_counter = 0
+    tracker.last_save_time = 0.0
+    tracker.history_full = false
+    tracker.released = false
+    tracker.advanced = false
+    tracker.current.valid = false
+    tracker.previous.valid = false
+    return tracker
+end
+
+function _finish_initialization!(tracker::ParticleTracker)
+    _check_particle_positions(tracker)
     _place_on_architecture!(tracker)
     _start_history!(tracker)
     return tracker
 end
 
 """
-    initialize_particles!(tracker, config3d)
-
-Initialize particles using enhanced 3D configuration.
+Error unless every particle lies within the grid's vertical extent, and
+within its horizontal extent along directions that are not periodic.
 """
-function initialize_particles!(tracker::ParticleTracker{T},
-                              config::ParticleConfig3D{T}) where T
-    initialize_particles_3d!(tracker, config)
-    tracker.config = EnhancedParticleConfig.convert_to_basic_config(config)
-    _place_on_architecture!(tracker)
-    _start_history!(tracker)
-    return tracker
+function _check_particle_positions(tracker::ParticleTracker{T}) where T
+    particles = tracker.particles
+    config = tracker.config
+    z_bottom, z_top = tracker.z_bottom, tracker.z_top
+    tolerance = 4eps(T) * max(abs(z_bottom), abs(z_top), tracker.Lz)
+    inside(value, low, high) =
+        low - 4eps(T) * max(abs(low), abs(high)) <= value <=
+        high + 4eps(T) * max(abs(low), abs(high))
+    for (x, y, z) in zip(particles.x, particles.y, particles.z)
+        isfinite(x) && isfinite(y) && isfinite(z) ||
+            throw(ArgumentError("particle positions must be finite"))
+        z_bottom - tolerance <= z <= z_top + tolerance || throw(ArgumentError(
+            "a particle at z = $z lies outside the grid's vertical extent " *
+            "[$z_bottom, $z_top]; z is a coordinate, not a depth"))
+        config.periodic_x || inside(x, tracker.x0, tracker.x0 + tracker.Lx) ||
+            throw(ArgumentError("a particle at x = $x lies outside the grid " *
+                                "[$(tracker.x0), $(tracker.x0 + tracker.Lx)]"))
+        config.periodic_y || inside(y, tracker.y0, tracker.y0 + tracker.Ly) ||
+            throw(ArgumentError("a particle at y = $y lies outside the grid " *
+                                "[$(tracker.y0), $(tracker.y0 + tracker.Ly)]"))
+    end
+    return nothing
 end
 
 """Record the initial positions when the configuration keeps a history."""
@@ -433,6 +543,47 @@ function _start_history!(tracker::ParticleTracker)
     tracker.history_full = false
     tracker.next_history_time = tracker.particles.time
     should_save_particles(tracker) && save_particle_state!(tracker)
+    return tracker
+end
+
+"""
+    _align_particle_time!(tracker, time)
+
+Put the particles on the time axis of a run that starts at `time`. Between
+runs the particles keep their own time, but a simulation restored with
+`restore!` starts at its restart time and a new simulation at zero.
+Particles not advanced since they were initialized take the start time, their
+initial history record included. Particles that have moved continue on the
+new time axis: their history records the positions at the start again, under
+the new time, and the inertial phase of `:instantaneous` trajectories
+restarts there.
+"""
+function _align_particle_time!(tracker::ParticleTracker, time)
+    particles = tracker.particles
+    time = Float64(time)
+    old = particles.time
+    old == time && return tracker
+    history = particles.time_history
+    if !tracker.advanced
+        replace!(history, old => time)
+    elseif isfinite(tracker.config.save_interval) ||
+           tracker.config.wave_motion === :instantaneous
+        @warn "The particles were at t = $old and continue from t = $time, the " *
+              "start of this run" *
+              (tracker.config.wave_motion === :instantaneous ?
+               ", where the inertial phase of their wave velocity restarts" : "") *
+              ". To continue the original time axis, restore the last state " *
+              "file with restore!(simulation, path)." maxlog=1
+    end
+    particles.time = time
+    tracker.current.valid = false
+    tracker.previous.valid = false
+    if !isempty(history) && last(history) == time
+        _advance_history_deadline!(tracker)
+    else
+        tracker.next_history_time = time
+        should_save_particles(tracker) && save_particle_state!(tracker)
+    end
     return tracker
 end
 
@@ -465,7 +616,7 @@ function initialize_particles_serial!(tracker::ParticleTracker{T},
 end
 
 """
-    advect_particles!(tracker, state, grid, dt, current_time=nothing; f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing, formulation=YBJPlus(), workspace=nothing)
+    advect_particles!(tracker, state, grid, dt, current_time=nothing; f, N2, N2_profile, N2_face_profile, formulation, workspace)
 
 Advance the particles from `current_time` (default: the particles' own time)
 to `current_time + dt`. `state` is taken as the fluid state at the end of
@@ -476,15 +627,19 @@ interpolate linearly in time between the two. Without it (on the first call,
 or after a gap), the end-of-interval velocity is used for the whole step.
 
 Particles stay in place until the simulation time reaches
-`particle_advec_time`.
+`particle_advec_time`, and keep moving once released.
 
-# Arguments
+# Keywords
+The velocity diagnostic's coefficients default to those of the model that
+owns the tracker (a tracker built with `ParticleTracker(config, model)` or
+`initialize_particles!(model, config)`); for a tracker without a model they
+default to `f = 1`, `N2 = 1`, and `YBJPlus()`.
 - `f`, `N2`: Physical coefficients used by the velocity diagnostic.
 - `N2_profile`: Optional cell-center N²(z) profile for nonuniform stratification.
 - `N2_face_profile`: Optional upper-face N²(z) profile, used by the Stokes
   drift of `:instantaneous` trajectories.
-- `formulation`: `YBJPlus()` (default) or `YBJ()`, which fixes how the wave
-  velocity LA follows from B.
+- `formulation`: `YBJPlus()` or `YBJ()`, which fixes how the wave velocity LA
+  follows from B.
 - `workspace`: Optional model workspace for the velocity diagnostic's scratch.
 
 See `ParticleConfig` for the two trajectory models, `wave_motion = :averaged`
@@ -492,37 +647,33 @@ See `ParticleConfig` for the two trajectory models, `wave_motion = :averaged`
 """
 function advect_particles!(tracker::ParticleTracker{T},
                           state::ModelFields, grid::RuntimeGeometry, dt::Real,
-                          current_time=nothing;
-                          f::Real=1, N2::Real=1,
-                          N2_profile=nothing,
-                          N2_face_profile=nothing,
-                          formulation=YBJPlus(),
-                          workspace=nothing) where T
+                          current_time=nothing; kwargs...) where T
+    velocity_options = _velocity_options(tracker; kwargs...)
     _place_on_architecture!(tracker)
     particles = tracker.particles
     t0 = current_time === nothing ? particles.time : Float64(current_time)
     t1 = t0 + Float64(dt)
     particles.time = t0
-    velocity_options = (; f, N2, N2_profile, N2_face_profile, formulation,
-                        workspace)
+    tracker.advanced = true
 
-    release_time = tracker.config.particle_advec_time
-    if t0 < release_time
+    if !_released(tracker, t0)
         # Not yet released. If the next step releases the particles, keep this
         # end-of-step velocity as the start of that step.
-        t1 >= release_time &&
+        _released(tracker, t1) &&
             update_velocity_fields!(tracker, state, grid; time=t1,
                                     velocity_options...)
         particles.time = t1
         should_save_particles(tracker) && save_particle_state!(tracker)
         return tracker
     end
+    tracker.released = true
 
     update_velocity_fields!(tracker, state, grid; time=t1, velocity_options...)
     # The previous snapshot is the start of this step only if it was taken at
     # t0; otherwise the end-of-step velocity is used for the whole step.
     previous = tracker.previous
     previous.valid = previous.valid && _same_time(previous.time, t0, dt)
+    f = velocity_options.f
     if tracker.config.wave_motion === :instantaneous && abs(f) * dt > 0.5
         @warn "Particle time step does not resolve the inertial oscillation " *
               "(f Δt = $(abs(f) * dt)); instantaneous trajectories need f Δt ≲ 0.2." maxlog=1
@@ -532,6 +683,33 @@ function advect_particles!(tracker::ParticleTracker{T},
     particles.time = t1
     should_save_particles(tracker) && save_particle_state!(tracker)
     return tracker
+end
+
+"""
+Whether the particles move at time `t`: once released, or from
+`particle_advec_time` on (up to the rounding of a time `t₀ + nΔt`).
+"""
+function _released(tracker::ParticleTracker, t)
+    tracker.released && return true
+    release_time = tracker.config.particle_advec_time
+    return t >= release_time - 8eps(max(abs(t), abs(release_time), 1.0))
+end
+
+"""
+The velocity diagnostic's coefficients given as keywords, with those of the
+tracker's model as defaults, or `f = 1`, `N2 = 1`, and `YBJPlus()` for a
+tracker without a model.
+"""
+function _velocity_options(tracker::ParticleTracker; f=nothing, N2=nothing,
+                           N2_profile=nothing, N2_face_profile=nothing,
+                           formulation=nothing, workspace=nothing)
+    defaults = tracker.model === nothing ?
+        (; f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing,
+           formulation=YBJPlus(), workspace=nothing) :
+        _PARENT._particle_velocity_options(tracker.model)
+    given = (; f, N2, N2_profile, N2_face_profile, formulation, workspace)
+    return map((value, default) -> value === nothing ? default : value,
+               given, defaults)
 end
 
 """
@@ -566,7 +744,7 @@ the particle time step, which a caller may give in the particles' precision.
     abs(t - t0) <= max(dt / 100, 4 * eps(Float64) * abs(t0))
 
 """
-    update_velocity_fields!(tracker, state, grid; time=tracker.particles.time, f=1, N2=1, N2_profile=nothing, N2_face_profile=nothing, formulation=YBJPlus(), workspace=nothing)
+    update_velocity_fields!(tracker, state, grid; time=tracker.particles.time, f, N2, N2_profile, N2_face_profile, formulation, workspace)
 
 Store the horizontal velocity of `state` as the tracker's velocity at `time`.
 The snapshot it replaces is kept as the previous one, for interpolation in
@@ -580,25 +758,14 @@ time.
 
 The velocity is diagnosed and kept on the model's architecture. When the
 tracker belongs to a model and `state` is that model's fields, the model's
-operators are used.
-
-# Arguments
-- `f`, `N2`: Physical coefficients used by the velocity diagnostic.
-- `N2_profile`: Optional cell-center N²(z) profile for nonuniform stratification.
-- `N2_face_profile`: Optional upper-face N²(z) profile, used by the Stokes
-  drift of `:instantaneous` trajectories.
-- `formulation`: `YBJPlus()` (default) or `YBJ()`, which fixes how the wave
-  velocity LA follows from B.
-- `workspace`: Optional model workspace for the diagnostic's scratch buffers.
+operators are used. The keywords are those of [`advect_particles!`](@ref),
+with the same defaults.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::ModelFields, grid::RuntimeGeometry;
-                                time=tracker.particles.time,
-                                f::Real=1, N2::Real=1,
-                                N2_profile=nothing,
-                                N2_face_profile=nothing,
-                                formulation=YBJPlus(),
-                                workspace=nothing) where T
+                                time=tracker.particles.time, kwargs...) where T
+    (; f, N2, N2_profile, N2_face_profile, formulation, workspace) =
+        _velocity_options(tracker; kwargs...)
     config = tracker.config
     model = tracker.model
     if model !== nothing && state === getproperty(model, :fields)
@@ -644,11 +811,15 @@ The horizontal velocity `(u, v)` that advects a particle at `(x, y, z)` at
 time `t`, with the configured interpolation. Within the current particle step
 the velocity is interpolated linearly in time between its start and its end.
 With `wave_motion = :instantaneous` the wave velocity is added at the inertial
-phase of `t`.
+phase of `t`. The tracker must hold a velocity, recorded by a run or by
+[`advect_particles!`](@ref).
 """
 function interpolate_velocity_at_position(x::T, y::T, z::T,
                                         tracker::ParticleTracker{T},
                                         t=tracker.particles.time) where T
+    tracker.current.valid || throw(ArgumentError(
+        "the tracker holds no velocity yet: run a simulation or advance the " *
+        "particles with advect_particles! first"))
     velocity = _velocity_arguments(tracker, t)
     tracker.architecture isa CPU && return _particle_velocity(x, y, z, zero(T), velocity)
     # Interpolate on the device; only the two values come back.
@@ -864,17 +1035,13 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
 end
 
 """
-Move the next history deadline past the current time in whole intervals, so
-that late records do not delay later ones.
+Set the next history deadline to the first multiple of `save_interval` after
+the current time, so that late records do not delay later ones.
 """
-function _advance_history_deadline!(tracker::ParticleTracker{T}) where T
-    interval = Float64(tracker.config.save_interval)
+function _advance_history_deadline!(tracker::ParticleTracker)
+    interval = tracker.config.save_interval
     (isfinite(interval) && interval > 0) || return tracker
-    time = tracker.particles.time
-    tolerance = 8eps(max(abs(time), abs(interval), 1.0))
-    while tracker.next_history_time <= time + tolerance
-        tracker.next_history_time += interval
-    end
+    tracker.next_history_time = _next_deadline(tracker.particles.time, interval)
     return tracker
 end
 
@@ -929,15 +1096,16 @@ end
     should_save_particles(tracker)
 
 Whether the tracker's in-memory history is due a record: never for
-`save_interval = Inf` (the default), every step for 0, and otherwise at the
-nominal times `t₀ + n save_interval`, which late records do not shift.
+`save_interval = Inf` (the default), every step for 0, and otherwise when a
+run starts and at the multiples of `save_interval`, which late records do
+not shift.
 """
-function should_save_particles(tracker::ParticleTracker{T}) where T
-    interval = Float64(tracker.config.save_interval)
+function should_save_particles(tracker::ParticleTracker)
+    interval = tracker.config.save_interval
     isfinite(interval) || return false
     interval > 0 || return true
     time = tracker.particles.time
-    tolerance = 8eps(max(abs(time), abs(interval), 1.0))
+    tolerance = 8eps(max(abs(time), interval, 1.0))
     return time >= tracker.next_history_time - tolerance
 end
 
@@ -963,23 +1131,27 @@ Files created:
 
 Example:
 ```julia
-tracker = ParticleTracker(config, model)
-initialize_particles!(tracker, config)
-enable_auto_file_splitting!(tracker, "long_simulation", max_points_per_file=500)
+using QGYBJplus.UnifiedParticleAdvection: enable_auto_file_splitting!,
+                                          finalize_trajectory_files!
 
-# Run long simulation - files will be created automatically
-for step in 1:10000
-    advect_particles!(tracker, model.fields, model.runtime.geometry, dt, step * dt)
-end
+config = particles_in_box(-500.0; x_max=Lx, y_max=Ly, save_interval=600.0)
+initialize_particles!(simulation, config)
+enable_auto_file_splitting!(simulation.model.particles, "long_simulation";
+                            max_points_per_file=500)
 
-# Final segment saved with:
-finalize_trajectory_files!(tracker)
+run!(simulation)   # writes long_simulation.nc, long_simulation_part1.nc, ...
+
+# Write the final segment:
+finalize_trajectory_files!(simulation.model.particles)
 ```
 """
 function enable_auto_file_splitting!(tracker::ParticleTracker{T}, base_filename::String;
                                      max_points_per_file::Int=1000) where T
     max_points_per_file > 0 ||
         throw(ArgumentError("max_points_per_file must be positive"))
+    isfinite(tracker.config.save_interval) || throw(ArgumentError(
+        "file splitting needs a tracker that keeps a history: give its " *
+        "configuration a finite save_interval"))
 
     # Update tracker configuration
     tracker.base_output_filename = base_filename
@@ -990,6 +1162,7 @@ function enable_auto_file_splitting!(tracker::ParticleTracker{T}, base_filename:
     # Use keyword arguments as ParticleConfig uses @kwdef
     old_config = tracker.config
     new_config = ParticleConfig{T}(
+        use_ybj_w = old_config.use_ybj_w,
         x_min = old_config.x_min,
         x_max = old_config.x_max,
         y_min = old_config.y_min,

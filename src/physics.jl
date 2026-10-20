@@ -38,9 +38,13 @@ function dealias_mask(geometry::Union{RectilinearGrid, RuntimeGeometry})
 end
 
 """
-Test whether the Fourier mode with indices `(i, j)` lies inside the two-thirds
-cutoff: the ellipse `(iₓ/Kₓ)² + (i_y/K_y)² ≤ 1` in mode index, with
-`Kₓ = ⌊nₓ/3⌋` and `K_y = ⌊n_y/3⌋`, which is a disk on a square grid.
+    is_dealiased(i, j, nx, ny)
+
+Test whether the Fourier mode with indices `(i, j)` (FFTW order) lies inside
+the two-thirds cutoff: the ellipse `(iₓ/Kₓ)² + (i_y/K_y)² ≤ 1` in mode index,
+with `Kₓ = ⌊nₓ/3⌋` and `K_y = ⌊n_y/3⌋`, which is a disk on a square grid.
+When `nₓ` or `n_y` is divisible by three, the boundary itself is excluded
+(`< 1`), so that no product of two retained modes aliases onto a retained one.
 """
 @inline function is_dealiased(i::Int, j::Int, nx::Int, ny::Int)
     ix = i - 1
@@ -111,7 +115,23 @@ function compute_hyperdiff_params(; nx::Int, ny::Int,
     return (ν=coefficient, ilap=order ÷ 2, order)
 end
 
-"""Return matching typed closure coefficients for flow and waves."""
+"""
+    dimensional_hyperdiff_params(; nx, ny, Lx, Ly, dt, order=4, efold_steps=10, kmax_fraction=2/3)
+
+The coefficient of [`compute_hyperdiff_params`](@ref) for both the flow and
+the waves, as a named tuple in the naming of the original Fortran model:
+`νₕ₁` and `νₕ₁ʷ` (the coefficients), `ilap1` and `ilap1w` (the Laplacian
+powers, `order ÷ 2`), an unused second operator (`νₕ₂ = νₕ₂ʷ = 0`,
+`ilap2 = ilap2w = 2`), `order`, and `efold_steps`. To configure a model, pass
+the coefficient to the closure:
+
+```julia
+ν = dimensional_hyperdiff_params(; nx, ny, Lx, Ly, dt).νₕ₁
+closure = HorizontalHyperdiffusivity(
+    flow=FlowHyperdiffusivity(coefficient=ν, order=4),
+    wave=WaveHyperdiffusivity(coefficient=ν, order=4))
+```
+"""
 function dimensional_hyperdiff_params(; nx::Int, ny::Int,
     Lx::Real, Ly::Real, dt::Real, order::Int=4, efold_steps::Int=10,
     kmax_fraction::Real=2/3)

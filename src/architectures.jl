@@ -95,6 +95,14 @@ on_backend(backend::KernelAbstractions.Backend, x) = Adapt.adapt(backend, x)
 on_host(x) = Adapt.adapt(KernelAbstractions.CPU(), x)
 
 """
+Copy the host array `source` into `destination`, which may live on a device.
+The element type is converted on the host first, since a copy to a device
+needs the same element type on both sides.
+"""
+copy_from_host!(destination::AbstractArray{T}, source::AbstractArray) where T =
+    copyto!(destination, eltype(source) === T ? source : convert(Array{T}, source))
+
+"""
     first_value(array)
 
 First element of `array`, read with a one-element copy so device arrays are

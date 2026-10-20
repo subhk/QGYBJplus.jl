@@ -11,19 +11,6 @@ end
 @inline _to_xyz(array::AbstractArray) = permutedims(array, (2, 3, 1))
 @inline _from_xyz(array::AbstractArray) = permutedims(array, (3, 1, 2))
 
-"""
-    _next_deadline(time, interval)
-
-The first time `k * interval` (`k` a positive integer) after `time`. Every
-`TimeInterval` schedule lies on this grid of multiples from t = 0, so a
-restored run keeps the original output times, and a deadline computed in one
-multiplication does not drift as a running sum would.
-"""
-function _next_deadline(time, interval)
-    tolerance = 8eps(max(abs(time), abs(interval), one(time)))
-    return (floor((time + tolerance) / interval) + 1) * interval
-end
-
 function ModelOutputManager(specification::S, ::Type{T}, start_time=zero(T)) where {S, T}
     next_time = specification.schedule isa TimeInterval ?
                 T(_next_deadline(start_time, specification.schedule.interval)) : nothing
@@ -185,6 +172,8 @@ _feedback_mode_name(model::QGYBJModel) =
 _generalized_pv_convention(model::QGYBJModel) =
     _wave_feedback_enabled(ETDModelOptions(model.physics, model.numerics)) ?
     "total_with_wave_pv" : "balanced_only"
+_flow_evolution_name(model::QGYBJModel) =
+    string(nameof(typeof(model.physics.flow)))
 
 function _refresh_output_diagnostics!(model::QGYBJModel,
     specification::NetCDFOutput)
@@ -254,6 +243,9 @@ function _write_model_state_file!(manager::ModelOutputManager,
 
     q_host = _host_array(fields.q)
     B_host = _host_array(fields.B)
+    # A fixed flow is prescribed by ψ, not inverted from q, so a restart needs it.
+    fixed_flow = model.physics.flow isa FixedFlow
+    psi_spectral_host = fixed_flow ? _host_array(fields.psi) : nothing
     u_host = write_velocities ? _host_array(fields.u) : nothing
     v_host = write_velocities ? _host_array(fields.v) : nothing
     w_host = write_velocities ? _host_array(fields.w) : nothing
@@ -311,6 +303,14 @@ function _write_model_state_file!(manager::ModelOutputManager,
         _define_field!(dataset, "B_hat_imag", imag.(B_host),
             "imaginary part of the wave envelope B: " * fourier;
             dimensions=spectral)
+        if fixed_flow
+            _define_field!(dataset, "psi_hat_real", real.(psi_spectral_host),
+                "real part of the prescribed streamfunction: " * fourier;
+                dimensions=spectral)
+            _define_field!(dataset, "psi_hat_imag", imag.(psi_spectral_host),
+                "imaginary part of the prescribed streamfunction: " * fourier;
+                dimensions=spectral)
+        end
 
         if write_velocities
             _define_field!(dataset, "u", u_host,
@@ -339,6 +339,7 @@ function _write_model_state_file!(manager::ModelOutputManager,
         dataset.attrib["Ly"] = grid.extent[2]
         dataset.attrib["Lz"] = grid.extent[3]
         dataset.attrib["wave_formulation"] = _wave_formulation_name(model)
+        dataset.attrib["flow_evolution"] = _flow_evolution_name(model)
         dataset.attrib["feedback_mode"] = _feedback_mode_name(model)
         dataset.attrib["generalized_pv"] =
             _generalized_pv_convention(model)
@@ -631,9 +632,9 @@ _energy_components(model::QGYBJModel, fields::ModelFields) =
     _local_energy_components(model, fields)
 
 """
-Energy components rebuilt from the model's prognostic `q` and `B`, so that a
-record never relies on, or mutates, the live diagnostic fields: ETD-RK2 keeps
-only q and B prognostically, and passive-wave steps clear A and C on purpose.
+Energy components rebuilt from the model's prognostic `q` and `B` (and a
+fixed flow's prescribed ψ), so that a record never relies on, or mutates, the
+live diagnostic fields: ETD-RK2 keeps only q and B prognostically.
 
 ψ (balanced, from q - qʷ) and A, C (from B) are rebuilt in scratch buffers.
 The original YBJ formulation recovers A through the full wave tendency, which
@@ -835,11 +836,43 @@ function _read_restart(model::QGYBJModel, path::AbstractString)
             throw(DimensionMismatch("restart q dimensions do not match model grid"))
         size(B) == size(q) ||
             throw(DimensionMismatch("restart B dimensions do not match restart q"))
+        psi = model.physics.flow isa FixedFlow ?
+              _read_restart_streamfunction(model, dataset, path, size(q)) : nothing
+        if haskey(dataset.attrib, "flow_evolution")
+            stored = String(dataset.attrib["flow_evolution"])
+            expected = _flow_evolution_name(model)
+            stored == expected || model.physics.flow isa FixedFlow ||
+                @warn "Restart file $path was written by a $stored model; this " *
+                      "model's flow evolves, so its streamfunction is inverted " *
+                      "from the file's q"
+        end
         time = haskey(dataset, "time") ? Float64(dataset["time"][1]) : nothing
         iteration = haskey(dataset.attrib, "iteration") ?
                     Int(dataset.attrib["iteration"]) : nothing
-        (; q, B, time, iteration)
+        (; q, B, psi, time, iteration)
     end
+end
+
+"""
+The streamfunction of a restart file, for a `FixedFlow` model, whose flow is
+prescribed rather than inverted from q: the Fourier coefficients `psi_hat`,
+or else the physical `psi` of an older file, transformed.
+"""
+function _read_restart_streamfunction(model::QGYBJModel, dataset, path, dims)
+    psi = if haskey(dataset, "psi_hat_real") && haskey(dataset, "psi_hat_imag")
+        _from_xyz(dataset["psi_hat_real"][:, :, :] .+
+                  im .* dataset["psi_hat_imag"][:, :, :])
+    elseif haskey(dataset, "psi")
+        physical = ComplexF64.(_from_xyz(dataset["psi"][:, :, :]))
+        FFTW.fft!(physical, (2, 3))
+    else
+        throw(ArgumentError(
+            "restart file $path holds no streamfunction, which a FixedFlow " *
+            "model needs: its flow is prescribed, not inverted from q"))
+    end
+    size(psi) == dims ||
+        throw(DimensionMismatch("restart ψ dimensions do not match restart q"))
+    return psi
 end
 
 """
@@ -880,6 +913,9 @@ Restore the prognostic `q` and `B` fields from a simulation state file and
 rebuild the model's diagnostic fields. The file must be for a domain of the
 same size and resolution; a different f or N² warns.
 
+A `FixedFlow` model takes its prescribed streamfunction from the file; an
+evolving flow is inverted from the restored q.
+
 Restoring a `Simulation` also sets its clock to the file's time and
 iteration, so output, diagnostics, and particles continue from there, and
 `stop_time` and `stop_iteration` keep counting from the original start.
@@ -902,22 +938,58 @@ end
 function _restore_fields!(model::QGYBJModel, path::AbstractString)
     model.runtime.finalized && error("cannot restore a finalized model")
     restart = _read_restart(model, path)
-    copyto!(model.fields.q, restart.q)
-    copyto!(model.fields.B, restart.B)
-    invert_q_to_psi!(model)
+    copy_from_host!(model.fields.q, restart.q)
+    copy_from_host!(model.fields.B, restart.B)
+    if restart.psi === nothing
+        invert_q_to_psi!(model)
+    else
+        copy_from_host!(model.fields.psi, restart.psi)
+    end
     compute_velocities!(model; compute_w=false)
     _refresh_wave_diagnostics!(model)
     return restart
 end
 
-"""Return the domain-integrated balanced-flow kinetic energy of `model`."""
-function Diagnostics.flow_kinetic_energy(model::QGYBJModel)
-    compute_velocities!(model; compute_w=false)
-    return Diagnostics.flow_kinetic_energy(model.fields.u, model.fields.v)
+"""Holder of the field snapshot that the energies of a `YBJ()` model need."""
+mutable struct _EnergySnapshot
+    fields::Any
 end
 
-"""Return the domain-integrated envelope and amplitude energies of `model`."""
+"""
+The domain-mean energies of `model`'s current state, named as the energy
+diagnostics record them, rebuilt from the prognostic fields without changing
+any model field.
+"""
+function _model_energies(model::QGYBJModel)
+    _operator_context(model)   # errors for a finalized model
+    values = _current_energy_components(model, _EnergySnapshot(nothing))
+    return NamedTuple{first.(_ENERGY_COMPONENTS)}(Float64.(values))
+end
+
+"""
+    flow_kinetic_energy(model)
+
+The domain-mean kinetic energy of the balanced flow, ½⟨u² + v²⟩ (m² s⁻² in a
+dimensional setup): the `mean_flow_KE` that the energy diagnostics record. It
+is computed from the prognostic q (or a `FixedFlow` model's prescribed ψ),
+changes no model field, and is a host scalar, also on a GPU.
+"""
+Diagnostics.flow_kinetic_energy(model::QGYBJModel) =
+    _model_energies(model).mean_flow_KE
+
+"""
+    wave_energy(model) -> (; kinetic, potential, correction)
+
+The domain-mean wave energies of `model`, as the energy diagnostics record
+them (`wave_KE`, `wave_PE`, and `wave_CE`): the kinetic energy ½⟨|LA|²⟩ of
+the wave velocity, the potential energy, and the YBJ⁺ correction (zero for
+`YBJ()`). With the balanced flow's energy, the potential and correction
+energies make up the energy that the ideal coupled system conserves
+(Asselin & Young 2019, eq. 3.7); the kinetic energy is informational. They
+are rebuilt from the prognostic B and change no model field.
+"""
 function Diagnostics.wave_energy(model::QGYBJModel)
-    _refresh_wave_diagnostics!(model)
-    return Diagnostics.wave_energy(model.fields.B, model.fields.A)
+    energies = _model_energies(model)
+    return (kinetic=energies.wave_KE, potential=energies.wave_PE,
+            correction=energies.wave_CE)
 end

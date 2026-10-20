@@ -65,7 +65,8 @@ formulation.
 ## Coordinates and transforms
 
 - Horizontal boundaries are periodic.
-- The vertical coordinate increases from the bottom to `z=0` at the surface.
+- The vertical coordinate increases from the bottom to the surface, at `z=0`
+  by default; depths are measured below the top of the grid.
 - Vertical nodes are cell centered.
 - Spectral fields are complex; diagnosed velocities are real.
 - Horizontal derivatives are spectral, while nonlinear products are formed

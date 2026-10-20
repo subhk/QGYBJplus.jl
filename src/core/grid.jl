@@ -139,6 +139,9 @@ function RectilinearGrid(architecture::AbstractArchitecture=CPU(),
     z=nothing,
     centered::Bool=false)
 
+    FT in (Float32, Float64) || throw(ArgumentError(
+        "the grid's floating-point type must be Float32 or Float64 (got $FT): " *
+        "the FFT libraries plan transforms in these precisions only"))
     size isa Tuple && length(size) == 3 ||
         throw(ArgumentError("size must be a three-element tuple"))
     all(value -> value isa Integer, size) ||

@@ -45,7 +45,11 @@ In the test suite a coupled run tracks the `Float64` run to about `1e-4`
 relative error over a few steps, and round-off grows over long integrations,
 so keep `Float64` for conservation checks and comparisons of small
 differences. Physical parameters are given as usual and converted, and output
-files and energy series are written in `Float64` either way.
+files and energy series are written in `Float64` either way. Times stay in
+`Float64` too: the simulation clock, `Δt`, output schedules, and particle
+times, since a `Float32` clock no longer resolves the step after months of
+simulated time. Particle positions have their own precision, `Float64` by
+default (see [Particle advection](@ref particles)).
 
 ## Reuse the simulation timestepper
 
@@ -75,8 +79,10 @@ Manual stepping does not advance particles, output, diagnostics, or a clock.
   four grid-sized real arrays in the particles' precision on that
   architecture, or eight with `wave_motion = :instantaneous`.
 - Call `finalize_simulation!` when a simulation is done. It drops the
-  timestepper workspace, scratch buffers, and any diagnostics snapshot, so the
-  garbage collector can return their device memory.
+  timestepper workspace and any diagnostics snapshot, so the garbage
+  collector can return their device memory, and keeps the model for a later
+  simulation. `finalize_model!(model)` releases the model's scratch buffers
+  once it is no longer needed.
 
 ## Limit output
 

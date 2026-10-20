@@ -59,6 +59,9 @@ See [QG equations](@ref qg-equations), [YBJ⁺ wave model](@ref ybj-plus), and
 ## Domain and boundary conditions
 
 Horizontal directions are periodic. Vertical nodes are cell centered between
-a rigid bottom and surface, with `z=0` at the surface. The balanced
+a rigid bottom and surface, with `z=0` at the surface by default. A grid may
+place its levels elsewhere, as `z=(0, H)`; depths, for stratification
+profiles, surface waves, wave packets, and file inputs, are then measured
+below its top. The balanced
 streamfunction uses homogeneous Neumann conditions at top and bottom; vertical
 velocity vanishes at those boundaries.

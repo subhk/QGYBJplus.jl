@@ -17,23 +17,30 @@ using NCDatasets
 """
     StratificationProfile{T}
 
-Abstract type for stratification profiles.
+Abstract type for stratification profiles. Every profile but
+[`AnalyticalProfile`](@ref) is defined by depth below the surface:
+`evaluate_N2(profile, z)` takes the depth as `-z`, for a lid at z = 0, and a
+model whose grid has its top at `z_top` samples the profile at `z - z_top`,
+so that depths are always measured below its lid. An `AnalyticalProfile` is
+evaluated at the grid's own z.
 """
 abstract type StratificationProfile{T} end
 
 """
-    ConstantN{T} <: StratificationProfile{T}
+    ConstantN{T}(N0) <: StratificationProfile{T}
 
-Constant buoyancy frequency profile.
+Constant buoyancy frequency `N0`: N² = N0² at every depth.
 """
 struct ConstantN{T} <: StratificationProfile{T}
     N0::T
 end
 
 """
-    SkewedGaussian{T} <: StratificationProfile{T}
+    SkewedGaussian{T}(N02, N12, sigma, z0, alpha) <: StratificationProfile{T}
 
-Skewed Gaussian profile from Fortran test cases.
+The stratification of the original Fortran test cases: a pycnocline of peak
+N² `N12` above the background `N02`, centred at the depth `z0` below the
+surface, with width `sigma` and skewness `alpha` (see [`evaluate_N2`](@ref)).
 """
 struct SkewedGaussian{T} <: StratificationProfile{T}
     N02::T    # Background N²
@@ -44,9 +51,11 @@ struct SkewedGaussian{T} <: StratificationProfile{T}
 end
 
 """
-    TanhProfile{T} <: StratificationProfile{T}
+    TanhProfile{T}(N_upper, N_lower, z_pycno, width) <: StratificationProfile{T}
 
-Hyperbolic tangent profile (pycnocline-like).
+A pycnocline: N changes from `N_upper` near the surface to `N_lower` at depth
+across the depth `z_pycno` below the surface, over `width`,
+`N(d) = N_upper + (N_lower - N_upper)(1 + tanh((d - z_pycno)/width))/2`.
 """
 struct TanhProfile{T} <: StratificationProfile{T}
     N_upper::T    # Upper ocean N
@@ -56,9 +65,10 @@ struct TanhProfile{T} <: StratificationProfile{T}
 end
 
 """
-    ExponentialProfile{T} <: StratificationProfile{T}
+    ExponentialProfile{T}(N_surface, scale_height, N_deep) <: StratificationProfile{T}
 
-Exponential stratification profile.
+N decaying from `N_surface` at the surface toward `N_deep` over the depth
+scale `scale_height`, `N(d) = N_deep + (N_surface - N_deep) exp(-d/scale_height)`.
 """
 struct ExponentialProfile{T} <: StratificationProfile{T}
     N_surface::T   # Surface N
@@ -96,16 +106,30 @@ PiecewiseProfile(z_interfaces::AbstractVector, N_values::AbstractVector) =
         z_interfaces, N_values)
 
 """
-    FileProfile{T} <: StratificationProfile{T}
+    FileProfile{T}(filename, z_data, N2_data) <: StratificationProfile{T}
 
 Tabulated N² values `N2_data` at depths `z_data` (positive downward, strictly
-increasing), as returned by `load_stratification_from_file`. `evaluate_N2`
-interpolates linearly in depth and holds the end values beyond the data.
+increasing, finite, and as many as the N² values), as returned by
+`load_stratification_from_file`. `evaluate_N2` interpolates linearly in depth
+and holds the end values beyond the data.
 """
 struct FileProfile{T} <: StratificationProfile{T}
     filename::String
     z_data::Vector{T}    # Depths (positive below surface)
     N2_data::Vector{T}
+
+    function FileProfile{T}(filename::AbstractString, z_data::AbstractVector,
+                            N2_data::AbstractVector) where T
+        isempty(z_data) && throw(ArgumentError("a file profile needs at least one depth"))
+        length(z_data) == length(N2_data) || throw(ArgumentError(
+            "a file profile needs as many N² values as depths (got " *
+            "$(length(N2_data)) and $(length(z_data)))"))
+        all(isfinite, z_data) && all(isfinite, N2_data) ||
+            throw(ArgumentError("the depths and N² values of a file profile must be finite"))
+        all(>(0), diff(z_data)) || throw(ArgumentError(
+            "the depths of a file profile must increase strictly (positive downward)"))
+        return new{T}(String(filename), z_data, N2_data)
+    end
 end
 
 """
@@ -133,69 +157,12 @@ function AnalyticalProfile(func::F; returns::Symbol=:N²,
 end
 
 """
-    create_stratification_profile(config)
+    evaluate_N2(profile, z)
 
-Create stratification profile from configuration.
-
-# Arguments
-- `config`: Configuration object with fields:
-  - `type::Symbol`: One of `:constant_N`, `:skewed_gaussian`, `:tanh_profile`, `:from_file`, `:analytical`
-  - For `:constant_N`: `N0` (buoyancy frequency)
-  - For `:skewed_gaussian`: `N02_sg`, `N12_sg`, `sigma_sg`, `z0_sg`, `alpha_sg`
-  - For `:tanh_profile`: `N_upper`, `N_lower`, `z_pycno`, `width`
-  - For `:from_file`: `filename` (path to a NetCDF or JLD2 file)
-  - For `:analytical`: `N_func` (N(z)) or `N2_func` (N²(z))
-
-# Returns
-A `StratificationProfile` subtype appropriate for the configuration.
-"""
-function create_stratification_profile(config)
-    T = Float64
-    
-    if config.type == :constant_N
-        return ConstantN{T}(config.N0)
-        
-    elseif config.type == :skewed_gaussian
-        return SkewedGaussian{T}(
-            config.N02_sg,
-            config.N12_sg, 
-            config.sigma_sg,
-            config.z0_sg,
-            config.alpha_sg
-        )
-        
-    elseif config.type == :tanh_profile
-        return TanhProfile{T}(
-            config.N_upper,
-            config.N_lower,
-            config.z_pycno,
-            config.width
-        )
-        
-    elseif config.type == :from_file
-        if isnothing(config.filename)
-            error("Filename required for stratification type :from_file")
-        end
-        return load_stratification_from_file(config.filename)
-
-    elseif config.type == :analytical || config.type == :function
-        if !isnothing(config.N2_func)
-            return AnalyticalProfile{T, typeof(config.N2_func)}(config.N2_func, true)
-        elseif !isnothing(config.N_func)
-            return AnalyticalProfile{T, typeof(config.N_func)}(config.N_func, false)
-        else
-            error("Provide N_func or N2_func for stratification type :$(config.type)")
-        end
-        
-    else
-        error("Unknown stratification type: $(config.type)")
-    end
-end
-
-"""
-    evaluate_N2(profile::ConstantN, z::Real)
-
-Evaluate N² for constant stratification.
+N² of `profile` at the height `z` relative to a lid at z = 0, that is at the
+depth `-z`; an [`AnalyticalProfile`](@ref) is evaluated at `z` itself. A model
+samples its profile at its own levels measured from its lid (see
+[`StratificationProfile`](@ref)).
 """
 function evaluate_N2(profile::ConstantN{T}, z::Real) where T
     return profile.N0^2
@@ -319,7 +286,9 @@ end
 """
     compute_stratification_profile(profile::StratificationProfile, grid::RectilinearGrid)
 
-Compute the pointwise N² profile at the model's cell centers (`grid.z`).
+Compute the pointwise N² profile at the model's cell centers (`grid.z`),
+with depths measured below the top of the grid (see
+[`StratificationProfile`](@ref)).
 
 Flux-form vertical operators use a separately sampled upper-face profile; see
 `_compute_stratification_face_profile`.
@@ -327,8 +296,18 @@ Flux-form vertical operators use a separately sampled upper-face profile; see
 function compute_stratification_profile(
     profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
 
-    return T[evaluate_N2(profile, z) for z in geometry.z]
+    return T[evaluate_N2(profile, _profile_coordinate(profile, z, geometry))
+             for z in geometry.z]
 end
+
+"""
+The coordinate at which a model on `grid` evaluates `profile` at its height
+`z`: relative to its lid for a profile defined by depth, and `z` itself for an
+`AnalyticalProfile`, a function of the grid's own coordinate.
+"""
+_profile_coordinate(profile::StratificationProfile, z, grid::RectilinearGrid) =
+    z - last(grid.z_faces)
+_profile_coordinate(profile::AnalyticalProfile, z, grid::RectilinearGrid) = z
 
 """
     _compute_stratification_face_profile(profile, grid)
@@ -340,7 +319,8 @@ uniform indexing convention even though its boundary flux is zero.
 function _compute_stratification_face_profile(
     profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
 
-    return T[evaluate_N2(profile, z) for z in @view geometry.z_faces[2:end]]
+    return T[evaluate_N2(profile, _profile_coordinate(profile, z, geometry))
+             for z in @view geometry.z_faces[2:end]]
 end
 
 """
@@ -351,14 +331,16 @@ Load a tabulated N² profile from a NetCDF file, or from a JLD2 file when
 
 The file must hold a vertical coordinate named `z` or `depth` and N² named
 `N2`, `N²`, or `n2`, as real arrays of equal length. `depth` is positive
-downward and `z` positive upward; a `z` without negative values is read as
-depth. `group` names the NetCDF group, or the JLD2 group, NamedTuple, or Dict,
-that holds the arrays, e.g. `group="ocean/cast12"`. JLD2 arrays may be ranges.
+downward and `z` positive upward, both relative to the surface; a `z` without
+negative values is read as depth, as in earlier versions. `group` names the
+NetCDF group, or the JLD2 group, NamedTuple, or Dict, that holds the arrays,
+e.g. `group="ocean/cast12"`. JLD2 arrays may be ranges.
 
 The data need not be sorted or lie on the model's levels: the model
-interpolates the profile linearly in depth to its own cell centers and faces,
-holds the end values beyond the data, and warns when that leaves more than one
-grid spacing uncovered at the top or bottom of the domain.
+interpolates the profile linearly in depth below its lid to its own cell
+centers and faces, holds the end values beyond the data, and warns when that
+leaves more than one grid spacing uncovered at the top or bottom of the
+domain.
 """
 function load_stratification_from_file(filename::String;
                                        group::Union{Nothing, AbstractString}=nothing)
@@ -430,7 +412,8 @@ Warn when the tabulated depths leave more than one grid spacing uncovered at
 the top or bottom of the domain, where `evaluate_N2` holds the end values.
 """
 function _warn_uncovered_depths(profile::FileProfile, grid::RectilinearGrid)
-    top, bottom = _depth(grid.z_faces[end]), _depth(grid.z_faces[1])
+    # Depths below the lid, which need not be at z = 0.
+    top, bottom = zero(eltype(grid.z_faces)), grid.z_faces[end] - grid.z_faces[1]
     shallowest, deepest = first(profile.z_data), last(profile.z_data)
     if shallowest - top > grid.dz || bottom - deepest > grid.dz
         @warn "The stratification data in $(profile.filename) cover depths " *
@@ -510,9 +493,13 @@ function plot_stratification_profile(profile::StratificationProfile{T}, Lz::Real
 end
 
 """
-    validate_stratification(N2_profile::Vector)
+    validate_stratification(N2_profile::Vector) -> (errors, warnings)
 
-Check that stratification profile is physically reasonable.
+Check a sampled N² profile, returning lists of messages. Errors: an empty
+profile, non-finite values, and N² ≤ 0 (unstable or neutral). Warnings:
+N² above 100 or below 1e-6, which in s⁻² usually signals a units mistake
+(though abyssal N² can fall below 1e-6), and jumps between neighbouring
+values much larger than the profile's average change.
 """
 function validate_stratification(N2_profile::Vector{T}) where T
     warnings = String[]
@@ -521,6 +508,11 @@ function validate_stratification(N2_profile::Vector{T}) where T
     # Check for empty profile
     if length(N2_profile) == 0
         push!(errors, "Empty N² profile - no stratification data provided")
+        return errors, warnings
+    end
+
+    if !all(isfinite, N2_profile)
+        push!(errors, "Non-finite N² values (NaN or Inf) detected")
         return errors, warnings
     end
 

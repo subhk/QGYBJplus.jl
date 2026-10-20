@@ -18,6 +18,7 @@ const _PARENT = parentmodule(@__MODULE__)
 const ParticleConfig = _PARENT.ParticleConfig
 const _check_wave_motion = _PARENT._check_wave_motion
 const _check_horizontal_advection = _PARENT._check_horizontal_advection
+const _check_particle_times = _PARENT._check_particle_times
 
 export ParticleConfig3D, ParticleDistribution,
        initialize_particles_3d!, UNIFORM_GRID, LAYERED, RANDOM_3D, CUSTOM,
@@ -86,8 +87,8 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     periodic_x::Bool = true
     periodic_y::Bool = true
     
-    # In-memory trajectory history (see ParticleConfig)
-    save_interval::T = Inf
+    # In-memory trajectory history (see ParticleConfig); a time, so Float64
+    save_interval::Float64 = Inf
     max_save_points::Int = 1000
 
     # Random distribution seed
@@ -102,39 +103,51 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
                                 save_interval, max_save_points, seed) where T
         _check_wave_motion(use_ybj_w, wave_motion)
         _check_horizontal_advection(use_3d_advection)
-        
+        _check_particle_times(0.0, save_interval, max_save_points)
+        check(condition, message) = condition || throw(ArgumentError(message))
+
         # Basic validation
+        check(all(isfinite, (x_min, x_max, y_min, y_max, z_min, z_max)),
+              "particle bounds must be finite")
         if distribution_type == CUSTOM
-            @assert x_max ≥ x_min "x_max must be greater than or equal to x_min"
-            @assert y_max ≥ y_min "y_max must be greater than or equal to y_min"
+            check(x_max ≥ x_min, "x_max must be greater than or equal to x_min")
+            check(y_max ≥ y_min, "y_max must be greater than or equal to y_min")
         else
-            @assert x_max > x_min "x_max must be greater than x_min"
-            @assert y_max > y_min "y_max must be greater than y_min"
+            check(x_max > x_min, "x_max must be greater than x_min")
+            check(y_max > y_min, "y_max must be greater than y_min")
         end
-        @assert z_max ≥ z_min "z_max must be greater than or equal to z_min"
-        @assert nx_particles > 0 "nx_particles must be positive"
-        @assert ny_particles > 0 "ny_particles must be positive"
-        @assert nz_particles > 0 "nz_particles must be positive"
-        
+        check(z_max ≥ z_min, "z_max must be greater than or equal to z_min")
+        check(nx_particles > 0, "nx_particles must be positive")
+        check(ny_particles > 0, "ny_particles must be positive")
+        check(nz_particles > 0, "nz_particles must be positive")
+
         # Distribution-specific validation
         if distribution_type == LAYERED
             if !isempty(z_levels)
-                @assert all(z_min ≤ z ≤ z_max for z in z_levels) "All z_levels must be within [z_min, z_max]"
-                @assert length(z_levels) == length(unique(z_levels)) "z_levels must be unique"
+                check(all(z_min ≤ z ≤ z_max for z in z_levels),
+                      "all z_levels must be within [z_min, z_max]")
+                check(allunique(z_levels), "z_levels must be unique")
             end
             if !isempty(particles_per_level)
                 expected_levels = isempty(z_levels) ? nz_particles : length(z_levels)
-                @assert length(particles_per_level) == expected_levels "particles_per_level must match number of levels"
+                check(length(particles_per_level) == expected_levels,
+                      "particles_per_level must match the number of levels")
+                check(all(>=(0), particles_per_level),
+                      "particles_per_level must not be negative")
             end
         elseif distribution_type == CUSTOM
-            @assert length(custom_x) == length(custom_y) == length(custom_z) "Custom position arrays must have same length"
+            check(length(custom_x) == length(custom_y) == length(custom_z),
+                  "custom position arrays must have the same length")
             if !isempty(custom_x)
-                @assert all(x_min ≤ x ≤ x_max for x in custom_x) "All custom_x must be within [x_min, x_max]"
-                @assert all(y_min ≤ y ≤ y_max for y in custom_y) "All custom_y must be within [y_min, y_max]"
-                @assert all(z_min ≤ z ≤ z_max for z in custom_z) "All custom_z must be within [z_min, z_max]"
+                check(all(x_min ≤ x ≤ x_max for x in custom_x),
+                      "all custom_x must be within [x_min, x_max]")
+                check(all(y_min ≤ y ≤ y_max for y in custom_y),
+                      "all custom_y must be within [y_min, y_max]")
+                check(all(z_min ≤ z ≤ z_max for z in custom_z),
+                      "all custom_z must be within [z_min, z_max]")
             end
         end
-        
+
         new{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                distribution_type, nx_particles, ny_particles, nz_particles,
                z_levels, particles_per_level, custom_x, custom_y, custom_z,
@@ -145,27 +158,30 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
 end
 
 """
-    particles_in_grid_3d(; x_max, y_max, z_max, nx, ny, nz, x_min=0, y_min=0, z_min=nothing, kwargs...)
+    particles_in_grid_3d(; x_max, y_max, z_max, nx, ny, nz, x_min=0, y_min=0, z_min=nothing, precision=Float64, kwargs...)
 
-Create an `nx` by `ny` by `nz` regular particle grid.
+Create an `nx` by `ny` by `nz` regular particle grid. Horizontally the grid
+spans `[x_min, x_max)` and `[y_min, y_max)`, as for a periodic domain;
+vertically its `nz` levels run from `z_min` to `z_max`, both included (the
+middle of the interval for `nz = 1`).
 
 When `z_min` is supplied, `z_min` and `z_max` are coordinates. When it is
-omitted, `z_max` is interpreted as a positive depth and the vertical interval
-is `[-z_max, 0]`.
+omitted, `z_max` is interpreted as a positive depth below a lid at z = 0 and
+the vertical interval is `[-z_max, 0]`.
 
 ```julia
 config = particles_in_grid_3d(
     x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
     y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
     z_min=first(model.grid.z_faces), z_max=last(model.grid.z_faces),
-    nx=10, ny=10, nz=10, precision=Float64,
+    nx=10, ny=10, nz=10,
 )
 ```
 """
 function particles_in_grid_3d(; x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
                                x_min::Real=0.0, y_min::Real=0.0, z_min::Union{Real,Nothing}=nothing,
                                nx::Int=10, ny::Int=10, nz::Int=5,
-                               precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                               precision::Type{T}=Float64,
                                kwargs...) where T<:AbstractFloat
     z_min_val = z_min === nothing ? -z_max : z_min
     z_max_val = z_min === nothing ? 0.0 : z_max
@@ -188,7 +204,7 @@ config = particles_in_layers(
     [-500.0, -1000.0, -1500.0];
     x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
     y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
-    nx=10, ny=10, precision=Float64,
+    nx=10, ny=10,
 )
 ```
 """
@@ -197,8 +213,9 @@ function particles_in_layers(z_levels::Vector{<:Real};
                             x_min::Real=0.0, y_min::Real=0.0,
                             nx::Int=10, ny::Int=10,
                             particles_per_level::Vector{Int}=Int[],
-                            precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                            precision::Type{T}=Float64,
                             kwargs...) where T<:AbstractFloat
+    isempty(z_levels) && throw(ArgumentError("give at least one z level"))
     z_levels_T = T.(z_levels)
     z_min = minimum(z_levels_T)
     z_max = maximum(z_levels_T)
@@ -207,7 +224,8 @@ function particles_in_layers(z_levels::Vector{<:Real};
     if isempty(particles_per_level)
         particles_per_level = fill(nx * ny, length(z_levels_T))
     else
-        @assert length(particles_per_level) == length(z_levels_T) "particles_per_level must match length(z_levels)"
+        length(particles_per_level) == length(z_levels_T) || throw(ArgumentError(
+            "particles_per_level must match length(z_levels)"))
     end
 
     return ParticleConfig3D{T}(
@@ -232,7 +250,6 @@ config = particles_random_3d(
     x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
     y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
     z_min=first(model.grid.z_faces), z_max=last(model.grid.z_faces),
-    precision=Float64,
 )
 ```
 """
@@ -240,7 +257,7 @@ function particles_random_3d(n::Int;
                             x_max::Real, y_max::Real, z_max::Real,  # REQUIRED
                             x_min::Real=0.0, y_min::Real=0.0, z_min::Union{Real,Nothing}=nothing,
                             seed::Int=1234,
-                            precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                            precision::Type{T}=Float64,
                             kwargs...) where T<:AbstractFloat
     z_min_val = z_min === nothing ? -z_max : z_min
     z_max_val = z_min === nothing ? 0.0 : z_max
@@ -264,12 +281,13 @@ config = particles_custom([
     (1.0, 1.0, -50.0),
     (2.0, 2.0, -100.0),
     (3.0, 1.5, -150.0),
-]; precision=Float64)
+])
 ```
 """
 function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}};
-                         precision::Type{T}=Float32,  # Float32 for memory efficiency (50% less memory than Float64)
+                         precision::Type{T}=Float64,
                          kwargs...) where T<:AbstractFloat
+    isempty(positions) && throw(ArgumentError("give at least one particle position"))
 
     custom_x = T[pos[1] for pos in positions]
     custom_y = T[pos[2] for pos in positions]
@@ -289,43 +307,37 @@ function particles_custom(positions::Vector{<:Tuple{Real,Real,Real}};
 end
 
 """
-    particles_in_circle(z; center, radius, n, pattern, kwargs...)
+    particles_in_circle(z; center, radius, n=100, pattern=:sunflower, seed=1234, precision=Float64, kwargs...)
 
-Create particles distributed in a circular disk at a fixed z-level.
+Create `n` particles in a disk of `radius` around `center = (x, y)` at the
+coordinate `z`.
 
-# Arguments
-- `z`: Vertical level where particles are placed
-- `center`: (x, y) center of circle (default: (π, π))
-- `radius`: Radius of the circular region (default: 1.0)
-- `n`: Number of particles (default: 100)
-- `pattern`: Distribution pattern (default: :sunflower)
-  - `:sunflower` - Fibonacci spiral (very uniform, recommended)
-  - `:rings` - Concentric rings
-  - `:random` - Uniform random within disk
+`pattern` places them:
+- `:sunflower` (default): a Fibonacci spiral, the most uniform;
+- `:rings`: concentric rings;
+- `:random`: uniformly at random, drawn from a generator seeded with `seed`,
+  so the same call gives the same positions.
 
 # Example
 ```julia
-# 100 particles in a circle at z = -π/2
-config = particles_in_circle(-π/2; radius=1.0, n=100)
-
-# Custom center and larger circle
-config = particles_in_circle(-1.0; center=(2.0, 2.0), radius=2.0, n=200)
-
-# Random distribution
-config = particles_in_circle(-π/4; radius=0.5, n=50, pattern=:random)
+config = particles_in_circle(-500.0; center=(250e3, 250e3), radius=50e3, n=200)
 ```
 """
-function particles_in_circle(z_level::T;
-                            center::Tuple{T,T}=(T(π), T(π)),
-                            radius::T=T(1.0),
+function particles_in_circle(z_level::Real;
+                            center::Tuple{Real,Real},
+                            radius::Real,
                             n::Int=100,
                             pattern::Symbol=:sunflower,
+                            seed::Int=1234,
+                            precision::Type{T}=Float64,
                             kwargs...) where T<:AbstractFloat
-    x_center, y_center = center
+    x_center, y_center = T(center[1]), T(center[2])
+    radius = T(radius)
+    z_level = T(z_level)
     n_particles = n
 
-    @assert radius > 0 "radius must be positive"
-    @assert n_particles > 0 "n_particles must be positive"
+    radius > 0 || throw(ArgumentError("radius must be positive"))
+    n_particles > 0 || throw(ArgumentError("n must be positive"))
 
     # Generate particle positions based on pattern
     custom_x = Vector{T}(undef, n_particles)
@@ -389,26 +401,27 @@ function particles_in_circle(z_level::T;
         end
 
     elseif pattern == :random
-        # Uniform random distribution within disk
-        # Use rejection sampling or sqrt(r) transformation
+        # Uniform in the disk: the radius goes as the square root of a
+        # uniform variable.
+        rng = MersenneTwister(seed)
         for i in 1:n_particles
-            # sqrt transformation for uniform area density
-            r = radius * sqrt(rand(T))
-            θ = T(2π) * rand(T)
+            r = radius * sqrt(rand(rng, T))
+            θ = T(2π) * rand(rng, T)
 
             custom_x[i] = x_center + r * cos(θ)
             custom_y[i] = y_center + r * sin(θ)
         end
 
     else
-        error("Unknown pattern: $pattern. Use :sunflower, :rings, or :random")
+        throw(ArgumentError("unknown pattern :$pattern; use :sunflower, :rings, or :random"))
     end
 
-    # Compute bounding box for the circular region
-    x_min = x_center - radius
-    x_max = x_center + radius
-    y_min = y_center - radius
-    y_max = y_center + radius
+    # The disk's bounding box, widened to hold the rounded positions.
+    slack = 4eps(T) * max(abs(x_center), abs(y_center), radius)
+    x_min = min(x_center - radius - slack, minimum(custom_x))
+    x_max = max(x_center + radius + slack, maximum(custom_x))
+    y_min = min(y_center - radius - slack, minimum(custom_y))
+    y_max = max(y_center + radius + slack, maximum(custom_y))
 
     return ParticleConfig3D{T}(
         x_min=x_min, x_max=x_max,
@@ -416,24 +429,8 @@ function particles_in_circle(z_level::T;
         z_min=z_level, z_max=z_level,
         distribution_type=CUSTOM,
         nx_particles=n_particles, ny_particles=1, nz_particles=1,
-        custom_x=custom_x, custom_y=custom_y, custom_z=custom_z;
-        kwargs...
-    )
-end
-
-# Convenience method with default Float32 type for memory efficiency
-function particles_in_circle(z_level::Real;
-                            center::Tuple{Real,Real}=(π, π),
-                            radius::Real=1.0,
-                            n::Int=100,
-                            pattern::Symbol=:sunflower,
-                            kwargs...)
-    T = Float32  # Float32 for memory efficiency (50% less memory than Float64)
-    return particles_in_circle(T(z_level);
-        center=(T(center[1]), T(center[2])),
-        radius=T(radius),
-        n=n,
-        pattern=pattern,
+        custom_x=custom_x, custom_y=custom_y, custom_z=custom_z,
+        seed=seed;
         kwargs...
     )
 end
@@ -457,7 +454,7 @@ function initialize_particles_3d!(tracker, config::ParticleConfig3D{T}) where T
     elseif config.distribution_type == CUSTOM
         initialize_custom_positions!(tracker, config)
     else
-        error("Unknown distribution type: $(config.distribution_type)")
+        throw(ArgumentError("unknown distribution type $(config.distribution_type)"))
     end
     
     # Set initial velocities to zero
@@ -478,7 +475,9 @@ function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where
     # Create 3D grid
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
-    z_range = range(config.z_min, config.z_max, length=config.nz_particles+1)[1:end-1]
+    # Vertically the interval is bounded, so both ends are levels.
+    z_range = config.nz_particles == 1 ? [(config.z_min + config.z_max) / 2] :
+              range(config.z_min, config.z_max, length=config.nz_particles)
 
     total_particles = config.nx_particles * config.ny_particles * config.nz_particles
 
@@ -520,7 +519,8 @@ function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) 
     else
         particles_per_level = config.particles_per_level
     end
-    @assert length(particles_per_level) == length(z_levels) "particles_per_level must match number of layers"
+    length(particles_per_level) == length(z_levels) ||
+        throw(ArgumentError("particles_per_level must match the number of layers"))
     
     total_particles = 0
     n_levels = length(z_levels)

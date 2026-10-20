@@ -4,11 +4,17 @@
 CurrentModule = QGYBJplus
 ```
 
-The vertical coordinate spans negative depth to zero and is cell centered.
-Runtime coefficients contain `N²` evaluated at the cell centers
-`model.grid.z`, together with `N²_face` evaluated at each cell's upper face
-`model.grid.z_faces[2:end]`. The Boussinesq elliptic coefficient is the
-face-based array `a_ell = f²/N²_face`.
+The vertical coordinate is cell centered and, by default, spans negative
+depth to zero. Runtime coefficients contain `N²` evaluated at the cell
+centers `model.grid.z`, together with `N²_face` evaluated at each cell's
+upper face `model.grid.z_faces[2:end]`. The Boussinesq elliptic coefficient
+is the face-based array `a_ell = f²/N²_face`.
+
+Every profile except [`AnalyticalProfile`](@ref) is defined by depth below
+the surface: `evaluate_N2(profile, z)` takes the depth as `-z`. A grid whose
+top is not at z = 0, such as `z=(0, 4000)`, samples them at `z - z_top`, so
+that depths are always measured below its lid. An `AnalyticalProfile` is a
+function of the grid's own z.
 
 ## Constant profile
 
@@ -55,11 +61,12 @@ model = QGYBJModel(grid=grid, stratification=profile)
 
 The file holds a vertical coordinate named `z` or `depth` and N² named `N2`,
 `N²`, or `n2`, as real arrays of equal length. `depth` is positive downward
-and `z` positive upward; a `z` without negative values is read as depth.
+and `z` positive upward, both from the surface; a `z` without negative values
+is read as depth.
 `group` selects a NetCDF group, or a JLD2 group, NamedTuple, or Dict; JLD2
 arrays may also be ranges. Data in any other form can be passed as
 `FileProfile{Float64}(name, depths, N²)`, with positive depths in increasing
-order.
+order; the constructor checks them.
 
 The data need not be sorted or lie on the model's levels. The model
 interpolates the profile linearly in depth to its own cell centers and upper
@@ -76,5 +83,8 @@ errors, warnings = validate_stratification(values)
 isempty(errors) || error(join(errors, "\n"))
 ```
 
-Model construction requires finite, positive values. The validation helper
-also reports unusually weak or strong stratification.
+Model construction requires finite, positive values. `validate_stratification`
+returns as errors an empty profile, non-finite values, and N² ≤ 0; it warns
+about N² above 100 or below 1e-6, which in s⁻² usually signal a units
+mistake (abyssal N² can be below 1e-6, so judge that warning against your
+data), and about jumps much larger than the profile's average change.

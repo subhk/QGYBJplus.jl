@@ -59,31 +59,49 @@ function _real_values(data, name, source)
 end
 
 """
-Depths, positive downward, from a vertical coordinate named `name` in a file:
-`depth` is positive downward and `z` positive upward, except that a `z`
-without negative values is read as depth, as in earlier versions.
+Depths, positive downward, from the vertical coordinate named `name` of a
+stratification file: `depth` is positive downward and `z` positive upward,
+both from the surface, except that a `z` without negative values is read as
+depth, as in earlier versions.
 """
 _file_depths(name, values) =
     name == "z" && any(<(zero(eltype(values))), values) ? -values : values
 
-"""Depth of the height `z`, without a negative zero at the surface."""
-_depth(z) = zero(z) - z
+"""
+Heights, in the grid's coordinates, of the vertical coordinate named `name`
+of a field file on a grid whose top (its lid) is at `top`: `depth` is
+measured down from the lid; `z` is a height, except that a `z` with no point
+below the lid, and some above it, is read as depth, as in earlier versions.
+"""
+function _field_heights(name, values, top)
+    as_depth = name == "depth" || (all(>=(top), values) && any(>(top), values))
+    return as_depth ? top .- values : values
+end
 
 """
-    _read_field(source)
+    _read_field(source, grid)
 
-The values of `source` and the coordinate vectors `(; x, y, z)` of its points,
-with `z` positive upward, or `nothing` in place of the coordinates when they
-are not all given.
+The values of `source` in z-x-y layout, checked to be finite, and the
+coordinate vectors `(; x, y, z)` of its points (z in the grid's
+coordinates), or `nothing` in place of the coordinates when they are not
+all given.
 """
-_read_field(source::FieldArray) = (Array(source.values), source.coordinates)
+function _read_field(source::FieldArray, grid::RectilinearGrid)
+    values = _checked_field_values(Array(source.values), "the FieldArray")
+    return _to_zxy(values, source.layout === :zxy ? (1, 2, 3) : (3, 1, 2)),
+           source.coordinates
+end
 
-function _read_field(source::FieldFile)
+function _read_field(source::FieldFile, grid::RectilinearGrid)
     isfile(source.path) ||
         throw(ArgumentError("field file does not exist: $(source.path)"))
     location = _source_description(source.path, source.group)
+    description = "$(repr(source.variable)) in $location"
     missing_variable() = throw(ArgumentError(
         "$location has no variable $(repr(source.variable))"))
+    top = Float64(last(grid.z_faces))
+    # Everything is read and checked while the file is open: an error must
+    # not hold on to a variable of a closed file.
     if _is_jld2(source.path)
         return jldopen(source.path, "r") do file
             container = _jld2_container(file, source.path, source.group)
@@ -91,30 +109,116 @@ function _read_field(source::FieldFile)
             source.variable in names || missing_variable()
             values = _entry(container, source.variable)
             values isa AbstractArray{<:Number, 3} || throw(ArgumentError(
-                "$(repr(source.variable)) in $location must be a " *
-                "three-dimensional numeric array; got $(typeof(values))"))
-            (Array(values), _stored_coordinates(in(names),
-                name -> _entry(container, name), location))
+                "$description must be a three-dimensional numeric array; " *
+                "got $(typeof(values))"))
+            values = _checked_field_values(Array(values), description)
+            (_to_zxy(values, source.layout === :zxy ? (1, 2, 3) : (3, 1, 2)),
+             _stored_coordinates(in(names), name -> _entry(container, name),
+                                 location, top))
         end
     else
         return NCDataset(source.path, "r") do dataset
             container = _netcdf_container(dataset, source.path, source.group)
             haskey(container, source.variable) || missing_variable()
-            (Array(container[source.variable][:, :, :]),
+            variable = container[source.variable]
+            dimensions = String[string(name) for name in NCDatasets.dimnames(variable)]
+            values = Array(variable)
+            values, dimensions = _drop_extra_dimensions(values, dimensions, description)
+            permutation = _zxy_permutation(dimensions, source.layout, description)
+            values = _checked_field_values(values, description)
+            (_to_zxy(values, permutation),
              _stored_coordinates(name -> haskey(container, name),
-                name -> container[name][:], location))
+                                 name -> container[name][:], location, top))
         end
     end
 end
 
-function _stored_coordinates(has, read, location)
+_to_zxy(values, permutation) =
+    permutation == (1, 2, 3) ? values : permutedims(values, permutation)
+
+"""
+`values` without the missing (fill) values a NetCDF variable reads as
+`missing`, in a numeric element type; an error when any is missing or not
+finite.
+"""
+function _checked_field_values(values::AbstractArray, description)
+    missing_count = count(ismissing, values)
+    missing_count == 0 || throw(ArgumentError(
+        "$description has $missing_count missing or fill values; fill them " *
+        "before setting the field"))
+    T = nonmissingtype(eltype(values))
+    T <: Number || throw(ArgumentError(
+        "$description must hold numbers; got $(eltype(values))"))
+    numbers = convert(Array{T}, values)
+    all(isfinite, numbers) || throw(ArgumentError(
+        "$description has non-finite values (NaN or Inf)"))
+    return numbers
+end
+
+"""Dimension names that identify each axis of a NetCDF field."""
+const _AXIS_DIMENSION_NAMES = (
+    x=("x", "xc", "x_c", "xh", "lon", "longitude", "nx"),
+    y=("y", "yc", "y_c", "yh", "lat", "latitude", "ny"),
+    z=("z", "zc", "z_c", "depth", "level", "lev", "nz"),
+)
+
+function _axis_of(dimension)
+    name = lowercase(dimension)
+    for axis in (:x, :y, :z)
+        name in _AXIS_DIMENSION_NAMES[axis] && return axis
+    end
+    return nothing
+end
+
+"""
+`values` without dimensions of length one beyond the three of a field, such
+as a single time; an error unless three dimensions remain.
+"""
+function _drop_extra_dimensions(values, dimensions, description)
+    while ndims(values) > 3
+        index = findfirst(d -> size(values, d) == 1 && _axis_of(dimensions[d]) === nothing,
+                          1:ndims(values))
+        index === nothing && break
+        values = dropdims(values; dims=index)
+        dimensions = deleteat!(copy(dimensions), index)
+    end
+    ndims(values) == 3 || throw(ArgumentError(
+        "$description has dimensions ($(join(dimensions, ", "))) of sizes " *
+        "$(size(values)); a field needs three, x, y, and z"))
+    return values, dimensions
+end
+
+"""
+The permutation that puts a NetCDF field in z-x-y order: from its dimension
+names when they name the axes (x, y, z or depth, and common alternatives;
+with two named, the third is the remaining axis), or else from `layout`.
+"""
+function _zxy_permutation(dimensions, layout, description)
+    axes = map(_axis_of, dimensions)
+    known = filter(!isnothing, collect(axes))
+    allunique(known) || throw(ArgumentError(
+        "the dimensions ($(join(dimensions, ", "))) of $description name an axis twice"))
+    if length(known) == 2
+        remaining = only(setdiff((:x, :y, :z), known))
+        axes = map(axis -> axis === nothing ? remaining : axis, axes)
+    elseif length(known) == 1
+        throw(ArgumentError(
+            "only one dimension of $description, of ($(join(dimensions, ", "))), " *
+            "names an axis; name all three (x, y, and z or depth), or none and " *
+            "give the layout"))
+    end
+    isempty(known) && return layout === :zxy ? (1, 2, 3) : (3, 1, 2)
+    return (findfirst(==(:z), axes), findfirst(==(:x), axes), findfirst(==(:y), axes))
+end
+
+function _stored_coordinates(has, read, location, top)
     vertical = findfirst(has, ("z", "depth"))
     has("x") && has("y") && vertical !== nothing || return nothing
     name = ("z", "depth")[vertical]
-    depths = _file_depths(name, _real_values(read(name), name, location))
+    heights = _field_heights(name, _real_values(read(name), name, location), top)
     return (x=_real_values(read("x"), "x", location),
             y=_real_values(read("y"), "y", location),
-            z=_depth.(depths))
+            z=heights)
 end
 
 """Whether `coordinates` are the model's own points, to within roundoff."""
@@ -235,10 +339,9 @@ function _vertical_weights(coordinate, grid::RectilinearGrid, source)
 
     bottom, top = grid.z_faces[1], grid.z_faces[end]
     if sorted[1] - bottom > grid.dz || top - sorted[end] > grid.dz
-        @warn "$(uppercasefirst(source)) covers depths $(_depth(sorted[end])) to " *
-              "$(_depth(sorted[1])), but the domain spans depths $(_depth(top)) " *
-              "to $(_depth(bottom)); outside that range it is held at the " *
-              "nearest data value."
+        @warn "$(uppercasefirst(source)) covers z = $(sorted[1]) to " *
+              "$(sorted[end]), but the domain spans z = $bottom to $top; " *
+              "outside that range it is held at the nearest data value."
     end
 
     weights = Vector{Tuple{Int, Int, Float64}}(undef, length(grid.z))

@@ -118,19 +118,46 @@ end
 """Constant N² used when an operator falls back from its profile (host value)."""
 _reference_N²(model::QGYBJModel) = first(model.runtime.coefficients.N²)
 
+"""
+    invert_q_to_psi!(model)
+
+Invert the model's potential vorticity `q` for its balanced streamfunction ψ,
+in place (`model.fields.psi`). With `WaveMeanFeedback` the wave PV qʷ is
+removed first, so ψ is the flow of `q - qʷ`. A `FixedFlow` model has no such
+inversion: its prescribed ψ is independent of q, and this is an error.
+"""
 function Elliptic.invert_q_to_psi!(model::QGYBJModel)
     context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
+    _fixed_flow(options) && throw(ArgumentError(
+        "a FixedFlow model's streamfunction is prescribed, not inverted from " *
+        "q; set it with set!(model; ψ=...)"))
     _invert_total_q_to_psi!(context.fields, context.grid, options,
         context.plans, context.a, context.mask;
         workspace=context.workspace, check_compatibility=true)
     return model
 end
 
+"""
+    invert_B_to_A!(model)
+
+Recover the wave amplitude A, and C = ∂A/∂z, from the envelope B, in place,
+by the relation of the model's formulation: B = L⁺A for `YBJPlus()` and
+`PassiveWave()`, and the solvability-constrained B = LA for `YBJ()`, whose
+recovery also uses the balanced flow's velocity.
+"""
 function Elliptic.invert_B_to_A!(model::QGYBJModel)
     context = _operator_context(model)
-    invert_B_to_A!(context.fields, context.grid, context.a;
-        workspace=context.workspace)
+    if model.physics.formulation isa YBJ
+        # The YBJ recovery diagnoses the velocity it needs, which clears w;
+        # keep the caller's w, since the flow itself does not change.
+        w = copy(model.fields.w)
+        _refresh_wave_diagnostics!(model)
+        copyto!(model.fields.w, w)
+    else
+        invert_B_to_A!(context.fields, context.grid, context.a;
+            workspace=context.workspace)
+    end
     return model
 end
 
@@ -153,6 +180,15 @@ function _wave_pv_forcing(model::QGYBJModel, context)
         N2_profile=context.N2, N2_face_profile=context.N2_face)
 end
 
+"""
+    compute_velocities!(model; compute_w=true)
+
+Diagnose the balanced (Lagrangian-mean) velocity from the model's
+streamfunction into `model.fields.u` and `v`, and, with `compute_w`, its
+vertical velocity `w` from the QG omega equation (with the wave-PV forcing
+when the model has `WaveMeanFeedback`); otherwise `w = 0`. Uses the model's
+own coefficients, stratification profile, and dealiasing.
+"""
 function Operators.compute_velocities!(model::QGYBJModel;
     compute_w::Bool=true, use_ybj_w::Bool=false)
     Operators._reject_use_ybj_w(use_ybj_w)
@@ -165,6 +201,13 @@ function Operators.compute_velocities!(model::QGYBJModel;
     return model
 end
 
+"""
+    compute_vertical_velocity!(model)
+
+Diagnose the balanced flow's vertical velocity `model.fields.w` from the QG
+omega equation, leaving `u` and `v` as they are (see
+[`compute_velocities!`](@ref)).
+"""
 function Operators.compute_vertical_velocity!(model::QGYBJModel)
     context = _operator_context(model)
     compute_vertical_velocity!(context.fields, context.grid, context.plans;
@@ -176,6 +219,15 @@ function Operators.compute_vertical_velocity!(model::QGYBJModel)
 end
 
 
+"""
+    compute_ybj_vertical_velocity!(model; t=nothing, skip_inversion=false)
+
+The vertical velocity of the waves at time `t` (at phase zero without `t`),
+from continuity with the wave velocity `e^{-ift} LA` (Asselin & Young 2019,
+eq. 2.10), into `model.fields.w`. A is first recovered from B by the model's
+formulation (see [`invert_B_to_A!`](@ref)), unless `skip_inversion` reuses
+the current A.
+"""
 function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     skip_inversion::Bool=false, t=nothing)
     context = _operator_context(model)
@@ -189,6 +241,14 @@ function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     return model
 end
 
+"""
+    compute_total_velocities!(model; t, compute_w=true, include_wave_velocity=true)
+
+The velocity at a fixed point into `model.fields.u`, `v`, and `w`: the
+balanced (Lagrangian-mean) velocity, less the waves' Stokes drift, plus the
+wave velocity `e^{-ift} LA` at time `t`. With `include_wave_velocity=false`
+it is the Eulerian-mean velocity, and `t` is not needed.
+"""
 function Operators.compute_total_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, use_ybj_w::Bool=false,
     include_wave_velocity::Bool=true)
@@ -203,6 +263,15 @@ function Operators.compute_total_velocities!(model::QGYBJModel; t=nothing,
     return model
 end
 
+"""
+    compute_wave_velocities!(model; t, compute_w=true, include_wave_velocity=true)
+
+Change the velocity already in `model.fields` by the waves: subtract their
+Stokes drift and, with `include_wave_velocity`, add the wave velocity at time
+`t`. Called directly after [`compute_velocities!`](@ref), it gives the same
+fields as [`compute_total_velocities!`](@ref); called after anything else, it
+adds to whatever is there.
+"""
 function Operators.compute_wave_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, include_wave_velocity::Bool=true)
     context = _operator_context(model)

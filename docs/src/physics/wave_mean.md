@@ -59,13 +59,18 @@ u + iv = (u^L + iv^L) - (u^S + iv^S) + e^{-if_0t}LA,
 ```
 
 and its vertical velocity combines the mean ``w^L``, ``-w^S``, and the wave
-vertical velocity. Three calls give these fields:
+vertical velocity. Three calls give these fields, each in `model.fields.u`,
+`v`, and `w`:
 
 ```julia
-compute_velocities!(model)                       # Lagrangian mean
-compute_total_velocities!(model; t)              # instantaneous, at time t
-compute_wave_velocities!(model; include_wave_velocity=false)  # mean → Eulerian mean
+compute_velocities!(model)                                     # Lagrangian mean
+compute_total_velocities!(model; t)                            # instantaneous, at time t
+compute_total_velocities!(model; include_wave_velocity=false)  # Eulerian mean
 ```
+
+`compute_wave_velocities!` instead modifies the velocity already in the
+fields, adding the wave velocity and subtracting the Stokes drift, so call it
+only directly after `compute_velocities!`.
 
 Particles default to phase-averaged trajectories, advected by the Lagrangian
 mean; `wave_motion=:instantaneous` follows the inertial oscillation instead
@@ -79,11 +84,14 @@ resources, so finalize each simulation independently.
 
 ```julia
 flow_energy = flow_kinetic_energy(model)
-B_energy, A_energy = wave_energy(model)
+wave = wave_energy(model)   # (; kinetic, potential, correction)
 ```
 
-In the inviscid continuous system, wave–mean exchange is internal to the
-combined energy budget. Dissipation, timestep, and spatial resolution control
+Both are domain means on the same scale. The energy the ideal coupled system
+conserves (Asselin & Young 2019, eq. 3.7) also holds the balanced flow's
+potential energy, which `EnergyDiagnosticsOutput` records with the rest as
+`coupled_energy`. In the inviscid continuous system, wave–mean exchange is
+internal to that budget. Dissipation, timestep, and spatial resolution control
 the corresponding discrete error.
 
 See Xie & Vanneste (2015) for the generalized-Lagrangian-mean derivation and

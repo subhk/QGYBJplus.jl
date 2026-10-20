@@ -705,10 +705,9 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
                     N2_face_profile=N2_face_profile,
                     compute_w=false, use_wave_feedback=true)
 
-    if _passive_wave(options)
-        fill!(S.A, zero(eltype(S.A)))
-        fill!(S.C, zero(eltype(S.C)))
-    elseif _ybj_plus(options)
+    if _ybj_plus(options)
+        # Passive waves (which `_ybj_plus` includes) do not need A, but it is
+        # kept as `set!`, output, and the energies define it: B = L⁺A.
         invert_B_to_A!(S, G, a; workspace)
     else
         with_scratch(workspace) do

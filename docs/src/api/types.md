@@ -67,6 +67,10 @@ NoDispersion
 
 ```@docs
 set!
+set_mean_flow!
+set_surface_waves!
+set_exponential_surface_waves!
+set_wave_packet!
 SurfaceWave
 RandomStreamfunction
 FieldArray
@@ -76,5 +80,21 @@ IterationInterval
 NetCDFOutput
 EnergyDiagnosticsOutput
 restore!
+```
+
+## Stratification
+
+```@docs
+StratificationProfile
+ConstantN
+SkewedGaussian
+TanhProfile
+ExponentialProfile
+PiecewiseProfile
+FileProfile
 AnalyticalProfile
+evaluate_N2
+compute_stratification_profile
+load_stratification_from_file
+validate_stratification
 ```

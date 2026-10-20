@@ -22,6 +22,7 @@ using ..UnifiedParticleAdvection: ParticleTracker, ParticleState, ParticleConfig
 const HAS_NCDS = true
 
 const _UNITS_CONVENTION = parentmodule(@__MODULE__)._UNITS_CONVENTION
+const _next_deadline = parentmodule(@__MODULE__)._next_deadline
 
 export write_particle_trajectories, read_particle_trajectories,
        write_particle_snapshot, create_particle_output_file,
@@ -67,32 +68,37 @@ Creates a dedicated `particles/` subdirectory for organized output.
 
 Schedule particle NetCDF output under `output_dir/particles`, every
 `save_interval_iter` iterations or every `save_interval_time` in the model's
-time units: give one of them; the iteration interval wins when both are
-positive. `output_mode` may be:
+time units (at its multiples from t = 0, like a `TimeInterval`): give one of
+them; the iteration interval wins when both are positive. `output_mode` may
+be:
 
 - `:trajectory`: one file, `<prefix>_trajectory.nc`, written when the run ends;
 - `:streaming`: one file, `<prefix>_stream.nc`, extended at every save, so a
   run that is killed keeps the trajectories saved so far;
-- `:snapshots`: one file per save, `<prefix>_<iteration>.nc`.
+- `:snapshots`: one file per save, `<prefix>_<iteration>.nc`, with the
+  iteration padded to 8 digits so that the names sort in time order.
 
 Each record holds the particle positions and their velocities at the
-recorded time. Existing files of the same mode and prefix raise an error
-unless `overwrite=true`, which removes them. Particle positions are not part
-of the model restart files, so a restored simulation starts new trajectories.
+recorded time; times are `Float64`, and positions are stored in precision
+`T`. Existing files of the same mode and prefix raise an error unless
+`overwrite=true`, which removes them. Particle positions are not part of the
+model restart files, so a restored simulation starts new trajectories: write
+them to another directory or prefix, or pass `overwrite=true`.
 
 Pass the manager as `particle_output` when constructing a
 [`QGYBJplus.Simulation`](@ref).
 The simulation writes initial, scheduled, and final particle states and closes
-the manager during finalization.
+the manager when its run ends, so each manager serves one run: give a new
+simulation a new manager.
 """
 mutable struct ParticleOutputManager{T<:AbstractFloat}
     # Directory configuration
     output_dir::String
     particle_dir::String
 
-    # Save interval configuration
+    # Save interval configuration (times are Float64, like the simulation clock)
     save_interval_iter::Int          # Save every N iterations (0 = use time)
-    save_interval_time::T            # Save every T time units (0 = use iterations)
+    save_interval_time::Float64      # Save every T time units (0 = use iterations)
 
     # Output mode
     output_mode::Symbol              # :snapshots, :trajectory, :streaming
@@ -103,11 +109,11 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
     current_file::String             # Current output file path
     save_count::Int                  # Number of saves performed
     last_save_iter::Int              # Last iteration saved
-    last_save_time::T                # Last time saved
-    next_save_time::T                # Next nominal time-based deadline
+    last_save_time::Float64          # Last time saved
+    next_save_time::Float64          # Next nominal time-based deadline
 
     # Accumulated data (for trajectory mode)
-    time_series::Vector{T}
+    time_series::Vector{Float64}
     x_series::Vector{Vector{T}}
     y_series::Vector{Vector{T}}
     z_series::Vector{Vector{T}}
@@ -137,7 +143,7 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
             throw(ArgumentError("give a positive save_interval_iter or save_interval_time"))
         output_dir = String(output_dir)
         file_prefix = String(file_prefix)
-        save_interval_time = T(save_interval_time)
+        save_interval_time = Float64(save_interval_time)
         output_mode in (:snapshots, :trajectory, :streaming) ||
             throw(ArgumentError(
                 "output_mode must be :snapshots, :trajectory, or :streaming"))
@@ -159,9 +165,9 @@ mutable struct ParticleOutputManager{T<:AbstractFloat}
             "",                      # current_file (set during initialization)
             0,                       # save_count
             0,                       # last_save_iter
-            T(0),                    # last_save_time
+            0.0,                     # last_save_time
             save_interval_time,      # next_save_time
-            T[],                     # time_series
+            Float64[],               # time_series
             Vector{T}[],             # x_series
             Vector{T}[],             # y_series
             Vector{T}[],             # z_series
@@ -227,11 +233,9 @@ function _is_snapshot_name(name::AbstractString, prefix::AbstractString)
     return !isempty(number) && all(isdigit, number)
 end
 
-"""
-Files this manager's mode and prefix would write that already exist: an error
-unless `overwrite=true`, which removes them.
-"""
-function _clear_existing_particle_files!(manager::ParticleOutputManager)
+"""The files this manager's mode and prefix would write that already exist."""
+function _existing_particle_files(manager::ParticleOutputManager)
+    isdir(manager.particle_dir) || return String[]
     prefix = manager.file_prefix
     names = if manager.output_mode == :trajectory
         ["$(prefix)_trajectory.nc"]
@@ -242,13 +246,25 @@ function _clear_existing_particle_files!(manager::ParticleOutputManager)
                 readdir(manager.particle_dir));
          "$(prefix)_summary.txt"]
     end
-    existing = filter(isfile, joinpath.(manager.particle_dir, names))
-    isempty(existing) && return manager
-    manager.overwrite || throw(ArgumentError(
+    return filter(isfile, joinpath.(manager.particle_dir, names))
+end
+
+"""Error, changing no file, when existing files are in the way of `manager`."""
+function _check_existing_particle_files(manager::ParticleOutputManager)
+    existing = _existing_particle_files(manager)
+    isempty(existing) || manager.overwrite || throw(ArgumentError(
         "particle output $(join(basename.(existing), ", ")) already exists in " *
         "$(manager.particle_dir); choose another directory or prefix, or pass " *
         "overwrite=true to replace it"))
-    foreach(rm, existing)
+    return existing
+end
+
+"""
+Files this manager's mode and prefix would write that already exist: an error
+unless `overwrite=true`, which removes them.
+"""
+function _clear_existing_particle_files!(manager::ParticleOutputManager)
+    foreach(rm, _check_existing_particle_files(manager))
     return manager
 end
 
@@ -271,9 +287,9 @@ function should_save_particles(manager::ParticleOutputManager{T},
 
     # Check time-based interval
     if manager.save_interval_time > 0
-        manager_time = T(time)
-        tolerance = 8eps(max(abs(manager_time), abs(manager.save_interval_time), one(T)))
-        return manager_time >= manager.next_save_time - tolerance
+        time = Float64(time)
+        tolerance = 8eps(max(abs(time), manager.save_interval_time, 1.0))
+        return time >= manager.next_save_time - tolerance
     end
 
     return false
@@ -293,7 +309,7 @@ Save current particle positions based on the output mode.
 function save_particle_positions!(manager::ParticleOutputManager{T},
                                   tracker::ParticleTracker{S},
                                   iteration::Int, time::Real) where {T,S}
-    manager_time = T(time)
+    manager_time = Float64(time)
     data = _particle_snapshot(tracker)
 
     if isempty(manager.particle_ids)
@@ -325,10 +341,8 @@ function save_particle_positions!(manager::ParticleOutputManager{T},
     manager.last_save_iter = iteration
     manager.last_save_time = manager_time
     if manager.save_interval_iter == 0 && manager.save_interval_time > 0
-        tolerance = 8eps(max(abs(manager_time), abs(manager.save_interval_time), one(T)))
-        while manager.next_save_time <= manager_time + tolerance
-            manager.next_save_time += manager.save_interval_time
-        end
+        manager.next_save_time =
+            _next_deadline(manager_time, manager.save_interval_time)
     end
 
     return manager
@@ -346,9 +360,9 @@ function save_particle_snapshot!(manager::ParticleOutputManager{T},
     data === nothing && (data = _particle_snapshot(tracker))
     ids, x, y, z, u, v = data.ids, data.x, data.y, data.z, data.u, data.v
 
-    # Create filename with iteration number
+    # Create filename with iteration number, padded so names sort in time order
     filename = joinpath(manager.particle_dir,
-                       "$(manager.file_prefix)_$(lpad(iteration, 6, '0')).nc")
+                       "$(manager.file_prefix)_$(lpad(iteration, 8, '0')).nc")
 
     HAS_NCDS || error("NCDatasets not available")
 
@@ -671,10 +685,12 @@ function write_snapshot_summary!(manager::ParticleOutputManager, tracker::Partic
         println(f, "")
         println(f, "Files:")
 
-        # List snapshot files
-        files = filter(f -> startswith(f, manager.file_prefix) && endswith(f, ".nc"),
+        # List snapshot files in iteration order
+        prefix = manager.file_prefix
+        files = filter(name -> _is_snapshot_name(name, prefix),
                        readdir(manager.particle_dir))
-        for file in sort(files)
+        iteration(name) = parse(Int, chop(name; head=length(prefix) + 1, tail=3))
+        for file in sort(files; by=iteration)
             println(f, "  $file")
         end
     end
@@ -1024,36 +1040,29 @@ end
     write_particle_trajectories_by_zlevel(base_filename, tracker;
                                           z_tolerance=1e-6, metadata=Dict())
 
-Write particle trajectories to separate files based on z-level.
+Write the tracker's in-memory trajectory history to one NetCDF file per
+initial z level, to analyse particles at different depths separately.
+Particles whose initial z differ by at most `z_tolerance` share a level. The
+files are named after the level, `<base_filename>_z<z>.nc` with the decimal
+point written `p` (for example `particles_z-250p0.nc`), and record it in
+their `z_level` attribute. Returns a `Dict` from each level to its file.
 
-This function groups particles by their initial z-level and saves each group
-to a separate NetCDF file. Useful for analyzing particles initialized at
-different depths independently.
-
-Parameters:
-- base_filename: Base name for output files (e.g., "particles" -> "particles_z1.23.nc")
-- tracker: ParticleTracker instance with trajectory history
-- z_tolerance: Tolerance for grouping particles by z-level (default: 1e-6)
-- metadata: Additional metadata to include in all files
-
-Returns: Dictionary mapping z-levels to filenames
+The tracker keeps a history only when its configuration sets `save_interval`
+(see [`ParticleConfig`](@ref)).
 
 Example:
 ```julia
-# Initialize particles at multiple depths
 config = particles_in_layers(
     [-250.0, -500.0, -750.0];
     x_min=first(model.grid.x_faces), x_max=last(model.grid.x_faces),
     y_min=first(model.grid.y_faces), y_max=last(model.grid.y_faces),
-    nx=4, ny=4,
+    nx=4, ny=4, save_interval=3600.0,
 )
-tracker = initialize_particles!(model, config)
+initialize_particles!(simulation, config)
+run!(simulation)
 
-# Run simulation...
-
-# Save each z-level to separate file
-files = write_particle_trajectories_by_zlevel("particles", tracker)
-# Creates one file for each initial depth.
+files = write_particle_trajectories_by_zlevel("particles", simulation.model.particles)
+# particles_z-250p0.nc, particles_z-500p0.nc, particles_z-750p0.nc
 ```
 """
 function write_particle_trajectories_by_zlevel(base_filename::String, tracker::ParticleTracker;
@@ -1069,6 +1078,7 @@ function write_particle_trajectories_by_zlevel(base_filename::String, tracker::P
 
     # Get initial z positions (first time in history)
     initial_z = particles.z_history[1]
+    T = eltype(initial_z)
 
     # Group particles by z-level
     z_groups = Dict{Float64, Vector{Int}}()
@@ -1100,8 +1110,9 @@ function write_particle_trajectories_by_zlevel(base_filename::String, tracker::P
     output_files = Dict{Float64, String}()
 
     for (z_level, particle_indices) in z_groups
-        # Create filename with z-level
-        z_str = replace(string(round(z_level, digits=3)), "." => "p")
+        # The shortest decimal form of the level in the particles' precision
+        # names it uniquely: distinct levels give distinct names.
+        z_str = replace(string(T(z_level)), "." => "p")
         filename = "$(base_filename)_z$(z_str).nc"
 
         println("Saving z=$(round(z_level, digits=3)) to $filename")

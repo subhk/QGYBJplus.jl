@@ -203,7 +203,7 @@ end
     @test_logs (:warn, r"horizontal mean of up to 0.5") psi_after(
         ζ=(x, y, z) -> ζ_exact(x, y, z) + 0.5)
     shallow = [-0.4, -0.2, 0.0]
-    @test_logs (:warn, r"covers depths 0.0 to 0.4, but the domain spans depths 0.0 to 1.0") psi_after(
+    @test_logs (:warn, r"covers z = -0.4 to 0.0, but the domain spans z = -1.0 to 0.0") psi_after(
         ζ=FieldArray(sampled(ζ_exact, grid.x, grid.y, shallow); layout=:xyz,
                      x=grid.x, y=grid.y, z=shallow))
     regional = collect(range(-π, π / 2; length=12))
