@@ -31,8 +31,14 @@ mutable struct SimulationRunOptions{T}
     diagnostics
 end
 
+"""
+The directory beneath which a diagnostics schedule writes its `diagnostic/`
+files when there is no state output.
+"""
+const _DEFAULT_OUTPUT_DIR = "output"
+
 default_run_options(::Type{T}) where T = SimulationRunOptions{T}(
-    "output", nothing, 10, true, true, true, false, false, false)
+    _DEFAULT_OUTPUT_DIR, nothing, 10, true, true, true, false, false, false)
 
 Base.copy(options::SimulationRunOptions{T}) where T = SimulationRunOptions{T}(
     (getfield(options, name) for name in fieldnames(SimulationRunOptions))...)
@@ -75,5 +81,7 @@ mutable struct Simulation{M, T, I, R}
     output_manager::Any
     diagnostics_manager::Any
     particle_output_manager::Any
+    # File identity captured by restore! for continuing state output.
+    restart_file::Union{Nothing, Base.StatStruct}
     state::SimulationState
 end

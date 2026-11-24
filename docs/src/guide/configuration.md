@@ -68,10 +68,19 @@ model = QGYBJModel(
 This leaves the balanced flow undamped and applies one fourth-order damping
 term to waves. Each `order` is the total derivative order.
 
-The default closure, `HorizontalHyperdiffusivity()`, keeps the coefficients
-of nondimensional setups, which damp nothing at dimensional wavenumbers; a
-nonlinear model warns when that is so. For a dimensional run, choose the
-coefficients from the grid spacing and time step:
+The default closure, [`GridScaleHyperdiffusivity`](@ref)`()`, damps the
+largest wavenumber the two-thirds dealiasing keeps by one e-fold every 10
+steps with an eighth-order term, for the flow and the waves alike. It is
+scaled to the grid and the time step, so it suits dimensional and
+nondimensional setups. Its `order` and `efold_steps` set how steep and how
+strong it is:
+
+```julia
+model = QGYBJModel(grid=grid, closure=GridScaleHyperdiffusivity(order=12, efold_steps=20))
+```
+
+Coefficients of your own are fixed in physical units instead, for instance
+the same rule for one time step, from the grid spacing and `Δt`:
 
 ```julia
 ν = compute_hyperdiff_coeff(dx=grid.dx, dy=grid.dy, dt=Δt, order=8)
@@ -81,9 +90,10 @@ closure = HorizontalHyperdiffusivity(
 )
 ```
 
-`compute_hyperdiff_coeff` damps the largest wavenumber the two-thirds
-dealiasing keeps by one e-fold every `efold_steps=10` steps; pass
-`inviscid=Inviscid()` to run without horizontal damping deliberately.
+Pass `inviscid=Inviscid()` to run without horizontal damping deliberately.
+Before version 2.1 the default was `HorizontalHyperdiffusivity()`, whose
+fixed coefficients damped nothing on dimensional grids and far too much on a
+2π domain; pass it explicitly to reproduce older runs.
 
 ## Execution choices
 

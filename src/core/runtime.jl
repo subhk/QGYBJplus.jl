@@ -1,4 +1,7 @@
-"""Precomputed vertical coefficients used by model operators."""
+"""
+Precomputed vertical coefficients used by model operators. Both N² profiles
+are bounded below by the floor of `a_ell_from_N2`.
+"""
 struct OperatorCoefficients{T}
     "Pointwise N² sampled at cell centers (`grid.z`)."
     N²::Vector{T}
@@ -29,6 +32,8 @@ mutable struct ModelRuntime{A, G, P, W, C, K, L}
     device_coefficients::K
     dealias_mask::L
     finalized::Bool
+    # What the model's fields hold of the last time step (see `_step!`).
+    step_state::Symbol
 end
 
 _coriolis_frequency(coriolis::FPlane) = coriolis.f
@@ -49,11 +54,14 @@ function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
     workspace = ModelWorkspace(architecture, (nz, nx, ny); T)
 
     # The host profiles (written to output files) are Float64; the kernels
-    # read copies in the grid's precision.
+    # read copies in the grid's precision. Every operator divides by the
+    # same bounded N² (see `_bounded_N2`), the centres taking the faces' floor.
     profile = _runtime_profile(physics.stratification)
     _warn_uncovered_depths(profile, grid)
-    N² = Float64.(compute_stratification_profile(profile, grid))
-    N²_face = Float64.(_compute_stratification_face_profile(profile, grid))
+    N²_face = _bounded_N2(
+        Float64.(_compute_stratification_face_profile(profile, grid)))
+    N² = max.(Float64.(compute_stratification_profile(profile, grid)),
+              _N2_floor(N²_face, Float64))
     a_ell = a_ell_from_N2(N²_face, physics.coriolis)
     coefficients = OperatorCoefficients(N², N²_face, a_ell)
     in_precision(profile) = eltype(profile) === T ? profile : T.(profile)
@@ -68,7 +76,7 @@ function build_runtime(grid::RectilinearGrid, physics::ModelPhysics,
         @info "QGYBJModel runtime initialized" architecture size=grid.size precision=T
     end
     return ModelRuntime(architecture, geometry, plans, workspace, coefficients,
-                        device_coefficients, mask, false)
+                        device_coefficients, mask, false, :new)
 end
 
 """Allocate model fields on the runtime's architecture, in the grid's precision."""
@@ -95,6 +103,50 @@ end
 
 architecture(runtime::ModelRuntime) = runtime.architecture
 architecture(model::QGYBJModel) = model.runtime.architecture
+
+#=
+What a step can reuse of the one before it. A step leaves B projected and ψ,
+u, v, A, and C diagnosed from it, and records that as `:diagnosed`. Whatever
+then writes to the model's fields says so here, so that the next step of a
+run never trusts a field that is no longer the step's: an operator that
+overwrites diagnostics leaves `:projected` (q and B are still the step's),
+and anything that sets q, B, or a prescribed ψ leaves `:new`.
+=#
+const _STEP_STATES = (:new, :projected, :diagnosed)
+_step_state_rank(state::Symbol) = findfirst(==(state), _STEP_STATES)
+
+"""Record that the model's diagnostic fields (ψ, u, v, w, A, C) were overwritten."""
+function _diagnostics_changed!(model::QGYBJModel)
+    runtime = model.runtime
+    runtime.step_state === :diagnosed && (runtime.step_state = :projected)
+    return model
+end
+
+"""Record that the model's state (q, B, or a prescribed ψ) was set."""
+_state_changed!(model::QGYBJModel) = (model.runtime.step_state = :new; model)
+
+"""
+Whether ψ, u, v, A, and C are as the model's last step left them, as far as
+the model's own operators and setters know. A caller's direct write to
+`model.fields` is not recorded, so this is asked only inside `run!`, between
+its steps, where nothing else can write to them; everything else rebuilds
+what it needs from q and B.
+"""
+_fields_as_stepped(model::QGYBJModel) = model.runtime.step_state === :diagnosed
+
+"""
+The streamfunction that a step diagnoses for `fields`: the balanced flow of
+their q (less the wave PV, with feedback), in a buffer borrowed from the
+model's workspace, or a fixed flow's prescribed ψ itself. `fields` is only
+read. Call it inside `with_scratch`.
+"""
+function _diagnosed_psi(fields::ModelFields, context, options::ETDModelOptions)
+    _fixed_flow(options) && return fields.psi
+    workspace = context.workspace
+    return _invert_total_q_to_psi!(scratch_like(workspace, fields.psi), fields,
+        context.grid, options, context.plans, context.a, context.mask;
+        workspace, project_nonlinear_state=true)
+end
 
 # Model-owned physical operator entry points use global geometry from the model
 # and kernel-facing resources from its runtime.
@@ -132,6 +184,7 @@ function Elliptic.invert_q_to_psi!(model::QGYBJModel)
     _fixed_flow(options) && throw(ArgumentError(
         "a FixedFlow model's streamfunction is prescribed, not inverted from " *
         "q; set it with set!(model; ψ=...)"))
+    _diagnostics_changed!(model)
     _invert_total_q_to_psi!(context.fields, context.grid, options,
         context.plans, context.a, context.mask;
         workspace=context.workspace, check_compatibility=true)
@@ -144,20 +197,12 @@ end
 Recover the wave amplitude A, and C = ∂A/∂z, from the envelope B, in place,
 by the relation of the model's formulation: B = L⁺A for `YBJPlus()` and
 `PassiveWave()`, and the solvability-constrained B = LA for `YBJ()`, whose
-recovery also uses the balanced flow's velocity.
+recovery also uses the velocity of the balanced flow, which is taken from q
+as a step diagnoses it (from a `FixedFlow` model's prescribed ψ), not from
+whatever `model.fields.psi` holds. Only A and C change.
 """
 function Elliptic.invert_B_to_A!(model::QGYBJModel)
-    context = _operator_context(model)
-    if model.physics.formulation isa YBJ
-        # The YBJ recovery diagnoses the velocity it needs, which clears w;
-        # keep the caller's w, since the flow itself does not change.
-        w = copy(model.fields.w)
-        _refresh_wave_diagnostics!(model)
-        copyto!(model.fields.w, w)
-    else
-        invert_B_to_A!(context.fields, context.grid, context.a;
-            workspace=context.workspace)
-    end
+    _refresh_wave_diagnostics!(model)
     return model
 end
 
@@ -170,7 +215,9 @@ end
 
 """
 Wave-PV forcing of the mean-flow vertical velocity for a model with wave
-feedback, or `nothing` (see `compute_vertical_velocity!`).
+feedback, or `nothing` (see `compute_vertical_velocity!`). It reads only ψ
+and B, so it is the same whatever u, v, and A hold, and leaves them as they
+are.
 """
 function _wave_pv_forcing(model::QGYBJModel, context)
     options = ETDModelOptions(model.physics, model.numerics)
@@ -193,6 +240,7 @@ function Operators.compute_velocities!(model::QGYBJModel;
     compute_w::Bool=true, use_ybj_w::Bool=false)
     Operators._reject_use_ybj_w(use_ybj_w)
     context = _operator_context(model)
+    _diagnostics_changed!(model)
     compute_velocities!(context.fields, context.grid;
         plans=context.plans, f=context.f, N2=_reference_N²(model),
         N2_profile=context.N2, N2_face_profile=context.N2_face,
@@ -206,9 +254,21 @@ end
 
 Diagnose the balanced flow's vertical velocity `model.fields.w` from the QG
 omega equation, leaving `u` and `v` as they are (see
-[`compute_velocities!`](@ref)).
+[`compute_velocities!`](@ref)). The wave-PV forcing of a model with
+`WaveMeanFeedback` uses the velocity of ψ, whatever `u` and `v` hold.
 """
 function Operators.compute_vertical_velocity!(model::QGYBJModel)
+    _diagnostics_changed!(model)
+    return _compute_vertical_velocity!(model)
+end
+
+"""
+`compute_vertical_velocity!(model)` without the record that a diagnostic
+field changed: w is the one field that no step, energy, or particle velocity
+reads, so the output of a run fills it between two steps and the next step
+still reuses the others.
+"""
+function _compute_vertical_velocity!(model::QGYBJModel)
     context = _operator_context(model)
     compute_vertical_velocity!(context.fields, context.grid, context.plans;
         f=context.f, N2=_reference_N²(model), N2_profile=context.N2,
@@ -226,11 +286,12 @@ The vertical velocity of the waves at time `t` (at phase zero without `t`),
 from continuity with the wave velocity `e^{-ift} LA` (Asselin & Young 2019,
 eq. 2.10), into `model.fields.w`. A is first recovered from B by the model's
 formulation (see [`invert_B_to_A!`](@ref)), unless `skip_inversion` reuses
-the current A.
+the current A. The flow fields ψ, u, and v do not change.
 """
 function Operators.compute_ybj_vertical_velocity!(model::QGYBJModel;
     skip_inversion::Bool=false, t=nothing)
     context = _operator_context(model)
+    _diagnostics_changed!(model)
     # A is recovered by the formulation's own relation: B = L⁺A for YBJ⁺ and
     # passive waves, the solvability-constrained B = LA for YBJ.
     skip_inversion || _refresh_wave_diagnostics!(model)
@@ -253,6 +314,7 @@ function Operators.compute_total_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, use_ybj_w::Bool=false,
     include_wave_velocity::Bool=true)
     context = _operator_context(model)
+    _diagnostics_changed!(model)
     compute_total_velocities!(context.fields, context.grid; t,
         plans=context.plans, f=context.f, N2=_reference_N²(model),
         N2_profile=context.N2, N2_face_profile=context.N2_face,
@@ -275,6 +337,7 @@ adds to whatever is there.
 function Operators.compute_wave_velocities!(model::QGYBJModel; t=nothing,
     compute_w::Bool=true, include_wave_velocity::Bool=true)
     context = _operator_context(model)
+    _diagnostics_changed!(model)
     compute_wave_velocities!(context.fields, context.grid; t,
         plans=context.plans, f=context.f, N2=_reference_N²(model),
         N2_profile=context.N2, N2_face_profile=context.N2_face,
@@ -284,12 +347,32 @@ function Operators.compute_wave_velocities!(model::QGYBJModel; t=nothing,
 end
 
 """Advance `model` by one model-owned exponential Runge-Kutta step."""
-function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
+step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2) =
+    _step!(model, timestepper, :new)
+
+"""
+One step of `model`, which starts from the state that `start` describes (see
+`_advance_etdrk2!`), or from less when the model's operators or setters have
+written to its fields since its last step (see `_diagnostics_changed!`):
+`run!` passes `:diagnosed` for a step that follows another of its steps, and
+the step then reuses whatever the model still holds of that one. A direct
+write to `model.fields` is not recorded, so only a caller that rules those
+out, as `run!` does between its own steps, may pass more than `:new`.
+"""
+function _step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2,
+                start::Symbol)
     Δt = timestepper.Δt
     isfinite(Δt) && Δt > zero(Δt) ||
         throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
 
+    start in _STEP_STATES ||
+        throw(ArgumentError("start must be :new, :projected, or :diagnosed"))
+    runtime = model.runtime
+    _step_state_rank(runtime.step_state) < _step_state_rank(start) &&
+        (start = runtime.step_state)
     context = _operator_context(model)
+    # A step that fails leaves fields no later step may reuse.
+    runtime.step_state = :new
     timestep_workspace = timestepper.workspace
     owner_changed = timestepper.workspace_owner !== nothing &&
                     timestepper.workspace_owner !== model.runtime
@@ -316,6 +399,7 @@ function step!(model::QGYBJModel, timestepper::ExponentialRungeKutta2)
         workspace=context.workspace,
         N2_profile=context.N2,
         N2_face_profile=context.N2_face,
-        timestep_workspace=timestep_workspace)
+        timestep_workspace=timestep_workspace, start)
+    runtime.step_state = :diagnosed
     return model
 end

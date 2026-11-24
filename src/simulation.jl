@@ -9,9 +9,9 @@ _runtime(model::QGYBJModel) = model.runtime
 
 architecture(simulation::Simulation) = architecture(simulation.model)
 _time_step(simulation::Simulation) = simulation.timestepper.Δt
-_advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time) = nothing
+_advect_model_particles!(::Nothing, model::QGYBJModel, Δt, time; kwargs...) = nothing
 _record_particle_velocity!(::Nothing, model::QGYBJModel, time) = nothing
-_align_particle_time!(::Nothing, time) = nothing
+_align_particle_time!(::Nothing, time, Δt) = nothing
 
 _maybe_integer(value) = isinteger(value) ? Int(value) : value
 
@@ -51,10 +51,8 @@ exact multiple of the step must not take one step more.
 function _before_stop_time(simulation::Simulation)
     stop_time = simulation.stop_time
     stop_time === nothing && return true
-    time = simulation.clock.time
-    tolerance = max(8eps(max(abs(time), abs(stop_time), one(time))),
-                    1e-6 * _time_step(simulation))
-    return time < stop_time - tolerance
+    return !_deadline_reached(simulation.clock.time, stop_time,
+                              _time_step(simulation))
 end
 
 _nonfinite(value) = !isfinite(value)
@@ -194,7 +192,7 @@ function _configure_time_stepping!(simulation::Simulation;
     Δt=nothing, stop_time=nothing, stop_iteration=nothing)
 
     if Δt !== nothing
-        value = typeof(_time_step(simulation))(Δt)
+        value = _time_value(Δt)
         isfinite(value) && value > zero(value) ||
             throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
         simulation.timestepper.Δt = value
@@ -211,7 +209,7 @@ function _configure_time_stepping!(simulation::Simulation;
         simulation.stop_iteration = Int(stop_iteration)
         simulation.stop_time = nothing
     elseif stop_time !== nothing
-        value = typeof(_time_step(simulation))(stop_time)
+        value = _time_value(stop_time)
         isfinite(value) && value > zero(value) ||
             throw(ArgumentError(
                 "stop_time must be finite and positive (got $stop_time)"))
@@ -242,6 +240,9 @@ function _configure_output!(simulation::Simulation; output=nothing,
 
     if output === false
         options.output = false
+        # A diagnostics schedule then writes beneath the default directory,
+        # not beneath the path of an earlier output.
+        options.output_dir = _DEFAULT_OUTPUT_DIR
     elseif output !== nothing
         output isa NetCDFOutput ||
             throw(ArgumentError("output must be a NetCDFOutput or false"))
@@ -288,7 +289,7 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
     model.runtime.finalized && error("cannot create a simulation from a finalized model")
     # Time is kept in Float64 whatever the type of Δt: a Float32 clock rounds
     # every step, and after months of simulated time it no longer resolves Δt.
-    value = Float64(Δt)
+    value = _time_value(Δt)
     isfinite(value) && value > 0 ||
         throw(ArgumentError("Δt must be finite and positive (got $Δt)"))
     _check_particle_output_type(particle_output)
@@ -303,6 +304,7 @@ function Simulation(model::QGYBJModel; Δt::Real=1.0, stop_time=nothing,
         nothing,
         nothing,
         particle_output,
+        nothing,
         Ready,
     )
     _configure_time_stepping!(simulation; stop_time, stop_iteration)
@@ -314,11 +316,12 @@ end
     set_mean_flow!(owner; method=:random, amplitude, spectral_slope=-3, seed=0, profile=nothing, pv_method=:qg)
 
 Set the balanced streamfunction ψ of a model or its simulation, from a
-function `psi_func(x, y, z)` (`method=:function`, the default) or as a random
-flow (`method=:random`, see [`RandomStreamfunction`](@ref): `amplitude` is
-the rms horizontal velocity). `pv_method` selects how the potential vorticity
-follows from ψ: `:qg` (with vortex stretching), `:barotropic` (relative
-vorticity only), or `:none` (q unchanged, for a `FixedFlow` model).
+function `psi_func(x, y, z)` (`method=:function`, the default), whose values
+must be finite, or as a random flow (`method=:random`, see
+[`RandomStreamfunction`](@ref): `amplitude` is the rms horizontal velocity).
+`pv_method` selects how the potential vorticity follows from ψ: `:qg` (with
+vortex stretching), `:barotropic` (relative vorticity only), or `:none` (q
+unchanged, for a `FixedFlow` model).
 """
 function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
     psi_func=nothing,
@@ -332,28 +335,21 @@ function set_mean_flow!(owner::Union{QGYBJModel, Simulation};
 
     _assert_mutable(owner)
     model = _model(owner)
+    _state_changed!(model)
     _check_pv_method(model, pv_method; sets_flow=true)
-    runtime = model.runtime
-    grid = runtime.geometry
+    grid = model.runtime.geometry
     geometry = model.grid
     fields = model.fields
-    plans = runtime.plans
 
     if method in (:function, :analytical)
         psi_func === nothing &&
             throw(ArgumentError("psi_func must be provided when method=:function"))
         verbose && println("Setting mean flow from analytical ψ(x, y, z)")
 
-        # User functions are evaluated on the host, then copied to the
-        # model's architecture and transformed there.
-        nx, ny, nz = geometry.size
-        T = eltype(fields.psi)
-        psi_host = Array{T}(undef, nz, nx, ny)
-        for j in 1:ny, i in 1:nx, k in 1:nz
-            psi_host[k, i, j] = T(psi_func(geometry.x[i], geometry.y[j], geometry.z[k]))
-        end
-        copyto!(fields.psi, psi_host)
-        fft_forward!(fields.psi, fields.psi, plans)
+        # User functions are evaluated on the host and checked like an array
+        # before ψ changes, then copied to the model's architecture and
+        # transformed there.
+        _assign_values!(fields.psi, model, _function_values(model, psi_func))
     elseif method === :random
         verbose &&
             println("Setting random mean flow: rms velocity=$amplitude, slope=$spectral_slope")
@@ -395,6 +391,7 @@ function set_surface_waves!(owner::Union{QGYBJModel, Simulation};
 
     _assert_mutable(owner)
     model = _model(owner)
+    _state_changed!(model)
     _check_pv_method(model, pv_method; sets_flow=false)
     runtime = model.runtime
     geometry = model.grid
@@ -504,6 +501,31 @@ function _initial_values(model::QGYBJModel,
     return (values=_field_values_zxy(model, initializer), space=initializer.space)
 end
 
+"""
+The values of a function `source(x, y, z)` at the model's grid points, read
+and checked as for an array of them.
+"""
+_initial_values(model::QGYBJModel, source::Function) =
+    _function_values(model, source)
+
+"""
+The values of any callable `source(x, y, z)`, a function or an object such as
+an interpolant, at the model's grid points (see `_initial_values`).
+"""
+function _function_values(model::QGYBJModel, source)
+    applicable(source, model.grid.x[1], model.grid.y[1], model.grid.z[1]) ||
+        throw(ArgumentError(
+            "the initial condition must be callable as f(x, y, z); got " *
+            "$(typeof(source))"))
+    grid = model.grid
+    nx, ny, nz = grid.size
+    values = [source(grid.x[i], grid.y[j], grid.z[k])
+              for k in 1:nz, i in 1:nx, j in 1:ny]
+    all(isfinite, values) || throw(ArgumentError(
+        "the initial-condition function returned non-finite values (NaN or Inf)"))
+    return _initial_values(model, FieldArray(values))
+end
+
 """Store initial `values` (from `_initial_values`) as the spectral `destination`."""
 function _assign_values!(destination, model::QGYBJModel, initial)
     copy_from_host!(destination, initial.values)
@@ -547,77 +569,49 @@ function _refresh_flow_diagnostics!(model::QGYBJModel, pv_method::Symbol)
     return model
 end
 
-function _refresh_normal_ybj_diagnostics!(fields::ModelFields,
-    model::QGYBJModel; rebuild_total_q::Bool=false,
-    pv_method::Symbol=:qg, project::Bool=false)
-
-    context = _operator_context(model)
-    options = ETDModelOptions(model.physics, model.numerics)
-    mask = context.mask
-    recovery_mask = _linear(options) ? nothing : mask
-
-    project && _project_initial_envelope!(fields, context.grid, options, mask,
-                                          context.workspace)
-
-    rebuild_total_q && _wave_feedback_enabled(options) &&
-        _rebuild_total_q_from_psi!(fields, model, pv_method)
-
-    _diagnose_flow!(fields, context.grid, options, context.plans,
-        context.a, mask;
-        workspace=context.workspace,
-        N2_profile=context.N2,
-        compute_w=false,
-        use_wave_feedback=true)
-
-    workspace = context.workspace
-    with_scratch(workspace) do
-        nBk = scratch_like(workspace, fields.B)
-        rBk = scratch_like(workspace, fields.B)
-        if _linear(options)
-            fill!(nBk, zero(eltype(nBk)))
-        else
-            convol_waqg_B!(nBk, fields.u, fields.v, fields.B,
-                context.grid, context.plans; Lmask=mask, workspace)
-        end
-        refraction_waqg_B!(rBk, fields.B, fields.psi,
-            context.grid, context.plans; Lmask=mask, workspace)
-        sigma = compute_sigma(context.f, context.grid, nBk, rBk;
-            Lmask=mask, workspace)
-        compute_A!(fields.A, fields.C, fields.B, sigma, context.grid;
-            f=context.f, Lmask=recovery_mask, workspace,
-            N2_profile=context.N2_face)
-    end
-    # As after a step: the velocity of a nonlinear fixed flow, diagnosed above
-    # from its projected ψ, is that of the full prescribed ψ.
-    _fixed_flow(options) && !_linear(options) &&
-        compute_velocities!(fields, context.grid; plans=context.plans,
-            f=context.f, compute_w=false, N2_profile=context.N2,
-            N2_face_profile=context.N2_face, workspace, dealias_mask=mask)
-    return fields
-end
-
 """
-Rebuild the wave amplitude `A` (and `C = A_z`) from `B`. Only a new initial
-condition (`project=true`) is restricted to the envelopes a wave amplitude can
-produce; a refresh for diagnostics, output, or a restart leaves the prognostic
-`B` untouched, so that it never changes the solution.
+Rebuild the wave amplitude `A` (and `C = A_z`) from `B` by the formulation's
+relation; ψ, u, v, and w are only read. The `YBJ()` recovery uses the
+balanced flow, which it takes from q as a step diagnoses it (see
+`_diagnosed_psi`) rather than from `fields.psi`: A then does not depend on
+whether ψ has been inverted since q last changed. Only
+a new initial condition (`project=true`) is restricted to the envelopes a
+wave amplitude can produce; a refresh for diagnostics, output, or a restart
+leaves the prognostic `B` untouched, so that it never changes the solution.
+With `rebuild_total_q`, a model with wave feedback rebuilds q for the new
+waves, or, when `pv_method=:none` keeps q, inverts the flow from it again.
 """
 function _refresh_wave_diagnostics!(fields::ModelFields,
     model::QGYBJModel; rebuild_total_q::Bool=false,
     pv_method::Symbol=:qg, project::Bool=false)
 
-    if model.physics.formulation isa YBJ
-        _refresh_normal_ybj_diagnostics!(fields, model;
-            rebuild_total_q, pv_method, project)
-    else
-        context = _operator_context(model)
-        options = ETDModelOptions(model.physics, model.numerics)
-        project && _project_initial_envelope!(fields, context.grid, options,
-                                              context.mask, context.workspace)
-        rebuild_total_q && _wave_feedback_enabled(options) &&
-            _rebuild_total_q_from_psi!(fields, model, pv_method)
-        invert_B_to_A!(fields, context.grid, context.a;
-            workspace=context.workspace)
+    context = _operator_context(model)
+    options = ETDModelOptions(model.physics, model.numerics)
+    fields === model.fields &&
+        (project || rebuild_total_q ? _state_changed!(model) :
+                                      _diagnostics_changed!(model))
+    project && _project_initial_envelope!(fields, context.grid, options,
+                                          context.mask, context.workspace)
+    if rebuild_total_q && _wave_feedback_enabled(options)
+        _rebuild_total_q_from_psi!(fields, model, pv_method)
+        # A kept q holds the new wave PV, so the balanced flow changes.
+        if pv_method === :none
+            _invert_total_q_to_psi!(fields, context.grid, options,
+                context.plans, context.a, context.mask;
+                workspace=context.workspace)
+            compute_velocities!(fields, context.grid; plans=context.plans,
+                f=context.f, compute_w=false, N2_profile=context.N2,
+                N2_face_profile=context.N2_face,
+                workspace=context.workspace, dealias_mask=context.mask)
+        end
+    end
+    with_scratch(context.workspace) do
+        # B = L⁺A involves no flow, so only YBJ needs the streamfunction.
+        psi = _ybj_plus(options) ? fields.psi :
+              _diagnosed_psi(fields, context, options)
+        _recover_wave_amplitude!((; psi, B=fields.B, A=fields.A, C=fields.C),
+            context.grid, options, context.plans, context.a, context.mask,
+            context.workspace, context.N2, context.N2_face; from_psi=true)
     end
     return fields
 end
@@ -625,19 +619,24 @@ end
 """
 Restrict `fields.B` to what a wave amplitude can produce (see
 `_project_wave_envelope!`), warning if nothing is left: a depth-uniform
-envelope carries no wave velocity in either YBJ formulation.
+envelope carries no wave velocity in either YBJ formulation. Subtract the
+mean relative to a level of the column so that a resolved depth variation
+survives even when the part being removed is much larger. Returns whether
+the envelope was removed.
 """
 function _project_initial_envelope!(fields::ModelFields, grid, options, mask,
                                     workspace)
     before = maximum(abs, fields.B)
-    _project_wave_envelope!(fields.B, grid, options, mask, workspace)
-    if before > 0 && maximum(abs, fields.B) <= 8eps(before)
+    _project_wave_envelope!(fields.B, grid, options, mask, workspace;
+                            reference_centered=true)
+    removed = before > 0 && iszero(maximum(abs, fields.B))
+    if removed
         @warn "The wave envelope is uniform in depth and was removed: B = L⁺A " *
               "(or LA) has zero depth mean in the horizontally uniform column " *
               "(every column for YBJ()), so a depth-uniform B carries no wave " *
               "velocity. Give the waves vertical structure." maxlog=1
     end
-    return fields
+    return removed
 end
 
 function _refresh_wave_diagnostics!(model::QGYBJModel; kwargs...)
@@ -661,8 +660,9 @@ each level. `pv_method` selects how the potential vorticity follows from ψ:
 [`ParticleConfig`](@ref) or [`ParticleConfig3D`](@ref) (see
 [`initialize_particles!`](@ref)).
 
-Every argument is checked, and every array and file read, before the model
-changes, so a rejected call leaves it as it was.
+Every argument is checked, every function evaluated, and every array and file
+read before the model changes, and their values must be finite, so a
+rejected call leaves the model as it was.
 """
 function set!(owner::Union{QGYBJModel, Simulation};
     ψ=nothing, psi=nothing, mean_flow=nothing,
@@ -674,6 +674,7 @@ function set!(owner::Union{QGYBJModel, Simulation};
 
     _assert_mutable(owner)
     model = _model(owner)
+    _state_changed!(model)
     flow = _first_notnothing(mean_flow, ψ, psi)
     vorticity = _first_notnothing(ζ, zeta)
     wave = _first_notnothing(waves, B)
@@ -728,7 +729,8 @@ function set!(owner::Union{QGYBJModel, Simulation};
     end
     if tracker !== nothing
         model.particles = tracker
-        owner isa Simulation && _align_particle_time!(tracker, owner.clock.time)
+        owner isa Simulation &&
+            _align_particle_time!(tracker, owner.clock.time, _time_step(owner))
     end
     return owner
 end
@@ -738,15 +740,7 @@ The relative vorticity `source` on the model's grid, as `_initial_values`
 gives it, warning when its horizontal mean will be dropped.
 """
 function _vorticity_values(model::QGYBJModel, source)
-    grid = model.grid
-    initializer = if source isa Function
-        nx, ny, nz = grid.size
-        FieldArray([source(grid.x[i], grid.y[j], grid.z[k])
-                    for k in 1:nz, i in 1:nx, j in 1:ny])
-    else
-        _field_initializer(source)
-    end
-    initial = _initial_values(model, initializer)
+    initial = _initial_values(model, source)
     _warn_horizontal_mean(initial.values, initial.space)
     return initial
 end
@@ -791,6 +785,13 @@ function _warn_horizontal_mean(values, space::Symbol)
 end
 
 """
+Least share of a wave packet's amplitude that the restriction to admissible
+envelopes must leave for `set_wave_packet!` to scale the packet back to the
+amplitude asked for.
+"""
+const _PACKET_RESCALE_LIMIT = 0.1
+
+"""
     set_wave_packet!(owner; amplitude, kx, ky, sigma_k, center=nothing, z_center=nothing, z_width=nothing, pv_method=:qg)
 
 Set the wave envelope B to a Gaussian wave packet: a plane wave of
@@ -800,8 +801,13 @@ of the domain by default. The spectral width `sigma_k`, in mode indices,
 sets the packet's width, about `Lx / (2π sigma_k)`. Vertically the envelope
 is Gaussian, centred `z_center` below the top of the domain with width
 `z_width` (half and a quarter of the depth by default). `amplitude` is the
-packet's largest |B|, before the envelope is restricted to the modes a wave
-amplitude can produce. The packet involves no randomness.
+largest |B| of the envelope set, which is first restricted to the modes a
+wave amplitude can produce and then scaled back to `amplitude`. A packet
+that is nearly uniform in depth loses most of itself to that restriction
+(all of it for `YBJ()`, whose envelope has no depth mean in any column), and
+scaling up what is left would set its vertical residual instead; such a
+packet, with less than a tenth of its amplitude left, is not scaled, and a
+warning gives the amplitude that was set. The packet involves no randomness.
 """
 function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
     amplitude::Real, kx::Int, ky::Int, sigma_k::Real,
@@ -812,6 +818,7 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
 
     _assert_mutable(owner)
     model = _model(owner)
+    _state_changed!(model)
     _check_pv_method(model, pv_method; sets_flow=false)
     runtime = model.runtime
     grid = runtime.geometry
@@ -820,9 +827,37 @@ function set_wave_packet!(owner::Union{QGYBJModel, Simulation};
 
     packet = create_wave_packet(grid, kx, ky, sigma_k, amplitude;
                                 center, z_center=z_c, z_width=z_w)
-    copy_from_host!(model.fields.B, packet)
-    _refresh_wave_diagnostics!(model;
-        rebuild_total_q=true, pv_method, project=true)
+    B = model.fields.B
+    copy_from_host!(B, packet)
+    # The restriction lowers the packet's peak, so B is scaled back to
+    # `amplitude` before the diagnostics are rebuilt from it. That holds for
+    # a packet the restriction mostly keeps. What it leaves of a packet that
+    # is nearly uniform in depth is the packet's small vertical residual (or
+    # round-off), which scaling up would make the envelope; it stays as it
+    # is, and an envelope that is removed (see `_project_initial_envelope!`)
+    # stays removed.
+    context = _operator_context(model)
+    options = ETDModelOptions(model.physics, model.numerics)
+    physical_peak() = with_scratch(runtime.workspace) do
+        physical = scratch_like(runtime.workspace, B)
+        maximum(abs, fft_backward!(physical, B, runtime))
+    end
+    before = physical_peak()
+    removed = _project_initial_envelope!(model.fields, context.grid, options,
+                                         context.mask, context.workspace)
+    peak = removed ? zero(before) : physical_peak()
+    if peak >= _PACKET_RESCALE_LIMIT * before && peak > 0
+        # B already has the sign of `amplitude`; only its size is restored.
+        scale = real(eltype(B))(abs(amplitude) / peak)
+        kernel_map!(value -> scale * value, B, B)
+    elseif !removed && before > 0
+        @warn "The wave packet is nearly uniform in depth: restricting it to " *
+              "the envelopes a wave amplitude can produce left " *
+              "$(round(100 * peak / before; sigdigits=2))% of its amplitude, " *
+              "max |B| = $peak, which was not scaled back to $(abs(amplitude)). " *
+              "Give the packet more vertical structure (a smaller z_width)."
+    end
+    _refresh_wave_diagnostics!(model; rebuild_total_q=true, pv_method)
     return owner
 end
 
@@ -860,6 +895,11 @@ function _apply_output_overrides!(simulation::Simulation;
     save_waves !== nothing &&
         (fields = _replace_output_field(
             fields, (:waves, :wave, :B, :A), :waves, save_waves))
+    # Velocities are written for the flag or for a :velocities field, so
+    # `save_velocities` sets both.
+    save_velocities !== nothing &&
+        (fields = _replace_output_field(
+            fields, (:velocities,), :velocities, save_velocities))
     velocities = save_velocities === nothing ?
                  current.velocities : save_velocities
     specification = NetCDFOutput(; path, schedule, fields, velocities,
@@ -869,21 +909,34 @@ end
 
 """
 Set up the output, energy diagnostics, and particle output of a run. Every
-check, such as for output that already exists, runs before any existing file
-is removed, so a run that cannot start leaves the files as they were and the
-simulation ready to run again with other settings. If setting up still fails,
-the managers this call created are dropped and the error is rethrown.
+check, such as for output that already exists or a directory that cannot be
+created or written, runs before any existing file is removed, so a run that
+cannot start leaves the files as they were and the simulation ready to run
+again with other settings. If setting up still fails, the managers this call
+created are dropped and the error is rethrown.
 """
 function _prepare_run_output!(simulation::Simulation)
-    _check_simulation_output(simulation)
-    _check_simulation_diagnostics(simulation)
+    state_plan = _check_simulation_output(simulation)
+    # Schedule-only diagnostics live under the state output path and share
+    # its history. Replacing an unrelated state series starts them over too.
+    replacing_history = state_plan !== nothing && state_plan.checkpoint === nothing &&
+                        !isempty(state_plan.stale)
+    resume_diagnostics = !(replacing_history &&
+                           simulation.run_options.diagnostics isa AbstractSchedule)
+    _check_simulation_diagnostics(simulation; resume=resume_diagnostics)
     _check_particle_output(simulation)
+    _create_output_directories(simulation)
     output_manager = simulation.output_manager
     diagnostics_manager = simulation.diagnostics_manager
     try
-        _prepare_simulation_output!(simulation)
-        _prepare_simulation_diagnostics!(simulation)
+        _prepare_simulation_output!(simulation, state_plan)
+        _prepare_simulation_diagnostics!(simulation; resume=resume_diagnostics)
         _prepare_particle_output!(simulation)
+        # Streaming particle setup opens and writes a NetCDF file. Keep the
+        # existing checkpoints until that and all other manager setup succeed.
+        if state_plan !== nothing
+            foreach(file -> rm(file.path), state_plan.stale)
+        end
     catch
         simulation.output_manager = output_manager
         simulation.diagnostics_manager = diagnostics_manager
@@ -911,12 +964,15 @@ The keywords override the constructor's settings for this run (see
   change the path, a `TimeInterval` schedule, or the fields of the
   `NetCDFOutput`, which they require.
 - `diagnostics_interval`: iterations between progress reports (10 by default).
-- `verbose`: log progress; `progress=true` prints detailed progress lines
-  with the largest wave and flow speeds.
+- `verbose`: log progress.
+- `progress`: `true` prints detailed progress lines instead, with the largest
+  wave and flow speeds, whatever `verbose` is; `false` reports no progress in
+  this run, unless `verbose=true` is given with it.
 
-Output setup checks everything, such as for files left by another run, before
-it removes a file, so a run that cannot start leaves the files as they were
-and the simulation `Ready`.
+Output setup checks everything, such as for files left by another run or a
+directory that cannot be written, before it removes a file, so a run that
+cannot start leaves the files as they were and the simulation `Ready`, with
+the settings it had before the call.
 """
 function run!(simulation::Simulation;
     output_dir::Union{String, Nothing}=nothing,
@@ -948,7 +1004,9 @@ function run!(simulation::Simulation;
     runtime.finalized &&
         throw(InvalidStateException("model runtime has been finalized", :finalized))
     # Apply the keyword overrides all together or not at all: a rejected
-    # keyword must not leave the others in place for the next run!.
+    # keyword, or output that cannot be set up, must not leave the others in
+    # place for the next run!.
+    run_wall_start = time_ns()
     saved = _run_settings(simulation)
     try
         _configure_time_stepping!(simulation; Δt, stop_time, stop_iteration)
@@ -956,20 +1014,24 @@ function run!(simulation::Simulation;
         _apply_output_overrides!(simulation;
             output_dir, save_interval, save_psi, save_waves, save_velocities)
         options = simulation.run_options
-        progress !== nothing && (options.verbose = progress)
         diagnostics_interval !== nothing &&
             (options.diagnostics_interval = diagnostics_interval)
         options.diagnostics_interval > 0 ||
             throw(ArgumentError("diagnostics_interval must be positive"))
+        _prepare_run_output!(simulation)
     catch
         _restore_run_settings!(simulation, saved)
         rethrow()
     end
-    detailed_progress = progress === true
     options = simulation.run_options
+    # The detailed lines replace the progress log, so `progress=true` reports
+    # whatever `verbose` is. `progress=false` turns off this run's reports,
+    # unless the same call asks for the log with `verbose=true`; it does not
+    # change the simulation's `verbose` setting.
+    detailed_progress = progress === true
+    report_progress = detailed_progress || verbose === true ||
+                      (options.verbose && progress !== false)
 
-    run_wall_start = time_ns()
-    _prepare_run_output!(simulation)
     simulation.state = Running
     try
         _maybe_write_simulation_output!(simulation; initial=true)
@@ -977,7 +1039,8 @@ function run!(simulation::Simulation;
         # The particles take the run's time axis, then the velocity at the
         # start of the first particle step, also stored with the initial
         # particle positions.
-        _align_particle_time!(model.particles, simulation.clock.time)
+        _align_particle_time!(model.particles, simulation.clock.time,
+                              _time_step(simulation))
         _record_particle_velocity!(model.particles, model, simulation.clock.time)
         _maybe_write_particle_output!(simulation; initial=true)
 
@@ -985,21 +1048,34 @@ function run!(simulation::Simulation;
         # rounding error every step and drift from the schedules.
         start_time, start_iteration = simulation.clock.time, simulation.clock.iteration
         Δt_run = _time_step(simulation)
+        # A step ends with B projected and ψ, u, v, and A diagnosed from it,
+        # and nothing in this loop changes q or B, so each step starts from
+        # what the previous one left (see `_advance_etdrk2!`) rather than
+        # projecting and diagnosing it again, and the particles, state
+        # files, and energy records after it take those fields as they are
+        # (`as_stepped`). The model keeps track of what is left (see
+        # `_diagnostics_changed!`), so whatever overwrites a diagnostic is
+        # followed by a new diagnosis from q and B. Only this loop may rely
+        # on that record: outside it the fields can be written to directly,
+        # which the model cannot see, so the first step starts from whatever
+        # the model holds, and the records before it are rebuilt from q and B.
+        start = :new
         while (simulation.stop_iteration === nothing ||
                simulation.clock.iteration < simulation.stop_iteration) &&
               _before_stop_time(simulation)
-            step!(model, simulation.timestepper)
+            _step!(model, simulation.timestepper, start)
+            start = :diagnosed
             _check_termination_conditions!(simulation)
             _advect_model_particles!(model.particles, model, Δt_run,
-                                     simulation.clock.time)
+                                     simulation.clock.time; as_stepped=true)
             simulation.clock.iteration += 1
             simulation.clock.time =
                 start_time + (simulation.clock.iteration - start_iteration) * Δt_run
-            _maybe_write_simulation_output!(simulation)
-            _maybe_record_simulation_diagnostics!(simulation)
+            _maybe_write_simulation_output!(simulation; as_stepped=true)
+            _maybe_record_simulation_diagnostics!(simulation; as_stepped=true)
             _maybe_write_particle_output!(simulation)
 
-            if options.verbose &&
+            if report_progress &&
                simulation.clock.iteration % options.diagnostics_interval == 0
                 if detailed_progress
                     _print_detailed_progress(simulation, run_wall_start)

@@ -100,7 +100,9 @@ initialize_particles!(model, layers)
 ```
 
 Other helpers create uniform volumes, circles, random clouds, and explicit
-custom positions.
+custom positions. They take the release, method, and history options of
+`particles_in_box`, `particle_advec_time` included, and an invalid option is
+an error when the configuration is built.
 
 ## Integration
 
@@ -168,7 +170,10 @@ modes are:
   so that the names sort in time order.
 
 Each record holds the particle positions and their horizontal velocities,
-`u` and `v`, at the recorded time. A run never silently replaces existing
+`u` and `v`, at the recorded time, in the manager's precision:
+`ParticleOutputManager{Float32}("output"; ...)` halves the size of the files,
+whose times stay `Float64`. Particles held until `particle_advec_time` record
+zero velocities before it, and the flow's velocity from then on. A run never silently replaces existing
 particle files of the same mode and prefix: pass `overwrite=true` to the
 manager to replace them. The check comes before the run starts and removes
 nothing, so a run that cannot start leaves the files as they were.

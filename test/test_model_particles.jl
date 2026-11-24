@@ -248,8 +248,6 @@ using QGYBJplus
         end
 
         mktempdir() do output_dir
-            # Make the first snapshot target a directory so NetCDF creation
-            # fails after manager setup has succeeded.
             blocked_snapshot = joinpath(
                 output_dir, "particles", "particles_00000000.nc")
             mkpath(blocked_snapshot)
@@ -267,7 +265,17 @@ using QGYBJplus
                 particle_output=particle_output,
                 verbose=false,
             )
-            # A directory where the snapshot goes makes NetCDF fail.
+            @test_throws ArgumentError run!(failing_simulation)
+            @test failing_simulation.state == Ready
+            @test isdir(blocked_snapshot)
+            @test !particle_output.initialized
+            @test !particle_output.closed
+
+            # The same collision, introduced after successful manager setup,
+            # fails during the write and closes the manager.
+            rm(blocked_snapshot)
+            QGYBJplus.setup_particle_output!(particle_output, model.particles)
+            mkdir(blocked_snapshot)
             @test_throws NCDatasets.NetCDFError run!(failing_simulation)
             @test failing_simulation.state == Failed
             @test particle_output.save_count == 0
@@ -462,6 +470,17 @@ end
     end
 end
 
+@testset "Particle interpolation rejects incompatible velocity grids" begin
+    info = (dx=1.0, dy=1.0, dz=1.0, Lx=2.0, Ly=2.0, Lz=2.0)
+    bc = (periodic_x=true, periodic_y=true)
+    field = ones(2, 2, 2)
+    @test_throws DimensionMismatch interpolate_velocity_advanced(
+        1.0, 1.0, -0.5, field, zeros(1, 1, 1), field, info, bc, TRILINEAR)
+    empty_field = zeros(0, 2, 2)
+    @test_throws ArgumentError interpolate_velocity_advanced(
+        1.0, 1.0, -0.5, empty_field, empty_field, empty_field, info, bc, TRILINEAR)
+end
+
 @testset "Particles stay in place until their release time" begin
     grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
     model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
@@ -479,8 +498,39 @@ end
         end
         @test particles.x == x₀
         @test particles.time ≈ 0.3
+        # Released at 0.3: the velocities there are the flow's, as in a run
+        # restored at 0.3, not zero.
+        velocity = [interpolate_velocity_at_position(particles.x[i], particles.y[i],
+                        particles.z[i], model.particles, particles.time)
+                    for i in 1:particles.np]
+        @test particles.u == first.(velocity)
+        @test particles.v == last.(velocity)
+        @test all(>(0), particles.u .^ 2 .+ particles.v .^ 2)
         advect_particles!(model, 0.1; current_time=0.3)
         @test particles.x != x₀
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Initial particle velocity uses the projected flow" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0),
+        flow=EvolvingFlow(), feedback=NoFeedback(), verbose=false)
+    try
+        # The prescribed mode lies outside the nonlinear cutoff. It is in the
+        # cached initial ψ but contributes no velocity to the first ETD step.
+        set!(model; ψ=(x, y, z) -> -sin(3y),
+            particles=particles_in_box(-0.5; x_min=0.3, x_max=0.3,
+                y_min=0.0, y_max=0.0, nx=1, ny=1))
+        tracker = model.particles
+        x₀ = copy(tracker.particles.x)
+        simulation = Simulation(model; Δt=0.1, stop_iteration=1,
+                                output=false, diagnostics=false, verbose=false)
+        run!(simulation)
+        @test maximum(abs, tracker.previous.u) < 1e-12
+        @test tracker.particles.x ≈ x₀ atol=1e-12 rtol=0
     finally
         finalize_model!(model)
     end
@@ -665,6 +715,13 @@ end
                 @test dataset["x"][:, end] == tracker.particles.x
                 @test dataset["u"][:, end] == tracker.particles.u
             end
+            # An index past the next record left fill values that read back
+            # as positions; the record follows the last one instead.
+            QGYBJplus.ParticleIO.append_particle_data!(file, tracker, 6)
+            NCDataset(file, "r") do dataset
+                @test dataset["time"][:] ≈ [0.05, 0.1, 0.15, 0.15]
+                @test dataset["x"][:, end] == tracker.particles.x
+            end
             missing_directory = joinpath(path, "missing")
             @test_throws NCDatasets.NetCDFError write_particle_snapshot(
                 joinpath(missing_directory, "snapshot.nc"), tracker, 0.0)
@@ -699,6 +756,35 @@ end
         finally
             finalize_model!(model)
         end
+    end
+
+    # Summed in Float32, the top face missed the lid (z = -6e-5 for 15
+    # levels), and particles at z = 0 were rejected.
+    grid = RectilinearGrid(Float32; size=(8, 8, 15), extent=(1e5, 1e5, 1000.0))
+    @test (first(grid.z_faces), last(grid.z_faces)) == grid.z_bounds
+    model = QGYBJModel(; grid, verbose=false)
+    try
+        initialize_particles!(model, particles_in_grid_3d(x_max=1e5, y_max=1e5,
+                                                          z_max=1000.0, nx=1, ny=1, nz=3))
+        @test (model.particles.z_bottom, model.particles.z_top) == grid.z_bounds
+        @test sort(Array(model.particles.particles.z)) == [-1000.0, -500.0, 0.0]
+    finally
+        finalize_model!(model)
+    end
+
+    # A Float32 grid cannot store a bound such as -1000.3, so Float64
+    # particles placed exactly on it were rejected; one beyond it still is.
+    grid = RectilinearGrid(Float32; size=(8, 8, 4), x=(0.0, 1e5), y=(0.0, 1e5),
+                           z=(-1000.3, 0.0))
+    model = QGYBJModel(; grid, verbose=false)
+    try
+        initialize_particles!(model, particles_in_layers([-1000.3, -500.0];
+                                                         x_max=1e5, y_max=1e5, nx=2, ny=2))
+        @test minimum(Array(model.particles.particles.z)) == -1000.3
+        @test_throws ArgumentError initialize_particles!(model,
+            particles_in_layers([-1000.4]; x_max=1e5, y_max=1e5, nx=2, ny=2))
+    finally
+        finalize_model!(model)
     end
 end
 
@@ -750,9 +836,34 @@ end
             P.update_velocity_fields!(tracker, model.fields,
                                       model.runtime.geometry; time=t)
         end
-        velocity = P._velocity_arguments(tracker, 1e8 + 5)
+        velocity = P._velocity_arguments(tracker, 1e8 + 5, 10.0)
         @test velocity.θ₀ === 0.25f0
-        @test velocity.θ_rate === Float32(1 / 20)
+        @test velocity.θ_step === 0.5f0
+        @test P._current_weight(velocity, 0.5f0) === 0.5f0
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Float16 particle snapshots blend over a short step" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(; grid, flow=FixedFlow(), feedback=NoFeedback(), verbose=false)
+    try
+        initialize_particles!(model, particles_in_box(Float16, -0.5;
+            x_max=1.0, y_max=1.0, nx=1, ny=1))
+        dt = 1e-5  # 1 / dt exceeds Float16's finite range.
+        set!(model; ψ=(x, y, z) -> -sin(y))
+        advect_particles!(model, dt)
+        set!(model; ψ=(x, y, z) -> -3sin(y))
+        advect_particles!(model, dt)
+
+        tracker = model.particles
+        @test tracker.particles.time === 2dt
+        @test only(tracker.particles.x) ≈ Float16(3dt) atol=2eps(Float16(3dt))
+        u, v = interpolate_velocity_at_position(Float16(0), Float16(0),
+                                                Float16(-0.5), tracker, 1.5dt)
+        @test u ≈ Float16(2)
+        @test iszero(v)
     finally
         finalize_model!(model)
     end
@@ -764,5 +875,133 @@ end
         @test ParticleOutputManager(path; save_interval_iter=10).save_interval_iter == 10
         @test_throws ArgumentError ParticleOutputManager(path)
         @test_throws ArgumentError ParticleOutputManager(path; save_interval_time=-1)
+    end
+end
+
+@testset "A Float32 output manager writes Float32 records" begin
+    model = particle_output_test_model()
+    try
+        initialize_particles!(model, particles_in_box(-0.4; x_min=0.2, x_max=6.0,
+                                                      y_min=0.3, y_max=6.1, nx=2, ny=1))
+        tracker = model.particles
+        for mode in (:trajectory, :streaming, :snapshots)
+            mktempdir() do path
+                manager = ParticleOutputManager{Float32}(path; save_interval_iter=1,
+                                                         output_mode=mode)
+                redirect_stdout(devnull) do
+                    QGYBJplus.setup_particle_output!(manager, tracker)
+                    QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0)
+                    QGYBJplus.finalize_particle_output!(manager, tracker)
+                end
+                directory = joinpath(path, "particles")
+                file = only(filter(endswith(".nc"), readdir(directory; join=true)))
+                NCDataset(file, "r") do dataset
+                    # They were Float64, as the manager's precision was ignored.
+                    @test eltype(dataset["x"].var) === Float32
+                    @test eltype(dataset["u"].var) === Float32
+                    @test vec(Array(dataset["x"])) == Float32.(tracker.particles.x)
+                    mode === :snapshots || @test eltype(dataset["time"].var) === Float64
+                end
+            end
+        end
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Re-initialized particles start without file splitting" begin
+    # Splitting stayed on for the new particles, continuing the earlier
+    # particles' file series.
+    model = particle_output_test_model()
+    try
+        Advection = QGYBJplus.UnifiedParticleAdvection
+        config(; kwargs...) = particles_in_box(-0.5; x_max=2π, y_max=2π, nx=2, ny=2,
+                                               save_interval=0.1, kwargs...)
+        initialize_particles!(model, config())
+        tracker = model.particles
+        redirect_stdout(devnull) do
+            Advection.enable_auto_file_splitting!(tracker, joinpath(mktempdir(), "split");
+                                                  max_points_per_file=3)
+        end
+        @test tracker.auto_file_splitting
+        Advection.initialize_particles!(tracker, config(auto_split_files=true))
+        @test !tracker.auto_file_splitting
+        @test isempty(tracker.base_output_filename)
+        @test tracker.output_file_sequence == 0
+        # The configuration's own switch, still on, wrote the new history to
+        # a file named ".nc" in the working directory.
+        @test !isempty(tracker.particles.time_history)
+        cd(mktempdir()) do
+            redirect_stdout(devnull) do
+                Advection.finalize_trajectory_files!(tracker)
+            end
+            @test isempty(readdir())
+        end
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Particle files take any metadata" begin
+    model = particle_output_test_model()
+    try
+        initialize_particles!(model, particles_in_layers([-0.75, -0.25]; x_max=2π,
+            y_max=2π, nx=2, ny=1, save_interval=0.0))
+        tracker = model.particles
+        advect_particles!(model, 0.05; current_time=0.0)
+        mktempdir() do path
+            # NetCDF has no Bool attributes: the manager raised a KeyError.
+            manager = ParticleOutputManager(path; save_interval_iter=1)
+            redirect_stdout(devnull) do
+                QGYBJplus.setup_particle_output!(manager, tracker)
+                QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0)
+                QGYBJplus.finalize_particle_output!(manager, tracker;
+                    metadata=Dict("adaptive" => true, "mode" => :fast))
+            end
+            NCDataset(joinpath(path, "particles", "particles_trajectory.nc"), "r") do dataset
+                @test dataset.attrib["adaptive"] == 1
+                @test dataset.attrib["mode"] == "fast"
+            end
+
+            # Streaming files and snapshot series dropped the metadata.
+            for mode in (:streaming, :snapshots)
+                directory = joinpath(path, String(mode))
+                manager = ParticleOutputManager(directory; save_interval_iter=1,
+                                                output_mode=mode)
+                redirect_stdout(devnull) do
+                    QGYBJplus.setup_particle_output!(manager, tracker)
+                    QGYBJplus.save_particle_positions!(manager, tracker, 0, 0.0)
+                    QGYBJplus.finalize_particle_output!(manager, tracker;
+                        metadata=Dict("adaptive" => true, "mode" => :fast))
+                end
+                particle_dir = joinpath(directory, "particles")
+                if mode === :streaming
+                    NCDataset(joinpath(particle_dir, "particles_stream.nc"), "r") do dataset
+                        @test dataset.attrib["adaptive"] == 1
+                        @test dataset.attrib["mode"] == "fast"
+                    end
+                else
+                    summary = read(joinpath(particle_dir, "particles_summary.txt"), String)
+                    @test occursin("adaptive: true", summary)
+                    @test occursin("mode: fast", summary)
+                end
+            end
+
+            # A typed Dict could not take the level's own attributes.
+            for (name, metadata) in (("text", Dict("run" => "A")),
+                                     ("flag", Dict(:run => true)))
+                files = redirect_stdout(devnull) do
+                    write_particle_trajectories_by_zlevel(joinpath(path, name),
+                                                          tracker; metadata)
+                end
+                @test length(files) == 2
+                NCDataset(files[-0.25], "r") do dataset
+                    @test dataset.attrib["run"] == (name == "text" ? "A" : 1)
+                    @test dataset.attrib["z_level"] == -0.25
+                end
+            end
+        end
+    finally
+        finalize_model!(model)
     end
 end

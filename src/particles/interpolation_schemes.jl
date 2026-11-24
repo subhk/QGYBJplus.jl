@@ -71,9 +71,9 @@ end
 """
     interpolate_fields(fields, parities, x, y, z, grid_info, boundary_conditions, method)
 
-Interpolate each array of the tuple `fields` (cell centred, `(nz, nx, ny)`
-layout) at `(x, y, z)`, with `x` and `y` measured from the domain origin.
-Returns a tuple with one value per field.
+Interpolate the equally sized, nonempty, one-based arrays in `fields` (cell
+centred, `(nz, nx, ny)` layout) at `(x, y, z)`, with `x` and `y` measured from
+the domain origin. Returns a tuple with one value per field.
 
 The column spans `grid_info.z_min` to `grid_info.z_max`, by default `-Lz` to
 `0`. Above the lid and below the bottom, field `n` continues as the mirror
@@ -86,6 +86,12 @@ function interpolate_fields(fields::NTuple{N, AbstractArray{T, 3}},
                             parities::NTuple{N, Int}, x::T, y::T, z::T,
                             grid_info, boundary_conditions,
                             method::InterpolationMethod) where {N, T}
+    Base.require_one_based_indexing(fields...)
+    dimensions = size(first(fields))
+    all(>(0), dimensions) || throw(ArgumentError("interpolation fields must be nonempty"))
+    all(field -> size(field) == dimensions, fields) || throw(DimensionMismatch(
+        "interpolation fields must all have size $dimensions"))
+
     if method == TRILINEAR
         return _interpolate_stencil(Val(2), fields, parities, x, y, z,
                                     grid_info, boundary_conditions)

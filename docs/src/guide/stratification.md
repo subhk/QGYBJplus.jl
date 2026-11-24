@@ -61,12 +61,20 @@ model = QGYBJModel(grid=grid, stratification=profile)
 
 The file holds a vertical coordinate named `z` or `depth` and N² named `N2`,
 `N²`, or `n2`, as real arrays of equal length. `depth` is positive downward
-and `z` positive upward, both from the surface; a `z` without negative values
-is read as depth.
+and `z` positive upward, both from the surface, which is the top of the grid;
+a `z` without negative values is read as depth. A CF `positive` attribute on
+a NetCDF coordinate states its sign instead: `"down"` for depths below the
+top of the grid, and `"up"` for heights, which are measured from the surface
+when none of them is positive, as in ocean data, and are otherwise heights in
+the grid's coordinates. The `z` of a QGYBJplus state file always holds
+heights in the grid's coordinates, so N² reloaded from model output keeps its
+place on any grid. When a state file includes `N2_face` and `z_face`, the
+model uses those samples for its upper cell faces.
 `group` selects a NetCDF group, or a JLD2 group, NamedTuple, or Dict; JLD2
 arrays may also be ranges. Data in any other form can be passed as
 `FileProfile{Float64}(name, depths, N²)`, with positive depths in increasing
-order; the constructor checks them.
+order; the constructor checks them. The depths are measured below the top of
+the grid, or below z = 0 in the grid's coordinates with `below_lid=false`.
 
 The data need not be sorted or lie on the model's levels. The model
 interpolates the profile linearly in depth to its own cell centers and upper

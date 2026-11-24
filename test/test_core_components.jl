@@ -128,25 +128,41 @@ end
     @test parameters.ilap1 == order ÷ 2
 end
 
-@testset "The default closure warns where it cannot damp" begin
-    inert = r"barely damps this grid"
-    dimensional = RectilinearGrid(size=(16, 16, 4), extent=(500e3, 500e3, 4000.0))
-    model = @test_logs (:warn, inert) match_mode=:any QGYBJModel(grid=dimensional)
-    finalize_model!(model)
-
-    # Not for a closure given explicitly, an undamped or linear model, or a
-    # nondimensional grid, where the default damps the grid scale strongly.
-    quiet = (:info, r"runtime initialized")
-    explicit = HorizontalHyperdiffusivity(
-        flow=FlowHyperdiffusivity(coefficient=0), wave=WaveHyperdiffusivity(coefficient=0))
-    for model in (
-        (@test_logs quiet QGYBJModel(grid=dimensional, closure=explicit)),
-        (@test_logs quiet QGYBJModel(grid=dimensional, inviscid=Inviscid())),
-        (@test_logs quiet QGYBJModel(grid=dimensional, linear=LinearDynamics())),
-        (@test_logs quiet QGYBJModel(
-            grid=RectilinearGrid(size=(16, 16, 4), extent=(2π, 2π, 1.0)),
-            coriolis=FPlane(f=1.0), stratification=ConstantStratification(N²=1.0))),
-    )
-        finalize_model!(model)
+@testset "The default closure damps the grid scale in any units" begin
+    # The former default had fixed coefficients: it damped nothing on a
+    # dimensional grid and even kₕ = 1 within 0.1 time units on a 2π one. The
+    # default damps the largest wavenumber the grid keeps by one e-fold every
+    # 10 steps, and half of it 2⁸ times more weakly, in any units and for
+    # any time step.
+    for (extent, f, N², Δt) in (((500e3, 500e3, 4000.0), 1e-4, 1e-5, 600.0),
+                                ((2π, 2π, 1.0), 1.0, 1.0, 0.01))
+        grid = RectilinearGrid(size=(16, 16, 4), extent=extent)
+        model = @test_logs min_level=Base.CoreLogging.Warn QGYBJModel(; grid,
+            coriolis=FPlane(f=f), stratification=ConstantStratification(N²=N²),
+            linear=true, verbose=false)
+        try
+            closure = model.numerics.closure
+            @test closure isa GridScaleHyperdiffusivity
+            @test closure.kmax² == maximum(grid.kh2[dealias_mask(grid)])
+            k = sqrt(closure.kmax²)
+            # A closure that no model has put on a grid has no rate to give;
+            # it used to report no damping at all.
+            @test_throws ArgumentError QGYBJplus.int_factor(
+                k, 0.0, Δt, GridScaleHyperdiffusivity())
+            for step in (Δt, 10Δt)
+                @test QGYBJplus.int_factor(k, 0.0, step, closure) ≈ 0.1
+                @test QGYBJplus.int_factor(k / 2, 0.0, step, closure;
+                                           waves=true) ≈ 0.1 / 2^8
+            end
+            # A step of a linear flow decays that mode by exactly e^(-1/10).
+            set!(model; ψ=(x, y, z) -> cos(k * x), verbose=false)
+            before = maximum(abs, model.fields.q)
+            step!(model, ExponentialRungeKutta2(; Δt))
+            @test maximum(abs, model.fields.q) / before ≈ exp(-0.1) rtol=1e-10
+        finally
+            finalize_model!(model)
+        end
     end
+    @test_throws ArgumentError GridScaleHyperdiffusivity(order=3)
+    @test_throws ArgumentError GridScaleHyperdiffusivity(efold_steps=0)
 end

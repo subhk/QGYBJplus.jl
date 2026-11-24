@@ -75,6 +75,28 @@ end
     set_mean_flow!(model; psi_func=flow, verbose=false)
     ψ = real(ifft(Array(model.fields.psi), (2, 3)))
     @test ψ ≈ [flow(x, y, z) for z in grid.z, x in grid.x, y in grid.y]
+
+    # A function that gives a NaN is rejected, as an array is, before ψ
+    # changes; it used to reach ψ and q.
+    broken(x, y, z) = x == first(grid.x) ? NaN : flow(x, y, z)
+    psi, q = copy(model.fields.psi), copy(model.fields.q)
+    @test_throws ArgumentError set!(model; ψ=broken)
+    @test_throws ArgumentError set_mean_flow!(model; psi_func=broken, verbose=false)
+    @test model.fields.psi == psi
+    @test model.fields.q == q
+end
+
+@testset "set_wave_packet! sets the largest |B| to its amplitude" begin
+    # The envelope is restricted to what a wave amplitude can produce, which
+    # lowered the packet's peak, by 12% for YBJ⁺ on four levels.
+    for formulation in (YBJPlus(), YBJ())
+        model = QGYBJModel(;
+            grid=RectilinearGrid(size=(16, 16, 4), extent=(1e5, 1e5, 1000.0)),
+            coriolis=FPlane(f=1e-4), stratification=ConstantStratification(N²=1e-5),
+            formulation, verbose=false)
+        set_wave_packet!(model; amplitude=0.1, kx=3, ky=1, sigma_k=1.5)
+        @test maximum(abs, ifft(Array(model.fields.B), (2, 3))) ≈ 0.1 rtol=1e-12
+    end
 end
 
 @testset "Model component types" begin

@@ -72,6 +72,26 @@ end
     @test IterationInterval(Int32(5)).interval === 5
 end
 
+@testset "A single-precision Δt keeps its decimal value" begin
+    # Read as 0.0099999998, Δt = 0.01f0 took 101 steps to t = 1, and every
+    # schedule fired a step late; 0.7f0 lands just short of 3.5 and 7.
+    for (Δt, decimal, stop_time, interval, iterations) in (
+            (0.01f0, 0.01, 1.0, 0.25, [0, 25, 50, 75, 100]),
+            (0.7f0, 0.7, 7.0, 3.5, [0, 5, 10]))
+        mktempdir() do directory
+            simulation = Simulation(time_test_model(); Δt, stop_time,
+                output=NetCDFOutput(path=directory, schedule=TimeInterval(interval)),
+                diagnostics=TimeInterval(interval), verbose=false)
+            run!(simulation)
+            @test simulation.clock.iteration == last(iterations)
+            @test state_iterations(directory) == iterations
+            energy_times = NCDataset(dataset -> dataset["time"][:],
+                joinpath(directory, "diagnostic", "total_energy.nc"))
+            @test energy_times ≈ decimal .* iterations
+        end
+    end
+end
+
 @testset "run! applies its keywords together or not at all" begin
     simulation = Simulation(time_test_model(); Δt=1.0, stop_iteration=2,
                             output=false, diagnostics=false, verbose=false)
@@ -79,8 +99,22 @@ end
     @test simulation.timestepper.Δt == 1.0
     @test simulation.run_options.diagnostics_interval == 10
     @test simulation.state === Ready
+
+    # So does output that cannot be set up, here because another run's files
+    # are in its way: the retry ran 7 steps of 0.5.
+    mktempdir() do directory
+        run!(Simulation(time_test_model(); Δt=1.0, stop_iteration=1,
+            output=NetCDFOutput(path=directory), diagnostics=false, verbose=false))
+        @test_throws ArgumentError run!(simulation; Δt=0.5, stop_iteration=7,
+                                        output=NetCDFOutput(path=directory))
+        @test simulation.state === Ready
+        @test simulation.timestepper.Δt == 1.0
+        @test simulation.stop_iteration == 2
+        @test simulation.run_options.output === false
+    end
     run!(simulation)
     @test simulation.clock.iteration == 2
+    @test simulation.clock.time == 2.0
 end
 
 @testset "Output setup checks everything before removing a file" begin
@@ -101,6 +135,199 @@ end
         @test_throws ArgumentError run!(simulation)
         @test simulation.state === Ready
         @test length(state_iterations(state_path)) == 2
+
+        # Nor may a diagnostics directory that cannot be created, because a
+        # file is in its way, fail after the state files are removed.
+        blocked = joinpath(directory, "blocked")
+        touch(blocked)
+        replacing(diagnostics) = Simulation(time_test_model(); Δt=1.0,
+            stop_iteration=1, diagnostics, verbose=false,
+            output=NetCDFOutput(path=state_path, schedule=IterationInterval(1),
+                                overwrite=true))
+        simulation = replacing(EnergyDiagnosticsOutput(path=blocked))
+        @test_throws Base.IOError run!(simulation)
+        @test simulation.state === Ready
+        @test length(state_iterations(state_path)) == 2
+
+        # The same for a directory that takes no new files, where the file
+        # system enforces that (not for root).
+        locked = mkpath(joinpath(directory, "locked"))
+        chmod(locked, 0o555)
+        try
+            enforced = try
+                touch(joinpath(locked, "probe"))
+                false
+            catch
+                true
+            end
+            if enforced
+                simulation = replacing(EnergyDiagnosticsOutput(path=locked))
+                @test_throws SystemError run!(simulation)
+                @test simulation.state === Ready
+                @test length(state_iterations(state_path)) == 2
+            end
+        finally
+            chmod(locked, 0o755)
+        end
+    end
+end
+
+@testset "An unreadable state file does not shift the numbering" begin
+    mktempdir() do directory
+        output(overwrite) = NetCDFOutput(path=directory,
+            schedule=IterationInterval(2), overwrite=overwrite)
+        run!(Simulation(time_test_model(); Δt=60.0, stop_iteration=4,
+            output=output(false), diagnostics=false, verbose=false))
+        # A run killed while writing leaves a file that cannot be read. It
+        # used to stay the latest file after its removal, so the restored
+        # run wrote its restart state again, as state0004.
+        write(joinpath(directory, "state0003.nc"), "truncated")
+        restored = Simulation(time_test_model(); Δt=60.0, stop_iteration=6,
+            output=output(true), diagnostics=false, verbose=false)
+        restore!(restored, joinpath(directory, "state0002.nc"))
+        run!(restored)
+        @test state_iterations(directory) == [0, 2, 4, 6]
+    end
+end
+
+@testset "Output files cannot replace directories" begin
+    mktempdir() do path
+        collisions = (joinpath(path, "wave_KE.nc"), joinpath(path, "total_energy.nc"))
+        for collision in collisions, overwrite in (false, true)
+            mkpath(collision)
+            marker = joinpath(collision, "keep.txt")
+            write(marker, "keep this file")
+            simulation = Simulation(time_test_model(); stop_iteration=1, verbose=false,
+                diagnostics=EnergyDiagnosticsOutput(; path, overwrite))
+            @test_throws ArgumentError run!(simulation)
+            @test simulation.state === Ready
+            @test read(marker, String) == "keep this file"
+            mv(collision, tempname(path))
+        end
+        # This name was previously used as the diagnostics writer's temp file.
+        existing = joinpath(path, "wave_KE.nc.tmp")
+        write(existing, "keep this too")
+        run!(Simulation(time_test_model(); stop_iteration=1, verbose=false,
+            diagnostics=EnergyDiagnosticsOutput(; path)))
+        @test read(existing, String) == "keep this too"
+        @test isfile(joinpath(path, "wave_KE.nc"))
+    end
+end
+
+@testset "Failed streaming setup preserves checkpoints" begin
+    mktempdir() do path
+        output = NetCDFOutput(; path, schedule=IterationInterval(1), overwrite=true)
+        run!(Simulation(time_test_model(); stop_iteration=2, output, verbose=false))
+        checkpoint = joinpath(path, "state0002.nc")
+        later = joinpath(path, "state0003.nc")
+        original = read(later)
+        model = time_test_model()
+        initialize_particles!(model,
+            particles_in_box(-500.0; x_max=1e5, y_max=1e5, nx=2, ny=2))
+        make_simulation(particle_output) = restore!(
+            Simulation(model; stop_iteration=3, output, particle_output, verbose=false),
+            checkpoint)
+        particle_output = ParticleOutputManager(
+            path; save_interval_iter=1, output_mode=:streaming, overwrite=true)
+        collision = mkpath(joinpath(path, "particles", "particles_stream.nc"))
+        write(joinpath(collision, "keep.txt"), "keep this directory")
+        blocked = make_simulation(particle_output)
+        @test_throws ArgumentError run!(blocked)
+        @test blocked.state === Ready
+        @test !particle_output.initialized
+        @test read(later) == original
+        @test isfile(joinpath(collision, "keep.txt"))
+        mv(collision, joinpath(path, "kept"))
+
+        # NetCDF does not support this precision. Failure while defining the
+        # streaming variables must also leave the existing output in place.
+        unsupported = ParticleOutputManager{BigFloat}(
+            path; save_interval_iter=1, output_mode=:streaming)
+        broken = make_simulation(unsupported)
+        @test_throws Exception run!(broken)
+        @test broken.state === Ready
+        @test !unsupported.initialized
+        @test read(later) == original
+        @test isempty(readdir(joinpath(path, "particles")))
+
+        run!(blocked)
+        @test blocked.state === Stopped
+        @test state_iterations(path) == [0, 1, 2, 3]
+    end
+end
+
+@testset "State output continues only from the restored checkpoint" begin
+    mktempdir() do path
+        destination = joinpath(path, "destination")
+        source = joinpath(path, "source")
+        for (directory, amplitude) in ((destination, 1.0), (source, 2.0))
+            model = time_test_model(flow=FixedFlow())
+            set!(model; ψ=(x, y, z) -> amplitude * cospi(2x / 1e5), verbose=false)
+            run!(Simulation(model; stop_iteration=1, verbose=false,
+                diagnostics=IterationInterval(1),
+                output=NetCDFOutput(path=directory)))
+        end
+        checkpoint = joinpath(source, "state0002.nc")
+        simulation = Simulation(time_test_model(flow=FixedFlow());
+            stop_iteration=2, verbose=false, diagnostics=IterationInterval(1),
+            output=NetCDFOutput(path=destination))
+        restore!(simulation, checkpoint)
+        existing = joinpath(destination, "state0002.nc")
+        original = read(existing)
+        @test_throws ArgumentError run!(simulation)
+        @test simulation.state === Ready
+        @test read(existing) == original
+        @test state_iterations(destination) == [0, 1]
+
+        run!(simulation; output=NetCDFOutput(path=destination, overwrite=true))
+        @test state_iterations(destination) == [1, 2]
+        @test NCDataset(ds -> maximum(abs, ds["psi"][:]),
+            joinpath(destination, "state0001.nc")) ≈ 2.0
+        @test NCDataset(ds -> ds["time"][:],
+            joinpath(destination, "diagnostic", "total_energy.nc")) == [1.0, 2.0]
+    end
+end
+
+@testset "Restore validates every field before modifying the model" begin
+    mktempdir() do path
+        file = joinpath(path, "restart.nc")
+        grid = RectilinearGrid(Float32; size=(4, 4, 4), extent=(2π, 2π, 1.0))
+        model = QGYBJModel(; grid, verbose=false)
+        set!(model; ψ=(x, y, z) -> cos(x), verbose=false)
+        original = copy_fields(model.fields)
+        simulation = Simulation(model; stop_iteration=2, verbose=false)
+        for bad in (-999.0, 1e50)
+            NCDataset(file, "c") do dataset
+                dims = ("x", "y", "z")
+                for dimension in dims
+                    dataset.dim[dimension] = 4
+                end
+                for name in ("q_hat_real", "q_hat_imag", "B_hat_imag")
+                    defVar(dataset, name, zeros(4, 4, 4), dims)
+                end
+                variable = defVar(dataset, "B_hat_real", Float64, dims; fillvalue=-999.0)
+                variable[:, :, :] = fill(bad, (4, 4, 4))
+                dataset.attrib["iteration"] = 1
+            end
+            @test_throws ArgumentError restore!(simulation, file)
+            @test simulation.clock.iteration == 0
+            @test all(name -> getproperty(model.fields, name) == getproperty(original, name),
+                      propertynames(original))
+        end
+    end
+end
+
+@testset "Diagnostics without state output go beneath output/" begin
+    # Run with output=false, a schedule wrote beneath the path of the output
+    # the simulation was built with.
+    mktempdir() do directory
+        cd(directory) do
+            simulation = Simulation(time_test_model(); Δt=1.0, stop_iteration=1,
+                output=NetCDFOutput(path="first"), verbose=false)
+            run!(simulation; output=false, diagnostics=IterationInterval(1))
+            @test isfile(joinpath("output", "diagnostic", "total_energy.nc"))
+            @test !ispath("first")
+        end
     end
 end
 
@@ -170,6 +397,22 @@ end
     @test NetCDFOutput(fields=(:psi, :B, :velocities)).fields == (:psi, :B, :velocities)
 end
 
+@testset "save_velocities overrides a :velocities field" begin
+    for save_velocities in (false, true)
+        mktempdir() do directory
+            fields = save_velocities ? (:ψ,) : (:ψ, :velocities)
+            simulation = Simulation(time_test_model(); Δt=1.0, stop_iteration=1,
+                output=NetCDFOutput(path=directory, fields=fields),
+                diagnostics=false, verbose=false)
+            run!(simulation; save_velocities)
+            NCDataset(joinpath(directory, "state0001.nc"), "r") do dataset
+                @test haskey(dataset, "psi")
+                @test haskey(dataset, "u") == save_velocities
+            end
+        end
+    end
+end
+
 @testset "A FixedFlow restart restores the prescribed streamfunction" begin
     prescribed(x, y, z) = 1e3 * sin(2π * x / 1e5) * cos(2π * y / 1e5) * (1 + z / 1000)
     for pv_method in (:none, :barotropic)
@@ -192,5 +435,39 @@ end
             @test restored.fields.u ≈ model.fields.u
             @test_throws ArgumentError invert_q_to_psi!(restored)
         end
+    end
+end
+
+@testset "Output does not change a run" begin
+    # Each step of run! starts from the diagnosis the previous one ended
+    # with; a state write recomputes the diagnostics, and the step after it
+    # diagnoses them again from q and B. A run gives the same fields whether
+    # or not it writes output at every step.
+    fields(model) = map(name -> Array(getproperty(model.fields, name)),
+                        (:q, :B, :psi, :u, :v, :A, :C))
+    for (formulation, feedback, flow) in (
+            (YBJPlus(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), :none, FixedFlow()))
+        runs = map((true, false)) do with_output
+            model = QGYBJModel(;
+                grid=RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0)),
+                coriolis=FPlane(f=1.0), stratification=ConstantStratification(N²=1.0),
+                formulation, feedback, flow, verbose=false)
+            set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z), verbose=false)
+            set_wave_packet!(model; amplitude=0.1, kx=3, ky=1, sigma_k=1.5)
+            output = with_output ?
+                NetCDFOutput(path=mktempdir(), schedule=IterationInterval(1)) : false
+            simulation = Simulation(model; Δt=0.01, stop_iteration=5, output,
+                                    diagnostics=false, verbose=false)
+            try
+                run!(simulation)
+                fields(model)
+            finally
+                finalize_simulation!(simulation)
+                finalize_model!(model)
+            end
+        end
+        @test runs[1] == runs[2]
     end
 end

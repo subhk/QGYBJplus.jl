@@ -14,8 +14,10 @@ kinetic_energy = flow_kinetic_energy(model)
 
 The domain-mean kinetic energy of the balanced flow, ``\tfrac12\langle u^2 +
 v^2\rangle`` (m² s⁻² in a dimensional setup): the `mean_flow_KE` that the
-energy diagnostics record. The result is a host scalar, also when the model
-runs on a GPU.
+energy diagnostics record. A nonlinear run evolves the flow through the modes
+inside the two-thirds cutoff, and its energy counts those; a `FixedFlow`
+keeps every mode of its prescribed ψ, and so do its velocity and its energy.
+The result is a host scalar, also when the model runs on a GPU.
 
 ## Wave energy
 

@@ -23,7 +23,8 @@ where L is the diagonal horizontal hyperdiffusion operator. The phi functions
 are evaluated with cancellation-safe series near zero.
 
 The coefficient table, the right-hand-side assembly, and both stage updates
-are KernelAbstractions kernels on the fields' backend.
+use KernelAbstractions kernels. ETD factors that depend on host-only scalar
+types are calculated on the host and copied to the fields' backend.
 ================================================================================
 =#
 
@@ -61,7 +62,9 @@ _ybj_plus(options::ETDModelOptions) =
 _passive_wave(options::ETDModelOptions) = options.formulation isa PassiveWave
 _inviscid(options::ETDModelOptions) = options.dissipation isa Inviscid
 _linear(options::ETDModelOptions) = options.dynamics isa LinearDynamics
-_no_dispersion(options::ETDModelOptions) = options.dispersion isa NoDispersion
+# Passive waves are only advected, so they have no dispersion either.
+_no_dispersion(options::ETDModelOptions) =
+    options.dispersion isa NoDispersion || _passive_wave(options)
 _wave_feedback_enabled(options::ETDModelOptions) =
     !_fixed_flow(options) && options.feedback isa WaveMeanFeedback
 
@@ -249,6 +252,10 @@ end
 @inline _wave_exponent(::FlowHyperdiffusivity, kₕ², Δt) = 0.0
 @inline _wave_exponent(closure::WaveHyperdiffusivity, kₕ², Δt) =
     Nonlinear._hyperdiffusion_exponent(closure, kₕ², Δt)
+@inline _flow_exponent(closure::GridScaleHyperdiffusivity, kₕ², Δt) =
+    Nonlinear._grid_scale_exponent(closure, kₕ²)
+@inline _wave_exponent(closure::GridScaleHyperdiffusivity, kₕ², Δt) =
+    Nonlinear._grid_scale_exponent(closure, kₕ²)
 
 @kernel function _etd_table_kernel!(Eq, hphi1q, hphi2q, EB, hphi1B, hphi2B,
                                     @Const(kx), @Const(ky), closure, Δt, inviscid)
@@ -268,14 +275,36 @@ end
     end
 end
 
-"""Refresh `table` for the current `Δt` and closure."""
-function fill_etd_table!(table::ETDCoefficientTable, S::ModelFields,
-                         G::RuntimeGeometry, options::ETDModelOptions, Δt)
-    _, nx, ny = size(S.q)
-    launch!(_etd_table_kernel!, table.Eq, (nx, ny),
+function _fill_etd_table!(table, kx, ky, closure, Δt, inviscid)
+    launch!(_etd_table_kernel!, table.Eq, size(table.Eq),
             table.Eq, table.hphi1q, table.hphi2q,
             table.EB, table.hphi1B, table.hphi2B,
-            G.kx, G.ky, options.closure, float(Δt), _inviscid(options))
+            kx, ky, closure, Δt, inviscid)
+    return table
+end
+
+"""Refresh `table` for the current `Δt` and closure."""
+function fill_etd_table!(table::ETDCoefficientTable, ::ModelFields,
+                         G::RuntimeGeometry, options::ETDModelOptions, Δt)
+    closure = options.closure
+    h = float(Δt)
+    inviscid = _inviscid(options)
+    cpu = get_backend(table.Eq) isa KernelAbstractions.CPU
+    if cpu || (isbitstype(typeof(closure)) && isbitstype(typeof(h)))
+        return _fill_etd_table!(table, G.kx, G.ky, closure, h, inviscid)
+    end
+
+    # BigFloat and other non-isbits scalars cannot be passed to a device
+    # kernel. Compute the horizontal factors in the same arithmetic as on
+    # CPU, then copy the finished tables in the grid's precision.
+    names = fieldnames(typeof(table))
+    dims = size(table.Eq)
+    T = eltype(table.Eq)
+    host = ETDCoefficientTable(map(_ -> Matrix{T}(undef, dims), names)...)
+    _fill_etd_table!(host, G.base.kx, G.base.ky, closure, h, inviscid)
+    for name in names
+        copy_from_host!(getfield(table, name), getfield(host, name))
+    end
     return table
 end
 
@@ -497,24 +526,39 @@ Remove the depth mean of the horizontally uniform (kₕ = 0) column of `B`. No
 wave amplitude produces it: at kₕ = 0, L⁺ = L, and the depth sum of LA
 vanishes under the Neumann conditions. Other columns are left unchanged.
 """
-function _remove_uniform_depth_mean!(B, G::RuntimeGeometry)
+function _remove_uniform_depth_mean!(B, G::RuntimeGeometry;
+                                     reference_centered::Bool=false)
     nz, nx, ny = size(B)
-    launch!(_uniform_depth_mean_kernel!, B, (nx, ny), B, G.kx, G.ky, nz)
+    launch!(_uniform_depth_mean_kernel!, B, (nx, ny), B, G.kx, G.ky, nz,
+            Val(reference_centered))
     return B
 end
 
-@kernel function _uniform_depth_mean_kernel!(B, @Const(kx), @Const(ky), nz)
+@kernel function _uniform_depth_mean_kernel!(B, @Const(kx), @Const(ky), nz,
+                                             reference_centered)
     i, j = @index(Global, NTuple)
     @inbounds if kx[i]^2 + ky[j]^2 == 0
-        mean_value = zero(eltype(B))
-        for k in 1:nz
-            mean_value += B[k, i, j]
-        end
-        mean_value /= nz
-        for k in 1:nz
-            B[k, i, j] -= mean_value
-        end
+        _subtract_depth_mean!(B, i, j, nz, reference_centered)
     end
+end
+
+@inline _relative_to(value, ::Nothing) = value
+@inline _relative_to(value, reference) = value - reference
+
+# For initial data, work relative to one level so that a large constant
+# offset cannot dominate the rounding of a small depth-varying signal.
+@inline function _subtract_depth_mean!(B, i, j, nz,
+                                       ::Val{reference_centered}) where reference_centered
+    @inbounds reference = reference_centered ? B[1, i, j] : nothing
+    offset = zero(eltype(B))
+    for k in 1:nz
+        @inbounds offset += _relative_to(B[k, i, j], reference)
+    end
+    offset /= nz
+    for k in 1:nz
+        @inbounds B[k, i, j] = _relative_to(B[k, i, j], reference) - offset
+    end
+    return nothing
 end
 
 """
@@ -524,11 +568,12 @@ and of the horizontally uniform column for YBJ⁺. The refraction term would
 otherwise feed these components, which carry no wave velocity.
 """
 function _project_wave_envelope!(B, G::RuntimeGeometry, options::ETDModelOptions,
-                                 L, workspace)
+                                 L, workspace; reference_centered::Bool=false)
     if _ybj_plus(options)
-        _remove_uniform_depth_mean!(B, G)
+        _remove_uniform_depth_mean!(B, G; reference_centered)
     else
-        sumB!(B, G; Lmask=_linear(options) ? nothing : L, workspace)
+        sumB!(B, G; Lmask=_linear(options) ? nothing : L, workspace,
+              reference_centered)
     end
     return B
 end
@@ -546,86 +591,177 @@ end
 
 """
 Advection terms `nq`, `nB` and refraction term `rB` of the prepared stage
-state `S`, and its wave amplitude A for the dispersion term.
+state `S`, and its wave amplitude A for the dispersion term (unless
+`amplitude` is false, for an A that is already current).
 """
 function _stage_terms!(nq, nB, rB, S, G, options, plans, a, L, workspace,
-                       N2_profile, N2_face_profile)
+                       N2_profile, N2_face_profile; amplitude::Bool=true)
     if _linear(options)
         fill!(nq, zero(eltype(nq)))
     else
         convol_waqg_q!(nq, S.u, S.v, S.q, G, plans; Lmask=L, workspace)
     end
     return _wave_terms!(nB, rB, S, G, options, plans, a, L, workspace,
-                        N2_profile, N2_face_profile)
+                        N2_profile, N2_face_profile; amplitude)
 end
 
 """
-Wave advection `nB` and refraction `rB` of the prepared state `S`, and its
-amplitude A for the dispersion term.
+Divergence-form advection of the spectral field `χ` by the velocity
+`(-∂ᵧψ, ∂ₓψ)` of `psi`, written to `nχ` (which may be `χ`). `psi` is
+projected as `_diagnose_flow!` projects a stage's ψ, so this is the
+advection by a diagnosed stage's `u` and `v` (`product` as in
+`convol_waqg_B!`, or `_real_product` as in `convol_waqg_q!`), but the
+velocity is formed in scratch rather than read from `u` and `v`. The field's
+transform and the divergence of the fluxes are those of
+`Nonlinear._convol_advect!`.
 """
-function _wave_terms!(nB, rB, S, G, options, plans, a, L, workspace,
-                      N2_profile, N2_face_profile)
+function _advect_by_psi!(nχ, psi, χ, G, plans, options, L, product, workspace)
+    with_scratch(workspace) do
+        mask = Nonlinear._nonlinear_mask(L, G, nχ)
+        field = Nonlinear._dealiased_physical(χ, mask, plans, workspace)
+        # ∂ₓψ = v and ∂ᵧψ = -u, in physical space. The destination is free
+        # until the divergence is written to it, so it holds ∂ₓψ unless it
+        # is also an input.
+        ψx = nχ === χ || nχ === psi ? scratch_like(workspace, χ) : nχ
+        ψy = scratch_like(workspace, χ)
+        velocity_mask = _linear(options) ? KeepAllModes() : _stage_mask(L, psi)
+        launch!(Nonlinear._gradient_kernel!, ψx, size(ψx), ψx, ψy, psi,
+                G.kx, G.ky, velocity_mask)
+        fft_backward!(ψx, ψx, plans)
+        fft_backward!(ψy, ψy, plans)
+        kernel_map!((ψyᵢ, χᵢ) -> product(-real(ψyᵢ), χᵢ), ψy, ψy, field)
+        kernel_map!((ψxᵢ, χᵢ) -> product(real(ψxᵢ), χᵢ), field, ψx, field)
+        Nonlinear._flux_divergence!(nχ, ψy, field, G, plans, mask)
+    end
+    return nχ
+end
+
+"""
+Wave advection `nB` of the state `S`, by `S.u` and `S.v`, or with
+`from_psi` by the velocity of `S.psi` (see `_advect_by_psi!`).
+"""
+function _wave_advection!(nB, S, G, options, plans, L, workspace;
+                          from_psi::Bool=false)
     # B is a complex physical field represented by its complex Fourier
     # transform. Both YBJ formulations therefore use complex advection and
     # refraction kernels; only the B -> A diagnostic relation differs.
     if _linear(options)
         fill!(nB, zero(eltype(nB)))
+    elseif from_psi
+        _advect_by_psi!(nB, S.psi, S.B, G, plans, options, L, *, workspace)
     else
         convol_waqg_B!(nB, S.u, S.v, S.B, G, plans; Lmask=L, workspace)
     end
+    return nB
+end
+
+"""Wave refraction `rB` of the state `S`; passive waves have none."""
+function _wave_refraction!(rB, S, G, options, plans, L, workspace)
     if _passive_wave(options)
         fill!(rB, zero(eltype(rB)))
     else
         refraction_waqg_B!(rB, S.B, S.psi, G, plans; Lmask=L, workspace)
     end
+    return rB
+end
 
-    if _passive_wave(options)
-        fill!(S.A, zero(eltype(S.A)))
-        fill!(S.C, zero(eltype(S.C)))
-    elseif !_no_dispersion(options)
-        if _ybj_plus(options)
-            invert_B_to_A!(S, G, a; workspace)
-        else
-            # The cutoff is required by nonlinear products, but linear
-            # normal-YBJ recovery is a one-column operation and is valid at
-            # every resolved mode.
-            sigma = compute_sigma(options.f, G, nB, rB; Lmask=L, workspace)
-            normal_N² = N2_face_profile === nothing ?
-                        N2_profile : N2_face_profile
-            compute_A!(S.A, S.C, S.B, sigma, G;
-                       f=options.f, Lmask=_linear(options) ? nothing : L,
-                       workspace, N2_profile=normal_N²)
-        end
+"""
+The amplitude `A`, and `C = A_z`, of the envelope `B` by the formulation's
+relation: B = L⁺A for YBJ⁺ and passive waves, and B = LA for YBJ, whose
+depth mean makes the tendency with advection `nB` and refraction `rB`
+solvable.
+"""
+function _wave_amplitude!(A, C, B, nB, rB, G, options, a, L, workspace,
+                          N2_profile, N2_face_profile)
+    if _ybj_plus(options)
+        Elliptic._invert_B_to_A!(A, C, B, G, a, workspace)
+    else
+        # The cutoff is required by nonlinear products, but linear
+        # normal-YBJ recovery is a one-column operation and is valid at
+        # every resolved mode.
+        sigma = compute_sigma(options.f, G, nB, rB; Lmask=L, workspace)
+        normal_N² = N2_face_profile === nothing ? N2_profile : N2_face_profile
+        compute_A!(A, C, B, sigma, G; f=options.f,
+                   Lmask=_linear(options) ? nothing : L, workspace,
+                   N2_profile=normal_N²)
     end
+    return A, C
+end
+
+"""
+Recover `S.A`, and `S.C = A_z`, from `S.B` by the formulation's relation (see
+`_wave_amplitude!`); ψ, u, v, and w are only read. The YBJ recovery uses the
+waves' advection by `S.u` and `S.v`, or with `from_psi` by the velocity of
+`S.psi`, formed in scratch. The advection and refraction are formed in `S.A`
+and `S.C` themselves, which the recovery then overwrites, so it borrows no
+buffer of its own. `S` needs only the fields named here, so it may be a
+named tuple of them.
+"""
+function _recover_wave_amplitude!(S, G, options, plans, a, L, workspace,
+                                  N2_profile, N2_face_profile;
+                                  from_psi::Bool=false)
+    if _ybj_plus(options)
+        Elliptic._invert_B_to_A!(S.A, S.C, S.B, G, a, workspace)
+        return S
+    end
+    nB = _wave_advection!(S.A, S, G, options, plans, L, workspace; from_psi)
+    rB = _wave_refraction!(S.C, S, G, options, plans, L, workspace)
+    _wave_amplitude!(S.A, S.C, S.B, nB, rB, G, options, a, L, workspace,
+                     N2_profile, N2_face_profile)
+    return S
+end
+
+"""
+Wave advection `nB` and refraction `rB` of the prepared state `S`, and its
+amplitude A for the dispersion term (unless `amplitude` is false).
+"""
+function _wave_terms!(nB, rB, S, G, options, plans, a, L, workspace,
+                      N2_profile, N2_face_profile; amplitude::Bool=true)
+    _wave_advection!(nB, S, G, options, plans, L, workspace)
+    _wave_refraction!(rB, S, G, options, plans, L, workspace)
+    amplitude && !_no_dispersion(options) &&
+        _wave_amplitude!(S.A, S.C, S.B, nB, rB, G, options, a, L, workspace,
+                         N2_profile, N2_face_profile)
     return nB, rB
 end
 
 """Inviscid wave tendency, written over the wave advection term in `Bt`."""
 @kernel function _wave_tendency_kernel!(Bt, @Const(rB), @Const(A), @Const(kx),
-                                        @Const(ky), mask, alpha_disp, linear,
-                                        no_dispersion)
+                                        @Const(ky), mask, alpha_disp, linear)
     k, i, j = @index(Global, NTuple)
-    @inbounds _, tB = _etdrk2_tendencies(zero(Bt[k, i, j]), Bt[k, i, j],
-        rB[k, i, j], A[k, i, j], Bt, Bt, kx, k, i, j, kx, ky, mask, alpha_disp,
-        zero(alpha_disp), zero(alpha_disp), 1, false, true, linear, no_dispersion,
-        false)
-    @inbounds Bt[k, i, j] = tB
+    @inbounds begin
+        nB = Bt[k, i, j]
+        amplitude = A === nothing ? zero(nB) : A[k, i, j]
+        _, tB = _etdrk2_tendencies(zero(nB), nB, rB[k, i, j], amplitude,
+            Bt, Bt, kx, k, i, j, kx, ky, mask, alpha_disp,
+            zero(alpha_disp), zero(alpha_disp), 1, false, true, linear, A === nothing,
+            false)
+        Bt[k, i, j] = tB
+    end
 end
 
 """
-Inviscid tendency `∂ₜB` (advection, refraction, dispersion) of the diagnosed
-state `S`; ψ, u, and v must be current. Recomputes the amplitude A of `S`.
+Inviscid tendency `∂ₜB` (advection, refraction, dispersion) of the state `S`
+from its ψ and B alone: the velocity and the amplitude are formed in
+scratch, so `S` is only read.
 """
 function _wave_tendency!(Bt, S, G, options, plans, a, L, workspace,
                          N2_profile, N2_face_profile)
+    # The advection comes first, while it can borrow the most scratch.
+    _wave_advection!(Bt, S, G, options, plans, L, workspace; from_psi=true)
     with_scratch(workspace) do
-        rB = scratch_like(workspace, S.B)
-        _wave_terms!(Bt, rB, S, G, options, plans, a, L, workspace,
-                     N2_profile, N2_face_profile)
-        alpha_disp, _, _, _, _, _, linear, no_dispersion =
-            _tendency_parameters(options, G)
-        launch!(_wave_tendency_kernel!, Bt, size(Bt), Bt, rB, S.A, G.kx, G.ky,
-                _stage_mask(L, Bt), alpha_disp, linear, no_dispersion)
+        rB = _wave_refraction!(scratch_like(workspace, S.B), S, G, options,
+                               plans, L, workspace)
+        A = nothing
+        if !_no_dispersion(options)
+            A = scratch_like(workspace, S.A)
+            _wave_amplitude!(A, scratch_like(workspace, S.C), S.B, Bt, rB, G,
+                             options, a, L, workspace, N2_profile,
+                             N2_face_profile)
+        end
+        alpha_disp, _, _, _, _, _, linear, _ = _tendency_parameters(options, G)
+        launch!(_wave_tendency_kernel!, Bt, size(Bt), Bt, rB, A, G.kx, G.ky,
+                _stage_mask(L, Bt), alpha_disp, linear)
     end
     return Bt
 end
@@ -634,9 +770,10 @@ end
     _wave_pv_derivative!(D, S, G, options, plans, a, L; kwargs...)
 
 Material derivative of the wave PV following the mean flow,
-`D = ∂ₜqʷ + J(ψ, qʷ)`, at the diagnosed state `S` (ψ, u, and v current). It
-forces the mean-flow vertical velocity in coupled runs: the conserved PV is
-`q_g + qʷ`, so `D_t q_g = -D_t qʷ`. `∂ₜqʷ` uses the inviscid wave tendency.
+`D = ∂ₜqʷ + J(ψ, qʷ)`, at the state `S`, from its ψ and B alone (`S` is only
+read). It forces the mean-flow vertical velocity in coupled runs: the
+conserved PV is `q_g + qʷ`, so `D_t q_g = -D_t qʷ`. `∂ₜqʷ` uses the inviscid
+wave tendency, restricted as a step restricts B.
 """
 function _wave_pv_derivative!(D, S::ModelFields, G::RuntimeGeometry,
                               options::ETDModelOptions, plans, a, L;
@@ -646,6 +783,9 @@ function _wave_pv_derivative!(D, S::ModelFields, G::RuntimeGeometry,
         Bt = scratch_like(workspace, S.B)
         _wave_tendency!(Bt, S, G, options, plans, a, L, workspace,
                         N2_profile, N2_face_profile)
+        # A step removes the depth mean that refraction gives B (see
+        # `_project_wave_envelope!`), so B changes only by the rest of Bt.
+        _project_wave_envelope!(Bt, G, options, L, workspace)
 
         # ∂ₜqʷ by polarization of the quadratic qʷ(B), which is exact for any
         # ε; scaling ε B_t to the size of B keeps the round-off small.
@@ -661,27 +801,44 @@ function _wave_pv_derivative!(D, S::ModelFields, G::RuntimeGeometry,
 
         # J(ψ, qʷ), in the divergence form of the model's advection.
         compute_qw_complex!(Bt, S.B, G, plans; f=options.f, Lmask=L, workspace)
-        convol_waqg_q!(Bt, S.u, S.v, Bt, G, plans; Lmask=L, workspace)
+        _advect_by_psi!(Bt, S.psi, Bt, G, plans, options, L,
+                        Nonlinear._real_product, workspace)
         kernel_map!(+, D, D, Bt)
     end
     return D
 end
 
+"""
+The tendencies of the state `S` that a step starts from. `start` says what
+`S` holds (see `_advance_etdrk2!`): with `:new`, B is projected and ψ, u, v,
+and A are diagnosed; with `:projected`, B is as a step left it, so only the
+diagnostics are recomputed; with `:diagnosed`, everything is as a step left
+it. `amplitude` says whether A is recovered as well; it is not when A is
+still the one the last step left, whatever became of ψ, u, and v.
+"""
 function _compute_etdrk2_rhs!(rhsq, rhsB, S::ModelFields, G::RuntimeGeometry,
                               options::ETDModelOptions, plans;
                               a, dealias_mask=nothing, workspace=nothing,
                               N2_profile=nothing,
                               N2_face_profile=nothing,
-                              timestep_workspace=nothing)
+                              timestep_workspace=nothing, start::Symbol=:new,
+                              amplitude::Bool=start !== :diagnosed)
     L = isnothing(dealias_mask) ? KeepAllModes() : dealias_mask
-    _prepare_stage!(S, G, options, plans, a, L, workspace, N2_profile,
-                    N2_face_profile)
+    if start === :new
+        _prepare_stage!(S, G, options, plans, a, L, workspace, N2_profile,
+                        N2_face_profile)
+    elseif start === :projected
+        _diagnose_flow!(S, G, options, plans, a, L;
+                        workspace=workspace, N2_profile=N2_profile,
+                        N2_face_profile=N2_face_profile,
+                        compute_w=false, use_wave_feedback=true)
+    end
     with_scratch(workspace) do
         # The advection terms go straight into the tendencies, which the
         # assembly kernel then completes.
         rBk = scratch_like(workspace, S.B)
         _stage_terms!(rhsq, rhsB, rBk, S, G, options, plans, a, L, workspace,
-                      N2_profile, N2_face_profile)
+                      N2_profile, N2_face_profile; amplitude)
         launch!(_etdrk2_rhs_kernel!, rhsq, size(rhsq),
                 rhsq, rhsB, S.q, rBk, S.A, S.psi, a, G.kx, G.ky,
                 _stage_mask(L, rhsq), _tendency_parameters(options, G)...)
@@ -694,7 +851,6 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
                                  workspace=nothing, N2_profile=nothing,
                                  N2_face_profile=nothing,
                                  timestep_workspace=nothing)
-    normal_recovery_mask = _linear(options) ? nothing : L
     _project_wave_envelope!(S.B, G, options, L, workspace)
     restore_full_fixed_diagnostics = _fixed_flow(options) && !_linear(options)
     # The vertical velocity does not enter the dynamics. It is diagnosed on
@@ -705,28 +861,11 @@ function _finalize_etdrk2_state!(S::ModelFields, G::RuntimeGeometry,
                     N2_face_profile=N2_face_profile,
                     compute_w=false, use_wave_feedback=true)
 
-    if _ybj_plus(options)
-        # Passive waves (which `_ybj_plus` includes) do not need A, but it is
-        # kept as `set!`, output, and the energies define it: B = L⁺A.
-        invert_B_to_A!(S, G, a; workspace)
-    else
-        with_scratch(workspace) do
-            nBk = scratch_like(workspace, S.B)
-            rBk = scratch_like(workspace, S.B)
-            if _linear(options)
-                fill!(nBk, zero(eltype(nBk)))
-            else
-                convol_waqg_B!(nBk, S.u, S.v, S.B, G, plans; Lmask=L, workspace)
-            end
-            refraction_waqg_B!(rBk, S.B, S.psi, G, plans; Lmask=L, workspace)
-            sigma = compute_sigma(options.f, G, nBk, rBk; Lmask=L, workspace)
-            normal_N² = N2_face_profile === nothing ?
-                        N2_profile : N2_face_profile
-            compute_A!(S.A, S.C, S.B, sigma, G;
-                       f=options.f, Lmask=normal_recovery_mask, workspace,
-                       N2_profile=normal_N²)
-        end
-    end
+    # Passive waves (which `_ybj_plus` includes) do not need A, but it is
+    # kept as `set!`, output, and the energies define it: B = L⁺A. The YBJ
+    # recovery uses the stage velocity just diagnosed.
+    _recover_wave_amplitude!(S, G, options, plans, a, L, workspace,
+                             N2_profile, N2_face_profile)
 
     # Nonlinear fixed-flow stages use a projected prescribed ψ so both
     # operands of each quadratic product are alias-safe. The public final
@@ -819,12 +958,30 @@ place. `q` and `B` hold the start-of-step values on entry.
     end
 end
 
-"""Internal ETD-RK2 step of the fields `S`, updated in place."""
+"""
+Internal ETD-RK2 step of the fields `S`, updated in place.
+
+`start` says what `S` holds when the step begins. A step ends by projecting B
+(see `_project_wave_envelope!`) and diagnosing ψ, u, v, A, and C from it, so a
+step that follows another can start from that state: `:diagnosed` when
+nothing has changed `S` since (the diagnosis is then not repeated), and
+`:projected` when only the diagnostics may have been overwritten (they are
+diagnosed again, to the same values, from q and B). `:new`, for any other
+state, projects B and diagnoses it. The projection is not exactly idempotent
+in floating point, so the first two differ from `:new` in the last bits.
+"""
 function _advance_etdrk2!(S::ModelFields, G::RuntimeGeometry,
                           options::ETDModelOptions, plans;
                           Δt::Real, a, dealias_mask=nothing, workspace=nothing,
                           N2_profile=nothing, N2_face_profile=nothing,
-                          timestep_workspace=nothing)
+                          timestep_workspace=nothing, start::Symbol=:new)
+    # A nonlinear fixed flow's stages advect with the velocity of its
+    # projected ψ, but a step ends with the velocity of the full ψ, so the
+    # velocity is diagnosed again. The amplitude the step left is the stage's
+    # own (it was recovered before the full velocity was restored) and stays.
+    amplitude = start !== :diagnosed
+    start === :diagnosed && _fixed_flow(options) && !_linear(options) &&
+        (start = :projected)
     L = isnothing(dealias_mask) ? KeepAllModes() : dealias_mask
     storage = timestep_workspace === nothing ?
               ExponentialRungeKutta2Workspace(S; G) : timestep_workspace
@@ -834,7 +991,7 @@ function _advance_etdrk2!(S::ModelFields, G::RuntimeGeometry,
     _compute_etdrk2_rhs!(storage.rhsq0, storage.rhsB0, S, G, options, plans;
                          a=a, dealias_mask=L, workspace=workspace,
                          N2_profile=N2_profile,
-                         N2_face_profile=N2_face_profile)
+                         N2_face_profile=N2_face_profile, start, amplitude)
 
     # The first-stage state has its own q and B; its diagnostics are computed
     # in the diagnostic arrays of S, which the final diagnosis overwrites.

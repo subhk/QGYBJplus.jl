@@ -242,6 +242,32 @@ end
     end
 end
 
+@testset "Waves that keep q change the balanced flow" begin
+    # With pv_method=:none, q is kept, so the wave PV of new waves changes
+    # the balanced flow; YBJ⁺ kept the flow of the old waves.
+    grid = RectilinearGrid(size=(8, 8, 4), x=(-π, π), y=(-π, π), z=(-1.0, 0.0))
+    vertical_mode = (-1.5, -0.5, 0.5, 1.5)
+    wave = [vertical_mode[k] * (sin(grid.x[i]) + im * sin(grid.y[j]))
+            for k in 1:4, i in 1:8, j in 1:8]
+    for formulation in (YBJPlus(), YBJ())
+        model = coupled_feedback_test_model(grid; formulation)
+        try
+            set!(model; ψ=(x, y, z) -> cos(x) + 0.2sin(y), verbose=false)
+            psi = copy(model.fields.psi)
+            set!(model; B=FieldArray(wave), pv_method=:none, verbose=false)
+            @test maximum(abs, model.fields.psi .- psi) > 1e-2 * maximum(abs, psi)
+            flow = map(copy, (model.fields.psi, model.fields.u, model.fields.v))
+            invert_q_to_psi!(model)
+            compute_velocities!(model; compute_w=false)
+            for (field, value) in zip((model.fields.psi, model.fields.u, model.fields.v), flow)
+                @test field ≈ value atol=1e-12 * maximum(abs, value)
+            end
+        finally
+            finalize_model!(model)
+        end
+    end
+end
+
 @testset "Coupled output, energy, and restart use balanced PV" begin
     grid = RectilinearGrid(
         size=(8, 8, 4),
@@ -606,6 +632,10 @@ end
             QGYBJplus._compute_etdrk2_rhs!(q_t, B_t, state, context.grid, options,
                 plans; a=context.a, dealias_mask=mask, workspace=context.workspace,
                 N2_profile=context.N2, N2_face_profile=context.N2_face)
+            # A step removes the depth mean that refraction gives B (here in
+            # the kₕ = 0 column), so B changes only by the rest of B_t.
+            @test abs(sum(B_t[:, 1, 1])) > 1e-3 * maximum(abs, B_t)
+            QGYBJplus._project_wave_envelope!(B_t, G, options, mask, context.workspace)
             B = model.fields.B
             qw(field) = QGYBJplus.compute_qw_complex!(similar(field), field, G, plans;
                                                       f=options.f, Lmask=mask)
@@ -680,4 +710,30 @@ end
     end
     ratio = maximum(abs, final_q[1] .- final_q[2]) / maximum(abs, final_q[2] .- final_q[3])
     @test 3.6 < ratio < 4.4
+end
+
+@testset "The YBJ amplitude does not depend on a stale streamfunction" begin
+    # The YBJ recovery of A uses the balanced flow. It read `fields.psi`,
+    # which is not the flow of q after q is written to, so A, and the A of a
+    # state file, depended on whether ψ had been inverted since.
+    grid = RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0), formulation=YBJ(),
+        feedback=WaveMeanFeedback(), verbose=false)
+    try
+        set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+             waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+        model.fields.q .*= 1.7
+        stale_psi = copy(model.fields.psi)
+        invert_B_to_A!(model)
+        before = copy(model.fields.A)
+        @test model.fields.psi == stale_psi      # only A and C change
+        invert_q_to_psi!(model)
+        @test model.fields.psi != stale_psi
+        invert_B_to_A!(model)
+        @test model.fields.A == before
+        @test maximum(abs, before) > 0
+    finally
+        finalize_model!(model)
+    end
 end

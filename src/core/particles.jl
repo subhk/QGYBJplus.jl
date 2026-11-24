@@ -36,7 +36,8 @@ function UnifiedParticleAdvection.initialize_particles!(
 
     _assert_mutable(simulation)
     UnifiedParticleAdvection.initialize_particles!(simulation.model, configuration)
-    _align_particle_time!(simulation.model.particles, simulation.clock.time)
+    _align_particle_time!(simulation.model.particles, simulation.clock.time,
+                          _time_step(simulation))
     return simulation
 end
 
@@ -67,14 +68,22 @@ kept from the previous call that ended at `current_time`; integration stages
 interpolate linearly in time between the two. Without it (on the first call,
 or after a gap) the end-of-interval velocity is used for the whole step.
 """
-function UnifiedParticleAdvection.advect_particles!(
-    model::QGYBJModel, Δt::Real; current_time=nothing)
+UnifiedParticleAdvection.advect_particles!(
+    model::QGYBJModel, Δt::Real; current_time=nothing) =
+    _advect_particles!(model, Δt, current_time)
 
+"""
+`advect_particles!(model, Δt; current_time)`. `as_stepped`, which only `run!`
+passes, says that the model's fields are as the step just taken left them, so
+that their velocity is not diagnosed again.
+"""
+function _advect_particles!(model::QGYBJModel, Δt::Real, current_time;
+                            as_stepped::Bool=false)
     tracker = model.particles
     tracker isa ParticleTracker ||
         throw(ArgumentError("initialize model particles before advection"))
     # Particle times are Float64 whatever the particles' precision.
-    value = Float64(Δt)
+    value = _time_value(Δt)
     isfinite(value) && value > 0 ||
         throw(ArgumentError("particle time step must be finite and positive"))
 
@@ -82,7 +91,7 @@ function UnifiedParticleAdvection.advect_particles!(
     runtime.finalized && error("cannot advect particles on a finalized model")
     UnifiedParticleAdvection.advect_particles!(
         tracker, model.fields, runtime.geometry, value, current_time;
-        _particle_velocity_options(model)...)
+        as_stepped, _particle_velocity_options(model)...)
     return model
 end
 
@@ -98,11 +107,11 @@ function _particle_velocity_options(model::QGYBJModel)
 end
 
 function _advect_model_particles!(tracker::ParticleTracker,
-    model::QGYBJModel, Δt, time)
+    model::QGYBJModel, Δt, time; as_stepped::Bool=false)
 
     tracker === model.particles ||
         error("model particle ownership is inconsistent")
-    advect_particles!(model, Δt; current_time=time)
+    _advect_particles!(model, Δt, time; as_stepped)
     return tracker
 end
 
@@ -110,24 +119,49 @@ end
 Keep the velocity of the model's current state, at simulation time `time`, as
 the start of the next particle step, and store each particle's velocity at
 that time (unless the particles are released later, and so stay at rest).
+Diagnose it from the same projected state as the time step, in scratch
+storage so the model's fields remain available to the integrator.
 """
 function _record_particle_velocity!(tracker::ParticleTracker,
     model::QGYBJModel, time)
 
     tracker === model.particles ||
         error("model particle ownership is inconsistent")
-    time = Float64(time)
+    time = _time_value(time)
     UnifiedParticleAdvection._released(tracker, time) || return tracker
-    UnifiedParticleAdvection.update_velocity_fields!(
-        tracker, model.fields, model.runtime.geometry; time,
-        _particle_velocity_options(model)...)
+
+    context = _operator_context(model)
+    (; fields, grid, plans, workspace, mask, a, N2, N2_face) = context
+    options = ETDModelOptions(model.physics, model.numerics)
+    instantaneous = tracker.config.wave_motion === :instantaneous
+    # These fields are only needed at startup. Keep them out of the workspace,
+    # whose high-water mark is retained for every step.
+    B = fields.B
+    if instantaneous || _wave_feedback_enabled(options)
+        B = copy(fields.B)
+        _project_wave_envelope!(B, grid, options, mask, workspace)
+    end
+    fixed_flow = _fixed_flow(options)
+    psi = fixed_flow ? fields.psi : similar(fields.psi)
+    A = instantaneous ? similar(fields.A) : fields.A
+    C = instantaneous ? similar(fields.C) : fields.C
+    state = ModelFields(fields.q, B, psi, A, C,
+                        similar(fields.u), similar(fields.v), similar(fields.w))
+    fixed_flow || _invert_total_q_to_psi!(state, grid, options, plans, a, mask;
+        workspace, project_nonlinear_state=true)
+    instantaneous && _recover_wave_amplitude!(state, grid, options, plans, a,
+        mask, workspace, N2, N2_face; from_psi=true)
+    UnifiedParticleAdvection.update_velocity_fields!(tracker, state, grid;
+        time, _particle_velocity_options(model)...)
+
     UnifiedParticleAdvection._store_particle_velocities!(tracker, time)
+    tracker.released = true
     return tracker
 end
 
 
-_align_particle_time!(tracker::ParticleTracker, time) =
-    UnifiedParticleAdvection._align_particle_time!(tracker, time)
+_align_particle_time!(tracker::ParticleTracker, time, Δt) =
+    UnifiedParticleAdvection._align_particle_time!(tracker, time, Δt)
 
 """Error unless `particle_output` is `nothing`, `false`, or a `ParticleOutputManager`."""
 function _check_particle_output_type(particle_output)
@@ -159,13 +193,14 @@ end
 function _prepare_particle_output!(simulation::Simulation)
     manager = simulation.particle_output_manager
     (manager === nothing || manager === false) && return simulation
+    manager.time_step = _time_step(simulation)
     if !manager.initialized
         setup_particle_output!(manager, simulation.model.particles)
         time = simulation.clock.time
         manager.last_save_iter = simulation.clock.iteration
         manager.last_save_time = time
         manager.save_interval_time > 0 && (manager.next_save_time =
-            _next_deadline(time, manager.save_interval_time))
+            _next_deadline(time, manager.save_interval_time, _time_step(simulation)))
     end
     return simulation
 end

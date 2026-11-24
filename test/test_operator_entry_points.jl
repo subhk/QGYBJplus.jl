@@ -54,6 +54,58 @@ end
     @test plus.fields.A ≈ A
 end
 
+@testset "Wave inversions change only the wave fields" begin
+    # For YBJ() they re-diagnosed the flow: u and v of the projected ψ, and ψ
+    # without its modes beyond the two-thirds cutoff, which q keeps.
+    sharp(x, y, z) = eddy(x, y, z) + 50 * sin(2π * 7 * x / 1e5) * (1 + z / 2000)
+    for formulation in (YBJ(), YBJPlus())
+        model = operator_test_model(; formulation, feedback=WaveMeanFeedback())
+        set!(model; ψ=sharp)
+        psi = copy(model.fields.psi)
+        packet_waves(model)
+        @test model.fields.psi == psi
+        A, C = copy(model.fields.A), copy(model.fields.C)
+
+        compute_total_velocities!(model; t=600.0)
+        flow = map(copy, (model.fields.psi, model.fields.u, model.fields.v))
+        w = copy(model.fields.w)
+        invert_B_to_A!(model)
+        @test (model.fields.psi, model.fields.u, model.fields.v) == flow
+        @test model.fields.w == w
+        @test model.fields.A == A && model.fields.C == C
+        compute_ybj_vertical_velocity!(model; t=600.0)
+        @test (model.fields.psi, model.fields.u, model.fields.v) == flow
+        @test model.fields.A == A
+
+        # The amplitude is the one a step leaves.
+        step!(model, ExponentialRungeKutta2(Δt=600.0))
+        A = copy(model.fields.A)
+        invert_B_to_A!(model)
+        @test model.fields.A == A
+        finalize_model!(model)
+    end
+end
+
+@testset "compute_vertical_velocity! forces w with the flow of ψ" begin
+    # Its wave-PV forcing advected the waves with whatever u and v held, and
+    # rewrote A (or, for passive waves, cleared it).
+    for formulation in (YBJPlus(), YBJ(), PassiveWave())
+        model = operator_test_model(; formulation, feedback=WaveMeanFeedback())
+        set!(model; ψ=eddy)
+        packet_waves(model)
+        A = copy(model.fields.A)
+        compute_velocities!(model)
+        w = copy(model.fields.w)
+        compute_total_velocities!(model; t=600.0)
+        u, v = copy(model.fields.u), copy(model.fields.v)
+        compute_vertical_velocity!(model)
+        @test model.fields.w == w
+        @test model.fields.u == u && model.fields.v == v
+        @test model.fields.A == A
+        finalize_model!(model)
+    end
+end
+
 @testset "PassiveWave keeps A = L⁺⁻¹B after a step" begin
     # A step cleared A and C, while set!, output, and the energies use L⁺⁻¹B.
     model = operator_test_model(formulation=PassiveWave())
@@ -165,4 +217,25 @@ end
     fields = copy_fields(model.fields)
     invert_q_to_psi!(fields, geometry; a=a64)
     @test fields.psi ≈ model.fields.psi rtol=1e-4
+end
+
+@testset "Float32 flux inversions preserve long barotropic modes" begin
+    L = 1_000_000
+    grid = RectilinearGrid(Float32; size=(8, 8, 100), extent=(L, L, 100))
+    stratification = AnalyticalProfile(z -> 1e-5 * (1.5 + 0.4sinpi(z / 100)))
+    model = QGYBJModel(; grid, stratification, verbose=false)
+    set!(model; ψ=(x, y, z) -> cospi(2x / L))
+    fields = model.fields
+    expected = copy(fields.psi)
+    horizontal_pv = -reshape(grid.kh2, 1, 8, 8) .* expected
+    @test fields.q ≈ horizontal_pv rtol=1e-6
+
+    invert_q_to_psi!(model)
+    @test fields.psi ≈ expected rtol=1e-5
+
+    # In a depth-constant column, L⁺A = -(kₕ²/4)A and A_z = 0.
+    fields.B .= horizontal_pv ./ 4
+    invert_B_to_A!(model)
+    @test fields.A ≈ expected rtol=1e-5
+    @test maximum(abs, fields.C) < 1e-8
 end

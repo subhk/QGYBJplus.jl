@@ -151,6 +151,79 @@ end
     end
 end
 
+@testset "File heights are read in the grid's coordinates" begin
+    # On a grid whose lid is at z = 1000, N² reloaded from a state file, or
+    # read from a z stated to be positive up, came out upside down.
+    grid = RectilinearGrid(size=(4, 4, 8), x=(0.0, 1e4), y=(0.0, 1e4), z=(0.0, 1000.0))
+    build(stratification) = QGYBJModel(; grid, coriolis=FPlane(f=1e-4), stratification,
+                                       flow=FixedFlow(), verbose=false)
+    mktempdir() do directory
+        model = build(TanhProfile{Float64}(0.01, 0.002, 300.0, 50.0))
+        simulation = Simulation(model; Δt=1.0, stop_iteration=1, diagnostics=false,
+                                output=NetCDFOutput(path=directory), verbose=false)
+        run!(simulation)
+        finalize_simulation!(simulation)
+        path = joinpath(directory, "state0001.nc")
+        state = load_stratification_from_file(path)
+        coefficients = model.runtime.coefficients
+        reloaded = build(state)
+        rebuilt = reloaded.runtime.coefficients
+        @test rebuilt.N² == coefficients.N²
+        @test rebuilt.N²_face == coefficients.N²_face
+        @test rebuilt.a_ell == coefficients.a_ell
+        @test_logs restore!(reloaded, path)
+
+        # Files without face samples still interpolate from their centers.
+        legacy_path = joinpath(directory, "legacy_profile.nc")
+        NCDataset(legacy_path, "c") do dataset
+            dataset.attrib["wave_formulation"] = "YBJPlus"
+            defVar(dataset, "z", grid.z, ("z",))
+            defVar(dataset, "N2", coefficients.N², ("z",))
+        end
+        legacy = build(load_stratification_from_file(legacy_path))
+        @test legacy.runtime.coefficients.N² == coefficients.N²
+        @test legacy.runtime.coefficients.N²_face != coefficients.N²_face
+        @test_logs (:warn, r"different N² profile \(N2_face\)") restore!(legacy, path)
+
+        # N² = 1e-6 (1 + z / 500) at the heights z = 0, 500, and 1000.
+        for (positive, coordinate) in (("up", [0.0, 500.0, 1000.0]),
+                                       ("DOWN", [1000.0, 500.0, 0.0]))
+            path = joinpath(directory, "$positive.nc")
+            NCDataset(path, "c") do dataset
+                dataset.dim["level"] = 3
+                defVar(dataset, "z", coordinate, ("level",); attrib=Dict("positive" => positive))
+                defVar(dataset, "N2", [1e-6, 2e-6, 3e-6], ("level",))
+            end
+            profile = load_stratification_from_file(path)
+            @test compute_stratification_profile(profile, grid) ≈ 1e-6 .* (1 .+ grid.z ./ 500)
+        end
+    end
+end
+
+@testset "A stated direction does not move the surface" begin
+    # `positive = "up"` gives the sign of z, not where it is measured from.
+    # Ocean data carry it on heights below the surface, which were read as
+    # heights in the grid's coordinates: on a grid from z = 0 to 1 every
+    # level then lay above the data, and N² came out constant.
+    heights, N² = [-0.9, -0.7, -0.5, -0.3, -0.1], [1.0, 2.0, 3.0, 4.0, 5.0]
+    mktempdir() do directory
+        for attributes in (Dict("positive" => "up"), Dict{String, String}())
+            path = joinpath(directory, "$(length(attributes)).nc")
+            NCDataset(path, "c") do dataset
+                dataset.dim["z"] = 5
+                defVar(dataset, "z", heights, ("z",); attrib=attributes)
+                defVar(dataset, "N2", N², ("z",))
+            end
+            profile = load_stratification_from_file(path)
+            @test profile.below_lid
+            for z in ((0.0, 1.0), (-1.0, 0.0), (10.0, 11.0))
+                grid = RectilinearGrid(size=(4, 4, 5), x=(0.0, 1.0), y=(0.0, 1.0), z=z)
+                @test compute_stratification_profile(profile, grid) ≈ N²
+            end
+        end
+    end
+end
+
 @testset "Single-level stratification validation" begin
     errors, warnings = validate_stratification([1.0])
     @test isempty(errors)

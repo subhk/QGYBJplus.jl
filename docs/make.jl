@@ -55,7 +55,10 @@ makedocs(
         "Troubleshooting" => "troubleshooting.md",
     ],
     doctest = false,
-    # Internal kernels are intentionally omitted from the user-facing API.
+    # Internal kernels are intentionally omitted from the user-facing API, so
+    # only exported names are checked. The few that internal submodules export
+    # but the package does not are reported as a warning.
+    checkdocs = :exports,
     warnonly = [:missing_docs],
 )
 

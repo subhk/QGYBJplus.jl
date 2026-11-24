@@ -18,8 +18,10 @@ RectilinearGrid → QGYBJModel → Simulation
 - [`Simulation`](@ref) owns time, ETD-RK2, stopping criteria, output, and
   diagnostics.
 
-Finalize a simulation when the run ends. This closes its output services and
-releases runtime resources owned by the model.
+Finalize a simulation when the run ends: [`finalize_simulation!`](@ref)
+closes its output and releases its time-stepping workspace, but leaves the
+model intact, so a new simulation can continue from its fields. Release the
+model's own memory with [`finalize_model!`](@ref) when it is no longer needed.
 
 ## Model fields
 

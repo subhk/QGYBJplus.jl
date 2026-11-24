@@ -63,7 +63,7 @@ module YBJNormal
 
 using KernelAbstractions: @kernel, @index, @Const, get_backend
 using ..QGYBJplus: RuntimeGeometry, launch!, kernel_mask, keep_mode, on_backend,
-                   KeepAllModes, vertical_spacing, in_precision
+                   KeepAllModes, vertical_spacing, in_precision, _subtract_depth_mean!
 
 """Kernel rule for a normal-YBJ `Lmask`: `nothing` keeps every mode."""
 _column_mask(Lmask, array) = kernel_mask(Lmask, array, KeepAllModes())
@@ -110,24 +110,19 @@ Modified B array with zero vertical mean at each (kₓ, kᵧ).
 Follows `sumB` in derivatives.f90, but keeps the depth-varying part of the
 kₕ = 0 column, the horizontally uniform waves.
 """
-function sumB!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry; Lmask=nothing, workspace=nothing)
+function sumB!(B::AbstractArray{<:Complex,3}, G::RuntimeGeometry;
+               Lmask=nothing, workspace=nothing, reference_centered::Bool=false)
     nz, nx, ny = size(B)
     @assert nz == G.nz "Vertical dimension must match the grid"
-    launch!(_sumB_kernel!, B, (nx, ny), B, G.kx, G.ky, _column_mask(Lmask, B), nz)
+    launch!(_sumB_kernel!, B, (nx, ny), B, _column_mask(Lmask, B), nz,
+            Val(reference_centered))
     return B
 end
 
-@kernel function _sumB_kernel!(B, @Const(kx), @Const(ky), mask, nz)
+@kernel function _sumB_kernel!(B, mask, nz, reference_centered)
     i, j = @index(Global, NTuple)
     if keep_mode(mask, i, j)
-        s = zero(eltype(B))
-        for k in 1:nz
-            @inbounds s += B[k, i, j]
-        end
-        aveij = s / nz
-        for k in 1:nz
-            @inbounds B[k, i, j] -= aveij
-        end
+        _subtract_depth_mean!(B, i, j, nz, reference_centered)
     else
         for k in 1:nz
             @inbounds B[k, i, j] = zero(eltype(B))

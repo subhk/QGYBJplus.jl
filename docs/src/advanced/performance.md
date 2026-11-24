@@ -66,6 +66,15 @@ end
 Constructing a new timestepper inside the loop defeats workspace reuse.
 Manual stepping does not advance particles, output, diagnostics, or a clock.
 
+`run!` is also faster per step than such a loop, by 10–20% at moderate
+resolution. Each step ends by diagnosing ψ, the velocities, and the wave
+amplitude from the new q and B. Inside `run!` nothing changes the fields
+between steps, so the next step starts from that diagnosis. A bare `step!`
+cannot know that the fields are unchanged, so it diagnoses them again.
+Results agree to rounding: the restriction of B that each step ends with is
+not repeated, so the last bits can differ from a loop of `step!` calls. They
+do not depend on the output schedule.
+
 ## Avoid host transfers in the time loop
 
 - Avoid copying full fields to the host (`Array(model.fields.q)`) during the

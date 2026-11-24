@@ -6,9 +6,9 @@ on:
   pull_request:
     types: [ closed ]
 
-# Shares the documentation workflow's group, so the two never push at once.
+# Waits for the pull request's last documentation run, which shares the group.
 concurrency:
-  group: gh-pages
+  group: docs-${{ github.event.number }}
   cancel-in-progress: false
 
 permissions:
@@ -24,15 +24,25 @@ jobs:
         with:
           ref: gh-pages
 
+      # Another documentation run may push to gh-pages meanwhile. The lease
+      # makes the force push fail rather than erase that deploy, and the
+      # cleanup then starts again from the new gh-pages.
       - name: Delete the preview and squash the branch history
         env:
           preview_dir: previews/PR${{ github.event.number }}
         run: |
-          if [ -d "${preview_dir}" ]; then
-            git config user.name "Documenter.jl"
-            git config user.email "documenter@juliadocs.github.io"
-            git rm -rf "${preview_dir}"
-            git commit -m "delete preview"
-            git branch gh-pages-new "$(echo "delete history" | git commit-tree HEAD^{tree})"
-            git push --force origin gh-pages-new:gh-pages
-          fi
+          git config user.name "Documenter.jl"
+          git config user.email "documenter@juliadocs.github.io"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q --depth=1 origin gh-pages
+            git reset -q --hard FETCH_HEAD
+            [ -d "${preview_dir}" ] || exit 0
+            base=$(git rev-parse HEAD)
+            git rm -rq "${preview_dir}"
+            git commit -qm "delete preview"
+            squashed=$(echo "delete history" | git commit-tree HEAD^{tree})
+            git push --force-with-lease=refs/heads/gh-pages:"${base}" \
+                origin "${squashed}":refs/heads/gh-pages && exit 0
+            sleep 15
+          done
+          exit 1

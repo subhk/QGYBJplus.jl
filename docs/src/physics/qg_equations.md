@@ -152,8 +152,11 @@ exactly.
 With wave feedback the conserved PV is ``q^g+q^w``, so the vorticity equation
 gains ``-D_t q^w`` and the omega equation the forcing
 ``f_0\,\partial_z(D_t q^w)``, where ``D_t q^w = \partial_t q^w + J(\psi,q^w)`` and
-``\partial_t q^w`` follows from the inviscid wave tendency. The ``w`` of a coupled
-run then closes the coupled buoyancy equation exactly. As ``\psi`` is the
+``\partial_t q^w`` follows from the inviscid wave tendency, less the depth mean
+that a time step removes from ``B`` (see [YBJ⁺ wave model](@ref ybj-plus)).
+The ``w`` of a coupled run then closes the coupled buoyancy equation exactly.
+The forcing is formed from ``\psi`` and ``B`` alone, so it neither reads nor
+changes `u`, `v`, or the wave amplitude. As ``\psi`` is the
 Lagrangian-mean streamfunction (Xie & Vanneste 2015; Wagner & Young 2016),
 ``u``, ``v``, and ``w`` are Lagrangian-mean velocities; see
 [Wave–mean interaction](@ref wave-mean) for the instantaneous velocity.

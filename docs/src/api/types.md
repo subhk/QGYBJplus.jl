@@ -51,6 +51,7 @@ PassiveWave
 ## Numerical components
 
 ```@docs
+GridScaleHyperdiffusivity
 HorizontalHyperdiffusivity
 FlowHyperdiffusivity
 WaveHyperdiffusivity
