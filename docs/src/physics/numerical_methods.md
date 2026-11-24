@@ -51,6 +51,12 @@ the conservative flux uses
 vertical column is solved by one kernel work item with the Thomas algorithm,
 so all horizontal modes are solved in parallel on the CPU or GPU.
 
+`N²` is bounded below by `√eps` times its largest value, with a warning, and
+every operator that divides by it (the inversions, the vertical velocities,
+the Stokes drift, and the `YBJ()` recovery) uses that one bounded profile.
+`N²` must be positive on every face but the rigid lid, where no operator uses
+it and it may be zero.
+
 ## ETD-RK2
 
 For

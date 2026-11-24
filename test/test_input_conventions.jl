@@ -1,5 +1,6 @@
 using Test
 using FFTW
+using JLD2
 using NCDatasets
 using QGYBJplus
 
@@ -36,6 +37,22 @@ end
                            [("y", ny), ("x", nx), ("z", nz)], permutedims(xyz, (2, 1, 3)))
         set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
         @test physical_values(model.fields.psi) ≈ expected
+
+        # A separate x dimension of the same length can be present in staggered output.
+        x_staggered = grid.x .+ grid.dx / 2
+        staggered = [sin(2π * x) * (1 + 0.5cos(2π * y)) * (1 + 0.1k)
+                     for x in x_staggered, y in grid.y, k in 1:nz]
+        path = joinpath(directory, "staggered.nc")
+        NCDataset(path, "c") do dataset
+            defVar(dataset, "x", grid.x, ("x",))
+            defVar(dataset, "xc", x_staggered, ("xc",))
+            defVar(dataset, "y", grid.y, ("y",))
+            defVar(dataset, "z", grid.z, ("z",))
+            defVar(dataset, "field", staggered, ("xc", "y", "z"))
+        end
+        set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+        centered = (staggered .+ circshift(staggered, (1, 0, 0))) ./ 2
+        @test physical_values(model.fields.psi) ≈ permutedims(centered, (3, 1, 2))
 
         # Common alternative names, and a third dimension implied by the other two.
         path = write_field(joinpath(directory, "lonlat.nc"),
@@ -135,6 +152,104 @@ end
                                         ("depth", collect(1000.0 .- shifted.z))))
         set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
         @test physical_values(model.fields.psi)[:, 1, 1] ≈ 1:8
+    end
+end
+
+@testset "FieldFile finds coordinates under the names of the axes" begin
+    # A (lon, lat, depth) field, surface first as in ocean output, was taken to
+    # be on the model's grid, bottom level first.
+    grid = RectilinearGrid(size=(4, 4, 8), extent=(1.0, 1.0, 800.0))
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0), flow=FixedFlow(),
+                       stratification=ConstantStratification(N²=1.0), verbose=false)
+    depth = collect(50.0:100.0:750.0)
+    values = [d for x in grid.x, y in grid.y, d in depth]   # the depth of each point
+    mktempdir() do directory
+        # Longitude and latitude are in degrees, not the model's units: they
+        # were read as x and y in metres, and the field interpolated across
+        # the domain. Only the depths place such a field.
+        degrees = collect(10.0:13.0)
+        for (x, y, z, horizontal, vertical) in (
+                ("lon", "lat", "depth", (degrees, degrees), depth),
+                ("xC", "yC", "zC", (collect(grid.x), collect(grid.y)), -depth))
+            path = write_field(joinpath(directory, "$x.nc"), [(x, 4), (y, 4), (z, 8)], values;
+                               coordinates=((x, horizontal[1]), (y, horizontal[2]),
+                                            (z, vertical)))
+            set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+            @test physical_values(model.fields.psi)[:, 1, 1] ≈ -grid.z
+        end
+        columns = [100.0i + j for i in 1:4, j in 1:4, d in depth]
+        path = write_field(joinpath(directory, "columns.nc"),
+                           [("lon", 4), ("lat", 4), ("depth", 8)], columns;
+                           coordinates=(("lon", degrees), ("lat", degrees), ("depth", depth)))
+        set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+        @test physical_values(model.fields.psi)[1, :, :] ≈ columns[:, :, 1]
+
+        # A level index is not a depth: the field is on the grid as stored.
+        levels = [Float64(k) for i in 1:4, j in 1:4, k in 1:8]
+        path = write_field(joinpath(directory, "level.nc"),
+                           [("x", 4), ("y", 4), ("level", 8)], levels;
+                           coordinates=(("x", collect(grid.x)), ("y", collect(grid.y)),
+                                        ("level", collect(1.0:8.0))))
+        set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+        @test physical_values(model.fields.psi)[:, 1, 1] ≈ 1:8
+    end
+end
+
+@testset "Field and stratification files share a vertical convention" begin
+    # On a grid whose lid is at z = 1000, the stratification reader took heights
+    # stated to be positive up for depths, and the field reader depths stated
+    # to be positive down for heights.
+    grid = RectilinearGrid(size=(4, 4, 8), x=(0.0, 1e5), y=(0.0, 1e5), z=(0.0, 1000.0))
+    levels = [Float64(k) for i in 1:4, j in 1:4, k in 1:8]
+    N² = 1e-6 .* (1 .+ grid.z ./ 1000)
+    mktempdir() do directory
+        for (positive, coordinate) in (("up", grid.z), ("down", 1000 .- grid.z))
+            path = joinpath(directory, "$positive.nc")
+            NCDataset(path, "c") do dataset
+                dataset.dim["x"] = 4; dataset.dim["y"] = 4; dataset.dim["z"] = 8
+                defVar(dataset, "x", collect(grid.x), ("x",))
+                defVar(dataset, "y", collect(grid.y), ("y",))
+                defVar(dataset, "z", collect(coordinate), ("z",); attrib=Dict("positive" => positive))
+                defVar(dataset, "N2", N², ("z",))
+                defVar(dataset, "field", levels, ("x", "y", "z"))
+            end
+            model = QGYBJModel(grid=grid, coriolis=FPlane(f=1e-4), flow=FixedFlow(),
+                               stratification=load_stratification_from_file(path),
+                               verbose=false)
+            @test model.runtime.coefficients.N² ≈ N²
+            set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+            @test physical_values(model.fields.psi)[:, 1, 1] ≈ 1:8
+        end
+    end
+end
+
+@testset "JLD2 fields drop dimensions of length one, as NetCDF fields do" begin
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(1.0, 1.0, 1.0))
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0), flow=FixedFlow(),
+                       stratification=ConstantStratification(N²=1.0), verbose=false)
+    xyz = [sin(2π * x) * (1 + 0.5cos(2π * y)) * (1 + 0.1k)
+           for x in grid.x, y in grid.y, k in 1:4]
+    mktempdir() do directory
+        path = joinpath(directory, "time.jld2")
+        jldsave(path; field=reshape(xyz, size(xyz)..., 1), series=cat(xyz, xyz; dims=4))
+        set!(model; ψ=FieldFile(path, "field"), pv_method=:none)
+        @test physical_values(model.fields.psi) ≈ permutedims(xyz, (3, 1, 2))
+        @test_throws ArgumentError set!(model; ψ=FieldFile(path, "series"), pv_method=:none)
+    end
+
+    # With one level, the leading z of a (z, x, y, time) array was dropped in
+    # place of the trailing time.
+    flat = RectilinearGrid(size=(8, 8, 1), extent=(1.0, 1.0, 1.0))
+    flat_model = QGYBJModel(grid=flat, coriolis=FPlane(f=1.0), flow=FixedFlow(),
+                            stratification=ConstantStratification(N²=1.0), verbose=false)
+    xy = [sin(2π * x) * (1 + 0.5cos(2π * y)) for x in flat.x, y in flat.y]
+    mktempdir() do directory
+        path = joinpath(directory, "flat.jld2")
+        jldsave(path; zxy=reshape(xy, 1, 8, 8, 1), xyz=reshape(xy, 8, 8, 1, 1))
+        for (name, layout) in (("zxy", :zxy), ("xyz", :xyz))
+            set!(flat_model; ψ=FieldFile(path, name; layout), pv_method=:none)
+            @test physical_values(flat_model.fields.psi)[1, :, :] ≈ xy
+        end
     end
 end
 

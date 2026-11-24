@@ -75,31 +75,13 @@ _dispersion_component(mode::DispersionMode) = mode
 _dispersion_component(no_dispersion::Bool) = no_dispersion ? NoDispersion() : Dispersive()
 
 """
-Warn when the default closure barely damps the smallest scale the grid keeps:
-when that scale takes more than 100 inertial periods to decay by e. Its
-coefficients come from nondimensional setups, where that decay takes a tiny
-fraction of an inertial period; with dimensional wavenumbers (kₕ ~ 10⁻⁴ m⁻¹)
-they damp almost nothing, and a nonlinear run is effectively inviscid. The
-damping is measured against the inertial period, the one time scale every
-model has.
+`closure` on `grid`: a `GridScaleHyperdiffusivity` takes the largest kₕ² that
+the grid's dealiasing keeps; other closures are their own coefficients.
 """
-function _warn_inert_default_closure(grid::RectilinearGrid,
-                                     closure::HorizontalHyperdiffusivity, f::Real)
-    kept = dealias_mask(grid)
-    k² = maximum(grid.kh2[kept])
-    iszero(k²) && return nothing
-    rate = max(Nonlinear._hyperdiffusion_exponent(closure.flow, k², 1.0),
-               Nonlinear._hyperdiffusion_exponent(closure.wave, k², 1.0))
-    periods = abs(f) / (2π * rate)
-    periods > 100 || return nothing
-    @warn "The default closure, HorizontalHyperdiffusivity(), barely damps this " *
-          "grid: the smallest scale it keeps, at kₕ = $(round(sqrt(k²); sigdigits=3)), " *
-          "decays by e in $(round(periods; sigdigits=3)) inertial periods. Its " *
-          "coefficients suit nondimensional setups. For a dimensional one, pass a " *
-          "closure with coefficients from compute_hyperdiff_coeff, or " *
-          "inviscid=Inviscid() to run without horizontal damping deliberately." maxlog=1
-    return nothing
-end
+_closure_on_grid(closure::AbstractClosure, grid::RectilinearGrid) = closure
+_closure_on_grid(closure::GridScaleHyperdiffusivity, grid::RectilinearGrid) =
+    GridScaleHyperdiffusivity(closure.order, closure.efold_steps,
+                              maximum(grid.kh2[dealias_mask(grid)]))
 
 """
     QGYBJModel(; grid, coriolis=FPlane(f=1e-4),
@@ -116,9 +98,8 @@ components before transform plans or fields are allocated:
 - `stratification`: a `ConstantStratification`, a [`StratificationProfile`](@ref),
   or the constant N² itself.
 - `closure`: horizontal hyperdiffusion. The default,
-  `HorizontalHyperdiffusivity()`, has coefficients for nondimensional setups;
-  with `verbose`, a nonlinear, dissipative model warns when they barely damp
-  its grid, as they do for dimensional wavenumbers.
+  [`GridScaleHyperdiffusivity`](@ref)`()`, damps the smallest scale the grid
+  keeps by one e-fold every 10 steps, in any units.
 - `vertical_diffusion`: a `VerticalDiffusivity`, or its coefficient.
 - `flow`: `EvolvingFlow()` (or `:evolving`), or `FixedFlow()` (`:fixed`,
   `true`) for a prescribed streamfunction.
@@ -129,7 +110,7 @@ components before transform plans or fields are allocated:
 - `inviscid`, `linear`, `no_dispersion`: `true` (or `Inviscid()`,
   `LinearDynamics()`, `NoDispersion()`) removes dissipation, the nonlinear
   terms, or wave dispersion.
-- `verbose`: report the architecture and size, and warn about inert closures.
+- `verbose`: report the architecture and size.
 """
 function QGYBJModel(; grid::RectilinearGrid,
     coriolis=FPlane(f=1e-4),
@@ -161,14 +142,12 @@ function QGYBJModel(; grid::RectilinearGrid,
     physics = ModelPhysics(coriolis_component, stratification_component,
                            flow_component, feedback_component,
                            formulation_component)
-    closure_component = closure === nothing ? HorizontalHyperdiffusivity() : closure
+    closure_component = _closure_on_grid(
+        closure === nothing ? GridScaleHyperdiffusivity() : closure, grid)
     numerics = ModelNumerics(closure_component, vertical_component,
                              _dissipation_component(inviscid),
                              _dynamics_component(linear),
                              _dispersion_component(no_dispersion))
-    closure === nothing && verbose && numerics.dissipation isa Dissipative &&
-        numerics.dynamics isa NonlinearDynamics &&
-        _warn_inert_default_closure(grid, closure_component, coriolis_component.f)
 
     runtime = build_runtime(grid, physics, numerics; verbose)
     fields = allocate_fields(grid, runtime)

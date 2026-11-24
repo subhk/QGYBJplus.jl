@@ -84,6 +84,9 @@ model = QGYBJModel(grid=grid)
 | Particle positions, the velocity that advects them, and the advection kernel | architecture of the grid; positions are copied to the host when output or the in-memory history records them |
 | Grid coordinates (`grid.x`, `grid.kx`, …) | host |
 
+For `BigFloat` hyperdiffusivity coefficients, the ETD integrating factors are
+computed on the host and copied to the device in the grid's precision.
+
 User functions passed to `set!`, such as `ψ=(x, y, z) -> ...`, are evaluated
 on the host, so they need not be GPU-compatible.
 

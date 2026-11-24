@@ -75,6 +75,48 @@ using QGYBJplus
     end
 end
 
+@testset "Every operator uses one bounded N² profile" begin
+    # Only the elliptic coefficient bounded N²; w, the Stokes drift, and the
+    # YBJ recovery divided by the raw values.
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    mixed = AnalyticalProfile(z -> z < -0.5 ? 1e-20 : 1.0; returns=:N²)
+    model = @test_logs (:warn, r"below √eps") QGYBJModel(; grid,
+        coriolis=FPlane(f=1.0), stratification=mixed, verbose=false)
+    coefficients = model.runtime.coefficients
+    bound = sqrt(eps()) * maximum(coefficients.N²_face)
+    @test minimum(coefficients.N²_face) == bound
+    @test minimum(coefficients.N²) == bound
+    @test coefficients.a_ell == 1 ./ coefficients.N²_face
+    @test Array(model.runtime.device_coefficients.N²_face) == coefficients.N²_face
+    finalize_model!(model)
+
+    # Well above the bound, the profile is the stratification's own.
+    model = QGYBJModel(; grid, coriolis=FPlane(f=1.0), verbose=false,
+        stratification=AnalyticalProfile(z -> 1 + 0.5cos(3z); returns=:N²))
+    @test model.runtime.coefficients.N²_face == 1 .+ 0.5cos.(3grid.z_faces[2:end])
+    finalize_model!(model)
+end
+
+@testset "N² may vanish on the rigid lid" begin
+    # No operator uses N² on the lid face, but N² = 0 there was rejected.
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    model = @test_nowarn QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+        stratification=AnalyticalProfile(z -> -z; returns=:N²), verbose=false)
+    coefficients = model.runtime.coefficients
+    @test coefficients.N²_face[1:3] == -grid.z_faces[2:4]
+    @test all(isfinite, coefficients.a_ell)
+    set!(model; ψ=(x, y, z) -> 0.1sin(x) * cos(y) * (1 + z), verbose=false)
+    set_wave_packet!(model; amplitude=0.1, kx=2, ky=1, sigma_k=1.0)
+    step!(model, ExponentialRungeKutta2(Δt=0.01))
+    compute_total_velocities!(model; t=0.01)
+    @test all(isfinite, model.fields.w)
+    @test all(isfinite, values(wave_energy(model)))
+    finalize_model!(model)
+    @test a_ell_from_N2([2.0, 0.0], 1.0)[1] == 0.5
+    @test_throws ArgumentError a_ell_from_N2([0.0, 1.0], 1.0)
+    @test_throws ArgumentError a_ell_from_N2([1.0, -1.0], 1.0)
+end
+
 @testset "Horizontal-mean QG PV inversion retains vertical structure" begin
     grid = RectilinearGrid(size=(4, 4, 8), extent=(2π, 2π, 1.0))
     model = QGYBJModel(
@@ -387,6 +429,39 @@ remove_column_means(φ) = φ .- sum(φ; dims=1) ./ size(φ, 1)
     finally
         finalize_model!(flat_model)
     end
+end
+
+@testset "General Helmholtz preserves long Float32 modes" begin
+    L = 1_000_000
+    grid = RectilinearGrid(Float32; size=(8, 8, 100), extent=(L, L, 100))
+    model = QGYBJModel(; grid, verbose=false)
+    set!(model; ψ=(x, y, z) -> cospi(2x / L))
+    expected = copy(model.fields.psi)
+    kh² = reshape(grid.kh2, 1, 8, 8)
+    a = 1f-3 .* (1 .+ 0.25f0 .* cospi.(grid.z ./ 100))
+    b = 1f-4 .* sinpi.(grid.z ./ 100)
+    # The depth-constant mode is set entirely by the small horizontal shift.
+    for α in (-0.25f0, 1f0)
+        rhs = -α .* kh² .* expected
+        invert_helmholtz!(rhs, rhs, model; a, b, scale_kh2=α)
+        @test rhs ≈ expected rtol=1e-5
+    end
+end
+
+@testset "General Helmholtz retains diffusion with opposing off-diagonals" begin
+    grid = RectilinearGrid(Float32; size=(8, 8, 3), extent=(1e6, 1e6, 3))
+    G = QGYBJplus.RuntimeGeometry(grid)
+    # At the middle level the drift terms round to ±1, so their sum does
+    # not represent the small diffusion term of the diagonal.
+    a = Float32[1e-3, 1e-8, 1]
+    b = Float32[-2e-3, 2, 0]
+    expected = zeros(ComplexF32, 3, 8, 8)
+    expected[2, 2, 1] = 1
+    rhs = copy(expected)
+    rhs[2, 2, 1] = -2a[2] - grid.kh2[2, 1]
+    rhs[3, 2, 1] = a[3]
+    invert_helmholtz!(rhs, rhs, G; a, b)
+    @test rhs ≈ expected rtol=1e-6
 end
 
 """Average values on the faces above each level onto cell centres (w = 0 below)."""

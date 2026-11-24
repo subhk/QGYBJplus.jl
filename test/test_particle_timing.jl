@@ -29,6 +29,89 @@ cellular_flow(x, y, z) = 1e3 * sin(2π * x / 1e5) * cos(2π * y / 1e5)
     @test particles.time_history ≈ (0:6) .* 0.1
     @test particles.y_history[4] == particles.y_history[1]   # t = 0.3: not yet moved
     @test particles.y_history[5] != particles.y_history[4]   # moved over 0.3 to 0.4
+
+    # The 3D helpers took no particle_advec_time (a MethodError).
+    disk = particles_in_circle(-500.0; center=(5e4, 5e4), radius=1e4, n=4,
+                               particle_advec_time=0.3f0)
+    @test disk.particle_advec_time === 0.3
+    model = particle_test_model()
+    set!(model; ψ=cellular_flow)
+    initialize_particles!(model, disk)
+    @test model.particles.config.particle_advec_time === 0.3
+    x₀ = copy(model.particles.particles.x)
+    advect_particles!(model, 0.1; current_time=0.1)
+    @test model.particles.particles.x == x₀
+    advect_particles!(model, 0.1; current_time=0.3)
+    @test model.particles.particles.x != x₀
+end
+
+@testset "A Float32 time step gives the decimal step's particle times" begin
+    # 0.7f0 is 0.69999999. Read as such, it put the particle times off the
+    # decimal ones, and the record due at 1.4 and the release at 2.1 came a
+    # step late.
+    config = particles_in_box(-500.0; x_max=1e5, y_max=1e5, nx=2, ny=1,
+                              save_interval=1.4, particle_advec_time=2.1)
+    model = particle_test_model()
+    set!(model; ψ=cellular_flow)
+    function advected(Δt)
+        initialize_particles!(model, config)
+        foreach(n -> advect_particles!(model, Δt; current_time=0.7n), 0:5)
+        particles = model.particles.particles
+        return (time=copy(particles.time_history), y=copy(particles.y_history))
+    end
+    decimal = advected(0.7)
+    @test decimal.time ≈ [0.0, 1.4, 2.8, 4.2]
+    @test advected(0.7f0) == decimal
+
+    # And through a simulation, with the output manager's schedule.
+    function simulated(Δt)
+        simulated_model = particle_test_model()
+        set!(simulated_model; ψ=cellular_flow)
+        initialize_particles!(simulated_model, config)
+        mktempdir() do directory
+            simulation = Simulation(simulated_model; Δt, stop_iteration=6, output=false,
+                diagnostics=false, verbose=false,
+                particle_output=ParticleOutputManager(directory; save_interval_time=1.4))
+            redirect_stdout(devnull) do
+                run!(simulation)
+            end
+            file = joinpath(directory, "particles", "particles_trajectory.nc")
+            NCDataset(dataset -> (time=dataset["time"][:], y=dataset["y"][:, :]), file)
+        end
+    end
+    decimal = simulated(0.7)
+    @test decimal.time ≈ [0.0, 1.4, 2.8, 4.2]
+    @test decimal.y[:, 2] == decimal.y[:, 1] != decimal.y[:, 3]   # released at 2.1
+    @test simulated(0.7f0) == decimal
+end
+
+@testset "Iteration-scheduled particle output keeps its iterations after restore!" begin
+    iterations(path) = sort([NCDataset(file -> Int(file.attrib["iteration"]),
+                                       joinpath(path, name))
+                             for name in readdir(path) if endswith(name, ".nc")])
+    mktempdir() do directory
+        run!(Simulation(particle_test_model(f=1e-4); Δt=100.0, stop_iteration=7,
+             output=NetCDFOutput(path=joinpath(directory, "first"),
+                                 schedule=IterationInterval(7)),
+             diagnostics=false, verbose=false))
+        model = particle_test_model(f=1e-4)
+        simulation = Simulation(model; Δt=100.0, stop_iteration=17,
+            output=NetCDFOutput(path=joinpath(directory, "second"),
+                                schedule=IterationInterval(5)),
+            particle_output=ParticleOutputManager(joinpath(directory, "p");
+                save_interval_iter=5, output_mode=:snapshots),
+            diagnostics=false, verbose=false)
+        restore!(simulation, joinpath(directory, "first", "state0002.nc"))
+        initialize_particles!(simulation, particles_in_box(-500.0; x_max=1e5, y_max=1e5,
+                                                           nx=2, ny=2))
+        redirect_stdout(devnull) do
+            run!(simulation)
+        end
+        # Counted from the restart at iteration 7, the records fell at 12 and
+        # 17, between the state files.
+        @test iterations(joinpath(directory, "second")) == [7, 10, 15, 17]
+        @test iterations(joinpath(directory, "p", "particles")) == [7, 10, 15, 17]
+    end
 end
 
 @testset "Particle helpers default to Float64" begin
@@ -74,6 +157,28 @@ end
     @test_throws ArgumentError particles_in_circle(-500.0; center=(0.0, 0.0), radius=-1.0)
     @test_throws ArgumentError particles_in_circle(-500.0; center=(0.0, 0.0), radius=1.0,
                                                    pattern=:spiral)
+
+    # The rings' shares grow as their circumference and add up to n. They
+    # used to overshoot n, which cut the outer ring short (16 of 25 for
+    # n = 50) and left it half as dense as the others.
+    for n in (8, 50, 300)
+        rings = particles_in_circle(-500.0; center=(5e4, 5e4), radius=1e4, n=n,
+                                    pattern=:rings)
+        radii = round.(hypot.(rings.custom_x .- 5e4, rings.custom_y .- 5e4); sigdigits=8)
+        levels = sort(unique(radii))
+        counts = [count(==(r), radii) for r in levels]
+        @test sum(counts) == n
+        @test last(levels) ≈ 1e4
+        @test all(abs.(counts .- n .* levels ./ sum(levels)) .<= 1)
+    end
+
+    # A single layer without z_levels lies mid-interval: range() rejected it.
+    layer = ParticleConfig3D{Float64}(x_max=1e5, y_max=1e5, z_min=-500.0, z_max=-100.0,
+                                      distribution_type=LAYERED, nx_particles=2,
+                                      ny_particles=2, nz_particles=1)
+    initialize_particles!(model, layer)
+    @test model.particles.particles.np == 4
+    @test all(==(-300.0), Array(model.particles.particles.z))
 end
 
 @testset "Particle configurations are validated" begin
@@ -88,6 +193,16 @@ end
                                                          z_max=-1.0)
     @test_throws ArgumentError particles_in_layers([-1.0, -1.0]; x_max=1.0, y_max=1.0)
     @test_throws ArgumentError particles_custom(Tuple{Float64, Float64, Float64}[])
+    # Invalid methods were accepted until the particles were initialized.
+    @test_throws ArgumentError particles_in_box(-500.0; x_max=1.0, y_max=1.0,
+                                                wave_motion=:mean)
+    @test_throws ArgumentError particles_in_box(-500.0; x_max=1.0, y_max=1.0,
+                                                integration_method=:rk3)
+    @test_throws ArgumentError particles_in_grid_3d(x_max=1.0, y_max=1.0, z_max=1.0,
+                                                    integration_method=:rk3)
+    # The 3D release time is checked as in ParticleConfig.
+    @test_throws ArgumentError particles_in_layers([-0.5]; x_max=1.0, y_max=1.0,
+                                                   particle_advec_time=Inf)
 
     # A depth given as a positive number lies above the lid: an error, rather
     # than particles clamped to the surface.
@@ -102,16 +217,50 @@ end
     initialize_particles!(model, particles_in_box(-500.0; x_max=1e5, y_max=1e5,
                                                   nx=3, ny=3, save_interval=0.0))
     tracker = model.particles
+    particles = tracker.particles
     smaller = particles_in_box(-200.0; x_max=1e5, y_max=1e5, nx=2, ny=1,
                                integration_method=:euler, wave_motion=:instantaneous)
     initialize_particles!(tracker, smaller)
-    particles = tracker.particles
+    @test tracker.particles === particles
     @test particles.np == 2
     @test length(particles.x) == length(particles.z) == length(particles.id) == 2
     @test all(==(-200.0), Array(particles.z))
     @test tracker.config === smaller
     @test isempty(particles.time_history)   # the new config keeps no history
     @test !tracker.current.valid
+end
+
+@testset "Rejected particle positions leave the tracker intact" begin
+    model = particle_test_model()
+    try
+        set!(model; ψ=cellular_flow)
+        config = particles_in_box(-500.0; x_max=1e5, y_max=1e5, nx=2, ny=2,
+                                  save_interval=0.0)
+        initialize_particles!(model, config)
+        advect_particles!(model, 0.1)
+        tracker = model.particles
+        particles = tracker.particles
+        arrays = (particles.x, particles.y, particles.z)
+        positions = map(copy, arrays)
+        history = copy(particles.time_history)
+        invalid_box = particles_in_box(-1500.0; x_max=1e5, y_max=1e5, nx=1, ny=1)
+        invalid_volume = particles_custom([(0.0, 0.0, -1500.0)])
+
+        for invalid in (invalid_box, invalid_volume)
+            @test_throws ArgumentError initialize_particles!(tracker, invalid)
+            @test tracker.config === config
+            @test tracker.particles === particles
+            @test all(map(===, (particles.x, particles.y, particles.z), arrays))
+            @test (particles.x, particles.y, particles.z) == positions
+            @test particles.time_history == history
+            @test particles.time == 0.1
+            @test tracker.released && tracker.current.valid
+        end
+        advect_particles!(model, 0.1)
+        @test particles.time_history == [0.0, 0.1, 0.2]
+    finally
+        finalize_model!(model)
+    end
 end
 
 @testset "Particles join the time axis of each run" begin
@@ -135,18 +284,19 @@ end
         @test restored_model.particles.particles.time_history ≈ [30.0, 40.0, 60.0]
     end
 
-    # Continued with a new simulation: released particles keep moving, and
-    # the history continues, with a warning that the time axis restarts.
+    # A run ending on the release step has not moved the particles yet. They
+    # still start moving immediately when a new simulation resets the clock.
     model = particle_test_model()
     initialize_particles!(model, particles_in_box(-500.0; x_max=1e5, y_max=1e5,
                                                   nx=2, ny=2, save_interval=0.1,
                                                   particle_advec_time=0.15))
-    first_run = Simulation(model; Δt=0.1, stop_iteration=3, output=false,
+    first_run = Simulation(model; Δt=0.1, stop_iteration=2, output=false,
                            diagnostics=false, verbose=false)
     set!(first_run; ψ=cellular_flow)
+    before = copy(Array(model.particles.particles.y))
     run!(first_run)
     @test model.particles.released
-    before = copy(Array(model.particles.particles.y))
+    @test Array(model.particles.particles.y) == before
     records = length(model.particles.particles.time_history)
     second_run = Simulation(model; Δt=0.1, stop_iteration=1, output=false,
                             diagnostics=false, verbose=false)
@@ -221,13 +371,13 @@ end
 
 # The integrators by themselves, with an analytic cellular velocity.
 struct CellularVelocity end
-UPA._particle_velocity(x, y, z, τ, ::CellularVelocity) =
+UPA._particle_velocity(x, y, z, fraction, ::CellularVelocity) =
     (-sin(x) * cos(y), cos(x) * sin(y))
 
 function integrate_cellular(method, Δt, duration)
     x, y = 0.3, 1.1
     for _ in 1:round(Int, duration / Δt)
-        x, y = UPA._integrate(Val(method), x, y, 0.0, 0.0, Δt, CellularVelocity())
+        x, y = UPA._integrate(Val(method), x, y, 0.0, Δt, CellularVelocity())
     end
     return [x, y]
 end

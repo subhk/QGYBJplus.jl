@@ -144,6 +144,24 @@ relative(a, b) = maximum(abs, a .- b) /
     end
 end
 
+@testset "Diagnosing w keeps a passive wave's amplitude" begin
+    # The wave-PV forcing of w cleared A and C, so the output, the total
+    # velocity, and particles then saw no wave amplitude.
+    model = switch_model(switch_grid(); flow=EvolvingFlow(),
+                         feedback=WaveMeanFeedback(), formulation=PassiveWave())
+    set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+         verbose=false)
+    set_wave_packet!(model; amplitude=0.1, kx=3, ky=1, sigma_k=1.5)
+    A, C = copy(model.fields.A), copy(model.fields.C)
+    @test maximum(abs, A) > 0
+    compute_velocities!(model)
+    @test maximum(abs, model.fields.w) > 0
+    @test model.fields.A == A && model.fields.C == C
+    compute_total_velocities!(model; t=0.3)
+    @test model.fields.A == A && model.fields.C == C
+    finalize_model!(model)
+end
+
 """
 Undamped model on a square grid for the kₕ = 0 tests: the jet ψ = U sin x
 leaves a wave envelope that depends on x and z only unadvected, J(ψ, B) = 0,
@@ -229,9 +247,7 @@ uniform_depth_mean(B) = abs(sum(B[:, 1, 1])) / size(B, 1) / maximum(abs, B)
                 @test maximum(abs, LA .- B[:, 1, 1]) < 1e-12 * maximum(abs, B[:, 1, 1])
                 # The wave kinetic energy diagnostic is ½⟨|LA|²⟩ of the
                 # (horizontally uniform) wave velocity.
-                manager = QGYBJplus.EnergyDiagnosticsManager(
-                    EnergyDiagnosticsOutput(path=mktempdir()), Float64)
-                wave_KE = first(QGYBJplus._current_energy_components(model, manager))
+                wave_KE = first(QGYBJplus._current_energy_components(model))
                 n = model.grid.size[1]
                 @test wave_KE ≈ 0.5 * sum(abs2, B[:, 1, 1]) / (n^4 * nz) rtol=1e-12
             finally

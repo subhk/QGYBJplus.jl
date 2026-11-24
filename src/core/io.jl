@@ -5,20 +5,24 @@ mutable struct ModelOutputManager{T, S}
     last_time::Union{Nothing, T}
     last_iteration::Union{Nothing, Int}
     next_time::Union{Nothing, T}
+    # Time step of the run, for the tolerance of the schedule.
+    time_step::Float64
     closed::Bool
 end
 
 @inline _to_xyz(array::AbstractArray) = permutedims(array, (2, 3, 1))
 @inline _from_xyz(array::AbstractArray) = permutedims(array, (3, 1, 2))
 
-function ModelOutputManager(specification::S, ::Type{T}, start_time=zero(T)) where {S, T}
+function ModelOutputManager(specification::S, ::Type{T}, start_time=zero(T),
+                            Δt=0.0) where {S, T}
     next_time = specification.schedule isa TimeInterval ?
-                T(_next_deadline(start_time, specification.schedule.interval)) : nothing
+                T(_next_deadline(start_time, specification.schedule.interval, Δt)) :
+                nothing
     return ModelOutputManager{T, S}(
-        specification, 1, nothing, nothing, next_time, false)
+        specification, 1, nothing, nothing, next_time, Float64(Δt), false)
 end
 
-function _prepare_simulation_output!(simulation::Simulation)
+function _prepare_simulation_output!(simulation::Simulation, plan)
     specification = simulation.run_options.output
     if specification === false
         simulation.output_manager = nothing
@@ -29,13 +33,18 @@ function _prepare_simulation_output!(simulation::Simulation)
         throw(ArgumentError("simulation output must be NetCDFOutput or false"))
     manager = simulation.output_manager
     if manager !== nothing && !manager.closed
+        manager.time_step = _time_step(simulation)
         return simulation
     end
 
-    mkpath(specification.path)
     manager = ModelOutputManager(specification, typeof(simulation.clock.time),
-                                 simulation.clock.time)
-    _resume_state_files!(manager, simulation.clock)
+                                 simulation.clock.time, _time_step(simulation))
+    checkpoint = plan.checkpoint
+    if checkpoint !== nothing
+        manager.counter = checkpoint.index + 1
+        manager.last_time = checkpoint.time
+        manager.last_iteration = checkpoint.iteration
+    end
     simulation.output_manager = manager
     return simulation
 end
@@ -44,6 +53,14 @@ end
 const _UNITS_CONVENTION =
     "Quantities are in the units of the model configuration " *
     "(for example m, s, and m/s for a dimensional setup)."
+
+"""Whether an output path holds a file, rejecting directories and other entries."""
+function _existing_output_file(path::AbstractString)
+    isfile(path) && return true
+    (ispath(path) || islink(path)) &&
+        throw(ArgumentError("output path $path is occupied by an entry that is not a regular file"))
+    return false
+end
 
 """
 The state files (`state####.nc`, regular files only) already in `path`, in
@@ -57,7 +74,7 @@ function _existing_state_files(path::AbstractString)
     for name in readdir(path)
         matched = match(r"^state(\d+)\.nc$", name)
         file = joinpath(path, name)
-        (matched === nothing || !isfile(file)) && continue
+        (matched === nothing || !_existing_output_file(file)) && continue
         time, iteration = try
             NCDataset(file, "r") do dataset
                 (Float64(dataset["time"][1]), Int(dataset.attrib["iteration"]))
@@ -72,66 +89,41 @@ function _existing_state_files(path::AbstractString)
 end
 
 """
-The existing state files a run would replace: all of them for a run from
-iteration 0, those after the restart iteration for a restored run.
+Identify the checkpoint to append after and any files to replace, without
+changing the directory. A matching clock alone cannot identify a checkpoint
+from another run.
 """
-_stale_state_files(existing, clock::Clock) =
-    filter(file -> clock.iteration == 0 || file.iteration > clock.iteration, existing)
-
-"""Error, unless `overwrite=true`, when `stale` state files are in the way."""
-function _check_stale_state_files(specification::NetCDFOutput, stale, clock::Clock)
-    isempty(stale) || specification.overwrite || throw(ArgumentError(
-        "$(specification.path) already holds state files " *
-        "($(basename(first(stale).path)) to $(basename(last(stale).path))) " *
-        (clock.iteration > 0 ? "after this run's restart iteration $(clock.iteration)" :
-                               "from another run") *
-        "; choose a new path or pass NetCDFOutput(...; overwrite=true) " *
-        "to replace them"))
-    return nothing
-end
-
-"""Check, changing no file, that the run's state files can be written."""
 function _check_simulation_output(simulation::Simulation)
     specification = simulation.run_options.output
     specification isa NetCDFOutput || return nothing
     manager = simulation.output_manager
     (manager !== nothing && !manager.closed) && return nothing
     existing = _existing_state_files(specification.path)
-    _check_stale_state_files(specification,
-        _stale_state_files(existing, simulation.clock), simulation.clock)
-    return nothing
+    source = simulation.restart_file
+    checkpoint_index = if source === nothing
+        nothing
+    else
+        findlast(existing) do file
+            file.iteration == simulation.clock.iteration &&
+                file.time == simulation.clock.time &&
+                _same_checkpoint(source, stat(file.path))
+        end
+    end
+    retained = something(checkpoint_index, 0)
+    checkpoint = retained == 0 ? nothing : existing[retained]
+    stale = [file for (index, file) in pairs(existing)
+             if index > retained || !isfinite(file.time) ||
+                file.iteration > simulation.clock.iteration]
+    isempty(stale) || specification.overwrite || throw(ArgumentError(
+        "$(specification.path) already holds state files " *
+        "($(basename(first(stale).path)) to $(basename(last(stale).path))) " *
+        (checkpoint === nothing ? "from another run" : "after the restart checkpoint") *
+        "; choose a new path or pass NetCDFOutput(...; overwrite=true) to replace them"))
+    return (; checkpoint, stale)
 end
 
-"""
-Number this run's state files after those already in its output directory.
-A restored simulation (clock past iteration 0) appends after the files up to
-its restart iteration, and does not write the restart state again. Other
-existing files are an error unless `overwrite=true`, which removes them: all
-of them for a run from iteration 0, those after the restart iteration for a
-restored run.
-"""
-function _resume_state_files!(manager::ModelOutputManager, clock::Clock)
-    specification = manager.specification
-    existing = _existing_state_files(specification.path)
-    isempty(existing) && return manager
-
-    stale = _stale_state_files(existing, clock)
-    if !isempty(stale)
-        _check_stale_state_files(specification, stale, clock)
-        foreach(file -> rm(file.path), stale)
-        filter!(file -> !(file in stale), existing)
-    end
-    isempty(existing) && return manager
-
-    latest = last(existing)
-    manager.counter = latest.index + 1
-    if latest.iteration == clock.iteration
-        # The restart state is already on disk.
-        manager.last_time = clock.time
-        manager.last_iteration = clock.iteration
-    end
-    return manager
-end
+_same_checkpoint(saved, current) =
+    Base.samefile(saved, current) && saved.size == current.size && saved.mtime == current.mtime
 
 function _output_due(manager::ModelOutputManager, clock::Clock;
     initial::Bool=false)
@@ -144,18 +136,15 @@ function _output_due(manager::ModelOutputManager, clock::Clock;
     schedule === nothing && return false
     schedule isa IterationInterval &&
         return clock.iteration % schedule.interval == 0
-    if schedule isa TimeInterval
-        tolerance = 8eps(max(abs(clock.time), abs(schedule.interval), one(clock.time)))
-        return manager.next_time !== nothing &&
-               clock.time >= manager.next_time - tolerance
-    end
+    schedule isa TimeInterval && return manager.next_time !== nothing &&
+        _deadline_reached(clock.time, manager.next_time, manager.time_step)
     error("unsupported output schedule $(typeof(schedule))")
 end
 
 function _advance_output_deadline!(manager::ModelOutputManager, time)
     schedule = manager.specification.schedule
     schedule isa TimeInterval || return manager
-    manager.next_time = _next_deadline(time, schedule.interval)
+    manager.next_time = _next_deadline(time, schedule.interval, manager.time_step)
     return manager
 end
 
@@ -175,14 +164,24 @@ _generalized_pv_convention(model::QGYBJModel) =
 _flow_evolution_name(model::QGYBJModel) =
     string(nameof(typeof(model.physics.flow)))
 
+"""
+Bring the diagnostic fields that `specification` writes up to date with q and
+B. With `as_stepped`, from `run!` straight after a step, ψ, A, u, and v are
+already that (see `_fields_as_stepped`), and only w, which a step leaves
+zero, is diagnosed; the next step then still reuses the others.
+"""
 function _refresh_output_diagnostics!(model::QGYBJModel,
-    specification::NetCDFOutput)
+    specification::NetCDFOutput; as_stepped::Bool=false)
 
     write_psi = _saves_psi(specification.fields)
     write_waves = _saves_waves(specification.fields)
     write_velocities = specification.velocities ||
                        :velocities in specification.fields
 
+    if as_stepped && _fields_as_stepped(model)
+        write_velocities && _compute_vertical_velocity!(model)
+        return model
+    end
     options = ETDModelOptions(model.physics, model.numerics)
     (write_psi || write_velocities) && !_fixed_flow(options) &&
         invert_q_to_psi!(model)
@@ -211,7 +210,7 @@ function _define_vector!(dataset, name::AbstractString, dimension, values,
 end
 
 function _write_model_state_file!(manager::ModelOutputManager,
-    simulation::Simulation)
+    simulation::Simulation; as_stepped::Bool=false)
 
     model = simulation.model
     runtime = model.runtime
@@ -223,7 +222,7 @@ function _write_model_state_file!(manager::ModelOutputManager,
     write_velocities = specification.velocities ||
                        :velocities in specification.fields
 
-    _refresh_output_diagnostics!(model, specification)
+    _refresh_output_diagnostics!(model, specification; as_stepped)
 
     # Physical fields go through one scratch buffer, one at a time, straight
     # to the host, so writing output adds no device memory.
@@ -267,9 +266,12 @@ function _write_model_state_file!(manager::ModelOutputManager,
 
         _define_vector!(dataset, "x", "x", grid.x, "x coordinate of the cell centres")
         _define_vector!(dataset, "y", "y", grid.y, "y coordinate of the cell centres")
-        _define_vector!(dataset, "z", "z", grid.z, "z coordinate of the cell centres")
+        # Heights in the grid's coordinates, which the CF attribute states
+        # for other tools as well as for this package's file readers.
+        _define_vector!(dataset, "z", "z", grid.z,
+            "z coordinate of the cell centres").attrib["positive"] = "up"
         _define_vector!(dataset, "z_face", "z_face", grid.z_faces[2:end],
-            "z coordinate of the upper face of each cell")
+            "z coordinate of the upper face of each cell").attrib["positive"] = "up"
         _define_vector!(dataset, "kx", "kx_index", grid.kx,
             "x wavenumber of each Fourier coefficient (FFTW order)")
         _define_vector!(dataset, "ky", "ky_index", grid.ky,
@@ -352,25 +354,28 @@ function _write_model_state_file!(manager::ModelOutputManager,
     return filepath
 end
 
+"""
+Write a state file if one is due. `as_stepped` says that the model's fields
+are as the step just taken left them (see `_refresh_output_diagnostics!`).
+"""
 function _maybe_write_simulation_output!(simulation::Simulation;
-    initial::Bool=false)
+    initial::Bool=false, as_stepped::Bool=false)
 
     manager = simulation.output_manager
     manager === nothing && return simulation
     _output_due(manager, simulation.clock; initial) || return simulation
-    _write_model_state_file!(manager, simulation)
+    _write_model_state_file!(manager, simulation; as_stepped)
     return simulation
 end
 
 """Simulation-owned accumulator for scheduled energy diagnostics."""
 mutable struct EnergyDiagnosticsManager{T, S}
     specification::S
-    # Field snapshot for the original YBJ formulation, whose wave diagnostics
-    # need a full field set; allocated on the first record.
-    fields::Any
     last_time::Union{Nothing, T}
     last_iteration::Union{Nothing, Int}
     next_time::Union{Nothing, T}
+    # Time step of the run, for the tolerance of the schedule.
+    time_step::Float64
     time::Vector{T}
     wave_KE::Vector{T}
     wave_PE::Vector{T}
@@ -383,12 +388,13 @@ mutable struct EnergyDiagnosticsManager{T, S}
 end
 
 function EnergyDiagnosticsManager(specification::S, ::Type{T},
-    start_time=zero(T)) where {S, T}
+    start_time=zero(T), Δt=0.0) where {S, T}
 
     next_time = specification.schedule isa TimeInterval ?
-                T(_next_deadline(start_time, specification.schedule.interval)) : nothing
+                T(_next_deadline(start_time, specification.schedule.interval, Δt)) :
+                nothing
     return EnergyDiagnosticsManager{T, S}(
-        specification, nothing, nothing, nothing, next_time,
+        specification, nothing, nothing, next_time, Float64(Δt),
         T[], T[], T[], T[], T[], T[], 0.0, false)
 end
 
@@ -420,7 +426,7 @@ function _diagnostics_specification(simulation::Simulation)
         overwrite=output isa NetCDFOutput && output.overwrite)
 end
 
-function _prepare_simulation_diagnostics!(simulation::Simulation)
+function _prepare_simulation_diagnostics!(simulation::Simulation; resume::Bool=true)
     specification = _diagnostics_specification(simulation)
     if specification === false
         simulation.diagnostics_manager = nothing
@@ -429,12 +435,14 @@ function _prepare_simulation_diagnostics!(simulation::Simulation)
 
     manager = simulation.diagnostics_manager
     if manager !== nothing && !manager.closed
+        manager.time_step = _time_step(simulation)
         return simulation
     end
     mkpath(specification.path)
     manager = EnergyDiagnosticsManager(
-        specification, typeof(simulation.clock.time), simulation.clock.time)
-    _resume_energy_series!(manager, simulation.clock)
+        specification, typeof(simulation.clock.time), simulation.clock.time,
+        _time_step(simulation))
+    _resume_energy_series!(manager, simulation.clock; resume)
     simulation.diagnostics_manager = manager
     return simulation
 end
@@ -444,16 +452,13 @@ Continue the energy series already in the diagnostic directory. A restored
 simulation (clock past iteration 0) keeps the stored records up to its
 restart time and does not record that time again. Other existing series are
 an error unless `overwrite=true`, which drops them (for a restored run, only
-the records after the restart time).
+the records after the restart time, unless the series cannot be read).
 """
-function _resume_energy_series!(manager::EnergyDiagnosticsManager, clock::Clock)
+function _resume_energy_series!(manager::EnergyDiagnosticsManager, clock::Clock; resume::Bool)
     specification = manager.specification
-    existing, stored, keep, tolerance = _check_energy_series(specification, clock)
-    isempty(existing) && return manager
-    if stored === nothing
-        foreach(rm, existing)
-        return manager
-    end
+    _, stored, keep, tolerance =
+        _check_energy_series(specification, clock, manager.time_step; resume)
+    stored === nothing && return manager
 
     T = eltype(manager.time)
     append!(manager.time, T.(stored.time[1:keep]))
@@ -471,37 +476,66 @@ end
 """
 The existing energy files of `specification`, the series stored in them (for a
 restored run), how many of its records precede the restart, and the time
-tolerance; an error unless `overwrite=true` when records would be replaced.
-Changes no file.
+tolerance (that of the schedules for the time step `Δt`, see
+`_time_tolerance`); an error unless `overwrite=true` when records would be
+replaced.
+A series that cannot be read, such as one left by a killed run, is replaced
+as a whole. Changes no file.
 """
-function _check_energy_series(specification::EnergyDiagnosticsOutput, clock::Clock)
-    existing = filter(isfile, _energy_files(specification.path))
-    tolerance = 8eps(max(abs(clock.time), one(clock.time)))
+function _check_energy_series(specification::EnergyDiagnosticsOutput, clock::Clock,
+                              Δt; resume::Bool)
+    existing = filter(_existing_output_file, _energy_files(specification.path))
+    tolerance = _time_tolerance(clock.time, clock.time, Δt)
     isempty(existing) && return existing, nothing, 0, tolerance
 
     summary = joinpath(specification.path, "total_energy.nc")
-    restored = clock.iteration > 0
-    stored = restored && isfile(summary) ? _read_energy_series(summary) : nothing
+    restored = resume && clock.iteration > 0
+    stored = restored && isfile(summary) ? _try_read_energy_series(summary) : nothing
     keep = stored === nothing ? 0 :
            count(time -> time <= clock.time + tolerance, stored.time)
     if stored === nothing || keep < length(stored.time)
         specification.overwrite || throw(ArgumentError(
             "$(specification.path) already holds energy diagnostics " *
-            (restored ? "after this run's restart time $(clock.time)" :
-                        "from another run") *
+            (!restored ? "from another run" :
+             stored === nothing ? "whose series cannot be read" :
+             "after this run's restart time $(clock.time)") *
             "; choose a new path or pass overwrite=true to replace them"))
     end
     return existing, stored, keep, tolerance
 end
 
 """Check, changing no file, that the run's energy series can be written."""
-function _check_simulation_diagnostics(simulation::Simulation)
+function _check_simulation_diagnostics(simulation::Simulation; resume::Bool)
     specification = _diagnostics_specification(simulation)
     specification === false && return nothing
     manager = simulation.diagnostics_manager
     (manager !== nothing && !manager.closed) && return nothing
-    _check_energy_series(specification, simulation.clock)
+    _check_energy_series(specification, simulation.clock, _time_step(simulation); resume)
     return nothing
+end
+
+"""
+Create the directories of the run's state output, energy diagnostics, and
+particle output, and check that a file can be created in each, before setting
+up any of them removes an old file.
+"""
+function _create_output_directories(simulation::Simulation)
+    output = simulation.run_options.output
+    diagnostics = _diagnostics_specification(simulation)
+    particles = simulation.particle_output_manager
+    output isa NetCDFOutput && _create_writable_directory(output.path)
+    diagnostics isa EnergyDiagnosticsOutput &&
+        _create_writable_directory(diagnostics.path)
+    particles isa ParticleOutputManager &&
+        _create_writable_directory(particles.particle_dir)
+    return nothing
+end
+
+function _create_writable_directory(path::AbstractString)
+    mkpath(path)
+    # A file created and removed there shows that the run can write its own.
+    mktemp((_, io) -> close(io), path)
+    return path
 end
 
 """Times and energy components stored in a `total_energy.nc` file."""
@@ -514,6 +548,16 @@ function _read_energy_series(path::AbstractString)
     end
 end
 
+"""The energy series in `path`, or `nothing` when the file cannot be read."""
+function _try_read_energy_series(path::AbstractString)
+    try
+        return _read_energy_series(path)
+    catch exception
+        exception isa InterruptException && rethrow()
+        return nothing
+    end
+end
+
 function _diagnostics_due(manager::EnergyDiagnosticsManager, clock::Clock;
     initial::Bool=false)
 
@@ -523,46 +567,46 @@ function _diagnostics_due(manager::EnergyDiagnosticsManager, clock::Clock;
     schedule = manager.specification.schedule
     schedule isa IterationInterval &&
         return clock.iteration % schedule.interval == 0
-    if schedule isa TimeInterval
-        tolerance = 8eps(max(abs(clock.time), abs(schedule.interval), one(clock.time)))
-        return manager.next_time !== nothing &&
-               clock.time >= manager.next_time - tolerance
-    end
+    schedule isa TimeInterval && return manager.next_time !== nothing &&
+        _deadline_reached(clock.time, manager.next_time, manager.time_step)
     error("unsupported diagnostic schedule $(typeof(schedule))")
 end
 
-function _advance_diagnostics_deadline!(manager::EnergyDiagnosticsManager,
-    time)
-
+function _advance_diagnostics_deadline!(manager::EnergyDiagnosticsManager, time)
     schedule = manager.specification.schedule
     schedule isa TimeInterval || return manager
-    manager.next_time = _next_deadline(time, schedule.interval)
+    manager.next_time = _next_deadline(time, schedule.interval, manager.time_step)
     return manager
 end
 
 @kernel function _energy_column_kernel!(energies, @Const(psi), @Const(A), @Const(C),
-                                        @Const(kx), @Const(ky), mask, @Const(a_ell),
-                                        dz, nz, include_wave_correction)
+                                        @Const(kx), @Const(ky), wave_mask, flow_mask,
+                                        @Const(a_ell), dz, nz, include_wave_correction)
     i, j = @index(Global, NTuple)
     mean_flow_KE = zero(eltype(energies))
     mean_flow_PE = zero(eltype(energies))
     wave_KE = zero(eltype(energies))
     wave_PE = zero(eltype(energies))
     wave_CE = zero(eltype(energies))
-    if keep_mode(mask, i, j)
+    keep_wave = keep_mode(wave_mask, i, j)
+    keep_flow = keep_mode(flow_mask, i, j)
+    if keep_wave || keep_flow
         @inbounds kh² = kx[i]^2 + ky[j]^2
         for k in 1:nz
-            @inbounds begin
-                a = a_ell[k]
+            @inbounds if keep_flow
                 # Horizontal fields use a full complex FFT, so Parseval assigns
                 # the zero mode the same weight as every other stored coefficient.
                 mean_flow_KE += kh² * abs2(psi[k, i, j])
 
                 if k < nz
                     ψz = (psi[k + 1, i, j] - psi[k, i, j]) / dz
-                    mean_flow_PE += a * abs2(ψz)
+                    mean_flow_PE += a_ell[k] * abs2(ψz)
                 end
+            end
+            keep_wave || continue
 
+            @inbounds begin
+                a = a_ell[k]
                 LA = if nz == 1
                     zero(eltype(C))
                 elseif k == 1
@@ -604,7 +648,9 @@ PE, wave correction energy, mean-flow KE, mean-flow PE. Each horizontal mode
 column is summed by one kernel work item, then the columns are reduced.
 
 Nonlinear runs keep only the modes inside the two-thirds cutoff, so their
-energy is summed over those; linear runs evolve every mode, and all count.
+energy is summed over those; linear runs evolve every mode, and all count. So
+do all modes of a fixed flow, whose prescribed ψ, and so its velocity, keeps
+them.
 """
 _local_energy_components(model::QGYBJModel, fields::ModelFields) =
     _local_energy_components(model, fields.psi, fields.A, fields.C, fields.u)
@@ -614,13 +660,14 @@ function _local_energy_components(model::QGYBJModel, psi, A, C, real_template)
     geometry = runtime.geometry
     nx, ny, nz = geometry.nx, geometry.ny, geometry.nz
     dz = nz > 1 ? abs(geometry.z[2] - geometry.z[1]) : one(eltype(geometry.z))
-    mask = _linear(ETDModelOptions(model.physics, model.numerics)) ?
-           KeepAllModes() : runtime.dealias_mask
+    options = ETDModelOptions(model.physics, model.numerics)
+    wave_mask = _linear(options) ? KeepAllModes() : runtime.dealias_mask
+    flow_mask = _fixed_flow(options) ? KeepAllModes() : wave_mask
 
     energies = similar(real_template, 5, nx, ny)
     launch!(_energy_column_kernel!, energies, (nx, ny),
             energies, psi, A, C, geometry.kx, geometry.ky,
-            mask, runtime.device_coefficients.a_ell, dz, nz,
+            wave_mask, flow_mask, runtime.device_coefficients.a_ell, dz, nz,
             !(model.physics.formulation isa YBJ))
     totals = on_host(vec(sum(energies; dims=(2, 3))))
 
@@ -636,52 +683,37 @@ Energy components rebuilt from the model's prognostic `q` and `B` (and a
 fixed flow's prescribed ψ), so that a record never relies on, or mutates, the
 live diagnostic fields: ETD-RK2 keeps only q and B prognostically.
 
-ψ (balanced, from q - qʷ) and A, C (from B) are rebuilt in scratch buffers.
-The original YBJ formulation recovers A through the full wave tendency, which
-needs a complete field set, so it works on a snapshot of the fields instead.
+ψ (the flow a step diagnoses from q, see `_diagnosed_psi`) and A, C (from B,
+by the formulation's relation, as `_refresh_wave_diagnostics!` recovers them)
+are rebuilt in scratch buffers, for every formulation by the one path.
+
+With `as_stepped`, from `run!` straight after a step, the model's diagnostic
+fields are the ones that would be rebuilt (see `_fields_as_stepped`), and the
+record costs no inversion. Nothing else may pass it: a field written to
+directly since the step would be missed.
 """
-function _current_energy_components(model::QGYBJModel, manager)
+function _current_energy_components(model::QGYBJModel; as_stepped::Bool=false)
     fields = model.fields
-    runtime = model.runtime
-    workspace = runtime.workspace
-    coefficients = runtime.device_coefficients
+    as_stepped && _fields_as_stepped(model) &&
+        return _local_energy_components(model, fields)
+    context = _operator_context(model)
     options = ETDModelOptions(model.physics, model.numerics)
-
-    if model.physics.formulation isa YBJ
-        if manager.fields === nothing
-            manager.fields = copy_fields(fields)
-        else
-            copy_fields!(manager.fields, fields)
-        end
-        snapshot = manager.fields
-        # FixedFlow owns a prescribed streamfunction independently of q.
-        _fixed_flow(options) || _invert_total_q_to_psi!(snapshot, runtime.geometry,
-            options, runtime.plans, coefficients.a_ell, runtime.dealias_mask;
-            workspace)
-        _refresh_wave_diagnostics!(snapshot, model)
-        return _energy_components(model, snapshot)
-    end
-
+    workspace = context.workspace
     return with_scratch(workspace) do
-        psi = if _fixed_flow(options)
-            fields.psi
-        else
-            _invert_total_q_to_psi!(scratch_like(workspace, fields.psi), fields,
-                runtime.geometry, options, runtime.plans, coefficients.a_ell,
-                runtime.dealias_mask; workspace)
-        end
+        psi = _diagnosed_psi(fields, context, options)
         A = scratch_like(workspace, fields.A)
         C = scratch_like(workspace, fields.C)
-        Elliptic._invert_B_to_A!(A, C, fields.B, runtime.geometry,
-            coefficients.a_ell, workspace)
+        _recover_wave_amplitude!((; psi, B=fields.B, A, C), context.grid,
+            options, context.plans, context.a, context.mask, workspace,
+            context.N2, context.N2_face; from_psi=true)
         _local_energy_components(model, psi, A, C, fields.u)
     end
 end
 
 function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
-    simulation::Simulation)
+    simulation::Simulation; as_stepped::Bool=false)
 
-    values = _current_energy_components(simulation.model, manager)
+    values = _current_energy_components(simulation.model; as_stepped)
     T = eltype(manager.time)
     push!(manager.time, T(simulation.clock.time))
     push!(manager.wave_KE, T(values[1]))
@@ -696,12 +728,12 @@ function _record_energy_diagnostics!(manager::EnergyDiagnosticsManager,
 end
 
 function _maybe_record_simulation_diagnostics!(simulation::Simulation;
-    initial::Bool=false)
+    initial::Bool=false, as_stepped::Bool=false)
 
     manager = simulation.diagnostics_manager
     manager === nothing && return simulation
     _diagnostics_due(manager, simulation.clock; initial) || return simulation
-    _record_energy_diagnostics!(manager, simulation)
+    _record_energy_diagnostics!(manager, simulation; as_stepped)
     # Keep the files current, so that a run that is killed keeps its series.
     Base.time() - manager.last_write >= _ENERGY_WRITE_INTERVAL &&
         _write_energy_diagnostics!(manager, simulation.model)
@@ -712,13 +744,15 @@ end
 Write a NetCDF file through `build(dataset)` atomically: into a temporary file
 that then replaces `path`, so a reader never sees a partly written file.
 """
-function _write_atomically(build, path::AbstractString)
-    temporary = path * ".tmp"
-    try
-        NCDataset(build, temporary, "c"; format=:netcdf3_classic)
-        mv(temporary, path; force=true)
-    finally
-        isfile(temporary) && rm(temporary)
+function _write_atomically(build, path::AbstractString; format=:netcdf3_classic)
+    _existing_output_file(path)
+    # Let NetCDF create the file with the normal output permissions.
+    mktempdir(dirname(abspath(path))) do directory
+        temporary = joinpath(directory, basename(path))
+        NCDataset(build, temporary, "c"; format)
+        # A same-filesystem rename replaces a file atomically and refuses a
+        # directory target, including one created after the preflight check.
+        Base.Filesystem.rename(temporary, path)
     end
     return path
 end
@@ -784,8 +818,6 @@ function _finish_simulation_diagnostics!(simulation::Simulation)
         rethrow()
     finally
         manager.closed = true
-        # A closed manager is replaced on the next run!, so free its snapshot.
-        manager.fields = nothing
     end
     return simulation
 end
@@ -832,12 +864,15 @@ function _read_restart(model::QGYBJModel, path::AbstractString)
                       im .* dataset["q_hat_imag"][:, :, :])
         B = _from_xyz(dataset["B_hat_real"][:, :, :] .+
                       im .* dataset["B_hat_imag"][:, :, :])
-        size(q) == (model.grid.size[3], model.grid.size[1], model.grid.size[2]) ||
+        fields = model.fields
+        size(q) == size(fields.q) ||
             throw(DimensionMismatch("restart q dimensions do not match model grid"))
         size(B) == size(q) ||
             throw(DimensionMismatch("restart B dimensions do not match restart q"))
+        q = _validated_restart_field(q, fields.q, "q", path)
+        B = _validated_restart_field(B, fields.B, "B", path)
         psi = model.physics.flow isa FixedFlow ?
-              _read_restart_streamfunction(model, dataset, path, size(q)) : nothing
+              _read_restart_streamfunction(dataset, path, fields.psi) : nothing
         if haskey(dataset.attrib, "flow_evolution")
             stored = String(dataset.attrib["flow_evolution"])
             expected = _flow_evolution_name(model)
@@ -849,8 +884,20 @@ function _read_restart(model::QGYBJModel, path::AbstractString)
         time = haskey(dataset, "time") ? Float64(dataset["time"][1]) : nothing
         iteration = haskey(dataset.attrib, "iteration") ?
                     Int(dataset.attrib["iteration"]) : nothing
+        time !== nothing && !isfinite(time) &&
+            throw(ArgumentError("restart file $path has a non-finite time"))
         (; q, B, psi, time, iteration)
     end
+end
+
+"""Validate and convert a checkpoint field on the host before modifying the model."""
+function _validated_restart_field(values, destination, name, path)
+    description = "restart $name in $path"
+    numbers = _checked_field_values(values, description)
+    typed = convert(Array{eltype(destination)}, numbers)
+    typed === numbers || all(isfinite, typed) || throw(ArgumentError(
+        "$description has values outside the model's precision"))
+    return typed
 end
 
 """
@@ -858,21 +905,22 @@ The streamfunction of a restart file, for a `FixedFlow` model, whose flow is
 prescribed rather than inverted from q: the Fourier coefficients `psi_hat`,
 or else the physical `psi` of an older file, transformed.
 """
-function _read_restart_streamfunction(model::QGYBJModel, dataset, path, dims)
+function _read_restart_streamfunction(dataset, path, destination)
     psi = if haskey(dataset, "psi_hat_real") && haskey(dataset, "psi_hat_imag")
         _from_xyz(dataset["psi_hat_real"][:, :, :] .+
                   im .* dataset["psi_hat_imag"][:, :, :])
     elseif haskey(dataset, "psi")
-        physical = ComplexF64.(_from_xyz(dataset["psi"][:, :, :]))
+        values = _from_xyz(dataset["psi"][:, :, :])
+        physical = ComplexF64.(_checked_field_values(values, "restart ψ in $path"))
         FFTW.fft!(physical, (2, 3))
     else
         throw(ArgumentError(
             "restart file $path holds no streamfunction, which a FixedFlow " *
             "model needs: its flow is prescribed, not inverted from q"))
     end
-    size(psi) == dims ||
+    size(psi) == size(destination) ||
         throw(DimensionMismatch("restart ψ dimensions do not match restart q"))
-    return psi
+    return _validated_restart_field(psi, destination, "ψ", path)
 end
 
 """
@@ -895,12 +943,16 @@ function _check_restart_configuration(model::QGYBJModel, dataset, path)
         @warn "Restart file $path was written with f0 = $(attributes["f0"]); " *
               "the model uses f0 = $f, which changes the flow inverted from q"
     end
-    N² = model.runtime.coefficients.N²
-    if haskey(dataset, "N2")
-        stored = dataset["N2"][:]
-        length(stored) == length(N²) && isapprox(stored, N²; rtol=1e-6) ||
-            @warn "Restart file $path was written with a different N² profile, " *
-                  "which changes the flow inverted from q"
+    coefficients = model.runtime.coefficients
+    for (name, expected) in (("N2", coefficients.N²), ("N2_face", coefficients.N²_face))
+        haskey(dataset, name) || continue
+        stored = dataset[name][:]
+        matches = length(stored) == length(expected) && all(value -> value isa Real, stored) &&
+                  isapprox(stored, expected; rtol=1e-6)
+        matches && continue
+        @warn "Restart file $path was written with a different N² profile ($name), " *
+              "which changes the flow inverted from q"
+        break
     end
     return nothing
 end
@@ -927,17 +979,20 @@ end
 
 function restore!(simulation::Simulation, path::AbstractString)
     _assert_mutable(simulation)
+    source = stat(path)
     restart = _restore_fields!(simulation.model, path)
     T = typeof(simulation.clock.time)
     restart.time === nothing || (simulation.clock.time = T(restart.time))
     restart.iteration === nothing ||
         (simulation.clock.iteration = restart.iteration)
+    simulation.restart_file = source
     return simulation
 end
 
 function _restore_fields!(model::QGYBJModel, path::AbstractString)
     model.runtime.finalized && error("cannot restore a finalized model")
     restart = _read_restart(model, path)
+    _state_changed!(model)
     copy_from_host!(model.fields.q, restart.q)
     copy_from_host!(model.fields.B, restart.B)
     if restart.psi === nothing
@@ -950,11 +1005,6 @@ function _restore_fields!(model::QGYBJModel, path::AbstractString)
     return restart
 end
 
-"""Holder of the field snapshot that the energies of a `YBJ()` model need."""
-mutable struct _EnergySnapshot
-    fields::Any
-end
-
 """
 The domain-mean energies of `model`'s current state, named as the energy
 diagnostics record them, rebuilt from the prognostic fields without changing
@@ -962,7 +1012,7 @@ any model field.
 """
 function _model_energies(model::QGYBJModel)
     _operator_context(model)   # errors for a finalized model
-    values = _current_energy_components(model, _EnergySnapshot(nothing))
+    values = _current_energy_components(model)
     return NamedTuple{first.(_ENERGY_COMPONENTS)}(Float64.(values))
 end
 

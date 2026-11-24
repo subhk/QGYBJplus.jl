@@ -51,6 +51,8 @@ const EMULATED_GPU = GPU(JLBackend())
 # closure.
 const EMULATED_LAUNCHES = Ref(0)
 const HOST_ARRAY_KERNELS = Set{Symbol}()
+const EMULATED_ETD_TABLE_LAUNCHES = Ref(0)
+const WAVE_TENDENCY_WITHOUT_AMPLITUDE = Bool[]
 
 holds_host_array(x, depth=0) = _holds_host_array(x, depth)
 _holds_host_array(::Union{Array, BitArray}, depth) = true
@@ -66,7 +68,10 @@ end
 function QGYBJplus.launch!(kernel!::F, backend::JLBackend, ndrange::Tuple,
                            args::Vararg{Any, N}) where {F, N}
     EMULATED_LAUNCHES[] += 1
-    any(holds_host_array, args) && push!(HOST_ARRAY_KERNELS, nameof(kernel!))
+    name = nameof(kernel!)
+    any(holds_host_array, args) && push!(HOST_ARRAY_KERNELS, name)
+    name === :_etd_table_kernel! && (EMULATED_ETD_TABLE_LAUNCHES[] += 1)
+    name === :_wave_tendency_kernel! && push!(WAVE_TENDENCY_WITHOUT_AMPLITUDE, args[3] === nothing)
     any(iszero, ndrange) && return nothing
     kernel!(backend)(args...; ndrange=ndrange)
     return nothing
@@ -74,7 +79,7 @@ end
 
 function architecture_test_model(architecture; formulation=YBJPlus(),
                                  feedback=WaveMeanFeedback(), flow=EvolvingFlow(),
-                                 size=(16, 12, 6), precision=Float64)
+                                 size=(16, 12, 6), precision=Float64, no_dispersion=false)
     grid = RectilinearGrid(architecture, precision; size, extent=(2π, 2π, 1.0))
     return QGYBJModel(
         grid=grid,
@@ -84,7 +89,7 @@ function architecture_test_model(architecture; formulation=YBJPlus(),
             flow=FlowHyperdiffusivity((1e-3, 1e-7), (4, 8)),
             wave=WaveHyperdiffusivity((2e-3, 1e-7), (4, 8))),
         vertical_diffusion=VerticalDiffusivity(1e-3),
-        flow=flow, feedback=feedback, formulation=formulation,
+        flow=flow, feedback=feedback, formulation=formulation, no_dispersion=no_dispersion,
         verbose=false,
     )
 end
@@ -141,6 +146,53 @@ end
     @test QGYBJplus.Transforms._check_fft_support(zeros(ComplexF64, 2, 4, 4)) === nothing
 end
 
+@testset "Emulated GPU Helmholtz validates arrays" begin
+    for nz in (1, 4)
+        nx, ny = 8, 6
+        model = architecture_test_model(EMULATED_GPU; size=(nx, ny, nz))
+        try
+            rhs_host = zeros(ComplexF64, nz, nx, ny)
+            rhs_host[:, 2, 1] .= 1 + 0.7im
+            rhs = on_architecture(EMULATED_GPU, rhs_host)
+            destination = similar(rhs)
+            a = ones(nz)
+
+            @test invert_helmholtz!(destination, rhs, model; a) === destination
+            @test Array(destination) ≈ -rhs_host
+            @test_throws ArgumentError invert_helmholtz!(destination, rhs_host, model; a)
+            @test_throws ArgumentError invert_helmholtz!(similar(rhs_host), rhs, model; a)
+
+            narrow = similar(rhs, nz, nx - 1, ny)
+            fill!(narrow, 0)
+            @test_throws DimensionMismatch invert_helmholtz!(narrow, narrow, model; a)
+        finally
+            finalize_model!(model)
+        end
+    end
+end
+
+@testset "Emulated GPU Helmholtz preserves a long Float32 mode" begin
+    nx, ny, nz = 8, 8, 100
+    grid = RectilinearGrid(EMULATED_GPU, Float32; size=(nx, ny, nz),
+                           extent=(1e6, 1e6, 100.0))
+    model = QGYBJModel(; grid, verbose=false)
+    try
+        expected = zeros(ComplexF32, nz, nx, ny)
+        expected[:, 2, 1] .= 1 + 0.7im
+        kh² = grid.kx[2]^2
+        a = 1f-3 .* (1 .+ 0.25f0 .* cospi.(grid.z ./ 100))
+        b = 1f-4 .* sinpi.(grid.z ./ 100)
+        # The depth-constant mode is set by the horizontal shift alone.
+        for scale in (1f0, -0.25f0)
+            rhs = on_architecture(EMULATED_GPU, (-scale * kh²) .* expected)
+            invert_helmholtz!(rhs, rhs, model; a, b, scale_kh2=scale)
+            @test Array(rhs) ≈ expected rtol=1e-5
+        end
+    finally
+        finalize_model!(model)
+    end
+end
+
 @testset "Emulated GPU model reproduces the CPU model" begin
     for (formulation, feedback, flow) in (
         (YBJPlus(), WaveMeanFeedback(), EvolvingFlow()),
@@ -193,6 +245,51 @@ end
             finalize_model!(device)
         end
     end
+end
+
+@testset "Emulated GPU stages BigFloat ETD factors on the host" begin
+    closure = HorizontalHyperdiffusivity(
+        flow=FlowHyperdiffusivity(big"1e320"; order=80),
+        wave=WaveHyperdiffusivity(big"2e320"; order=80))
+    step = 0.25
+    table_launches = EMULATED_ETD_TABLE_LAUNCHES[]
+    host, device = map((CPU(), EMULATED_GPU)) do architecture
+        grid = RectilinearGrid(architecture; size=(8, 8, 2),
+                               extent=(2π * 1e4, 2π * 1e4, 1000.0))
+        model = QGYBJModel(; grid, closure, verbose=false)
+        try
+            timestepper = ExponentialRungeKutta2(Δt=step)
+            step!(model, timestepper)
+            return timestepper.workspace.etd
+        finally
+            finalize_model!(model)
+        end
+    end
+    @test EMULATED_ETD_TABLE_LAUNCHES[] == table_launches
+    for name in (:Eq, :hphi1q, :hphi2q, :EB, :hphi1B, :hphi2B)
+        @test getproperty(device, name) isa JLArray
+        @test Array(getproperty(device, name)) == getproperty(host, name)
+    end
+    # k = 1e-4 at this mode, so k^80 = 1e-320 and both damping rates are finite.
+    @test host.Eq[2, 1] ≈ exp(-step)
+    @test host.EB[2, 1] ≈ exp(-2step)
+end
+
+@testset "Emulated GPU nondispersive wave forcing omits the amplitude" begin
+    launch_start = length(WAVE_TENDENCY_WITHOUT_AMPLITUDE)
+    host_w, device_w = map((CPU(), EMULATED_GPU)) do architecture
+        model = architecture_test_model(architecture; no_dispersion=NoDispersion())
+        try
+            set!(model; ψ=architecture_test_psi, B=architecture_test_wave(model.grid))
+            compute_vertical_velocity!(model)
+            return Array(model.fields.w)
+        finally
+            finalize_model!(model)
+        end
+    end
+    @test WAVE_TENDENCY_WITHOUT_AMPLITUDE[(launch_start + 1):end] == [true]
+    @test maximum(abs, host_w) > 0
+    @test device_w ≈ host_w rtol=1e-12
 end
 
 @testset "Single-precision models" begin
@@ -308,6 +405,63 @@ end
     end
     for component in 1:3
         @test positions[2][component] ≈ positions[1][component] rtol=1e-12
+    end
+end
+
+@testset "Emulated GPU Float16 particles take short steps" begin
+    model = architecture_test_model(EMULATED_GPU; flow=FixedFlow(), feedback=NoFeedback())
+    try
+        set!(model; ψ=(x, y, z) -> 200sin(x))
+        initialize_particles!(model, particles_in_box(Float16, -0.5;
+            x_min=0.5, x_max=0.9, y_min=0.5, y_max=0.9, nx=1, ny=1))
+        tracker = model.particles
+        particles = tracker.particles
+        initial_y = only(Array(particles.y))
+        advect_particles!(model, 1e-5)
+        advect_particles!(model, 1e-5)
+
+        @test tracker.previous.valid
+        @test particles.time ≈ 2e-5
+        @test particles.y isa JLArray{Float16, 1}
+        x, y, z = map(array -> only(Array(array)), (particles.x, particles.y, particles.z))
+        @test all(isfinite, (x, y, z))
+        @test y > initial_y
+        @test all(isfinite, interpolate_velocity_at_position(x, y, z, tracker))
+    finally
+        finalize_model!(model)
+    end
+end
+
+@testset "Emulated GPU tracker keeps its state after rejected initialization" begin
+    model = architecture_test_model(EMULATED_GPU)
+    try
+        set!(model; ψ=architecture_test_psi)
+        configuration = particles_in_box(-0.5; x_max=2π, y_max=2π, nx=3, ny=2,
+                                         save_interval=0.05)
+        initialize_particles!(model, configuration)
+        tracker = model.particles
+        advect_particles!(model, 0.05)
+        advect_particles!(model, 0.05)
+        particles = tracker.particles
+        arrays = (particles.x, particles.y, particles.z, particles.u, particles.v)
+        history = copy(particles.time_history)
+        values = map(Array, arrays)
+        @test length(history) == 3
+
+        invalid = particles_in_box(-5.0; x_max=2π, y_max=2π, nx=1, ny=1)
+        @test_throws ArgumentError initialize_particles!(tracker, invalid)
+        @test tracker.config === configuration
+        @test tracker.particles === particles
+        @test all((particles.x, particles.y, particles.z, particles.u, particles.v) .=== arrays)
+        @test map(Array, arrays) == values
+        @test tracker.current.valid && tracker.previous.valid
+        @test particles.time ≈ 0.10
+        @test particles.time_history == history
+
+        advect_particles!(model, 0.05)
+        @test last(particles.time_history) ≈ 0.15
+    finally
+        finalize_model!(model)
     end
 end
 

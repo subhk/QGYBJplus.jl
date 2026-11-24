@@ -196,6 +196,9 @@ function RectilinearGrid(architecture::AbstractArchitecture=CPU(),
     x_nodes = T[x0 + (i - 1) * dx for i in 1:nx]
     y_nodes = T[y0 + (j - 1) * dy for j in 1:ny]
     z_faces = T[z_bottom + (k - 1) * dz for k in 1:(nz + 1)]
+    # The end faces are the bounds themselves: the sum can miss the top by a
+    # rounding error, which in Float32 put the lid at z = -6e-5.
+    z_faces[1], z_faces[end] = z_bottom, z_top
     z_nodes = T[(z_faces[k] + z_faces[k + 1]) / 2 for k in 1:nz]
     x_faces = T[x0 + (i - 1) * dx for i in 1:(nx + 1)]
     y_faces = T[y0 + (j - 1) * dy for j in 1:(ny + 1)]

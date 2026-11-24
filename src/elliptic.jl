@@ -83,6 +83,8 @@ stored at vertical level r + offset of the column (i, j).
 ================================================================================
 =#
 
+function tridiagonal_row end
+
 """
 Solve one column of a tridiagonal system with the Thomas algorithm, writing
 the solution to `x[offset .+ (1:n), i, j]` and using `c` as scratch.
@@ -106,42 +108,80 @@ the solution to `x[offset .+ (1:n), i, j]` and using `c` as scratch.
 end
 
 """
-`Δz² q = a[k] (ψ[k+1] - ψ[k]) - a[k-1] (ψ[k] - ψ[k-1]) - kₕ²Δz² ψ[k]`, with the
-Neumann flux removed at the bottom and top faces. `shift = kₕ²Δz²` (YBJ⁺ uses
-`kₕ²Δz²/4`), which must be positive: the kₕ = 0 columns are integrated
-directly.
+Solve a shifted Neumann column whose rows have diagonal
+`-(lower + upper + shift)`. After eliminating the lower diagonal, the
+pivot of the sign-reversed row is `upper + remainder`. Propagate the fraction
+`remainder / pivot` so a small shift survives without cancellation. With
+`gauge`, replace the first row by `x[1] = 0`. When given, `C` receives the
+vertical derivative.
 """
+@inline function _solve_shifted_neumann!(x, C, c, column, gauge::Bool=false)
+    i, j, nz, Δz, shift = column.i, column.j, column.nz, column.Δz, column.shift
+    @inbounds begin
+        if gauge
+            fraction = one(shift)
+            c[1, i, j] = zero(shift)
+            x[1, i, j] = zero(eltype(x))
+        else
+            _, upper, forcing = neumann_row(column, 1)
+            pivot = upper + shift
+            fraction = shift / pivot
+            c[1, i, j] = upper / pivot
+            x[1, i, j] = -forcing / pivot
+        end
+        C === nothing || (C[1, i, j] = fraction)
+
+        for k in 2:nz
+            lower, upper, forcing = neumann_row(column, k)
+            remainder = shift + lower * fraction
+            pivot = neumann_pivot(column, k, lower, upper, remainder, c[k - 1, i, j])
+            fraction = remainder / pivot
+            c[k, i, j] = upper / pivot
+            C === nothing || (C[k, i, j] = fraction)
+            x[k, i, j] = (lower * x[k - 1, i, j] - forcing) / pivot
+        end
+
+        for k in (nz - 1):-1:1
+            modified_rhs = x[k, i, j]
+            above = x[k + 1, i, j]
+            x[k, i, j] = modified_rhs + c[k, i, j] * above
+            if C !== nothing
+                # Back substitution also gives the difference directly, using
+                # the saved fraction so small variations in A are resolved.
+                C[k, i, j] = (real(C[k, i, j]) * above - modified_rhs) / Δz
+            end
+        end
+        C === nothing || (C[nz, i, j] = zero(eltype(C)))
+    end
+    return nothing
+end
+
+@inline neumann_pivot(column, k, lower, upper, remainder, previous) = upper + remainder
+
+"""Flux-form stencil with `a[k]` on each cell's upper face."""
 struct VerticalFluxColumn{A, R, T}
     a::A
     rhs::R
     i::Int
     j::Int
     nz::Int
+    Δz::T
     Δz²::T
     shift::T
 end
 
-@inline function tridiagonal_row(s::VerticalFluxColumn, k)
-    T = typeof(s.shift)
-    nz = s.nz
-    @inbounds if k == 1
-        a_up = T(s.a[1])
-        dl, d, du = zero(T), -(a_up + s.shift), a_up
-    elseif k == nz
-        a_down = T(s.a[nz - 1])
-        dl, d, du = a_down, -(a_down + s.shift), zero(T)
-    else
-        a_up = T(s.a[k])
-        a_down = T(s.a[k - 1])
-        dl, d, du = a_down, -(a_up + a_down + s.shift), a_up
+@inline function neumann_row(s::VerticalFluxColumn, k)
+    @inbounds begin
+        lower = k > 1 ? s.a[k - 1] : zero(s.shift)
+        upper = k < s.nz ? s.a[k] : zero(s.shift)
+        forcing = s.Δz² * s.rhs[k, s.i, s.j]
     end
-    @inbounds b = s.Δz² * s.rhs[k, s.i, s.j]
-    return dl, d, du, b
+    return lower, upper, forcing
 end
 
 """
 Centered `helmholtzdouble` stencil with optional Neumann boundary fluxes.
-`shift = αkₕ²Δz²`. With `gauge = true`, row 1 is replaced by `φ[1] = 0`.
+`shift = αkₕ²Δz²`.
 """
 struct HelmholtzColumn{A, B, R, BB, TB, T}
     a::A
@@ -155,33 +195,34 @@ struct HelmholtzColumn{A, B, R, BB, TB, T}
     Δz::T
     Δz²::T
     shift::T
-    gauge::Bool
 end
 
-@inline function tridiagonal_row(s::HelmholtzColumn, k)
-    a, b, Δz, nz = s.a, s.b, s.Δz, s.nz
-    @inbounds rhs = s.Δz² * s.rhs[k, s.i, s.j]
-    @inbounds if k == 1
-        dl = zero(s.shift)
-        d = -a[1] - b[1] * Δz / 2 - s.shift
-        du = a[1] + b[1] * Δz / 2
-        if s.bot_bc !== nothing
-            rhs += (a[1] - b[1] * Δz / 2) * Δz * s.bot_bc[s.i, s.j]
+@inline function neumann_row(s::HelmholtzColumn, k)
+    @inbounds begin
+        half_drift = s.b[k] * s.Δz / 2
+        lower = s.a[k] - half_drift
+        upper = s.a[k] + half_drift
+        forcing = s.Δz² * s.rhs[k, s.i, s.j]
+        if k == 1
+            s.bot_bc === nothing ||
+                (forcing += lower * s.Δz * s.bot_bc[s.i, s.j])
+            lower = zero(lower)
+        elseif k == s.nz
+            s.top_bc === nothing ||
+                (forcing -= upper * s.Δz * s.top_bc[s.i, s.j])
+            upper = zero(upper)
         end
-        s.gauge && return zero(s.shift), one(s.shift), zero(s.shift), zero(rhs)
-    elseif k == nz
-        dl = a[nz] - b[nz] * Δz / 2
-        d = -a[nz] + b[nz] * Δz / 2 - s.shift
-        du = zero(s.shift)
-        if s.top_bc !== nothing
-            rhs -= (a[nz] + b[nz] * Δz / 2) * Δz * s.top_bc[s.i, s.j]
-        end
-    else
-        dl = a[k] - b[k] * Δz / 2
-        d = -2 * a[k] - s.shift
-        du = a[k] + b[k] * Δz / 2
     end
-    return dl, d, du, rhs
+    return lower, upper, forcing
+end
+
+@inline function neumann_pivot(s::HelmholtzColumn, k, lower, upper, remainder, previous)
+    if real(lower) < 0 < real(upper) || real(upper) < 0 < real(lower)
+        # With opposing sides the drift can hide the diffusion coefficient.
+        # Use the diagonal directly for this row to preserve that coefficient.
+        @inbounds return (2s.a[k] + s.shift) - lower * previous
+    end
+    return upper + remainder
 end
 
 #=
@@ -342,8 +383,8 @@ end
         # With one level and Neumann BCs the vertical terms vanish: ψ = -q/kₕ².
         @inbounds ψ[1, i, j] = -q[1, i, j] / kₕ²
     else
-        system = VerticalFluxColumn(a, q, i, j, nz, Δz², kₕ² * Δz²)
-        _thomas_solve!(ψ, c, i, j, 0, nz, system)
+        column = VerticalFluxColumn(a, q, i, j, nz, Δz, Δz², kₕ² * Δz²)
+        _solve_shifted_neumann!(ψ, nothing, c, column)
     end
 end
 
@@ -392,6 +433,9 @@ Boundary flux terms are added to RHS:
 - `bot_bc`, `top_bc`: Optional boundary flux arrays (nx, ny) for non-zero Neumann BCs
 - `workspace`: Optional model workspace supplying the Thomas scratch
 
+`dstk` and `rhs` must share the geometry's shape and execution backend. The
+coefficient vectors and boundary flux arrays may be supplied on the host.
+
 # Singular columns
 Where `scale_kh2 × kₕ² = 0` — the horizontal-mean column, and every column when
 `scale_kh2 = 0` — the Neumann problem is singular: constants are in its null
@@ -411,12 +455,17 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
                            bot_bc=nothing,
                            top_bc=nothing,
                            workspace=nothing)
-    nz = G.nz
-    nz_local, nx, ny = size(dstk)
-    nz_local == nz || throw(DimensionMismatch(
-        "dstk has $nz_local levels; the grid has $nz"))
-    size(rhs) == size(dstk) || throw(DimensionMismatch(
-        "rhs has size $(size(rhs)); dstk has $(size(dstk))"))
+    nz, nx, ny = G.nz, G.nx, G.ny
+    expected = (nz, nx, ny)
+    size(dstk) == expected || throw(DimensionMismatch(
+        "dstk has size $(size(dstk)); the grid requires $expected"))
+    size(rhs) == expected || throw(DimensionMismatch(
+        "rhs has size $(size(rhs)); the grid requires $expected"))
+    backend = get_backend(G.kx)
+    get_backend(dstk) == backend ||
+        throw(ArgumentError("dstk must be on the geometry's execution backend"))
+    get_backend(rhs) == backend ||
+        throw(ArgumentError("rhs must be on the geometry's execution backend"))
     length(a) == nz || throw(DimensionMismatch("a must have length nz=$nz"))
     length(b) == nz || throw(DimensionMismatch("b must have length nz=$nz"))
     for (bc, name) in ((bot_bc, "bot_bc"), (top_bc, "top_bc"))
@@ -424,7 +473,6 @@ function invert_helmholtz!(dstk, rhs, G::RuntimeGeometry;
             "$name must be an (nx, ny) = ($nx, $ny) array (got size $(size(bc)))"))
     end
 
-    backend = get_backend(dstk)
     # The column scalars share the grid's precision.
     α = convert(typeof(vertical_spacing(G)), scale_kh2)
     if nz == 1
@@ -476,9 +524,9 @@ end
     i, j = @index(Global, NTuple)
     @inbounds kₕ² = kx[i]^2 + ky[j]^2
     singular = iszero(α * kₕ²)
-    system = HelmholtzColumn(a, b, rhs, bot_bc, top_bc, i, j, nz,
-                             Δz, Δz², α * kₕ² * Δz², singular)
-    _thomas_solve!(φ, c, i, j, 0, nz, system)
+    column = HelmholtzColumn(a, b, rhs, bot_bc, top_bc, i, j, nz,
+                             Δz, Δz², α * kₕ² * Δz²)
+    _solve_shifted_neumann!(φ, nothing, c, column, singular)
     if singular
         # Fix the constant null mode with a zero vertical mean.
         mean_value = zero(eltype(φ))
@@ -584,43 +632,40 @@ end
         # The mean mode keeps the A = 0 gauge.
         @inbounds A[1, i, j] = kₕ² == 0 ? zero(eltype(A)) : -4 * B[1, i, j] / kₕ²
         @inbounds C[1, i, j] = zero(eltype(C))
-    else
-        if kₕ² == 0
-            # ∂z(a ∂z) with Neumann BCs is singular: its range has zero depth
-            # sum. Project out the depth mean of B, integrate the discrete
-            # vertical flux, and fix the gauge with sum(A) = 0. (Pinning A[1]
-            # and dropping a row would instead put the whole depth mean of B
-            # into the bottom cell.)
-            B̄ = zero(eltype(B))
-            for k in 1:nz
-                @inbounds B̄ += B[k, i, j]
-            end
-            B̄ /= nz
-            @inbounds A[1, i, j] = zero(eltype(A))
-            flux = zero(eltype(B))
-            for k in 1:(nz - 1)
-                @inbounds begin
-                    flux += B[k, i, j] - B̄
-                    A[k + 1, i, j] = A[k, i, j] + Δz² * flux / a[k]
-                end
-            end
-            mean_value = zero(eltype(A))
-            for k in 1:nz
-                @inbounds mean_value += A[k, i, j]
-            end
-            mean_value /= nz
-            for k in 1:nz
-                @inbounds A[k, i, j] -= mean_value
-            end
-        else
-            system = VerticalFluxColumn(a, B, i, j, nz, Δz², (kₕ² * Δz²) / 4)
-            _thomas_solve!(A, c, i, j, 0, nz, system)
+    elseif kₕ² == 0
+        # ∂z(a ∂z) with Neumann BCs is singular: its range has zero depth
+        # sum. Project out the depth mean of B, integrate the discrete
+        # vertical flux, and fix the gauge with sum(A) = 0. (Pinning A[1]
+        # and dropping a row would instead put the whole depth mean of B
+        # into the bottom cell.)
+        B̄ = zero(eltype(B))
+        for k in 1:nz
+            @inbounds B̄ += B[k, i, j]
         end
-
+        B̄ /= nz
+        @inbounds A[1, i, j] = zero(eltype(A))
+        flux = zero(eltype(B))
+        for k in 1:(nz - 1)
+            @inbounds begin
+                flux += B[k, i, j] - B̄
+                A[k + 1, i, j] = A[k, i, j] + Δz² * flux / a[k]
+            end
+        end
+        mean_value = zero(eltype(A))
+        for k in 1:nz
+            @inbounds mean_value += A[k, i, j]
+        end
+        mean_value /= nz
+        for k in 1:nz
+            @inbounds A[k, i, j] -= mean_value
+        end
         for k in 1:(nz - 1)
             @inbounds C[k, i, j] = (A[k + 1, i, j] - A[k, i, j]) / Δz
         end
         @inbounds C[nz, i, j] = zero(eltype(C))
+    else
+        column = VerticalFluxColumn(a, B, i, j, nz, Δz, Δz², (kₕ² * Δz²) / 4)
+        _solve_shifted_neumann!(A, C, c, column)
     end
 end
 

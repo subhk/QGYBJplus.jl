@@ -48,7 +48,7 @@ from quadratic nonlinearities. The Lmask array encodes which modes to keep;
 module Nonlinear
 
 using KernelAbstractions: @kernel, @index, @Const, get_backend
-using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity,
+using ..QGYBJplus: RuntimeGeometry, HorizontalHyperdiffusivity, GridScaleHyperdiffusivity,
                    FlowHyperdiffusivity, WaveHyperdiffusivity
 using ..QGYBJplus: fft_forward!, fft_backward!
 using ..QGYBJplus: allocate_fft_backward_dst
@@ -137,6 +137,16 @@ The Jacobian conserves both φ and χ integrals (energy and enstrophy).
 function _component_int_factor(kₓ::Real, kᵧ::Real, Δt::Real, closure)
     kₕ² = kₓ^2 + kᵧ^2
     return _hyperdiffusion_exponent(closure, kₕ², Δt)
+end
+
+"""
+`(kₕ / kₘₐₓ)^order / efold_steps`, the exponent λΔt of a
+`GridScaleHyperdiffusivity` in a step of any length; zero on a grid that keeps
+only its mean.
+"""
+@inline function _grid_scale_exponent(closure::GridScaleHyperdiffusivity, kₕ²)
+    iszero(closure.kmax²) && return 0.0
+    return (Float64(kₕ²) / closure.kmax²)^(closure.order ÷ 2) / closure.efold_steps
 end
 
 """
@@ -311,27 +321,46 @@ function convol_waqg!(nqk, nBRk, nBIk, u, v, qk, BRk, BIk, G::RuntimeGeometry, p
     return nqk, nBRk, nBIk
 end
 
+#=
+The divergence-form advection has one implementation, in two steps that every
+caller shares: the advected field is dealiased and taken to physical space,
+and the divergence of its fluxes is formed. Only the products between them
+differ, by where the velocity comes from: `_convol_advect!` reads a diagnosed
+u and v, and the time stepper's `_advect_by_psi!` forms them from ψ.
+=#
+
+"""The spectral field `χk`, dealiased by `mask`, in physical space, in a borrowed buffer."""
+function _dealiased_physical(χk, mask, plans, workspace)
+    χ = scratch_like(workspace, χk)
+    dealias!(χ, χk, mask)
+    return fft_backward!(χ, χ, plans)
+end
+
+"""
+Divergence `ikₓ(uχ)^ + ikᵧ(vχ)^` of the physical fluxes `uχ` and `vχ`, which
+are transformed in place, written to `nχk` and dealiased by `mask`.
+"""
+function _flux_divergence!(nχk, uχ, vχ, G::RuntimeGeometry, plans, mask)
+    fft_forward!(uχ, uχ, plans)
+    fft_forward!(vχ, vχ, plans)
+    # The normalized inverse transform leaves the products correctly scaled.
+    launch!(_divergence_kernel!, nχk, size(nχk),
+            nχk, uχ, vχ, G.kx, G.ky, mask)
+    return nχk
+end
+
 # Advection helper for complex fields (q or B) without splitting into BR/BI.
 function _convol_advect!(nχk, u, v, χk, G::RuntimeGeometry, plans;
                          Lmask=nothing, use_real::Bool=false, workspace=nothing)
-    backend = get_backend(nχk)
     mask = _nonlinear_mask(Lmask, G, nχk)
     product = use_real ? _real_product : *
 
     # Two buffers, transformed in place: χ (then vχ) and uχ.
-    χ = scratch_like(workspace, χk)
-    dealias!(χ, χk, mask)
-    fft_backward!(χ, χ, plans)
+    χ = _dealiased_physical(χk, mask, plans, workspace)
     uχ = scratch_like(workspace, χk)
     kernel_map!(product, uχ, u, χ)
     kernel_map!(product, χ, v, χ)
-    fft_forward!(uχ, uχ, plans)
-    fft_forward!(χ, χ, plans)
-
-    # The normalized inverse transform leaves the products correctly scaled.
-    launch!(_divergence_kernel!, backend, size(nχk),
-            nχk, uχ, χ, G.kx, G.ky, mask)
-    return nχk
+    return _flux_divergence!(nχk, uχ, χ, G, plans, mask)
 end
 
 """
@@ -830,6 +859,19 @@ function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
 
     (inviscid || !waves) && return 0.0
     return _component_int_factor(kₓ, kᵧ, Δt, closure)
+end
+
+# The same for the flow and the waves, and for any Δt (see the closure).
+function int_factor(kₓ::Real, kᵧ::Real, Δt::Real,
+    closure::GridScaleHyperdiffusivity; waves::Bool=false,
+    inviscid::Bool=false)
+
+    inviscid && return 0.0
+    isnan(closure.kmax²) && throw(ArgumentError(
+        "this GridScaleHyperdiffusivity is not on a grid, so it has no " *
+        "largest wavenumber to scale by; use the closure of a model, " *
+        "model.numerics.closure"))
+    return _grid_scale_exponent(closure, kₓ^2 + kᵧ^2)
 end
 
 end # module

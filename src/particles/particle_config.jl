@@ -18,6 +18,8 @@ const _PARENT = parentmodule(@__MODULE__)
 const ParticleConfig = _PARENT.ParticleConfig
 const _check_wave_motion = _PARENT._check_wave_motion
 const _check_horizontal_advection = _PARENT._check_horizontal_advection
+const _check_particle_methods = _PARENT._check_particle_methods
+const _time_value = _PARENT._time_value
 const _check_particle_times = _PARENT._check_particle_times
 
 export ParticleConfig3D, ParticleDistribution,
@@ -44,7 +46,13 @@ Configure a volume, layered distribution, random cloud, or explicit particle
 positions using explicit coordinate bounds. Prefer
 [`particles_in_grid_3d`](@ref), [`particles_in_layers`](@ref),
 [`particles_random_3d`](@ref), or [`particles_custom`](@ref), which populate
-the bounds and distribution-specific fields.
+the bounds and distribution-specific fields. A `LAYERED` distribution without
+`z_levels` has `nz_particles` levels placed as by `particles_in_grid_3d`.
+
+`particle_advec_time`, `wave_motion`, `integration_method`,
+`interpolation_method`, the periodicity, `save_interval`, and
+`max_save_points` are those of [`ParticleConfig`](@ref). Invalid options
+raise an `ArgumentError` when the configuration is built.
 """
 Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     # Spatial domain for particle initialization (x_max, y_max, z_max are required)
@@ -78,7 +86,10 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     use_ybj_w::Bool = false
     wave_motion::Symbol = :averaged
     use_3d_advection::Bool = false
-    
+
+    # Release time (see ParticleConfig); a time, so Float64
+    particle_advec_time::Float64 = 0.0
+
     # Integration and interpolation methods (see ParticleConfig)
     integration_method::Symbol = :rk2
     interpolation_method::InterpolationMethod = TRICUBIC
@@ -98,12 +109,16 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
     function ParticleConfig3D{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                                 distribution_type, nx_particles, ny_particles, nz_particles,
                                 z_levels, particles_per_level, custom_x, custom_y, custom_z,
-                                use_ybj_w, wave_motion, use_3d_advection, integration_method,
+                                use_ybj_w, wave_motion, use_3d_advection,
+                                particle_advec_time, integration_method,
                                 interpolation_method, periodic_x, periodic_y,
                                 save_interval, max_save_points, seed) where T
         _check_wave_motion(use_ybj_w, wave_motion)
         _check_horizontal_advection(use_3d_advection)
-        _check_particle_times(0.0, save_interval, max_save_points)
+        _check_particle_methods(integration_method, interpolation_method)
+        particle_advec_time = _time_value(particle_advec_time)
+        save_interval = _time_value(save_interval)
+        _check_particle_times(particle_advec_time, save_interval, max_save_points)
         check(condition, message) = condition || throw(ArgumentError(message))
 
         # Basic validation
@@ -151,7 +166,8 @@ Base.@kwdef struct ParticleConfig3D{T<:AbstractFloat}
         new{T}(x_min, x_max, y_min, y_max, z_min, z_max,
                distribution_type, nx_particles, ny_particles, nz_particles,
                z_levels, particles_per_level, custom_x, custom_y, custom_z,
-               use_ybj_w, wave_motion, use_3d_advection, integration_method,
+               use_ybj_w, wave_motion, use_3d_advection,
+               particle_advec_time, integration_method,
                interpolation_method, periodic_x, periodic_y,
                save_interval, max_save_points, seed)
     end
@@ -314,7 +330,9 @@ coordinate `z`.
 
 `pattern` places them:
 - `:sunflower` (default): a Fibonacci spiral, the most uniform;
-- `:rings`: concentric rings;
+- `:rings`: concentric rings, evenly spaced up to the edge of the disk, with
+  shares of the `n` particles that grow as their circumference, so that
+  every ring has the same spacing along it;
 - `:random`: uniformly at random, drawn from a generator seeded with `seed`,
   so the same call gives the same positions.
 
@@ -360,44 +378,24 @@ function particles_in_circle(z_level::Real;
         end
 
     elseif pattern == :rings
-        # Concentric rings with uniform radial spacing
-        # Determine number of rings based on particle count
+        # Rings at radii radius·k/n_rings, k = 1, …, n_rings, whose shares of
+        # the n particles grow as their circumference (as k), so that the
+        # particles of every ring are about as far apart as the rings.
         n_rings = max(1, round(Int, sqrt(n_particles / π)))
+        k_sum = n_rings * (n_rings + 1) ÷ 2
         particles_placed = 0
 
         for ring in 1:n_rings
-            # Radius of this ring
             r = radius * T(ring) / T(n_rings)
-
-            # Number of particles on this ring (proportional to circumference)
-            if ring == 1
-                n_on_ring = max(1, round(Int, n_particles / (n_rings * n_rings)))
-            else
-                n_on_ring = max(1, round(Int, 2π * ring * n_particles / (π * n_rings * n_rings)))
-            end
-
-            # Don't exceed total particles
-            n_on_ring = min(n_on_ring, n_particles - particles_placed)
-
+            # Rounding the running total makes the shares add up to n.
+            placed_after = round(Int, n_particles * (ring * (ring + 1) ÷ 2) / k_sum)
+            n_on_ring = placed_after - particles_placed
             for j in 1:n_on_ring
                 θ = T(2π) * T(j - 1) / T(n_on_ring)
-                idx = particles_placed + j
-                if idx <= n_particles
-                    custom_x[idx] = x_center + r * cos(θ)
-                    custom_y[idx] = y_center + r * sin(θ)
-                end
+                custom_x[particles_placed + j] = x_center + r * cos(θ)
+                custom_y[particles_placed + j] = y_center + r * sin(θ)
             end
-            particles_placed += n_on_ring
-
-            if particles_placed >= n_particles
-                break
-            end
-        end
-
-        # Fill any remaining particles at center
-        for i in (particles_placed + 1):n_particles
-            custom_x[i] = x_center
-            custom_y[i] = y_center
+            particles_placed = placed_after
         end
 
     elseif pattern == :random
@@ -475,9 +473,7 @@ function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where
     # Create 3D grid
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
-    # Vertically the interval is bounded, so both ends are levels.
-    z_range = config.nz_particles == 1 ? [(config.z_min + config.z_max) / 2] :
-              range(config.z_min, config.z_max, length=config.nz_particles)
+    z_range = _vertical_levels(config)
 
     total_particles = config.nx_particles * config.ny_particles * config.nz_particles
 
@@ -505,13 +501,19 @@ function initialize_uniform_3d_grid!(tracker, config::ParticleConfig3D{T}) where
 end
 
 """
+The `nz_particles` levels from `z_min` to `z_max`. The interval is bounded, so
+both ends are levels; a single level lies in its middle.
+"""
+_vertical_levels(config::ParticleConfig3D) =
+    config.nz_particles == 1 ? [(config.z_min + config.z_max) / 2] :
+    collect(range(config.z_min, config.z_max, length=config.nz_particles))
+
+"""
 Initialize layered particle distribution.
 """
 function initialize_layered_distribution!(tracker, config::ParticleConfig3D{T}) where T
     
-    z_levels = isempty(config.z_levels) ? 
-               collect(range(config.z_min, config.z_max, length=config.nz_particles)) :
-               config.z_levels
+    z_levels = isempty(config.z_levels) ? _vertical_levels(config) : config.z_levels
     
     # Calculate total particles
     if isempty(config.particles_per_level)
@@ -712,6 +714,7 @@ function convert_to_basic_config(config::ParticleConfig3D{T}) where T
         z_level=z_level,
         nx_particles=config.nx_particles, ny_particles=config.ny_particles,
         wave_motion=config.wave_motion, use_3d_advection=config.use_3d_advection,
+        particle_advec_time=config.particle_advec_time,
         integration_method=config.integration_method,
         interpolation_method=config.interpolation_method,
         periodic_x=config.periodic_x, periodic_y=config.periodic_y,

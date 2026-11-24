@@ -429,7 +429,8 @@ end
                     parent(expected.psi) .- baseline_psi) > 1e-10
 
                 QGYBJplus._refresh_wave_diagnostics!(feedback_model)
-                @test parent(feedback_model.fields.psi) ≈ parent(expected.psi)
+                # The refresh recovers A and C only; the flow is left as it is.
+                @test parent(feedback_model.fields.psi) == baseline_psi
                 @test parent(feedback_model.fields.A) ≈ parent(expected.A)
                 @test parent(feedback_model.fields.C) ≈ parent(expected.C)
                 @test parent(feedback_model.fields.q) == prognostic_q
@@ -438,7 +439,7 @@ end
             end
 
             failure_path = joinpath(output_dir, "forced_failure")
-            mkpath(joinpath(failure_path, "state0001.nc"))
+            blocked_state = mkpath(joinpath(failure_path, "state0001.nc"))
             failing_simulation = Simulation(
                 model;
                 Δt=0.1,
@@ -446,7 +447,16 @@ end
                 output=NetCDFOutput(path=failure_path),
                 verbose=false,
             )
-            # A directory where the state file goes makes NetCDF fail.
+            @test_throws ArgumentError run!(failing_simulation)
+            @test failing_simulation.state === Ready
+            @test failing_simulation.output_manager === nothing
+            @test isdir(blocked_state)
+
+            # A collision introduced after setup still fails during the
+            # write and closes the active manager.
+            rm(blocked_state)
+            QGYBJplus._prepare_run_output!(failing_simulation)
+            mkdir(blocked_state)
             @test_throws NCDatasets.NetCDFError run!(failing_simulation)
             @test failing_simulation.state == Failed
             @test failing_simulation.output_manager.closed
@@ -669,6 +679,156 @@ end
             end
         finally
             finalize_model!(model)
+        end
+    end
+end
+
+@testset "Energy diagnostics count every mode of a fixed flow" begin
+    # A fixed flow keeps its prescribed ψ, and so its velocity, beyond the
+    # two-thirds cutoff (⌊8/3⌋ = 2), where nonlinear runs dropped its energy.
+    grid = RectilinearGrid(size=(8, 8, 4), extent=(2π, 2π, 1.0))
+    ψ(x, y, z) = 0.3sin(3x) * (2 + z)
+    energies = map((false, true)) do linear
+        model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0), flow=FixedFlow(),
+            linear, verbose=false)
+        try
+            set!(model; ψ, pv_method=:none)
+            u, v = model.fields.u, model.fields.v
+            @test flow_kinetic_energy(model) ≈ sum(u .^ 2 .+ v .^ 2) / (2 * length(u))
+            QGYBJplus._model_energies(model)
+        finally
+            finalize_model!(model)
+        end
+    end
+    # The potential energy counts the same modes, as in a linear run.
+    @test energies[1].mean_flow_PE ≈ energies[2].mean_flow_PE
+    @test energies[1].mean_flow_PE > 0
+end
+
+@testset "An unreadable energy series is replaced with overwrite=true" begin
+    mktempdir() do path
+        first_run = Simulation(continuation_test_model(); Δt=0.1, stop_iteration=4,
+            output=NetCDFOutput(path=path, schedule=IterationInterval(2)),
+            diagnostics=IterationInterval(1), verbose=false)
+        run!(first_run)
+        finalize_simulation!(first_run)
+        # A run killed while writing leaves a file that cannot be read, which
+        # blocked a restored run even with overwrite=true.
+        summary = joinpath(path, "diagnostic", "total_energy.nc")
+        write(summary, "truncated")
+        function restored(overwrite)
+            simulation = Simulation(continuation_test_model(); Δt=0.1,
+                stop_iteration=6, diagnostics=IterationInterval(1), verbose=false,
+                output=NetCDFOutput(path=path, schedule=IterationInterval(2),
+                                    overwrite=overwrite))
+            return restore!(simulation, joinpath(path, "state0002.nc"))
+        end
+        blocked = restored(false)
+        @test_throws ArgumentError run!(blocked)
+        @test read(summary, String) == "truncated"
+
+        replaced = restored(true)
+        run!(replaced)
+        finalize_simulation!(replaced)
+        # The series starts again at the restart time.
+        @test energy_times(path) ≈ 0.2:0.1:0.6
+    end
+end
+
+@testset "Energies follow fields written to directly" begin
+    # A step's diagnostics were reused for the energies and the particle
+    # velocity whenever the model's own operators had not overwritten them,
+    # but a write to `model.fields`, which the model cannot see, left them
+    # stale: doubling B left the wave energy unchanged.
+    function stepped_model(formulation)
+        grid = RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0))
+        model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0), formulation,
+            verbose=false)
+        set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+             waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+        step!(model, ExponentialRungeKutta2(Δt=0.01))
+        return model
+    end
+    model = stepped_model(YBJPlus())
+    waves, flow = wave_energy(model), flow_kinetic_energy(model)
+    model.fields.B .*= 2
+    @test wave_energy(model).potential ≈ 4 * waves.potential
+    @test wave_energy(model).kinetic ≈ 4 * waves.kinetic
+    model.fields.q .*= 3
+    @test flow_kinetic_energy(model) ≈ 9 * flow
+
+    # The particles take the velocity of the streamfunction as it is.
+    advected = stepped_model(YBJPlus())
+    initialize_particles!(advected, particles_in_box(-0.4; x_max=2π, y_max=2π,
+                                                     nx=2, ny=2))
+    velocity = copy(advected.fields.u)
+    advected.fields.psi .*= 2
+    advect_particles!(advected, 0.01)
+    @test advected.particles.current.u ≈ 2 .* velocity
+
+    # A new simulation records the fields as they are, whatever an earlier
+    # run left.
+    mktempdir() do directory
+        energy_output(name) = EnergyDiagnosticsOutput(
+            path=joinpath(directory, name), schedule=IterationInterval(1))
+        first_run = Simulation(model; Δt=0.01, stop_iteration=2, output=false,
+                               diagnostics=energy_output("first"), verbose=false)
+        run!(first_run)
+        finalize_simulation!(first_run)
+        model.fields.q .*= 2
+        expected = flow_kinetic_energy(model)
+        second_run = Simulation(model; Δt=0.01, stop_iteration=1, output=false,
+                                diagnostics=energy_output("second"), verbose=false)
+        run!(second_run)
+        finalize_simulation!(second_run)
+        recorded = NCDataset(dataset -> dataset["mean_flow_KE"][1],
+                             joinpath(directory, "second", "total_energy.nc"))
+        @test recorded ≈ expected
+    end
+end
+
+@testset "State files after a step hold the fields a refresh gives" begin
+    # A state write straight after a step takes ψ, A, u, and v as the step
+    # left them and diagnoses only w; the file is the one that rebuilding
+    # every diagnostic from q and B gives.
+    for (formulation, feedback, flow) in (
+            (YBJPlus(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), NoFeedback(), FixedFlow()))
+        grid = RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0))
+        model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0), formulation, feedback,
+            flow, verbose=false)
+        set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+             waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+        mktempdir() do directory
+            output = NetCDFOutput(path=directory, schedule=IterationInterval(1),
+                                  fields=(:ψ, :waves), velocities=true)
+            simulation = Simulation(model; Δt=0.01, stop_iteration=3, output,
+                                    diagnostics=false, verbose=false)
+            run!(simulation)
+            # The run's steps reused each other's diagnosis across the writes.
+            @test QGYBJplus._fields_as_stepped(model)
+            names = ("psi", "A_real", "A_imag", "u", "v", "w")
+            written = NCDataset(joinpath(directory, "state0004.nc")) do dataset
+                [Array(dataset[name]) for name in names]
+            end
+            QGYBJplus._refresh_output_diagnostics!(model, output)
+            @test !QGYBJplus._fields_as_stepped(model)
+            fields = model.fields
+            physical(field) = QGYBJplus._to_xyz(ifft(Array(field), (2, 3)))
+            A = physical(fields.A)
+            rebuilt = [real.(physical(fields.psi)), real.(A), imag.(A),
+                       QGYBJplus._to_xyz(Array(fields.u)),
+                       QGYBJplus._to_xyz(Array(fields.v)),
+                       QGYBJplus._to_xyz(Array(fields.w))]
+            for (name, file, model_field) in zip(names, written, rebuilt)
+                @test file ≈ model_field rtol=1e-12 atol=1e-14
+            end
+            @test maximum(abs, written[end]) > 0
+            finalize_simulation!(simulation)
         end
     end
 end

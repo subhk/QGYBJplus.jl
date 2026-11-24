@@ -31,11 +31,10 @@ restored run keeps the original output times.
 
 A run never silently replaces files already in its output directory. A
 simulation restored from a state file (see [Restart](@ref io-restart))
-continues the numbering after the files up to its restart iteration. Any
-other existing state files raise an error, unless the output is configured
-with `NetCDFOutput(...; overwrite=true)`, which removes them first: all of
-them for a run that starts at iteration 0, and only those after the restart
-iteration for a restored run.
+continues the numbering when the output directory contains the checkpoint
+it loaded. Any state files after that checkpoint, or all state files when
+the checkpoint is absent, require `NetCDFOutput(...; overwrite=true)` to
+replace.
 
 ## Energy diagnostics
 
@@ -57,9 +56,13 @@ independent location with
 `EnergyDiagnosticsOutput(path="energies", schedule=TimeInterval(600.0))`.
 The files are rewritten during the run, at most every ten seconds of wall
 time, and once more when it ends, so a run that is stopped early keeps its
-series. A restored simulation appends to the series already there; other
-existing series need `overwrite=true` (which a schedule passed as
-`diagnostics` takes from the `NetCDFOutput`).
+series. A restored simulation appends to the series already there. When
+`diagnostics` is a schedule and the run replaces state files from another
+run, it starts a new energy series as well. Replacing a series needs
+`overwrite=true` (which a schedule passed as
+`diagnostics` takes from the `NetCDFOutput`). So does a series that cannot be
+read, such as one left by a run killed while writing: `overwrite=true`
+replaces it, and a restored run starts it again at its restart time.
 The summary file preserves the component series together with
 `total_wave_energy`, `total_flow_energy`, `coupled_energy`, and `total_energy`.
 `coupled_energy = total_flow_energy + wave_PE + wave_CE` is the
@@ -164,10 +167,13 @@ prefix, or `overwrite=true` to replace the earlier files.
 
 ## Failure behavior
 
-An error while setting up output, such as state files from another run, is
-raised before anything is written or removed and leaves the simulation
-`Ready`: run it again with another path or `overwrite=true` (for particle
-output, which is given to the constructor, build a new simulation). Exceptions
+An error while setting up output, such as state files from another run or a
+directory that cannot be created or written, is raised before anything is
+written or removed and leaves the simulation `Ready`, without the settings
+passed to that `run!`: run it again with another path or `overwrite=true`
+(for particle output, which is given to the constructor, build a new
+simulation). Setup creates the output directories, and checks that files can
+be created in them, before it removes an old file. Exceptions
 during the run, including while writing, move the simulation to `Failed`,
 close the state, diagnostics, and particle managers, and are rethrown. Use
 `try`/`finally` to guarantee cleanup; `finalize_simulation!` leaves the model

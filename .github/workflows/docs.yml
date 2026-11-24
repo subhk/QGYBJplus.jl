@@ -9,13 +9,17 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
-# Every run may push to gh-pages (pull requests deploy previews), and
-# concurrent pushes reject each other, so the runs take turns. The preview
-# cleanup workflow shares this group.
+# Runs for the same branch, tag, or pull request take turns, and a newer
+# pull-request run replaces an older one. Runs for different refs may
+# overlap: one group for all of them would cancel a waiting run, such as a
+# release tag's, whenever another run queued behind it. Documenter pushes to
+# gh-pages without force, so a push that races another fails visibly
+# instead of overwriting it.
 concurrency:
-  group: gh-pages
-  cancel-in-progress: false
+  group: docs-${{ github.event.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   actions: write     # julia-actions/cache removes superseded caches

@@ -51,7 +51,12 @@ B=\partial_z\!\left(\frac{f_0^2}{N^2}\partial_z A\right).
 ```
 
 The implementation recovers `A` by vertical integration with coefficient
-``N^2/f_0^2`` and enforces the tendency solvability condition.
+``N^2/f_0^2`` and enforces the tendency solvability condition, whose
+advection and refraction use the balanced flow, taken from the model's ``q``
+as a time step diagnoses it (from the prescribed ``\psi`` of a `FixedFlow`
+model), so `A` is the same whether or not ``\psi`` has been inverted since
+``q`` last changed. Recovering `A` (`invert_B_to_A!(model)`) changes only `A`
+and `C`.
 
 ## Depth-mean part of the envelope
 

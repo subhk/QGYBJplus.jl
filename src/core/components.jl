@@ -190,11 +190,14 @@ WaveHyperdiffusivity(; coefficient::Real, order::Int=4) =
 
 Horizontal damping composed from explicit balanced-flow and wave components.
 
-The no-argument constructor, also the model's default closure, keeps the
-fourth- and twelfth-order terms of nondimensional setups: coefficients
-`(0.01, 10.0)` for the flow and `(0.0, 10.0)` for the waves. With dimensional
-wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) they damp nothing, so a dimensional run should
-give its own coefficients, for instance from [`compute_hyperdiff_coeff`](@ref):
+The no-argument constructor keeps the fixed fourth- and twelfth-order
+coefficients that were the model's default before version 2.1: `(0.01, 10.0)`
+for the flow and `(0.0, 10.0)` for the waves. Being fixed, they suit only
+grids of one size: at dimensional wavenumbers (kₕ ~ 10⁻⁴ m⁻¹) they damp
+nothing, and on a 2π domain they damp even kₕ = 1 within a tenth of a time
+unit. The model's default is now [`GridScaleHyperdiffusivity`](@ref). To set
+the coefficients yourself, take them for instance from
+[`compute_hyperdiff_coeff`](@ref):
 
 ```julia
 ν = compute_hyperdiff_coeff(dx=grid.dx, dy=grid.dy, dt=Δt, order=8)
@@ -216,6 +219,42 @@ function HorizontalHyperdiffusivity(;
 
     return HorizontalHyperdiffusivity(flow, wave)
 end
+
+"""
+    GridScaleHyperdiffusivity(; order=8, efold_steps=10)
+
+Horizontal damping of the balanced flow and the waves alike, scaled to the
+grid and the time step: the largest wavenumber that the two-thirds dealiasing
+keeps, `kₘₐₓ`, decays by one e-fold every `efold_steps` steps, and a mode at
+`kₕ` by `(kₕ / kₘₐₓ)^order / efold_steps` of one per step, in any units and
+for any time step. This is the rule by which
+[`compute_hyperdiff_coeff`](@ref) chooses a coefficient, applied
+automatically, and the model's default closure. With `order = 8`, a mode at
+half of `kₘₐₓ` is damped 256 times more weakly. A model takes `kₘₐₓ` from its
+grid when it is built, so the closure to ask for damping rates
+([`int_factor`](@ref)) is the model's, `model.numerics.closure`; one that no
+model has taken has no `kₘₐₓ`, and asking it is an error.
+"""
+struct GridScaleHyperdiffusivity <: AbstractClosure
+    order::Int
+    efold_steps::Float64
+    # The largest kₕ² the dealiasing keeps, set by the model (NaN before).
+    kmax²::Float64
+
+    function GridScaleHyperdiffusivity(order::Integer, efold_steps::Real,
+                                       kmax²::Real)
+        order > 0 && iseven(order) || throw(ArgumentError(
+            "hyperdiffusion order must be positive and even (got $order)"))
+        isfinite(efold_steps) && efold_steps > 0 || throw(ArgumentError(
+            "efold_steps must be finite and positive (got $efold_steps)"))
+        isnan(kmax²) || (isfinite(kmax²) && kmax² >= 0) || throw(ArgumentError(
+            "the largest squared wavenumber must be finite and non-negative"))
+        return new(Int(order), Float64(efold_steps), Float64(kmax²))
+    end
+end
+
+GridScaleHyperdiffusivity(; order::Integer=8, efold_steps::Real=10) =
+    GridScaleHyperdiffusivity(order, efold_steps, NaN)
 
 """
     SurfaceWave(; amplitude, scale, profile=:gaussian)
@@ -306,13 +345,21 @@ The dimensions of a NetCDF variable are put in order by their names when
 they name the axes (`x`, `y`, and `z` or `depth`, or common alternatives such
 as `lon`, `lat`, and `lev`); otherwise, and for JLD2 arrays, `layout` gives
 their order (`:xyz` or `:zxy`). Extra dimensions of length one, such as a
-single time, are dropped. Missing (fill) and non-finite values are errors.
+single time, are dropped, in JLD2 arrays too. Missing (fill) and non-finite
+values are errors.
 
-When the same place holds coordinate vectors `x`, `y`, and `z` (or `depth`),
-a field on another grid is interpolated onto the model's. `z` is in the
-grid's coordinates, positive upward, and `depth` is measured down from the
-top of the grid, its lid; a `z` with no point below the lid, and some above
-it, is read as depth, as in earlier versions.
+When the same place holds coordinate vectors in the model's units, named `x`,
+`y`, and `z` or `depth` (or `xc`, `x_c`, `xh`, and likewise for y and z; in
+any case), a field on another grid is interpolated onto the model's. Vectors
+named `lon`, `lat`, `lev`, and the like are not coordinates in the model's
+units and are not read; with a vertical coordinate alone, the field is at
+the grid's points in x and y and its levels are placed by their depths. A
+NetCDF vertical coordinate with a CF `positive` attribute holds
+heights in the grid's coordinates (`"up"`) or depths below the lid
+(`"down"`), and the `z` of a QGYBJplus state file holds heights. Otherwise
+`z` is in the grid's coordinates, positive upward, and `depth` is measured
+down from the top of the grid, its lid; a `z` with no point below the lid,
+and some above it, is read as depth, as in earlier versions.
 """
 struct FieldFile
     path::String
@@ -362,6 +409,22 @@ function SurfaceWave(; amplitude::Real, scale::Real, profile::Symbol=:gaussian)
 end
 
 """
+    _time_value(t)
+
+A time (or time step) as `Float64`, the precision of the simulation clock. A
+`Float32` or `Float16` value is read as the decimal it prints as, so `0.01f0`
+is 0.01, the value that was written, rather than its binary expansion
+0.0099999998: over the steps of a run that difference would add up, and
+`stop_time = 1` would take one step more.
+"""
+function _time_value(t::Union{Float16, Float32})
+    isfinite(t) || return Float64(t)
+    # Julia prints a Float32 exponent with `f` (1.0f-5), which `parse` reads as `e`.
+    return parse(Float64, replace(string(t), 'f' => 'e'))
+end
+_time_value(t::Real) = Float64(t)
+
+"""
     TimeInterval(interval)
 
 Schedule output or diagnostics every `interval` of model time (seconds in a
@@ -374,7 +437,7 @@ struct TimeInterval{T<:AbstractFloat} <: AbstractSchedule
     interval::T
 
     function TimeInterval{T}(interval::Real) where T<:AbstractFloat
-        value = T(interval)
+        value = T(_time_value(interval))
         isfinite(value) || throw(ArgumentError("interval must be finite (got $interval)"))
         value > 0 || throw(ArgumentError("interval must be positive (got $interval)"))
         return new{T}(value)
@@ -398,15 +461,36 @@ struct IterationInterval <: AbstractSchedule
 end
 
 """
-    _next_deadline(time, interval)
+    _time_tolerance(time, deadline, Δt)
 
-The first multiple of `interval` after `time`, up to rounding. Every
+How close `time` must come to `deadline` to have reached it: the rounding of
+a time `t₀ + nΔt`, or a millionth of the time step `Δt`, whichever is larger.
+The stop test and every schedule use this one rule, so that they agree.
+
+`Δt` has no default, so that no caller falls back to the rounding alone and
+fires a step late. Whatever keeps a schedule (the output and diagnostics
+managers, the particle output manager, the particle tracker) stores the time
+step of its run as `time_step` when the run is set up, and passes that; it is
+zero only where there is no run.
+"""
+_time_tolerance(time, deadline, Δt) =
+    max(8eps(max(abs(time), abs(deadline), 1.0)), 1e-6 * Δt)
+
+"""Whether `time` has reached `deadline`, up to `_time_tolerance`."""
+_deadline_reached(time, deadline, Δt) =
+    time >= deadline - _time_tolerance(time, deadline, Δt)
+
+"""
+    _next_deadline(time, interval, Δt)
+
+The first multiple of `interval` after `time`, where a multiple that `time`
+has reached (see `_time_tolerance`) counts as passed. Every
 `TimeInterval` schedule lies on this grid of multiples from t = 0, so a
 restored run keeps the original output times, and a deadline computed with
 one multiplication does not drift as a running sum would.
 """
-function _next_deadline(time, interval)
-    tolerance = 8eps(max(abs(time), abs(interval), one(time)))
+function _next_deadline(time, interval, Δt)
+    tolerance = _time_tolerance(time, interval, Δt)
     return (floor((time + tolerance) / interval) + 1) * interval
 end
 
@@ -425,10 +509,9 @@ the wave amplitude `A` and velocity `LA`, and `:velocities` for u, v, and w,
 which `velocities=true` also adds.
 
 A run never silently replaces state files already in `path`. A simulation
-restored with [`restore!`](@ref) continues the numbering after the files up
-to its restart iteration. Any other existing files raise an error unless
-`overwrite=true`, which removes them: all state files for a run that starts
-at iteration 0, and the files after the restart iteration for a restored run.
+restored with [`restore!`](@ref) continues the numbering when `path` contains
+the checkpoint it loaded. Any state files after that checkpoint, or all
+state files when the checkpoint is absent, require `overwrite=true` to replace.
 """
 struct NetCDFOutput{S}
     path::String
@@ -466,7 +549,8 @@ time, and once more when it ends.
 
 A restored simulation appends to the series already in `path`. Any other
 existing series raises an error unless `overwrite=true`, which replaces it
-(for a restored run, only the records after the restart time).
+(for a restored run, only the records after the restart time, unless the
+series cannot be read).
 """
 struct EnergyDiagnosticsOutput{S<:AbstractSchedule}
     path::String

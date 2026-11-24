@@ -59,22 +59,59 @@ function _real_values(data, name, source)
 end
 
 """
-Depths, positive downward, from the vertical coordinate named `name` of a
-stratification file: `depth` is positive downward and `z` positive upward,
-both from the surface, except that a `z` without negative values is read as
-depth, as in earlier versions.
+The direction a NetCDF file states for a vertical coordinate with attributes
+`attributes`: `:up` for heights and `:down` for depths, from a CF `positive`
+attribute, or else `:up` in a QGYBJplus state file, which records
+`wave_formulation` among its global attributes; `nothing` when the file does
+not say. Field and stratification files share this rule; where the heights
+are measured from is theirs to say (see `_field_heights` and `_file_depths`).
 """
-_file_depths(name, values) =
-    name == "z" && any(<(zero(eltype(values))), values) ? -values : values
+function _stated_direction(attributes, global_attributes)
+    positive = lowercase(strip(string(get(attributes, "positive", ""))))
+    positive in ("up", "down") && return Symbol(positive)
+    return _is_state_file(global_attributes) ? :up : nothing
+end
+
+"""Whether the global attributes are those of a QGYBJplus state file."""
+_is_state_file(global_attributes) = haskey(global_attributes, "wave_formulation")
+
+"""
+Depths, positive downward, from the vertical coordinate named `name` of a
+stratification file, and whether they are measured below the lid (`true`) or
+below z = 0 in the grid's coordinates (`false`).
+
+A stated direction (see `_stated_direction`) gives the sign of the
+coordinate, not where it is measured from. A coordinate stated to be positive
+down holds depths below the lid. One stated to be positive up holds heights:
+in the grid's coordinates in a QGYBJplus state file (`state_file`), which
+wrote them from its grid, or when some height is positive, which no height
+below a surface is; otherwise below the surface, the lid, as in ocean data and
+as without the attribute. Without a stated direction `depth` is positive
+downward and `z` positive upward, both from the surface, except that a `z`
+without negative values is read as depth, as in earlier versions.
+"""
+function _file_depths(name, values, direction, state_file::Bool=false)
+    direction === :down && return values, true
+    if direction === :up
+        in_grid_coordinates = state_file || any(>(zero(eltype(values))), values)
+        return -values, !in_grid_coordinates
+    end
+    return (name == "z" && any(<(zero(eltype(values))), values) ? -values : values), true
+end
 
 """
 Heights, in the grid's coordinates, of the vertical coordinate named `name`
-of a field file on a grid whose top (its lid) is at `top`: `depth` is
-measured down from the lid; `z` is a height, except that a `z` with no point
-below the lid, and some above it, is read as depth, as in earlier versions.
+of a field file on a grid whose top (its lid) is at `top`. A coordinate
+stated to be positive up (see `_stated_direction`) holds heights, and one
+stated to be positive down depths below the lid. Otherwise `depth` is
+measured down from the lid and `z` is a height, except that a `z` with no
+point below the lid, and some above it, is read as depth, as in earlier
+versions.
 """
-function _field_heights(name, values, top)
-    as_depth = name == "depth" || (all(>=(top), values) && any(>(top), values))
+function _field_heights(name, values, top, direction)
+    as_depth = direction === nothing ?
+        name == "depth" || (all(>=(top), values) && any(>(top), values)) :
+        direction === :down
     return as_depth ? top .- values : values
 end
 
@@ -99,7 +136,6 @@ function _read_field(source::FieldFile, grid::RectilinearGrid)
     description = "$(repr(source.variable)) in $location"
     missing_variable() = throw(ArgumentError(
         "$location has no variable $(repr(source.variable))"))
-    top = Float64(last(grid.z_faces))
     # Everything is read and checked while the file is open: an error must
     # not hold on to a variable of a closed file.
     if _is_jld2(source.path)
@@ -108,13 +144,17 @@ function _read_field(source::FieldFile, grid::RectilinearGrid)
             names = _entry_names(container)
             source.variable in names || missing_variable()
             values = _entry(container, source.variable)
-            values isa AbstractArray{<:Number, 3} || throw(ArgumentError(
-                "$description must be a three-dimensional numeric array; " *
-                "got $(typeof(values))"))
-            values = _checked_field_values(Array(values), description)
+            values isa AbstractArray{<:Number} || throw(ArgumentError(
+                "$description must be a numeric array; got $(typeof(values))"))
+            # A JLD2 array names no dimensions, so it is read as a NetCDF
+            # variable with unnamed ones.
+            values, _ = _drop_extra_dimensions(Array(values),
+                ["dimension $d" for d in 1:ndims(values)], description)
+            values = _checked_field_values(values, description)
             (_to_zxy(values, source.layout === :zxy ? (1, 2, 3) : (3, 1, 2)),
-             _stored_coordinates(in(names), name -> _entry(container, name),
-                                 location, top))
+             _stored_coordinates(names,
+                 (name, _) -> _entry(container, name) isa AbstractVector,
+                 name -> _entry(container, name), name -> nothing, location, grid))
         end
     else
         return NCDataset(source.path, "r") do dataset
@@ -126,9 +166,15 @@ function _read_field(source::FieldFile, grid::RectilinearGrid)
             values, dimensions = _drop_extra_dimensions(values, dimensions, description)
             permutation = _zxy_permutation(dimensions, source.layout, description)
             values = _checked_field_values(values, description)
+            z, x, y = permutation
+            axis_dimensions = (x=dimensions[x], y=dimensions[y], z=dimensions[z])
+            matches_dimension(name, dimension) =
+                NCDatasets.dimnames(container[name]) == (dimension,)
             (_to_zxy(values, permutation),
-             _stored_coordinates(name -> haskey(container, name),
-                                 name -> container[name][:], location, top))
+             _stored_coordinates(keys(container), matches_dimension,
+                 name -> container[name][:],
+                 name -> _stated_direction(container[name].attrib, dataset.attrib),
+                 location, grid; dimensions=axis_dimensions))
         end
     end
 end
@@ -172,11 +218,13 @@ end
 
 """
 `values` without dimensions of length one beyond the three of a field, such
-as a single time; an error unless three dimensions remain.
+as a single time; an error unless three dimensions remain. Of several such
+dimensions that name no axis, the last goes first: a single time trails the
+field's own dimensions, one of which may itself have length one.
 """
 function _drop_extra_dimensions(values, dimensions, description)
     while ndims(values) > 3
-        index = findfirst(d -> size(values, d) == 1 && _axis_of(dimensions[d]) === nothing,
+        index = findlast(d -> size(values, d) == 1 && _axis_of(dimensions[d]) === nothing,
                           1:ndims(values))
         index === nothing && break
         values = dropdims(values; dims=index)
@@ -211,14 +259,55 @@ function _zxy_permutation(dimensions, layout, description)
     return (findfirst(==(:z), axes), findfirst(==(:x), axes), findfirst(==(:y), axes))
 end
 
-function _stored_coordinates(has, read, location, top)
-    vertical = findfirst(has, ("z", "depth"))
-    has("x") && has("y") && vertical !== nothing || return nothing
-    name = ("z", "depth")[vertical]
-    heights = _field_heights(name, _real_values(read(name), name, location), top)
-    return (x=_real_values(read("x"), "x", location),
-            y=_real_values(read("y"), "y", location),
-            z=heights)
+"""
+Names of the vectors that hold an axis's coordinates in the model's units.
+They are fewer than the dimension names: a `lon` or `lat` is in degrees and a
+`lev` or `level` may be an index, so those order the dimensions of a field
+(see `_AXIS_DIMENSION_NAMES`) but never place its points.
+"""
+const _AXIS_COORDINATE_NAMES = (
+    x=("x", "xc", "x_c", "xh"),
+    y=("y", "yc", "y_c", "yh"),
+    z=("z", "zc", "z_c", "depth"),
+)
+
+"""
+The coordinate vectors `(; x, y, z)` stored beside a field, z as heights in
+the grid's coordinates, or `nothing` when the field has no vertical
+coordinate and so is taken to be on the grid as it is stored. NetCDF vectors
+must use the field's dimension for their axis, with the dimension's own
+coordinate variable preferred. JLD2 vectors name no dimension. A field with
+a vertical coordinate but without both horizontal ones, such as one on
+longitude and latitude, is at the grid's own points in x and y, so that its
+levels are placed and put in the grid's order by their depths.
+`direction(name)` is the direction the file states for a vertical
+coordinate (see `_stated_direction`).
+"""
+function _stored_coordinates(variables, matches_dimension, read, direction, location,
+                             grid::RectilinearGrid;
+                             dimensions=(x=nothing, y=nothing, z=nothing))
+    function coordinate_name(axis)
+        aliases = _AXIS_COORDINATE_NAMES[axis]
+        dimension = dimensions[axis]
+        if dimension !== nothing && lowercase(dimension) in aliases &&
+           dimension in variables && matches_dimension(dimension, dimension)
+            return dimension
+        end
+        for candidate in aliases, name in variables
+            lowercase(name) == candidate && matches_dimension(name, dimension) && return name
+        end
+        return nothing
+    end
+    names = map(coordinate_name, (x=:x, y=:y, z=:z))
+    names.z === nothing && return nothing
+    values(name) = _real_values(read(name), name, location)
+    horizontal = names.x === nothing || names.y === nothing ?
+        (x=collect(Float64, grid.x), y=collect(Float64, grid.y)) :
+        (x=values(names.x), y=values(names.y))
+    top = Float64(last(grid.z_faces))
+    heights = _field_heights(lowercase(names.z), values(names.z), top,
+                             direction(names.z))
+    return merge(horizontal, (z=heights,))
 end
 
 """Whether `coordinates` are the model's own points, to within roundoff."""

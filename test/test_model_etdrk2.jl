@@ -623,3 +623,92 @@ end
         end
     end
 end
+
+@testset "A step that follows a step reuses its diagnosis" begin
+    # A step ends with B projected and ψ, u, v, and A diagnosed from it, so
+    # the next one can start from that state (as run! does). Skipping the
+    # repeated diagnosis gives the same result to the bit; skipping the
+    # repeated projection differs from a fresh start in the last bits only.
+    fields(model) = map(name -> Array(getproperty(model.fields, name)),
+                        (:q, :B, :psi, :u, :v, :A, :C))
+    function make(formulation, feedback, flow)
+        grid = RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0))
+        model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0),
+            formulation, feedback, flow, verbose=false)
+        set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+             verbose=false)
+        set_wave_packet!(model; amplitude=0.1, kx=3, ky=1, sigma_k=1.5)
+        return model
+    end
+    for (formulation, feedback, flow) in (
+            (YBJPlus(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), WaveMeanFeedback(), EvolvingFlow()),
+            (YBJ(), :none, FixedFlow()),
+            (PassiveWave(), :none, EvolvingFlow()))
+        models = [make(formulation, feedback, flow) for _ in 1:3]
+        steppers = [ExponentialRungeKutta2(Δt=0.01) for _ in 1:3]
+        try
+            foreach((m, s) -> QGYBJplus._step!(m, s, :new), models, steppers)
+            for (m, s, start) in zip(models, steppers, (:diagnosed, :projected, :new))
+                QGYBJplus._step!(m, s, start)
+            end
+            diagnosed, projected, new = fields.(models)
+            @test diagnosed == projected
+            @test all(isapprox.(projected[1:2], new[1:2]; rtol=1e-13))
+            @test_throws ArgumentError QGYBJplus._step!(models[1], steppers[1], :old)
+        finally
+            foreach(finalize_model!, models)
+        end
+    end
+end
+
+@testset "A step reuses only what the model still holds of the last one" begin
+    # The reuse rested on run! knowing what each helper between two steps
+    # writes. The model now records it: an operator that overwrites a
+    # diagnostic, or a setter, makes the next step diagnose or start again.
+    fields(model) = map(name -> Array(getproperty(model.fields, name)),
+                        (:q, :B, :psi, :u, :v, :A, :C))
+    function make()
+        grid = RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0))
+        model = QGYBJModel(; grid, coriolis=FPlane(f=1.0),
+            stratification=ConstantStratification(N²=1.0),
+            formulation=YBJ(), feedback=WaveMeanFeedback(), verbose=false)
+        set!(model; ψ=(x, y, z) -> 0.2sin(x) * cos(2y) * (1 + z) + 0.05cos(3x + y),
+             verbose=false)
+        set_wave_packet!(model; amplitude=0.1, kx=3, ky=1, sigma_k=1.5)
+        return model
+    end
+    state(model) = model.runtime.step_state
+    reference, overwritten, reset = make(), make(), make()
+    steppers = [ExponentialRungeKutta2(Δt=0.01) for _ in 1:3]
+    try
+        @test state(reference) === :new
+        foreach((m, s) -> QGYBJplus._step!(m, s, :new), (reference, overwritten, reset),
+                steppers)
+        @test state(reference) === :diagnosed
+
+        # The total velocity in u and v would otherwise advect the next step.
+        compute_total_velocities!(overwritten; t=0.3)
+        @test state(overwritten) === :projected
+        invert_B_to_A!(reference)
+        @test state(reference) === :projected
+        QGYBJplus._step!(reference, steppers[1], :projected)
+        QGYBJplus._step!(overwritten, steppers[2], :diagnosed)
+        @test fields(overwritten) == fields(reference)
+        @test state(overwritten) === :diagnosed
+
+        # A setter starts again: the step projects and diagnoses the new state.
+        # (`reset` joins the others at two steps first.)
+        QGYBJplus._step!(reset, steppers[3], :projected)
+        @test fields(reset) == fields(reference)
+        set_wave_packet!(reset; amplitude=0.05, kx=2, ky=1, sigma_k=1.5)
+        @test state(reset) === :new
+        set_wave_packet!(reference; amplitude=0.05, kx=2, ky=1, sigma_k=1.5)
+        QGYBJplus._step!(reference, steppers[1], :new)
+        QGYBJplus._step!(reset, steppers[3], :diagnosed)
+        @test fields(reset) == fields(reference)
+    finally
+        foreach(finalize_model!, (reference, overwritten, reset))
+    end
+end

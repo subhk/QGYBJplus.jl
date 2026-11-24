@@ -1,31 +1,45 @@
 """
-Compute `a(z) = f² / N²(z)`, with `N²` bounded below by `√eps` times its
-largest value. The bound is relative so that it means the same in every unit
-system: an absolute `√eps ≈ 1.5e-8` would clamp realistic abyssal N² in s⁻².
+    a_ell_from_N2(N2_profile, f)
+
+Compute `a(z) = f² / N²(z)` from N² on the upper cell faces
+(`grid.z_faces[2:end]`), bounded below as the model bounds it: by `√eps`
+times its largest value. N² must be positive on every face but the last,
+the rigid lid, where it may be zero.
 """
 function a_ell_from_N2(N2_profile::AbstractVector, f::Real)
+    T = promote_type(eltype(N2_profile), typeof(float(f)))
+    return T(f)^2 ./ _bounded_N2(N2_profile, T)
+end
+
+"""
+N² on the upper cell faces, bounded below by `√eps` times its largest value,
+the floor of every operator that divides by it. The bound is relative so that
+it means the same in every unit system: an absolute `√eps ≈ 1.5e-8` would
+clamp realistic abyssal N² in s⁻². N² must be finite, and positive on every
+face but the last: no operator uses N² on the rigid lid, so it may be zero
+there, and is bounded without a warning.
+"""
+function _bounded_N2(N2_profile::AbstractVector,
+                     ::Type{T}=float(eltype(N2_profile))) where T
     isempty(N2_profile) &&
         throw(ArgumentError("the stratification profile cannot be empty"))
-    T = promote_type(eltype(N2_profile), typeof(float(f)))
+    lid = length(N2_profile)
     for (k, value) in enumerate(N2_profile)
         isfinite(value) ||
             throw(ArgumentError("N² must be finite at vertical level $k"))
-        value > zero(value) ||
+        value > zero(value) || (k == lid && iszero(value)) ||
             throw(ArgumentError("N² must be positive at vertical level $k"))
     end
-    threshold = sqrt(eps(T)) * T(maximum(N2_profile))
-    warned = false
-    coefficients = Vector{T}(undef, length(N2_profile))
-    @inbounds for k in eachindex(N2_profile)
-        value = T(N2_profile[k])
-        if value < threshold && !warned
-            @warn "N² is below √eps times its largest value; clamping elliptic coefficients" level=k threshold maxlog=1
-            warned = true
-        end
-        coefficients[k] = T(f)^2 / max(value, threshold)
-    end
-    return coefficients
+    bound = _N2_floor(N2_profile, T)
+    bound > zero(T) || throw(ArgumentError("N² cannot vanish everywhere"))
+    level = findfirst(value -> T(value) < bound, @view N2_profile[1:(lid - 1)])
+    level === nothing ||
+        @warn "N² is below √eps times its largest value; clamping it" level threshold=bound maxlog=1
+    return T[max(T(value), bound) for value in N2_profile]
 end
+
+"""The lower bound of N², `√eps` times the largest value of `N2_profile`."""
+_N2_floor(N2_profile, ::Type{T}) where T = sqrt(eps(T)) * T(maximum(N2_profile))
 
 a_ell_from_N2(N2_profile::AbstractVector, coriolis::FPlane) =
     a_ell_from_N2(N2_profile, coriolis.f)

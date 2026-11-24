@@ -115,8 +115,8 @@ within the radial two-thirds dealiasing radius has a random phase and a
 variance proportional to `|k|^slope`, with `|k|` the mode index. The field is
 the same at every level, times `profile[k]` at level `k` when a profile
 vector is given, and ψ is real (Hermitian coefficients). The values depend
-only on the seeds and the global mode indices, so every architecture produces
-the same field up to rounding.
+only on the seeds, which may be any `Int`, and the global mode indices, so
+every architecture produces the same field up to rounding.
 """
 function init_random_psi!(psik, G::RuntimeGeometry, amplitude::Real;
                           slope::Real=-3.0, seed::Int=0, seed_offset::Int=0,
@@ -129,7 +129,9 @@ function init_random_psi!(psik, G::RuntimeGeometry, amplitude::Real;
     weights = profile === nothing ? ones(G.nz) : Float64.(collect(profile))
     length(weights) == G.nz && all(isfinite, weights) || throw(ArgumentError(
         "the profile must give a finite value at each of the $(G.nz) levels"))
-    base_seed = _mix64(UInt64(seed) ⊻ UInt64(seed_offset))
+    # `% UInt64` keeps the bits of a negative seed, where `UInt64` would throw,
+    # and is `UInt64(seed)` for the others.
+    base_seed = _mix64((seed % UInt64) ⊻ (seed_offset % UInt64))
     rms = _random_psi_rms_velocity(G, base_seed, Float64(slope), weights)
     scale = rms > 0 ? Float64(amplitude) / rms : 0.0
     backend = get_backend(psik)
@@ -157,18 +159,18 @@ Compute the horizontal energy spectrum E(k) of a spectral field, averaged over
 the modes in each integer shell. Evaluated on a host copy of `field`.
 """
 function compute_energy_spectrum(field, G::RuntimeGeometry)
-    kx_max = G.nx ÷ 2
-    ky_max = G.ny ÷ 2
-    k_max = min(kx_max, ky_max)
+    k_max = min(G.nx ÷ 2, G.ny ÷ 2)
     spectrum = zeros(Float64, k_max)
     count = zeros(Int, k_max)
 
     field_arr = on_host(field)
     for k in axes(field_arr, 1)
         for j in axes(field_arr, 3)
-            ky = j <= ky_max ? j - 1 : j - 1 - G.ny
+            # FFTW order, as for the grid's wavenumbers: for odd n the first
+            # (n + 1) ÷ 2 modes are 0 to n ÷ 2.
+            ky = j <= (G.ny + 1) ÷ 2 ? j - 1 : j - 1 - G.ny
             for i in axes(field_arr, 2)
-                kx = i <= kx_max ? i - 1 : i - 1 - G.nx
+                kx = i <= (G.nx + 1) ÷ 2 ? i - 1 : i - 1 - G.nx
                 k_total = round(Int, sqrt(Float64(kx^2 + ky^2)))
                 if 1 <= k_total <= k_max
                     spectrum[k_total] += abs2(field_arr[k, i, j])
@@ -321,11 +323,10 @@ end
             vert_term = a[nz - 1] * (ψ[nz - 1, i, j] - ψ[nz, i, j])
             q[k, i, j] = -kh2 * ψ[nz, i, j] + vert_term / dz2
         else
-            coeff_up = a[k]
-            coeff_down = a[k - 1]
-            vert_term = coeff_up * ψ[k + 1, i, j] -
-                        (coeff_up + coeff_down) * ψ[k, i, j] +
-                        coeff_down * ψ[k - 1, i, j]
+            ψₖ = ψ[k, i, j]
+            flux_up = a[k] * (ψ[k + 1, i, j] - ψₖ)
+            flux_down = a[k - 1] * (ψₖ - ψ[k - 1, i, j])
+            vert_term = flux_up - flux_down
             q[k, i, j] = -kh2 * ψ[k, i, j] + vert_term / dz2
         end
     end

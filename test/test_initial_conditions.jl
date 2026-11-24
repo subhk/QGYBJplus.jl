@@ -43,10 +43,32 @@ rms_speed(model) = sqrt(sum(model.fields.u .^ 2 .+ model.fields.v .^ 2) / length
     other = initial_test_model()
     set!(other; mean_flow=RandomStreamfunction(amplitude=0.4, seed=7))
     @test other.fields.psi != model.fields.psi
+    # Any Int is a seed: a negative one threw an InexactError.
+    set!(other; mean_flow=RandomStreamfunction(amplitude=0.4, seed=-42))
+    @test rms_speed(other) ≈ 0.4 rtol=1e-8
+    set!(again; mean_flow=RandomStreamfunction(amplitude=0.4, seed=-42))
+    @test again.fields.psi == other.fields.psi
+    @test other.fields.psi != model.fields.psi
 
     @test_throws ArgumentError RandomStreamfunction(amplitude=-1.0)
     @test_throws ArgumentError RandomStreamfunction(amplitude=1.0, profile=3)
     @test_throws UndefKeywordError RandomStreamfunction()
+end
+
+@testset "The energy spectrum bins every mode, for odd sizes too" begin
+    # For odd n, the mode kx = n ÷ 2 was taken for -(n ÷ 2 + 1) and dropped.
+    for n in (8, 9)
+        grid = RectilinearGrid(size=(n, n, 1), extent=(2π, 2π, 1.0))
+        geometry = QGYBJplus.RuntimeGeometry(grid)
+        binned = map(Iterators.product(1:n, 1:n)) do (i, j)
+            mode = zeros(ComplexF64, 1, n, n)
+            mode[1, i, j] = 1
+            spectrum = QGYBJplus.compute_energy_spectrum(mode, geometry)
+            shell = round(Int, hypot(grid.kx[i], grid.ky[j]))   # integer wavenumbers
+            1 <= shell <= n ÷ 2 ? spectrum[shell] > 0 : iszero(spectrum)
+        end
+        @test all(binned)
+    end
 end
 
 @testset "set_wave_packet! is localized, deterministic, and scaled" begin
@@ -75,6 +97,28 @@ end
 
     @test_throws ArgumentError set_wave_packet!(model; amplitude=0.1, kx=1, ky=0,
                                                 sigma_k=-1.0)
+
+    # A negative amplitude keeps its sign: the rescaling applied it twice.
+    set_wave_packet!(model; amplitude=0.1, kx=3, ky=0, sigma_k=1.5)
+    positive = copy(model.fields.B)
+    set_wave_packet!(model; amplitude=-0.1, kx=3, ky=0, sigma_k=1.5)
+    @test model.fields.B ≈ -positive
+end
+
+struct CallableStreamfunction
+    amplitude::Float64
+end
+(flow::CallableStreamfunction)(x, y, z) = flow.amplitude * sin(2π * x / 5e5)
+
+@testset "set_mean_flow! takes any callable" begin
+    # A callable that is not a Function was a MethodError.
+    model = initial_test_model()
+    set_mean_flow!(model; psi_func=(x, y, z) -> 1e3 * sin(2π * x / 5e5), verbose=false)
+    expected = copy(model.fields.psi)
+    set_mean_flow!(model; psi_func=CallableStreamfunction(1e3), verbose=false)
+    @test model.fields.psi == expected
+    @test_throws ArgumentError set_mean_flow!(model; psi_func=1.0, verbose=false)
+    @test model.fields.psi == expected
 end
 
 @testset "set! checks every argument before it changes the model" begin
@@ -106,14 +150,50 @@ end
     @test maximum(abs, model.fields.B) > 0
 end
 
-@testset "The default closure warns on fine dimensional grids" begin
-    # With f = 1e-4, a 137 m grid took 29,400 inertial periods to damp its
-    # smallest scale by e, and did not warn.
-    @test_logs (:warn, r"barely damps this grid") match_mode=:any QGYBJModel(
-        grid=RectilinearGrid(size=(64, 64, 2), extent=(64 * 137.0, 64 * 137.0, 1000.0)),
-        coriolis=FPlane(f=1e-4), stratification=ConstantStratification(N²=1e-5))
-    # Nondimensional setups damp within a fraction of a period.
-    @test_logs min_level=Base.CoreLogging.Warn QGYBJModel(
-        grid=RectilinearGrid(size=(16, 16, 2), extent=(2π, 2π, 1.0)),
-        coriolis=FPlane(f=1.0), stratification=ConstantStratification(N²=1.0))
+@testset "A wave packet nearly uniform in depth is not scaled up" begin
+    # The envelope is restricted to what a wave amplitude can produce and
+    # then scaled back to `amplitude`. What YBJ() keeps of a packet much
+    # deeper than the domain is its small vertical residual, which was scaled
+    # up without bound: 87 times for z_width = 2 on a unit depth, and 1e13
+    # times, from round-off, for a uniform one.
+    peak(model) = maximum(abs, physical_field(model.fields.B))
+    packet!(model; kwargs...) = set_wave_packet!(model; amplitude=0.1, kx=3, ky=1,
+                                                 sigma_k=1.5, kwargs...)
+    unit_model(formulation) = QGYBJModel(;
+        grid=RectilinearGrid(size=(16, 16, 8), extent=(2π, 2π, 1.0)),
+        coriolis=FPlane(f=1.0), stratification=ConstantStratification(N²=1.0),
+        formulation, verbose=false)
+
+    model = unit_model(YBJ())
+    # A packet with vertical structure keeps its amplitude.
+    @test_logs min_level=Base.CoreLogging.Warn packet!(model)
+    @test peak(model) ≈ 0.1
+    @test_logs (:warn, r"nearly uniform in depth") packet!(model; z_width=2.0)
+    @test 0 < peak(model) < 0.01
+    @test_logs (:warn, r"nearly uniform in depth") packet!(model; z_width=20.0)
+    @test 0 < peak(model) < 1e-3
+    # A broad packet can still have a representable vertical residual.
+    @test_logs (:warn, r"nearly uniform in depth") packet!(model; z_width=2e6)
+    @test 0 < peak(model) < 1e-12
+    # Once all levels round to the same value, the packet is removed.
+    @test_logs (:warn, r"uniform in depth and was removed") match_mode=:any packet!(
+        model; z_width=2e8)
+    @test peak(model) == 0
+    @test all(iszero, model.fields.A)
+
+    # YBJ⁺ removes the depth mean of the horizontally uniform column only.
+    plus = unit_model(YBJPlus())
+    @test_logs min_level=Base.CoreLogging.Warn packet!(plus; z_width=20.0)
+    @test peak(plus) ≈ 0.1
+end
+
+@testset "A large depth mean cannot erase a resolved Float32 wave" begin
+    grid = RectilinearGrid(Float32; size=(8, 8, 4), extent=(2π, 2π, 1))
+    B = repeat(reshape(Float32[1 - 1e-4, 1 - 1e-4, 1 + 1e-4, 1 + 1e-4],
+                       4, 1, 1), 1, 8, 8)
+    for formulation in (YBJPlus(), YBJ())
+        model = QGYBJModel(; grid, formulation, verbose=false)
+        set!(model; B)
+        @test physical_field(model.fields.B) ≈ B .- 1 rtol=1e-5
+    end
 end

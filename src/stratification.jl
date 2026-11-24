@@ -21,7 +21,8 @@ Abstract type for stratification profiles. Every profile but
 [`AnalyticalProfile`](@ref) is defined by depth below the surface:
 `evaluate_N2(profile, z)` takes the depth as `-z`, for a lid at z = 0, and a
 model whose grid has its top at `z_top` samples the profile at `z - z_top`,
-so that depths are always measured below its lid. An `AnalyticalProfile` is
+so that depths are always measured below its lid. An `AnalyticalProfile`, and
+a [`FileProfile`](@ref) of depths below z = 0 (`below_lid=false`), are
 evaluated at the grid's own z.
 """
 abstract type StratificationProfile{T} end
@@ -106,20 +107,26 @@ PiecewiseProfile(z_interfaces::AbstractVector, N_values::AbstractVector) =
         z_interfaces, N_values)
 
 """
-    FileProfile{T}(filename, z_data, N2_data) <: StratificationProfile{T}
+    FileProfile{T}(filename, z_data, N2_data; below_lid=true) <: StratificationProfile{T}
 
 Tabulated N² values `N2_data` at depths `z_data` (positive downward, strictly
 increasing, finite, and as many as the N² values), as returned by
 `load_stratification_from_file`. `evaluate_N2` interpolates linearly in depth
-and holds the end values beyond the data.
+and holds the end values beyond the data. The depths are measured below the
+model's lid, or, with `below_lid=false`, below z = 0 in the grid's
+coordinates: then `z_data` is minus the heights, and the profile stays at
+those heights wherever the lid is.
 """
 struct FileProfile{T} <: StratificationProfile{T}
     filename::String
     z_data::Vector{T}    # Depths (positive below surface)
     N2_data::Vector{T}
+    below_lid::Bool      # Depths below the lid, or else below z = 0
+    face_samples::Union{Nothing, Tuple{Vector{T}, Vector{T}}} # Depths below z = 0 and N²
 
     function FileProfile{T}(filename::AbstractString, z_data::AbstractVector,
-                            N2_data::AbstractVector) where T
+                            N2_data::AbstractVector, face_samples=nothing;
+                            below_lid::Bool=true) where T
         isempty(z_data) && throw(ArgumentError("a file profile needs at least one depth"))
         length(z_data) == length(N2_data) || throw(ArgumentError(
             "a file profile needs as many N² values as depths (got " *
@@ -128,7 +135,7 @@ struct FileProfile{T} <: StratificationProfile{T}
             throw(ArgumentError("the depths and N² values of a file profile must be finite"))
         all(>(0), diff(z_data)) || throw(ArgumentError(
             "the depths of a file profile must increase strictly (positive downward)"))
-        return new{T}(String(filename), z_data, N2_data)
+        return new{T}(String(filename), z_data, N2_data, below_lid, face_samples)
     end
 end
 
@@ -260,27 +267,16 @@ end
 
 Evaluate N² for file-based profile using interpolation.
 """
-function evaluate_N2(profile::FileProfile{T}, z::Real) where T
-    depth = -z
-    # Linear interpolation
-    if depth <= profile.z_data[1]
-        return profile.N2_data[1]
-    elseif depth >= profile.z_data[end]
-        return profile.N2_data[end]
-    else
-        # Find surrounding points
-        for i in 1:(length(profile.z_data)-1)
-            if profile.z_data[i] <= depth <= profile.z_data[i+1]
-                # Linear interpolation
-                α = (depth - profile.z_data[i]) / (profile.z_data[i+1] - profile.z_data[i])
-                return (1-α) * profile.N2_data[i] + α * profile.N2_data[i+1]
-            end
-        end
-    end
+evaluate_N2(profile::FileProfile, z::Real) =
+    _interpolate_N2(profile.z_data, profile.N2_data, -z)
 
-    # Should never reach here - indicates a logic error or malformed profile data
-    error("evaluate_N2: Failed to interpolate N² at depth=$depth. " *
-          "z_data range: [$(profile.z_data[1]), $(profile.z_data[end])]")
+function _interpolate_N2(depths, values, depth)
+    depth <= first(depths) && return first(values)
+    depth >= last(depths) && return last(values)
+    isnan(depth) && throw(ArgumentError("the evaluation depth must not be NaN"))
+    i = searchsortedlast(depths, depth)
+    α = (depth - depths[i]) / (depths[i + 1] - depths[i])
+    return (1 - α) * values[i] + α * values[i + 1]
 end
 
 """
@@ -303,11 +299,14 @@ end
 """
 The coordinate at which a model on `grid` evaluates `profile` at its height
 `z`: relative to its lid for a profile defined by depth, and `z` itself for an
-`AnalyticalProfile`, a function of the grid's own coordinate.
+`AnalyticalProfile`, a function of the grid's own coordinate, or a
+`FileProfile` of depths below z = 0.
 """
 _profile_coordinate(profile::StratificationProfile, z, grid::RectilinearGrid) =
     z - last(grid.z_faces)
 _profile_coordinate(profile::AnalyticalProfile, z, grid::RectilinearGrid) = z
+_profile_coordinate(profile::FileProfile, z, grid::RectilinearGrid) =
+    profile.below_lid ? z - last(grid.z_faces) : z
 
 """
     _compute_stratification_face_profile(profile, grid)
@@ -319,8 +318,15 @@ uniform indexing convention even though its boundary flux is zero.
 function _compute_stratification_face_profile(
     profile::StratificationProfile{T}, geometry::RectilinearGrid) where T
 
-    return T[evaluate_N2(profile, _profile_coordinate(profile, z, geometry))
-             for z in @view geometry.z_faces[2:end]]
+    return T[_evaluate_face_N2(profile, z, geometry) for z in @view geometry.z_faces[2:end]]
+end
+
+_evaluate_face_N2(profile, z, grid) = evaluate_N2(profile, _profile_coordinate(profile, z, grid))
+
+function _evaluate_face_N2(profile::FileProfile, z, grid)
+    samples = profile.face_samples
+    samples === nothing && return evaluate_N2(profile, _profile_coordinate(profile, z, grid))
+    return _interpolate_N2(samples..., -z)
 end
 
 """
@@ -331,14 +337,22 @@ Load a tabulated N² profile from a NetCDF file, or from a JLD2 file when
 
 The file must hold a vertical coordinate named `z` or `depth` and N² named
 `N2`, `N²`, or `n2`, as real arrays of equal length. `depth` is positive
-downward and `z` positive upward, both relative to the surface; a `z` without
-negative values is read as depth, as in earlier versions. `group` names the
-NetCDF group, or the JLD2 group, NamedTuple, or Dict, that holds the arrays,
-e.g. `group="ocean/cast12"`. JLD2 arrays may be ranges.
+downward and `z` positive upward, both relative to the surface (the model's
+lid), and a `z` without negative values is read as depth, as in earlier
+versions. A CF `positive` attribute on a NetCDF coordinate states its sign
+instead: `"down"` for depths below the lid, and `"up"` for heights, which
+are below the surface when none is positive (as in ocean data) and otherwise
+in the grid's coordinates. The `z` of a QGYBJplus state file always holds
+heights in the grid's coordinates, so N² reloaded from model output keeps its
+place wherever the lid is. When the state file also provides `z_face` and
+`N2_face`, the model uses those data to sample N² at its upper cell faces.
+`group`
+names the NetCDF group, or the JLD2 group, NamedTuple, or Dict, that holds
+the arrays, e.g. `group="ocean/cast12"`. JLD2 arrays may be ranges.
 
 The data need not be sorted or lie on the model's levels: the model
-interpolates the profile linearly in depth below its lid to its own cell
-centers and faces, holds the end values beyond the data, and warns when that
+interpolates the profile linearly in depth to its own cell centers and
+faces, holds the end values beyond the data, and warns when that
 leaves more than one grid spacing uncovered at the top or bottom of the
 domain.
 """
@@ -347,12 +361,24 @@ function load_stratification_from_file(filename::String;
     T = Float64
     source = _source_description(filename, group)
     read_profile = _is_jld2(filename) ? _read_jld2_profile : _read_netcdf_profile
-    coordinate_name, coordinate_data, N2_data = read_profile(filename, group)
+    coordinate_name, coordinate_data, N2_data, direction, state_file, face_data =
+        read_profile(filename, group)
 
-    depths = _file_depths(coordinate_name,
-        _real_values(coordinate_data, coordinate_name, source))
-    values = _real_values(N2_data, "N²", source)
+    depths, below_lid = _file_depths(coordinate_name,
+        _real_values(coordinate_data, coordinate_name, source), direction,
+        state_file)
+    depths, values = _sorted_profile_samples(depths, _real_values(N2_data, "N²", source), source)
 
+    face_samples = if face_data !== nothing
+        face_depths = -_real_values(face_data.z, "z_face", source)
+        face_values = _real_values(face_data.N², "N2_face", source)
+        _sorted_profile_samples(face_depths, face_values, source)
+    end
+
+    return FileProfile{T}(filename, depths, values, face_samples; below_lid)
+end
+
+function _sorted_profile_samples(depths, values, source)
     isempty(depths) &&
         throw(ArgumentError("$source contains no coordinate data"))
     length(depths) == length(values) ||
@@ -366,20 +392,28 @@ function load_stratification_from_file(filename::String;
     permutation = sortperm(depths)
     depths = depths[permutation]
     values = values[permutation]
-    all(>(zero(T)), diff(depths)) ||
+    all(>(0), diff(depths)) ||
         throw(ArgumentError("the coordinates in $source must be unique"))
 
-    return FileProfile{T}(filename, depths, values)
+    return depths, values
 end
 
 const _PROFILE_COORDINATE_NAMES = ("z", "depth")
 const _PROFILE_N2_NAMES = ("N2", "N²", "n2")
 
+# Each reader returns the coordinate's name and values, the N² values, the
+# direction the file states for the coordinate (see `_stated_direction`),
+# whether it is a QGYBJplus state file, and any saved upper-face data.
 function _read_netcdf_profile(filename, group)
     return NCDataset(filename, "r") do dataset
         container = _netcdf_container(dataset, filename, group)
         z_name, N2_name = _profile_names(keys(container), filename, group)
-        (z_name, container[z_name][:], container[N2_name][:])
+        state_file = _is_state_file(dataset.attrib)
+        faces = if state_file && haskey(container, "z_face") && haskey(container, "N2_face")
+            (z=container["z_face"][:], N²=container["N2_face"][:])
+        end
+        (z_name, container[z_name][:], container[N2_name][:],
+         _stated_direction(container[z_name].attrib, dataset.attrib), state_file, faces)
     end
 end
 
@@ -387,7 +421,7 @@ function _read_jld2_profile(filename, group)
     return jldopen(filename, "r") do file
         container = _jld2_container(file, filename, group)
         z_name, N2_name = _profile_names(_entry_names(container), filename, group)
-        (z_name, _entry(container, z_name), _entry(container, N2_name))
+        (z_name, _entry(container, z_name), _entry(container, N2_name), nothing, false, nothing)
     end
 end
 
@@ -414,7 +448,8 @@ the top or bottom of the domain, where `evaluate_N2` holds the end values.
 function _warn_uncovered_depths(profile::FileProfile, grid::RectilinearGrid)
     # Depths below the lid, which need not be at z = 0.
     top, bottom = zero(eltype(grid.z_faces)), grid.z_faces[end] - grid.z_faces[1]
-    shallowest, deepest = first(profile.z_data), last(profile.z_data)
+    offset = profile.below_lid ? zero(grid.z_faces[end]) : grid.z_faces[end]
+    shallowest, deepest = first(profile.z_data) + offset, last(profile.z_data) + offset
     if shallowest - top > grid.dz || bottom - deepest > grid.dz
         @warn "The stratification data in $(profile.filename) cover depths " *
               "$shallowest to $deepest, but the domain spans depths $top to " *

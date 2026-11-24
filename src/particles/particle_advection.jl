@@ -47,6 +47,8 @@ const launch! = _PARENT.launch!
 const on_architecture = _PARENT.on_architecture
 const zeros_on = _PARENT.zeros_on
 const _next_deadline = _PARENT._next_deadline
+const _deadline_reached = _PARENT._deadline_reached
+const _time_value = _PARENT._time_value
 
 """Validate the particle wave-motion options."""
 function _check_wave_motion(use_ybj_w::Bool, wave_motion::Symbol)
@@ -88,7 +90,7 @@ function _check_particle_methods(integration_method::Symbol,
     integration_method in (:euler, :rk2, :rk4) || throw(ArgumentError(
         "integration_method must be :euler, :rk2, or :rk4 (got :$integration_method)"))
     interpolation_method == ADAPTIVE &&
-        @warn "interpolation_method = ADAPTIVE is deprecated and now uses TRICUBIC"
+        @warn "interpolation_method = ADAPTIVE is deprecated and now uses TRICUBIC" maxlog=1
     return nothing
 end
 
@@ -139,6 +141,7 @@ simulations write trajectories with a `ParticleOutputManager`.
   particle time step must resolve the inertial period (`f Δt ≲ 0.2`).
 
 `use_ybj_w` and `use_3d_advection` were removed and must stay `false`.
+Invalid options raise an `ArgumentError` when the configuration is built.
 """
 Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
     # Spatial domain for particle initialization (x_max, y_max, z_level are required)
@@ -188,6 +191,11 @@ Base.@kwdef struct ParticleConfig{T<:AbstractFloat}
         y_max >= y_min || throw(ArgumentError("y_max must not be below y_min"))
         nx_particles > 0 && ny_particles > 0 ||
             throw(ArgumentError("nx_particles and ny_particles must be positive"))
+        _check_wave_motion(use_ybj_w, wave_motion)
+        _check_horizontal_advection(use_3d_advection)
+        _check_particle_methods(integration_method, interpolation_method)
+        particle_advec_time = _time_value(particle_advec_time)
+        save_interval = _time_value(save_interval)
         _check_particle_times(particle_advec_time, save_interval, max_save_points)
         return new{T}(x_min, x_max, y_min, y_max, z_level,
                       nx_particles, ny_particles,
@@ -357,6 +365,9 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     x0::T; y0::T
     z_bottom::T; z_top::T
     dx::T; dy::T; dz::T
+    # Relative precision of those bounds: the coarser of the particles' and
+    # the grid's (a Float32 grid cannot store a bound such as -1000.3).
+    bounds_eps::T
 
     # Velocity at the end of the current particle step (`current`) and at its
     # start (`previous`, kept from the end of the preceding step). Integration
@@ -380,6 +391,9 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
     save_counter::Int
     last_save_time::Float64
     next_history_time::Float64
+    # Time step of the run or of the last particle step, for the tolerance
+    # of the release time and of the history schedule.
+    time_step::Float64
     history_full::Bool
 
     # File splitting for large simulations
@@ -389,10 +403,6 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
 
     function ParticleTracker{T}(config::ParticleConfig{T}, grid::RuntimeGeometry;
                                 plans=nothing, model=nothing) where T
-        _check_wave_motion(config.use_ybj_w, config.wave_motion)
-        _check_horizontal_advection(config.use_3d_advection)
-        _check_particle_methods(config.integration_method,
-                                config.interpolation_method)
         np = config.nx_particles * config.ny_particles
         particles = ParticleState{T}(np)
 
@@ -408,10 +418,11 @@ mutable struct ParticleTracker{T<:AbstractFloat, P, A<:AbstractArchitecture,
             grid.x0, grid.y0,
             first(grid.z_faces), last(grid.z_faces),
             grid.Lx/grid.nx, grid.Ly/grid.ny, grid.dz,
+            max(eps(T), eps(eltype(grid.z_faces))),
             current, previous, 0.0,
             false, false,
             transform_plans,
-            0, 0.0, 0.0, false,
+            0, 0.0, 0.0, 0.0, false,
             0, "", false  # output_file_sequence, base_output_filename, auto_file_splitting
         )
     end
@@ -425,16 +436,14 @@ ParticleTracker(config::ParticleConfig{T}, grid::RuntimeGeometry; kwargs...) whe
     return offset >= extent ? zero(T) : offset
 end
 
-"""Move the particle positions and velocities to the tracker's architecture."""
-function _place_on_architecture!(tracker::ParticleTracker)
-    particles = tracker.particles
-    architecture = tracker.architecture
+"""Move the particle positions and velocities to `architecture`."""
+function _place_on_architecture!(particles::ParticleState, architecture)
     particles.x = on_architecture(architecture, particles.x)
     particles.y = on_architecture(architecture, particles.y)
     particles.z = on_architecture(architecture, particles.z)
     particles.u = on_architecture(architecture, particles.u)
     particles.v = on_architecture(architecture, particles.v)
-    return tracker
+    return particles
 end
 
 """Give the particle positions and velocities host storage, to fill them in place."""
@@ -444,16 +453,6 @@ function _host_particle_storage!(particles::ParticleState{T}) where T
     particles.z isa Vector{T} || (particles.z = Vector{T}(Array(particles.z)))
     particles.u isa Vector{T} || (particles.u = Vector{T}(Array(particles.u)))
     particles.v isa Vector{T} || (particles.v = Vector{T}(Array(particles.v)))
-    return particles
-end
-
-"""Host storage for `np` particles."""
-function _host_particle_storage!(particles::ParticleState, np::Int)
-    _host_particle_storage!(particles)
-    foreach(array -> resize!(array, np),
-            (particles.x, particles.y, particles.z, particles.id,
-             particles.u, particles.v))
-    particles.np = np
     return particles
 end
 
@@ -468,45 +467,49 @@ coordinate, negative below a lid at z = 0, not a depth.
 """
 function initialize_particles!(tracker::ParticleTracker{T},
                               config::ParticleConfig{T}) where T
-    _adopt_config!(tracker, config)
-    _host_particle_storage!(tracker.particles,
-                            config.nx_particles * config.ny_particles)
-    initialize_particles_serial!(tracker, config)
-    return _finish_initialization!(tracker)
+    particles = ParticleState{T}(config.nx_particles * config.ny_particles)
+    initialize_particles_serial!(particles, config)
+    return _finish_initialization!(tracker, particles, config)
 end
 
 function initialize_particles!(tracker::ParticleTracker{T},
                               config::ParticleConfig3D{T}) where T
-    _adopt_config!(tracker, EnhancedParticleConfig.convert_to_basic_config(config))
-    initialize_particles_3d!(tracker, config)
-    return _finish_initialization!(tracker)
+    basic = EnhancedParticleConfig.convert_to_basic_config(config)
+    particles = ParticleState{T}(0)
+    initialize_particles_3d!((; particles), config)
+    return _finish_initialization!(tracker, particles, basic)
 end
 
-"""Use `config` for later steps, and forget the particles of an earlier one."""
-function _adopt_config!(tracker::ParticleTracker{T}, config::ParticleConfig{T}) where T
-    _check_wave_motion(config.use_ybj_w, config.wave_motion)
-    _check_horizontal_advection(config.use_3d_advection)
-    # The tracker's constructor has checked (and warned about) its own config.
-    config === tracker.config ||
-        _check_particle_methods(config.integration_method, config.interpolation_method)
+"""Validate and prepare a new population before replacing the tracker's state."""
+function _finish_initialization!(tracker::ParticleTracker{T}, particles::ParticleState{T},
+                                 config::ParticleConfig{T}) where T
+    _check_particle_positions(tracker, particles, config)
+    isfinite(config.save_interval) && _push_particle_history!(particles)
+    _place_on_architecture!(particles, tracker.architecture)
+
+    state = tracker.particles
+    state.x, state.y, state.z = particles.x, particles.y, particles.z
+    state.u, state.v, state.id = particles.u, particles.v, particles.id
+    state.time, state.np = particles.time, particles.np
+    state.x_history, state.y_history, state.z_history =
+        particles.x_history, particles.y_history, particles.z_history
+    state.id_history, state.time_history = particles.id_history, particles.time_history
+
     tracker.config = config
-    particles = tracker.particles
-    foreach(empty!, (particles.x_history, particles.y_history, particles.z_history,
-                     particles.id_history, particles.time_history))
-    tracker.save_counter = 0
-    tracker.last_save_time = 0.0
+    tracker.save_counter = length(particles.time_history)
+    tracker.last_save_time = particles.time
+    tracker.next_history_time = particles.time
+    _advance_history_deadline!(tracker)
     tracker.history_full = false
     tracker.released = false
     tracker.advanced = false
     tracker.current.valid = false
     tracker.previous.valid = false
-    return tracker
-end
-
-function _finish_initialization!(tracker::ParticleTracker)
-    _check_particle_positions(tracker)
-    _place_on_architecture!(tracker)
-    _start_history!(tracker)
+    # New particles start a file series of their own: splitting their
+    # history takes `enable_auto_file_splitting!` again.
+    tracker.auto_file_splitting = false
+    tracker.base_output_filename = ""
+    tracker.output_file_sequence = 0
     return tracker
 end
 
@@ -514,14 +517,14 @@ end
 Error unless every particle lies within the grid's vertical extent, and
 within its horizontal extent along directions that are not periodic.
 """
-function _check_particle_positions(tracker::ParticleTracker{T}) where T
-    particles = tracker.particles
-    config = tracker.config
+function _check_particle_positions(tracker::ParticleTracker, particles::ParticleState,
+                                   config::ParticleConfig)
     z_bottom, z_top = tracker.z_bottom, tracker.z_top
-    tolerance = 4eps(T) * max(abs(z_bottom), abs(z_top), tracker.Lz)
+    precision = 4tracker.bounds_eps
+    tolerance = precision * max(abs(z_bottom), abs(z_top), tracker.Lz)
     inside(value, low, high) =
-        low - 4eps(T) * max(abs(low), abs(high)) <= value <=
-        high + 4eps(T) * max(abs(low), abs(high))
+        low - precision * max(abs(low), abs(high)) <= value <=
+        high + precision * max(abs(low), abs(high))
     for (x, y, z) in zip(particles.x, particles.y, particles.z)
         isfinite(x) && isfinite(y) && isfinite(z) ||
             throw(ArgumentError("particle positions must be finite"))
@@ -538,18 +541,12 @@ function _check_particle_positions(tracker::ParticleTracker{T}) where T
     return nothing
 end
 
-"""Record the initial positions when the configuration keeps a history."""
-function _start_history!(tracker::ParticleTracker)
-    tracker.history_full = false
-    tracker.next_history_time = tracker.particles.time
-    should_save_particles(tracker) && save_particle_state!(tracker)
-    return tracker
-end
-
 """
-    _align_particle_time!(tracker, time)
+    _align_particle_time!(tracker, time, dt)
 
-Put the particles on the time axis of a run that starts at `time`. Between
+Put the particles on the time axis of a run that starts at `time` with time
+step `dt`, which the tracker keeps for the tolerance of its release time and
+history schedule. Between
 runs the particles keep their own time, but a simulation restored with
 `restore!` starts at its restart time and a new simulation at zero.
 Particles not advanced since they were initialized take the start time, their
@@ -558,11 +555,18 @@ new time axis: their history records the positions at the start again, under
 the new time, and the inertial phase of `:instantaneous` trajectories
 restarts there.
 """
-function _align_particle_time!(tracker::ParticleTracker, time)
+function _align_particle_time!(tracker::ParticleTracker, time, dt)
     particles = tracker.particles
-    time = Float64(time)
+    time = _time_value(time)
+    tracker.time_step = _time_value(dt)
     old = particles.time
-    old == time && return tracker
+    if old == time
+        # The deadline set before the time step was known may lie within the
+        # run's tolerance of this time, which has its record already.
+        isempty(particles.time_history) || last(particles.time_history) != time ||
+            _advance_history_deadline!(tracker)
+        return tracker
+    end
     history = particles.time_history
     if !tracker.advanced
         replace!(history, old => time)
@@ -590,10 +594,8 @@ end
 """
 Initialize particles for serial execution.
 """
-function initialize_particles_serial!(tracker::ParticleTracker{T},
+function initialize_particles_serial!(particles::ParticleState{T},
                                      config::ParticleConfig{T}) where T
-    particles = tracker.particles
-
     # Create uniform grid of particles
     x_range = range(config.x_min, config.x_max, length=config.nx_particles+1)[1:end-1]
     y_range = range(config.y_min, config.y_max, length=config.ny_particles+1)[1:end-1]
@@ -612,7 +614,7 @@ function initialize_particles_serial!(tracker::ParticleTracker{T},
     particles.time = 0.0
     particles.np = length(particles.x)
 
-    return tracker
+    return particles
 end
 
 """
@@ -627,7 +629,8 @@ interpolate linearly in time between the two. Without it (on the first call,
 or after a gap), the end-of-interval velocity is used for the whole step.
 
 Particles stay in place until the simulation time reaches
-`particle_advec_time`, and keep moving once released.
+`particle_advec_time`, and keep moving once released. From the release time
+on, their stored velocities are those of the flow at their positions.
 
 # Keywords
 The velocity diagnostic's coefficients default to those of the model that
@@ -647,39 +650,47 @@ See `ParticleConfig` for the two trajectory models, `wave_motion = :averaged`
 """
 function advect_particles!(tracker::ParticleTracker{T},
                           state::ModelFields, grid::RuntimeGeometry, dt::Real,
-                          current_time=nothing; kwargs...) where T
+                          current_time=nothing; as_stepped::Bool=false,
+                          kwargs...) where T
     velocity_options = _velocity_options(tracker; kwargs...)
-    _place_on_architecture!(tracker)
     particles = tracker.particles
-    t0 = current_time === nothing ? particles.time : Float64(current_time)
-    t1 = t0 + Float64(dt)
+    _place_on_architecture!(particles, tracker.architecture)
+    t0 = current_time === nothing ? particles.time : _time_value(current_time)
+    step = _time_value(dt)
+    t1 = t0 + step
     particles.time = t0
     tracker.advanced = true
+    tracker.time_step = step
 
     if !_released(tracker, t0)
-        # Not yet released. If the next step releases the particles, keep this
-        # end-of-step velocity as the start of that step.
-        _released(tracker, t1) &&
-            update_velocity_fields!(tracker, state, grid; time=t1,
+        # Not yet released. If the particles are released at t1, keep this
+        # end-of-step velocity as the start of the next step, and store each
+        # particle's velocity at t1, as a run that starts at t1 does.
+        if _released(tracker, t1)
+            update_velocity_fields!(tracker, state, grid; time=t1, as_stepped,
                                     velocity_options...)
+            _store_particle_velocities!(tracker, t1)
+            tracker.released = true
+        end
         particles.time = t1
         should_save_particles(tracker) && save_particle_state!(tracker)
         return tracker
     end
     tracker.released = true
 
-    update_velocity_fields!(tracker, state, grid; time=t1, velocity_options...)
+    update_velocity_fields!(tracker, state, grid; time=t1, as_stepped,
+                            velocity_options...)
     # The previous snapshot is the start of this step only if it was taken at
     # t0; otherwise the end-of-step velocity is used for the whole step.
     previous = tracker.previous
-    previous.valid = previous.valid && _same_time(previous.time, t0, dt)
+    previous.valid = previous.valid && _same_time(previous.time, t0, step)
     f = velocity_options.f
-    if tracker.config.wave_motion === :instantaneous && abs(f) * dt > 0.5
+    if tracker.config.wave_motion === :instantaneous && abs(f) * step > 0.5
         @warn "Particle time step does not resolve the inertial oscillation " *
-              "(f Δt = $(abs(f) * dt)); instantaneous trajectories need f Δt ≲ 0.2." maxlog=1
+              "(f Δt = $(abs(f) * step)); instantaneous trajectories need f Δt ≲ 0.2." maxlog=1
     end
 
-    _advance_particles!(tracker, t0, dt)
+    _advance_particles!(tracker, t0, step)
     particles.time = t1
     should_save_particles(tracker) && save_particle_state!(tracker)
     return tracker
@@ -687,12 +698,13 @@ end
 
 """
 Whether the particles move at time `t`: once released, or from
-`particle_advec_time` on (up to the rounding of a time `t₀ + nΔt`).
+`particle_advec_time` on (up to the tolerance of the schedules for the
+tracker's time step).
 """
 function _released(tracker::ParticleTracker, t)
     tracker.released && return true
-    release_time = tracker.config.particle_advec_time
-    return t >= release_time - 8eps(max(abs(t), abs(release_time), 1.0))
+    return _deadline_reached(t, tracker.config.particle_advec_time,
+                             tracker.time_step)
 end
 
 """
@@ -722,14 +734,14 @@ function _advance_particles!(tracker::ParticleTracker{T}, t0, dt) where T
     integrator = Val(tracker.config.integration_method)
     launch!(_advect_particles_kernel!, particles.x, (particles.np,),
             particles.x, particles.y, particles.z, particles.u, particles.v,
-            _velocity_arguments(tracker, t0), integrator, T(dt))
+            _velocity_arguments(tracker, t0, dt), integrator, T(dt))
     return tracker
 end
 
 """Store each particle's velocity at its position and the time `t`."""
 function _store_particle_velocities!(tracker::ParticleTracker{T}, t) where T
-    _place_on_architecture!(tracker)
     particles = tracker.particles
+    _place_on_architecture!(particles, tracker.architecture)
     launch!(_particle_velocity_kernel!, particles.u, (particles.np,),
             particles.u, particles.v, particles.x, particles.y, particles.z,
             _velocity_arguments(tracker, t))
@@ -760,16 +772,24 @@ The velocity is diagnosed and kept on the model's architecture. When the
 tracker belongs to a model and `state` is that model's fields, the model's
 operators are used. The keywords are those of [`advect_particles!`](@ref),
 with the same defaults.
+
+The velocity is diagnosed from the state's streamfunction on every call but
+one: `run!` passes `as_stepped` straight after a step of the tracker's model,
+whose `u` and `v` are then that velocity already.
 """
 function update_velocity_fields!(tracker::ParticleTracker{T},
                                 state::ModelFields, grid::RuntimeGeometry;
-                                time=tracker.particles.time, kwargs...) where T
+                                time=tracker.particles.time,
+                                as_stepped::Bool=false, kwargs...) where T
     (; f, N2, N2_profile, N2_face_profile, formulation, workspace) =
         _velocity_options(tracker; kwargs...)
     config = tracker.config
     model = tracker.model
     if model !== nothing && state === getproperty(model, :fields)
-        compute_velocities!(model; compute_w=false)
+        # A step leaves this velocity in the model's fields; only a run can
+        # tell that nothing has written to them since.
+        as_stepped && _PARENT._fields_as_stepped(model) ||
+            compute_velocities!(model; compute_w=false)
     else
         compute_velocities!(state, grid; plans=tracker.plans, f, N2,
                             compute_w=false, N2_profile, N2_face_profile,
@@ -834,19 +854,18 @@ Kernel-side velocity. `_velocity_arguments` packs the tracker's two snapshots
 and the interpolation parameters into a named tuple of device arrays and
 isbits values, which every particle kernel receives.
 
-Kernels work in the particles' precision with the time τ elapsed since a
-reference time t_ref, never with the time itself: in single precision a time
-of a few months is rounded to seconds. The weights of the two snapshots and
-the inertial phase at t_ref are formed on the host in Float64.
+Kernels work in the particles' precision with fractions of the step. The
+snapshot weight and inertial phase at the start and their increments over
+the whole step are formed on the host in Float64. This avoids rounding large
+absolute times or overflowing the inverse of a small time step.
 =#
 
 """
-The tracker's velocity as kernel arguments, for times `t_ref + τ`: the fields
-of its two snapshots, the weight `θ₀ + θ_rate τ` of the current one, the
-inertial phase `phase₀ + f τ` of the waves, and the interpolation and domain
-parameters.
+The fields, snapshot weights, wave phase, and interpolation parameters for
+sampling the tracker's velocity at a fraction of `step` after `t_ref`. Use a
+zero `step` to sample the velocity at `t_ref` alone.
 """
-function _velocity_arguments(tracker::ParticleTracker{T}, t_ref) where T
+function _velocity_arguments(tracker::ParticleTracker{T}, t_ref, step=0.0) where T
     config = tracker.config
     waves = config.wave_motion === :instantaneous
     fields(snapshot) = waves ? (snapshot.u, snapshot.v, snapshot.LA_r, snapshot.LA_i) :
@@ -858,12 +877,13 @@ function _velocity_arguments(tracker::ParticleTracker{T}, t_ref) where T
     span = current.time - previous.time
     blend = previous.valid && span > 0
     θ₀ = blend ? (t - previous.time) / span : 1.0
-    θ_rate = blend ? 1 / span : 0.0
+    θ_step = blend ? step / span : 0.0
     f = tracker.inertial_frequency
     phase₀ = waves ? mod(f * t, 2π) : 0.0
+    phase_step = waves ? f * step : 0.0
     z_min, z_max = tracker.z_bottom, tracker.z_top
     return (; now=fields(current), before=fields(previous),
-            θ₀=T(θ₀), θ_rate=T(θ_rate), f=T(f), phase₀=T(phase₀),
+            θ₀=T(θ₀), θ_step=T(θ_step), phase₀=T(phase₀), phase_step=T(phase_step),
             waves=Val(waves), stencil=_stencil(config.interpolation_method),
             grid_info=(dx=tracker.dx, dy=tracker.dy, dz=tracker.dz,
                        Lx=tracker.Lx, Ly=tracker.Ly, Lz=tracker.Lz,
@@ -877,70 +897,68 @@ _stencil(method::InterpolationMethod) =
     method == TRILINEAR ? Val(2) : method == QUINTIC ? Val(6) : Val(4)
 
 """
-Weight of the end-of-step velocity at the time τ after the reference time:
-linear in time between the two snapshots, and 1 when there is no valid
-start-of-step snapshot.
+Weight of the end-of-step velocity at `fraction` of the step. It is linear
+between valid snapshots, and 1 when only the latest snapshot is valid.
 """
-@inline _current_weight(velocity, τ::T) where T =
-    clamp(velocity.θ₀ + velocity.θ_rate * τ, zero(T), one(T))
+@inline _current_weight(velocity, fraction::T) where T =
+    clamp(velocity.θ₀ + velocity.θ_step * fraction, zero(T), one(T))
 
 """
 Horizontal velocity of one snapshot's `fields` at a position, with the wave
-phase of the time τ after the reference time. Horizontal velocities have zero
+phase at `fraction` of the step. Horizontal velocities have zero
 vertical derivative at the lid and the bottom, so every column is mirrored
 evenly there.
 """
-@inline function _snapshot_velocity(fields::NTuple{N, Any}, x, y, z, τ,
+@inline function _snapshot_velocity(fields::NTuple{N, Any}, x, y, z, fraction,
                                     velocity) where N
     values = InterpolationSchemes._interpolate_stencil(velocity.stencil, fields,
         ntuple(_ -> 1, Val(N)), x - velocity.x0, y - velocity.y0, z,
         velocity.grid_info, velocity.boundaries)
-    return _horizontal_velocity(velocity.waves, values, τ, velocity)
+    return _horizontal_velocity(velocity.waves, values, fraction, velocity)
 end
 
-@inline _horizontal_velocity(::Val{false}, (u, v), τ, velocity) = (u, v)
-@inline function _horizontal_velocity(::Val{true}, (u, v, LA_r, LA_i), τ, velocity)
+@inline _horizontal_velocity(::Val{false}, (u, v), fraction, velocity) = (u, v)
+@inline function _horizontal_velocity(::Val{true}, (u, v, LA_r, LA_i), fraction, velocity)
     # Wave velocity at time t: u + iv = e^{-ift} LA.
-    s, c = sincos(velocity.phase₀ + velocity.f * τ)
+    s, c = sincos(velocity.phase₀ + velocity.phase_step * fraction)
     return (u + c * LA_r + s * LA_i, v + c * LA_i - s * LA_r)
 end
 
 """
-The horizontal velocity that advects a particle at `(x, y, z)` at the time τ
-after the reference time of `velocity`.
+The horizontal velocity that advects a particle at `(x, y, z)` at
+`fraction` of the step.
 """
-@inline function _particle_velocity(x, y, z, τ, velocity)
-    θ = _current_weight(velocity, τ)
-    θ == 0 && return _snapshot_velocity(velocity.before, x, y, z, τ, velocity)
-    uc, vc = _snapshot_velocity(velocity.now, x, y, z, τ, velocity)
+@inline function _particle_velocity(x, y, z, fraction, velocity)
+    θ = _current_weight(velocity, fraction)
+    θ == 0 && return _snapshot_velocity(velocity.before, x, y, z, fraction, velocity)
+    uc, vc = _snapshot_velocity(velocity.now, x, y, z, fraction, velocity)
     θ == 1 && return (uc, vc)
-    up, vp = _snapshot_velocity(velocity.before, x, y, z, τ, velocity)
+    up, vp = _snapshot_velocity(velocity.before, x, y, z, fraction, velocity)
     return (θ * uc + (1 - θ) * up, θ * vc + (1 - θ) * vp)
 end
 
-# Integration methods: one step from (x, y) at the time t0 after the reference
-# time (zero for a particle step), at the fixed depth z.
+# Integration methods: one step of length dt at the fixed depth z.
 
-@inline function _integrate(::Val{:euler}, x, y, z, t0, dt, velocity)
-    u, v = _particle_velocity(x, y, z, t0, velocity)
+@inline function _integrate(::Val{:euler}, x, y, z, dt, velocity)
+    u, v = _particle_velocity(x, y, z, zero(dt), velocity)
     return x + dt * u, y + dt * v
 end
 
-@inline function _integrate(::Val{:rk2}, x0, y0, z, t0, dt, velocity)
-    u1, v1 = _particle_velocity(x0, y0, z, t0, velocity)
+@inline function _integrate(::Val{:rk2}, x0, y0, z, dt, velocity)
+    u1, v1 = _particle_velocity(x0, y0, z, zero(dt), velocity)
     # Midpoint
     u2, v2 = _particle_velocity(x0 + dt / 2 * u1, y0 + dt / 2 * v1, z,
-                                t0 + dt / 2, velocity)
+                                one(dt) / 2, velocity)
     return x0 + dt * u2, y0 + dt * v2
 end
 
-@inline function _integrate(::Val{:rk4}, x0, y0, z, t0, dt, velocity)
-    u1, v1 = _particle_velocity(x0, y0, z, t0, velocity)
+@inline function _integrate(::Val{:rk4}, x0, y0, z, dt, velocity)
+    u1, v1 = _particle_velocity(x0, y0, z, zero(dt), velocity)
     u2, v2 = _particle_velocity(x0 + dt / 2 * u1, y0 + dt / 2 * v1, z,
-                                t0 + dt / 2, velocity)
+                                one(dt) / 2, velocity)
     u3, v3 = _particle_velocity(x0 + dt / 2 * u2, y0 + dt / 2 * v2, z,
-                                t0 + dt / 2, velocity)
-    u4, v4 = _particle_velocity(x0 + dt * u3, y0 + dt * v3, z, t0 + dt, velocity)
+                                one(dt) / 2, velocity)
+    u4, v4 = _particle_velocity(x0 + dt * u3, y0 + dt * v3, z, one(dt), velocity)
     return (x0 + dt * (u1 + 2*u2 + 2*u3 + u4) / 6,
             y0 + dt * (v1 + 2*v2 + 2*v3 + v4) / 6)
 end
@@ -963,11 +981,11 @@ end
     p = @index(Global, Linear)
     @inbounds begin
         zp = z[p]
-        xp, yp = _integrate(integrator, x[p], y[p], zp, zero(dt), dt, velocity)
+        xp, yp = _integrate(integrator, x[p], y[p], zp, dt, velocity)
         xp, yp = _horizontal_boundaries(xp, yp, velocity)
         x[p] = xp
         y[p] = yp
-        u[p], v[p] = _particle_velocity(xp, yp, zp, dt, velocity)
+        u[p], v[p] = _particle_velocity(xp, yp, zp, one(dt), velocity)
     end
 end
 
@@ -986,6 +1004,15 @@ end
 end
 
 """
+Whether the history is split into files: after `enable_auto_file_splitting!`,
+until the tracker is given new particles. The tracker's own switch decides,
+not its configuration's `auto_split_files`, which a re-seeded tracker may
+carry over from the particles before.
+"""
+_splits_files(tracker::ParticleTracker) =
+    tracker.auto_file_splitting && !isempty(tracker.base_output_filename)
+
+"""
 Save current particle state to trajectory history.
 
 If auto_split_files is enabled and max_save_points is reached, automatically
@@ -996,7 +1023,7 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
     
     # Check if we've reached max_save_points
     if length(particles.time_history) >= tracker.config.max_save_points
-        if tracker.config.auto_split_files && !isempty(tracker.base_output_filename)
+        if _splits_files(tracker)
             # Save current trajectory segment to file
             split_and_save_trajectory_segment!(tracker)
             
@@ -1021,17 +1048,21 @@ function save_particle_state!(tracker::ParticleTracker{T}) where T
         end
     end
     
-    # Save current state to history
+    _push_particle_history!(particles)
+    tracker.save_counter += 1
+    tracker.last_save_time = particles.time
+    _advance_history_deadline!(tracker)
+    return tracker
+end
+
+"""Record host copies of the current positions, IDs, and time."""
+function _push_particle_history!(particles::ParticleState)
     push!(particles.x_history, Array(particles.x))
     push!(particles.y_history, Array(particles.y))
     push!(particles.z_history, Array(particles.z))
     push!(particles.id_history, copy(particles.id))
     push!(particles.time_history, particles.time)
-    
-    tracker.save_counter += 1
-    tracker.last_save_time = particles.time
-    _advance_history_deadline!(tracker)
-    return tracker
+    return particles
 end
 
 """
@@ -1041,7 +1072,8 @@ the current time, so that late records do not delay later ones.
 function _advance_history_deadline!(tracker::ParticleTracker)
     interval = tracker.config.save_interval
     (isfinite(interval) && interval > 0) || return tracker
-    tracker.next_history_time = _next_deadline(tracker.particles.time, interval)
+    tracker.next_history_time =
+        _next_deadline(tracker.particles.time, interval, tracker.time_step)
     return tracker
 end
 
@@ -1104,9 +1136,8 @@ function should_save_particles(tracker::ParticleTracker)
     interval = tracker.config.save_interval
     isfinite(interval) || return false
     interval > 0 || return true
-    time = tracker.particles.time
-    tolerance = 8eps(max(abs(time), interval, 1.0))
-    return time >= tracker.next_history_time - tolerance
+    return _deadline_reached(tracker.particles.time, tracker.next_history_time,
+                             tracker.time_step)
 end
 
 """
@@ -1201,7 +1232,7 @@ Call this at the end of long simulations to ensure the final trajectory
 segment is saved to file.
 """
 function finalize_trajectory_files!(tracker::ParticleTracker; final_metadata::Dict=Dict())
-    if !tracker.config.auto_split_files || isempty(tracker.particles.time_history)
+    if !_splits_files(tracker) || isempty(tracker.particles.time_history)
         return tracker
     end
     

@@ -76,6 +76,18 @@ using QGYBJplus
     end
     @test count(line -> startswith(line, "Iteration: "), split(progress_text, '\n')) == 2
 
+    # progress=false does not silence a verbose=true given with it, as it
+    # used to, but does turn off the reports of a simulation that is verbose
+    # by its own setting, for that run.
+    logged = Simulation(model; Δt=0.25, stop_iteration=2,
+        output=false, diagnostics=false, verbose=false)
+    @test_logs (:info, "Simulation progress") (:info, "Simulation progress") run!(
+        logged; verbose=true, progress=false, diagnostics_interval=1)
+    quiet = Simulation(model; Δt=0.25, stop_iteration=2,
+        output=false, diagnostics=false, verbose=true)
+    @test_logs run!(quiet; progress=false, diagnostics_interval=1)
+    @test quiet.run_options.verbose
+
     for state in (Running, Failed)
         time_limited.state = state
         @test_throws InvalidStateException set!(

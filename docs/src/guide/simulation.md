@@ -35,9 +35,11 @@ explicitly, or `diagnostics=false` to disable diagnostic files.
 The lifecycle progresses through `Ready`, `Running`, and `Stopped`. An
 exception moves it to `Failed`; explicit cleanup moves it to `Finalized`.
 Output is set up before the run starts, and every check, such as for files
-left by another run, comes before any file is removed: an error there leaves
-the files as they were and the simulation `Ready` to run again with other
-settings. `run!` keywords are likewise applied together or not at all.
+left by another run or a directory that cannot be created or written, comes
+before any file is removed: an error there leaves the files as they were and
+the simulation `Ready` to run again with other settings. `run!` keywords are
+likewise applied together or not at all, so those of a run whose output
+cannot be set up are dropped too.
 Each `Simulation` is a one-shot execution owner: after it reaches `Stopped`,
 construct a new simulation around the same model to continue from the current
 fields. A new simulation's clock starts at zero; to continue the time axis
@@ -77,7 +79,9 @@ field-selection overrides rebuild the effective `NetCDFOutput` configuration
 before its manager opens.
 
 Set `progress=true` to print the maximum wave and flow speeds at the
-`diagnostics_interval` cadence:
+`diagnostics_interval` cadence. These lines replace the `verbose` log and are
+printed whatever `verbose` is. `progress=false` reports no progress in that
+run, unless `verbose=true` is passed with it:
 
 ```julia
 run!(simulation; progress=true, diagnostics_interval=100)
@@ -114,4 +118,6 @@ inertial_period(simulation)
 Low-level applications may construct [`ExponentialRungeKutta2`](@ref) and call
 `step!(model, timestepper)`. That call advances model fields only; it does not
 update a clock, particles, output, or diagnostics. Ordinary runs should use
-`Simulation`.
+`Simulation`, which is also faster per step (see
+[Performance](@ref performance)) and agrees with a loop of `step!` calls to
+rounding.

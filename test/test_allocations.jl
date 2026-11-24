@@ -134,3 +134,48 @@ end
         finalize_simulation!(simulation)
     end
 end
+
+@testset "YBJ energies borrow scratch rather than copy the fields" begin
+    # The energies of a YBJ() model kept a copy of all eight fields for the
+    # run (6.5 grid arrays) and allocated one on every flow_kinetic_energy
+    # or wave_energy call; they need no arrays of their own.
+    nx, ny, nz = 16, 16, 8
+    grid_array_bytes = nx * ny * nz * sizeof(ComplexF64)
+    grid = RectilinearGrid(size=(nx, ny, nz), extent=(2π, 2π, 1.0))
+    model = QGYBJModel(grid=grid, coriolis=FPlane(f=1.0),
+        stratification=ConstantStratification(N²=1.0),
+        feedback=WaveMeanFeedback(), formulation=YBJ(), verbose=false)
+    try
+        set!(model; ψ=(x, y, z) -> 0.3sin(x) * cos(y) * (1 + z),
+             waves=SurfaceWave(amplitude=0.1, scale=0.3), verbose=false)
+        step!(model, ExponentialRungeKutta2(Δt=0.01))
+        buffers = length(model.runtime.workspace.pool.buffers)
+
+        # Straight after a step the energies are those of the fields as
+        # they are, which a run takes; once a diagnostic is overwritten, and
+        # for every other caller, they are rebuilt from q and B, to the same
+        # values.
+        stepped = Q._current_energy_components(model; as_stepped=true)
+        @test collect(Q._current_energy_components(model)) == collect(stepped)
+        compute_total_velocities!(model; t=0.3)
+        @test !Q._fields_as_stepped(model)
+        energies = Q._current_energy_components(model)
+        @test collect(energies) == collect(stepped)
+        # The scratch pool does not grow past what a step needs.
+        @test length(model.runtime.workspace.pool.buffers) == buffers
+
+        # The energies are those of a full copy of the fields.
+        copied = copy_fields(model.fields)
+        Q._refresh_wave_diagnostics!(copied, model)
+        @test collect(energies) == collect(Q._energy_components(model, copied))
+
+        # Only some plane-sized arrays (about half a grid array here, against
+        # 7 for the copy).
+        flow_kinetic_energy(model)
+        wave_energy(model)
+        @test (@allocated flow_kinetic_energy(model)) < 2 * grid_array_bytes
+        @test (@allocated wave_energy(model)) < 2 * grid_array_bytes
+    finally
+        finalize_model!(model)
+    end
+end

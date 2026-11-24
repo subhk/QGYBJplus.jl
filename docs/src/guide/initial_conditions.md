@@ -111,6 +111,13 @@ centered `z_center` below the top of the domain, with width `z_width`; they
 default to half and a quarter of the depth. The packet involves no
 randomness, so it is the same on every call and every architecture.
 
+The envelope is first restricted to what a wave amplitude can produce (see
+[Depth-mean part of the envelope](@ref)) and then scaled back to `amplitude`.
+A packet much deeper than the domain is nearly uniform in depth and loses
+most of itself to that restriction, all of it for `YBJ()`. When less than a
+tenth of its amplitude is left, the packet is not scaled back, and a warning
+gives the amplitude that was set: give such a packet a smaller `z_width`.
+
 ## Direct array access
 
 Pass a global `(z, x, y)` array directly to initialize a physical field:
@@ -137,8 +144,9 @@ the order, by default the file-oriented `(x, y, z)`:
 set!(model; B=FieldFile("initial.nc", "B"))
 ```
 
-A single time (a dimension of length one) is dropped. Missing (fill) values,
-NaN, and Inf are errors, for files and arrays alike.
+A single time (a dimension of length one) is dropped, from NetCDF and JLD2
+files alike. Missing (fill) values, NaN, and Inf are errors, for files and
+arrays alike.
 
 Public setters rebuild dependent `q`, `A`, `C`, and velocity diagnostics.
 
@@ -146,11 +154,23 @@ Public setters rebuild dependent `q`, `A`, `C`, and velocity diagnostics.
 
 A physical field given on another rectilinear grid is interpolated onto the
 model's grid when the coordinates of its points are known. A `FieldFile` finds
-them as the vectors `x`, `y`, and `z` (or `depth`) stored beside the field:
-`z` is in the grid's coordinates, positive upward, and `depth` is measured
-down from the top of the grid (a `z` with no point below the top and some
-above it is read as depth, as in earlier versions). A `FieldArray` takes them
-as keywords, with `z` in the grid's coordinates:
+them as the vectors stored beside the field under the names `x`, `y`, and
+`z` or `depth` (or `xc`, `x_c`, `xh`, and likewise for y and z), in any case,
+in the model's units. In NetCDF each coordinate vector must use the field's
+dimension along that axis. Names such as `lon`, `lat`, and `lev` order the
+dimensions but are not read as coordinates: degrees and level indices do not
+place points on the model's grid. A field with a vertical coordinate but
+without `x` and `y`, such as one on longitude and latitude, must have the
+grid's number of points in x and y, where it is taken as it is stored, and
+its levels are placed by their depths. A field without a vertical coordinate
+is taken to be on the model's grid. A NetCDF vertical coordinate
+with a CF `positive` attribute holds heights in the grid's coordinates
+(`"up"`) or depths below the top of the grid (`"down"`), and the `z` of a
+QGYBJplus state file holds heights. Otherwise `z` is in the grid's
+coordinates, positive upward, and `depth` is measured down from the top of
+the grid (a `z` with no point below the top and some above it is read as
+depth, as in earlier versions). A `FieldArray` takes them as keywords, with
+`z` in the grid's coordinates:
 
 ```julia
 set!(model; ζ=FieldFile("eddies.jld2", "zeta"))
@@ -169,6 +189,12 @@ profile = load_stratification_from_file("input.jld2")   # z (or depth) and N2
 model = QGYBJModel(grid=grid, stratification=profile)
 set!(model; ζ=FieldFile("input.jld2", "zeta"))           # x, y, z, and zeta
 ```
+
+The profile and the field read a `positive` attribute, a state file, and
+`depth` alike, and `z` alike when the top of the grid is at z = 0. On a grid
+whose top is elsewhere, `load_stratification_from_file` still reads a `z`
+without negative values as depth, so store `depth` there, or a NetCDF `z`
+with `positive = "up"`.
 
 Interpolation is linear along each axis. In x and y it is periodic with the
 model's domain, so the data must hold one period of a periodic field, in any
