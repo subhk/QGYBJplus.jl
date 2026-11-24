@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Running Simulations · QGYBJ+.jl</title><meta name="title" content="Running Simulations · QGYBJ+.jl"/><meta property="og:title" content="Running Simulations · QGYBJ+.jl"/><meta property="twitter:title" content="Running Simulations · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/guide/simulation/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/guide/simulation/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/guide/simulation/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../configuration/">Configuration</a></li><li><a class="tocitem" href="../stratification/">Stratification</a></li><li><a class="tocitem" href="../initial_conditions/">Initial Conditions</a></li><li class="is-active"><a class="tocitem" href>Running Simulations</a><ul class="internal"><li><a class="tocitem" href="#Quick-Start"><span>Quick Start</span></a></li><li><a class="tocitem" href="#Time-Stepping"><span>Time Stepping</span></a></li><li><a class="tocitem" href="#Progress-Monitoring"><span>Progress Monitoring</span></a></li><li><a class="tocitem" href="#Checkpointing"><span>Checkpointing</span></a></li><li><a class="tocitem" href="#Stability-Monitoring"><span>Stability Monitoring</span></a></li><li><a class="tocitem" href="#Output-During-Simulation"><span>Output During Simulation</span></a></li><li><a class="tocitem" href="#Using-the-High-Level-API"><span>Using the High-Level API</span></a></li><li><a class="tocitem" href="#Parallel-Execution"><span>Parallel Execution</span></a></li><li><a class="tocitem" href="#Common-Patterns"><span>Common Patterns</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>Troubleshooting</span></a></li></ul></li><li><a class="tocitem" href="../io/">I/O and Output</a></li><li><a class="tocitem" href="../diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../../advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../../advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="../../advanced/parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../../advanced/interpolation/">Interpolation</a></li><li><a class="tocitem" href="../../advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>Running Simulations</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Running Simulations</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/guide/simulation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="running"><a class="docs-heading-anchor" href="#running">Running Simulations</a><a id="running-1"></a><a class="docs-heading-anchor-permalink" href="#running" title="Permalink"></a></h1><p>This page explains how to run and monitor QGYBJ+.jl simulations.</p><h2 id="Quick-Start"><a class="docs-heading-anchor" href="#Quick-Start">Quick Start</a><a id="Quick-Start-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Start" title="Permalink"></a></h2><h3 id="Simple-Interface"><a class="docs-heading-anchor" href="#Simple-Interface">Simple Interface</a><a id="Simple-Interface-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Interface" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+
+config = create_simple_config(
+    Lx=500e3, Ly=500e3, Lz=4000.0,  # Domain size (REQUIRED)
+    nx=64, ny=64, nz=32,
+    dt=0.001,
+    total_time=10.0
+)
+
+result = run_simple_simulation(config)</code></pre><h3 id="Manual-Control"><a class="docs-heading-anchor" href="#Manual-Control">Manual Control</a><a id="Manual-Control-1"></a><a class="docs-heading-anchor-permalink" href="#Manual-Control" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+
+# Setup with domain size (REQUIRED)
+par = default_params(
+    Lx=500e3, Ly=500e3, Lz=4000.0,
+    nx=64, ny=64, nz=32,
+    dt=0.001, nt=10000
+)
+G, S, plans, a_ell = setup_model(par)
+
+# Initialize
+init_random_psi!(S, G; amplitude=0.1)
+compute_q_from_psi!(S, G, plans, a_ell)
+
+# Time loop
+first_projection_step!(S, G, par, plans, a_ell)
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+end</code></pre><h2 id="Time-Stepping"><a class="docs-heading-anchor" href="#Time-Stepping">Time Stepping</a><a id="Time-Stepping-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Stepping" title="Permalink"></a></h2><h3 id="Available-Time-Stepping-Functions"><a class="docs-heading-anchor" href="#Available-Time-Stepping-Functions">Available Time Stepping Functions</a><a id="Available-Time-Stepping-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Available-Time-Stepping-Functions" title="Permalink"></a></h3><table><tr><th style="text-align: left">Function</th><th style="text-align: left">Description</th></tr><tr><td style="text-align: left"><code>first_projection_step!</code></td><td style="text-align: left">Forward Euler for first step</td></tr><tr><td style="text-align: left"><code>leapfrog_step!</code></td><td style="text-align: left">Leapfrog with Robert-Asselin filter</td></tr></table><h3 id="Basic-Time-Loop"><a class="docs-heading-anchor" href="#Basic-Time-Loop">Basic Time Loop</a><a id="Basic-Time-Loop-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Time-Loop" title="Permalink"></a></h3><pre><code class="language-julia hljs"># First step uses forward Euler
+first_projection_step!(S, G, par, plans, a_ell)
+
+# Subsequent steps use leapfrog
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+end</code></pre><p>Each time step performs:</p><ol><li>Compute nonlinear terms (Jacobians, refraction)</li><li>Apply dissipation via integrating factors</li><li>Update prognostic variables (q, B)</li><li>Invert elliptic equations (q→ψ, B→A)</li><li>Compute velocities</li></ol><h2 id="Progress-Monitoring"><a class="docs-heading-anchor" href="#Progress-Monitoring">Progress Monitoring</a><a id="Progress-Monitoring-1"></a><a class="docs-heading-anchor-permalink" href="#Progress-Monitoring" title="Permalink"></a></h2><h3 id="Basic-Progress"><a class="docs-heading-anchor" href="#Basic-Progress">Basic Progress</a><a id="Basic-Progress-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Progress" title="Permalink"></a></h3><pre><code class="language-julia hljs">for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+
+    if step % 100 == 0
+        println(&quot;Step $step / $(par.nt) ($(100*step/par.nt)%)&quot;)
+    end
+end</code></pre><h3 id="With-Diagnostics"><a class="docs-heading-anchor" href="#With-Diagnostics">With Diagnostics</a><a id="With-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#With-Diagnostics" title="Permalink"></a></h3><pre><code class="language-julia hljs">for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+
+    if step % 100 == 0
+        compute_velocities!(S, G, plans)
+        KE = flow_kinetic_energy(S.u, S.v)
+        WE_B, WE_A = wave_energy(S.B, S.A)
+        println(&quot;Step $step: KE=$KE, WE_B=$WE_B&quot;)
+    end
+end</code></pre><h3 id="Progress-Bar"><a class="docs-heading-anchor" href="#Progress-Bar">Progress Bar</a><a id="Progress-Bar-1"></a><a class="docs-heading-anchor-permalink" href="#Progress-Bar" title="Permalink"></a></h3><pre><code class="language-julia hljs">using ProgressMeter
+
+@showprogress for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+end</code></pre><h2 id="Checkpointing"><a class="docs-heading-anchor" href="#Checkpointing">Checkpointing</a><a id="Checkpointing-1"></a><a class="docs-heading-anchor-permalink" href="#Checkpointing" title="Permalink"></a></h2><h3 id="Save-Checkpoints"><a class="docs-heading-anchor" href="#Save-Checkpoints">Save Checkpoints</a><a id="Save-Checkpoints-1"></a><a class="docs-heading-anchor-permalink" href="#Save-Checkpoints" title="Permalink"></a></h3><pre><code class="language-julia hljs">using JLD2
+
+checkpoint_interval = 1000
+
+first_projection_step!(S, G, par, plans, a_ell)
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+
+    if step % checkpoint_interval == 0
+        filename = &quot;checkpoint_$(lpad(step, 8, &#39;0&#39;)).jld2&quot;
+        @save filename S G par step
+    end
+end</code></pre><h3 id="Restart-from-Checkpoint"><a class="docs-heading-anchor" href="#Restart-from-Checkpoint">Restart from Checkpoint</a><a id="Restart-from-Checkpoint-1"></a><a class="docs-heading-anchor-permalink" href="#Restart-from-Checkpoint" title="Permalink"></a></h3><pre><code class="language-julia hljs">using JLD2
+
+# Load checkpoint
+@load &quot;checkpoint_00005000.jld2&quot; S G par step
+
+# Continue simulation
+for step = step+1:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+end</code></pre><h2 id="Stability-Monitoring"><a class="docs-heading-anchor" href="#Stability-Monitoring">Stability Monitoring</a><a id="Stability-Monitoring-1"></a><a class="docs-heading-anchor-permalink" href="#Stability-Monitoring" title="Permalink"></a></h2><h3 id="CFL-Check"><a class="docs-heading-anchor" href="#CFL-Check">CFL Check</a><a id="CFL-Check-1"></a><a class="docs-heading-anchor-permalink" href="#CFL-Check" title="Permalink"></a></h3><pre><code class="language-julia hljs">function check_cfl(S, G, dt)
+    u_max = maximum(abs.(S.u))
+    v_max = maximum(abs.(S.v))
+    cfl = dt * max(u_max/G.dx, v_max/G.dy)
+    return cfl
+end
+
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+    compute_velocities!(S, G, plans)
+
+    cfl = check_cfl(S, G, par.dt)
+    if cfl &gt; 1.0
+        @warn &quot;CFL &gt; 1 at step $step: $cfl&quot;
+    end
+end</code></pre><h3 id="Energy-Conservation"><a class="docs-heading-anchor" href="#Energy-Conservation">Energy Conservation</a><a id="Energy-Conservation-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Conservation" title="Permalink"></a></h3><pre><code class="language-julia hljs">compute_velocities!(S, G, plans)
+E0 = flow_kinetic_energy(S.u, S.v)
+
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+
+    if step % 100 == 0
+        compute_velocities!(S, G, plans)
+        E = flow_kinetic_energy(S.u, S.v)
+        dE = (E - E0) / E0
+        if abs(dE) &gt; 0.1
+            @warn &quot;Energy drift: $dE at step $step&quot;
+        end
+    end
+end</code></pre><h2 id="Output-During-Simulation"><a class="docs-heading-anchor" href="#Output-During-Simulation">Output During Simulation</a><a id="Output-During-Simulation-1"></a><a class="docs-heading-anchor-permalink" href="#Output-During-Simulation" title="Permalink"></a></h2><h3 id="Snapshots-with-NetCDF"><a class="docs-heading-anchor" href="#Snapshots-with-NetCDF">Snapshots with NetCDF</a><a id="Snapshots-with-NetCDF-1"></a><a class="docs-heading-anchor-permalink" href="#Snapshots-with-NetCDF" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+
+output_interval = 100
+
+first_projection_step!(S, G, par, plans, a_ell)
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+    time = step * par.dt
+
+    if step % output_interval == 0
+        # Save streamfunction
+        ncdump_psi(S, G, step, time, &quot;output/&quot;)
+
+        # Save wave envelope
+        ncdump_la(S, G, step, time, &quot;output/&quot;)
+    end
+end</code></pre><h3 id="Time-Series"><a class="docs-heading-anchor" href="#Time-Series">Time Series</a><a id="Time-Series-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Series" title="Permalink"></a></h3><pre><code class="language-julia hljs">KE_history = Float64[]
+WE_history = Float64[]
+time_history = Float64[]
+
+for step = 2:par.nt
+    leapfrog_step!(S, G, par, plans, a_ell)
+
+    push!(time_history, step * par.dt)
+    compute_velocities!(S, G, plans)
+    push!(KE_history, flow_kinetic_energy(S.u, S.v))
+    push!(WE_history, wave_energy(S.B, S.A)[1])
+end</code></pre><h2 id="Using-the-High-Level-API"><a class="docs-heading-anchor" href="#Using-the-High-Level-API">Using the High-Level API</a><a id="Using-the-High-Level-API-1"></a><a class="docs-heading-anchor-permalink" href="#Using-the-High-Level-API" title="Permalink"></a></h2><h3 id="QGYBJSimulation"><a class="docs-heading-anchor" href="#QGYBJSimulation">QGYBJSimulation</a><a id="QGYBJSimulation-1"></a><a class="docs-heading-anchor-permalink" href="#QGYBJSimulation" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+
+# Create configuration
+domain = create_domain_config(
+    nx=64, ny=64, nz=32,
+    Lx=500e3, Ly=500e3, Lz=4000.0
+)
+
+strat = create_stratification_config(type=:constant_N)
+
+model = create_model_config(
+    ybj_plus=true,
+    inviscid=false
+)
+
+output = create_output_config(
+    output_dir=&quot;output&quot;,
+    output_interval=100
+)
+
+# Setup simulation
+sim = setup_simulation(domain, strat; model=model, output=output)
+
+# Run
+run_simulation!(sim, dt=0.001, nsteps=10000)</code></pre><h2 id="Parallel-Execution"><a class="docs-heading-anchor" href="#Parallel-Execution">Parallel Execution</a><a id="Parallel-Execution-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-Execution" title="Permalink"></a></h2><h3 id="Multi-threaded-(FFTs)"><a class="docs-heading-anchor" href="#Multi-threaded-(FFTs)">Multi-threaded (FFTs)</a><a id="Multi-threaded-(FFTs)-1"></a><a class="docs-heading-anchor-permalink" href="#Multi-threaded-(FFTs)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Set before starting Julia
+export JULIA_NUM_THREADS=8
+
+# Or check in code
+println(&quot;Using $(Threads.nthreads()) threads&quot;)</code></pre><h3 id="MPI-with-2D-Pencil-Decomposition"><a class="docs-heading-anchor" href="#MPI-with-2D-Pencil-Decomposition">MPI with 2D Pencil Decomposition</a><a id="MPI-with-2D-Pencil-Decomposition-1"></a><a class="docs-heading-anchor-permalink" href="#MPI-with-2D-Pencil-Decomposition" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI, PencilArrays, PencilFFTs, QGYBJplus
+
+MPI.Init()
+mpi_config = QGYBJplus.setup_mpi_environment()
+
+# Setup distributed simulation
+params = default_params(
+    Lx=1000e3, Ly=1000e3, Lz=5000.0,
+    nx=256, ny=256, nz=128
+)
+grid = QGYBJplus.init_mpi_grid(params, mpi_config)
+state = QGYBJplus.init_mpi_state(grid, mpi_config)
+workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
+plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
+
+# Run with: mpiexec -n 16 julia simulation.jl
+
+MPI.Finalize()</code></pre><p>See <a href="../../advanced/parallel/#parallel">MPI Parallelization</a> for details.</p><h2 id="Common-Patterns"><a class="docs-heading-anchor" href="#Common-Patterns">Common Patterns</a><a id="Common-Patterns-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Patterns" title="Permalink"></a></h2><h3 id="Production-Run-Template"><a class="docs-heading-anchor" href="#Production-Run-Template">Production Run Template</a><a id="Production-Run-Template-1"></a><a class="docs-heading-anchor-permalink" href="#Production-Run-Template" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+using JLD2
+
+function run_production(;
+    Lx, Ly, Lz,              # Domain size (REQUIRED)
+    nx, ny, nz,
+    dt, nsteps,
+    output_interval=100,
+    checkpoint_interval=1000,
+    output_dir=&quot;output&quot;
+)
+    # Setup
+    mkpath(output_dir)
+    par = default_params(
+        Lx=Lx, Ly=Ly, Lz=Lz,
+        nx=nx, ny=ny, nz=nz,
+        dt=dt, nt=nsteps
+    )
+    G, S, plans, a_ell = setup_model(par)
+
+    # Initialize
+    init_random_psi!(S, G; amplitude=0.1)
+    compute_q_from_psi!(S, G, plans, a_ell)
+
+    # Time loop
+    first_projection_step!(S, G, par, plans, a_ell)
+    for step = 2:nsteps
+        leapfrog_step!(S, G, par, plans, a_ell)
+
+        # Output
+        if step % output_interval == 0
+            ncdump_psi(S, G, step, step*dt, output_dir)
+        end
+
+        # Checkpoint
+        if step % checkpoint_interval == 0
+            @save &quot;$output_dir/checkpoint.jld2&quot; S G par step
+        end
+    end
+
+    return S
+end
+
+# Run
+run_production(
+    Lx=500e3, Ly=500e3, Lz=4000.0,
+    nx=64, ny=64, nz=32,
+    dt=0.001, nsteps=10000
+)</code></pre><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">Troubleshooting</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="NaN-Values"><a class="docs-heading-anchor" href="#NaN-Values">NaN Values</a><a id="NaN-Values-1"></a><a class="docs-heading-anchor-permalink" href="#NaN-Values" title="Permalink"></a></h3><pre><code class="language-julia hljs">if any(isnan, S.psi)
+    error(&quot;NaN detected at step $step&quot;)
+end</code></pre><h3 id="Instability"><a class="docs-heading-anchor" href="#Instability">Instability</a><a id="Instability-1"></a><a class="docs-heading-anchor-permalink" href="#Instability" title="Permalink"></a></h3><ul><li>Reduce time step (<code>dt</code>)</li><li>Increase dissipation (<code>νₕ₂</code>, <code>ilap2</code>)</li><li>Check initial conditions for sharp gradients</li></ul><h3 id="Memory-Issues"><a class="docs-heading-anchor" href="#Memory-Issues">Memory Issues</a><a id="Memory-Issues-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Issues" title="Permalink"></a></h3><ul><li>Reduce grid size</li><li>Use checkpointing</li><li>Enable MPI for distribution across nodes</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../initial_conditions/">« Initial Conditions</a><a class="docs-footer-nextpage" href="../io/">I/O and Output »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Particle Advection · QGYBJ+.jl</title><meta name="title" content="Particle Advection · QGYBJ+.jl"/><meta property="og:title" content="Particle Advection · QGYBJ+.jl"/><meta property="twitter:title" content="Particle Advection · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/particles/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/particles/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/advanced/particles/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../parallel/">MPI Parallelization</a></li><li class="is-active"><a class="tocitem" href>Particle Advection</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Physics-of-Particle-Advection"><span>Physics of Particle Advection</span></a></li><li><a class="tocitem" href="#Quick-Start"><span>Quick Start</span></a></li><li><a class="tocitem" href="#Time-Integration-Methods"><span>Time Integration Methods</span></a></li><li><a class="tocitem" href="#Interpolation-Methods"><span>Interpolation Methods</span></a></li><li><a class="tocitem" href="#Particle-Initialization"><span>Particle Initialization</span></a></li><li><a class="tocitem" href="#Boundary-Conditions"><span>Boundary Conditions</span></a></li><li><a class="tocitem" href="#Delayed-Particle-Release"><span>Delayed Particle Release</span></a></li><li><a class="tocitem" href="#Trajectory-Output"><span>Trajectory Output</span></a></li><li><a class="tocitem" href="#Parallel-Algorithm"><span>Parallel Algorithm</span></a></li><li><a class="tocitem" href="#Key-Data-Structures"><span>Key Data Structures</span></a></li><li><a class="tocitem" href="#Performance-Considerations"><span>Performance Considerations</span></a></li><li><a class="tocitem" href="#Visualization"><span>Visualization</span></a></li><li><a class="tocitem" href="#API-Reference"><span>API Reference</span></a></li></ul></li><li><a class="tocitem" href="../parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../interpolation/">Interpolation</a></li><li><a class="tocitem" href="../performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Advanced Topics</a></li><li class="is-active"><a href>Particle Advection</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Particle Advection</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/advanced/particles.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="particles"><a class="docs-heading-anchor" href="#particles">Particle Advection</a><a id="particles-1"></a><a class="docs-heading-anchor-permalink" href="#particles" title="Permalink"></a></h1><p>This page describes Lagrangian particle tracking in QGYBJ+.jl, including the physics, numerical algorithms, and parallel implementation.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>Particle tracking allows you to:</p><ul><li>Follow <strong>fluid parcels</strong> as they move with the flow</li><li>Compute <strong>Lagrangian statistics</strong> (dispersion, diffusivity)</li><li>Track <strong>tracer concentrations</strong> along trajectories</li><li>Study <strong>mixing</strong> and <strong>transport</strong> in QG-YBJ+ dynamics</li></ul><h2 id="Physics-of-Particle-Advection"><a class="docs-heading-anchor" href="#Physics-of-Particle-Advection">Physics of Particle Advection</a><a id="Physics-of-Particle-Advection-1"></a><a class="docs-heading-anchor-permalink" href="#Physics-of-Particle-Advection" title="Permalink"></a></h2><h3 id="Total-Velocity-Field"><a class="docs-heading-anchor" href="#Total-Velocity-Field">Total Velocity Field</a><a id="Total-Velocity-Field-1"></a><a class="docs-heading-anchor-permalink" href="#Total-Velocity-Field" title="Permalink"></a></h3><p>In QG-YBJ+ dynamics, particles are advected by the <strong>total velocity field</strong> consisting of:</p><p><strong>1. Geostrophic Flow</strong> (from streamfunction ψ):</p><p class="math-container">\[u_{QG} = -\frac{\partial \psi}{\partial y}, \quad v_{QG} = \frac{\partial \psi}{\partial x}\]</p><p><strong>2. Wave-Induced Stokes Drift</strong> (from wave amplitude A):</p><p><em>Horizontal Stokes Drift:</em></p><p class="math-container">\[u_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial x}\right] = \frac{\partial |A|^2}{\partial x}\]</p><p class="math-container">\[v_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial y}\right] = \frac{\partial |A|^2}{\partial y}\]</p><p><em>Vertical Stokes Drift:</em></p><p class="math-container">\[w_{wave} = 2\,\text{Re}\left[A^* \frac{\partial A}{\partial z}\right] = \frac{\partial |A|^2}{\partial z}\]</p><p>The vertical derivative ∂A/∂z is computed by <code>invert_B_to_A!</code> and stored in <code>S.C</code>.</p><p><strong>3. QG Vertical Velocity</strong> (from omega equation):</p><p class="math-container">\[\nabla^2 w_{QG} + \frac{N^2}{f^2}\frac{\partial^2 w_{QG}}{\partial z^2} = 2\,J(\psi_z, \nabla^2\psi)\]</p><p><strong>4. YBJ Vertical Velocity</strong> (alternative wave-induced formulation):</p><p class="math-container">\[w_{YBJ} = -\frac{f^2}{N^2}\left[\left(\frac{\partial A}{\partial x}\right)_z - i\left(\frac{\partial A}{\partial y}\right)_z\right] + \text{c.c.}\]</p><p>This is controlled by the <code>use_ybj_w</code> option. When <code>use_ybj_w=true</code>, this wave-induced vertical velocity is used instead of solving the QG omega equation.</p><h3 id="Total-Velocity"><a class="docs-heading-anchor" href="#Total-Velocity">Total Velocity</a><a id="Total-Velocity-1"></a><a class="docs-heading-anchor-permalink" href="#Total-Velocity" title="Permalink"></a></h3><p>The complete velocity used for particle advection is:</p><p class="math-container">\[\mathbf{u}_{total} = (u_{QG} + u_{wave},\; v_{QG} + v_{wave},\; w + w_{wave})\]</p><p>where <span>$w$</span> is either <span>$w_{QG}$</span> (from omega equation) or <span>$w_{YBJ}$</span> (wave-induced) depending on the <code>use_ybj_w</code> setting.</p><p>This includes both horizontal and <strong>vertical Stokes drift</strong>, ensuring particles are correctly advected by the full wave-induced velocity field.</p><h2 id="Quick-Start"><a class="docs-heading-anchor" href="#Quick-Start">Quick Start</a><a id="Quick-Start-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Start" title="Permalink"></a></h2><h3 id="Basic-Setup"><a class="docs-heading-anchor" href="#Basic-Setup">Basic Setup</a><a id="Basic-Setup-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Setup" title="Permalink"></a></h3><pre><code class="language-julia hljs">using QGYBJplus
+
+# Create simulation configuration
+config = SimulationConfig(
+    domain = DomainConfig(nx=128, ny=128, nz=64),
+    # ... other settings
+)
+
+# Set up simulation
+sim = setup_simulation(config)
+
+# Create particle configuration (100 particles in a box at z = π/2)
+particle_config = particles_in_box(π/2;
+    nx=10, ny=10,
+    integration_method=:rk4,
+    interpolation_method=TRILINEAR,
+    save_interval=0.1
+)
+
+# Create particle tracker
+tracker = ParticleTracker(particle_config, sim.grid)
+initialize_particles!(tracker, particle_config)
+
+# Advect particles during simulation
+for step in 1:nsteps
+    timestep!(sim)
+    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
+end
+
+# Save trajectories
+write_particle_trajectories(&quot;particles.nc&quot;, tracker)</code></pre><h2 id="Time-Integration-Methods"><a class="docs-heading-anchor" href="#Time-Integration-Methods">Time Integration Methods</a><a id="Time-Integration-Methods-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Integration-Methods" title="Permalink"></a></h2><p>Three integration schemes are available:</p><h3 id="Euler-Method-(1st-order)"><a class="docs-heading-anchor" href="#Euler-Method-(1st-order)">Euler Method (1st order)</a><a id="Euler-Method-(1st-order)-1"></a><a class="docs-heading-anchor-permalink" href="#Euler-Method-(1st-order)" title="Permalink"></a></h3><p class="math-container">\[\mathbf{x}_{n+1} = \mathbf{x}_n + \Delta t \cdot \mathbf{u}(\mathbf{x}_n, t_n)\]</p><pre><code class="language-julia hljs">config = particles_in_box(π/2; integration_method=:euler)</code></pre><h3 id="RK2-Midpoint-Method-(2nd-order)"><a class="docs-heading-anchor" href="#RK2-Midpoint-Method-(2nd-order)">RK2 Midpoint Method (2nd order)</a><a id="RK2-Midpoint-Method-(2nd-order)-1"></a><a class="docs-heading-anchor-permalink" href="#RK2-Midpoint-Method-(2nd-order)" title="Permalink"></a></h3><p class="math-container">\[\begin{aligned}
+\mathbf{k}_1 &amp;= \mathbf{u}(\mathbf{x}_n, t_n) \\
+\mathbf{x}_{mid} &amp;= \mathbf{x}_n + \frac{\Delta t}{2} \mathbf{k}_1 \\
+\mathbf{k}_2 &amp;= \mathbf{u}(\mathbf{x}_{mid}, t_n + \frac{\Delta t}{2}) \\
+\mathbf{x}_{n+1} &amp;= \mathbf{x}_n + \Delta t \cdot \mathbf{k}_2
+\end{aligned}\]</p><pre><code class="language-julia hljs">config = particles_in_box(π/2; integration_method=:rk2)</code></pre><h3 id="RK4-Classical-Method-(4th-order)"><a class="docs-heading-anchor" href="#RK4-Classical-Method-(4th-order)">RK4 Classical Method (4th order)</a><a id="RK4-Classical-Method-(4th-order)-1"></a><a class="docs-heading-anchor-permalink" href="#RK4-Classical-Method-(4th-order)" title="Permalink"></a></h3><p class="math-container">\[\begin{aligned}
+\mathbf{k}_1 &amp;= \mathbf{u}(\mathbf{x}_n, t_n) \\
+\mathbf{k}_2 &amp;= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_1, t_n + \frac{\Delta t}{2}) \\
+\mathbf{k}_3 &amp;= \mathbf{u}(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_2, t_n + \frac{\Delta t}{2}) \\
+\mathbf{k}_4 &amp;= \mathbf{u}(\mathbf{x}_n + \Delta t\,\mathbf{k}_3, t_n + \Delta t) \\
+\mathbf{x}_{n+1} &amp;= \mathbf{x}_n + \frac{\Delta t}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
+\end{aligned}\]</p><pre><code class="language-julia hljs">config = particles_in_box(π/2; integration_method=:rk4)</code></pre><table><tr><th style="text-align: left">Method</th><th style="text-align: left">Order</th><th style="text-align: left">Velocity Evaluations/Step</th><th style="text-align: left">Recommended Use</th></tr><tr><td style="text-align: left"><code>:euler</code></td><td style="text-align: left">1</td><td style="text-align: left">1</td><td style="text-align: left">Quick tests, large dt</td></tr><tr><td style="text-align: left"><code>:rk2</code></td><td style="text-align: left">2</td><td style="text-align: left">2</td><td style="text-align: left">Balance of speed/accuracy</td></tr><tr><td style="text-align: left"><code>:rk4</code></td><td style="text-align: left">4</td><td style="text-align: left">4</td><td style="text-align: left">High accuracy studies</td></tr></table><h2 id="Interpolation-Methods"><a class="docs-heading-anchor" href="#Interpolation-Methods">Interpolation Methods</a><a id="Interpolation-Methods-1"></a><a class="docs-heading-anchor-permalink" href="#Interpolation-Methods" title="Permalink"></a></h2><p>Velocity must be interpolated from the grid to particle positions.</p><h3 id="Trilinear-(Default)"><a class="docs-heading-anchor" href="#Trilinear-(Default)">Trilinear (Default)</a><a id="Trilinear-(Default)-1"></a><a class="docs-heading-anchor-permalink" href="#Trilinear-(Default)" title="Permalink"></a></h3><ul><li><strong>Stencil</strong>: 2×2×2 = 8 points</li><li><strong>Order</strong>: O(h²)</li><li><strong>Smoothness</strong>: C⁰ continuous</li></ul><pre><code class="language-julia hljs">config = particles_in_box(π/2; interpolation_method=TRILINEAR)</code></pre><h3 id="Tricubic"><a class="docs-heading-anchor" href="#Tricubic">Tricubic</a><a id="Tricubic-1"></a><a class="docs-heading-anchor-permalink" href="#Tricubic" title="Permalink"></a></h3><ul><li><strong>Stencil</strong>: 4×4×4 = 64 points (Catmull-Rom splines)</li><li><strong>Order</strong>: O(h⁴)</li><li><strong>Smoothness</strong>: C¹ continuous</li></ul><pre><code class="language-julia hljs">config = particles_in_box(π/2; interpolation_method=TRICUBIC)</code></pre><h3 id="Quintic"><a class="docs-heading-anchor" href="#Quintic">Quintic</a><a id="Quintic-1"></a><a class="docs-heading-anchor-permalink" href="#Quintic" title="Permalink"></a></h3><ul><li><strong>Stencil</strong>: 6×6×6 = 216 points (B-splines)</li><li><strong>Order</strong>: O(h⁶)</li><li><strong>Smoothness</strong>: C⁴ continuous</li></ul><pre><code class="language-julia hljs">config = particles_in_box(π/2; interpolation_method=QUINTIC)</code></pre><h3 id="Adaptive"><a class="docs-heading-anchor" href="#Adaptive">Adaptive</a><a id="Adaptive-1"></a><a class="docs-heading-anchor-permalink" href="#Adaptive" title="Permalink"></a></h3><p>Automatically selects trilinear or tricubic based on local field smoothness.</p><pre><code class="language-julia hljs">config = particles_in_box(π/2; interpolation_method=ADAPTIVE)</code></pre><table><tr><th style="text-align: left">Method</th><th style="text-align: left">Points</th><th style="text-align: left">Error</th><th style="text-align: left">Best For</th></tr><tr><td style="text-align: left"><code>TRILINEAR</code></td><td style="text-align: left">8</td><td style="text-align: left">O(h²)</td><td style="text-align: left">Speed, rough fields</td></tr><tr><td style="text-align: left"><code>TRICUBIC</code></td><td style="text-align: left">64</td><td style="text-align: left">O(h⁴)</td><td style="text-align: left">Accuracy, smooth fields</td></tr><tr><td style="text-align: left"><code>QUINTIC</code></td><td style="text-align: left">216</td><td style="text-align: left">O(h⁶)</td><td style="text-align: left">Highest accuracy</td></tr><tr><td style="text-align: left"><code>ADAPTIVE</code></td><td style="text-align: left">8-64</td><td style="text-align: left">Variable</td><td style="text-align: left">Mixed conditions</td></tr></table><h2 id="Particle-Initialization"><a class="docs-heading-anchor" href="#Particle-Initialization">Particle Initialization</a><a id="Particle-Initialization-1"></a><a class="docs-heading-anchor-permalink" href="#Particle-Initialization" title="Permalink"></a></h2><p>QGYBJ+.jl provides simple, intuitive constructors for initializing particles:</p><table><tr><th style="text-align: left">Constructor</th><th style="text-align: left">Description</th></tr><tr><td style="text-align: left"><code>particles_in_box(z; ...)</code></td><td style="text-align: left">Uniform grid in a 2D rectangular box at fixed z</td></tr><tr><td style="text-align: left"><code>particles_in_circle(z; ...)</code></td><td style="text-align: left">Circular disk at fixed z (sunflower/rings/random)</td></tr><tr><td style="text-align: left"><code>particles_in_grid_3d(; ...)</code></td><td style="text-align: left">Uniform 3D rectangular grid</td></tr><tr><td style="text-align: left"><code>particles_in_layers(z_levels; ...)</code></td><td style="text-align: left">Multiple 2D grids at different z-levels</td></tr><tr><td style="text-align: left"><code>particles_random_3d(n; ...)</code></td><td style="text-align: left">Random distribution in 3D volume</td></tr><tr><td style="text-align: left"><code>particles_custom(positions; ...)</code></td><td style="text-align: left">User-specified positions</td></tr></table><h3 id="Particles-in-a-Box-(2D-at-fixed-z)"><a class="docs-heading-anchor" href="#Particles-in-a-Box-(2D-at-fixed-z)">Particles in a Box (2D at fixed z)</a><a id="Particles-in-a-Box-(2D-at-fixed-z)-1"></a><a class="docs-heading-anchor-permalink" href="#Particles-in-a-Box-(2D-at-fixed-z)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 100 particles (10×10) in a box at z = π/2
+config = particles_in_box(π/2; nx=10, ny=10)
+
+# Custom domain
+config = particles_in_box(π/2;
+    x_min=π/4, x_max=7π/4,
+    y_min=π/4, y_max=7π/4,
+    nx=20, ny=20              # 400 particles
+)</code></pre><h3 id="Particles-in-a-Circle-(2D-at-fixed-z)"><a class="docs-heading-anchor" href="#Particles-in-a-Circle-(2D-at-fixed-z)">Particles in a Circle (2D at fixed z)</a><a id="Particles-in-a-Circle-(2D-at-fixed-z)-1"></a><a class="docs-heading-anchor-permalink" href="#Particles-in-a-Circle-(2D-at-fixed-z)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 100 particles in a circle of radius 1.0 at z = π/2
+config = particles_in_circle(π/2; radius=1.0, n=100)
+
+# Custom center and pattern
+config = particles_in_circle(1.0;
+    center=(2.0, 2.0),        # Circle center
+    radius=1.5,
+    n=200,
+    pattern=:sunflower        # :sunflower, :rings, or :random
+)</code></pre><p><strong>Available patterns:</strong></p><ul><li><code>:sunflower</code> - Fibonacci spiral (very uniform, recommended)</li><li><code>:rings</code> - Concentric rings</li><li><code>:random</code> - Uniform random within disk</li></ul><h3 id="Particles-in-a-3D-Grid"><a class="docs-heading-anchor" href="#Particles-in-a-3D-Grid">Particles in a 3D Grid</a><a id="Particles-in-a-3D-Grid-1"></a><a class="docs-heading-anchor-permalink" href="#Particles-in-a-3D-Grid" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 500 particles in a 10×10×5 grid
+config = particles_in_grid_3d(; nx=10, ny=10, nz=5)
+
+# Custom domain
+config = particles_in_grid_3d(;
+    x_min=0, x_max=π,
+    z_min=0.5, z_max=2.5,
+    nx=8, ny=8, nz=4
+)</code></pre><h3 id="Particles-in-Layers-(multiple-z-levels)"><a class="docs-heading-anchor" href="#Particles-in-Layers-(multiple-z-levels)">Particles in Layers (multiple z-levels)</a><a id="Particles-in-Layers-(multiple-z-levels)-1"></a><a class="docs-heading-anchor-permalink" href="#Particles-in-Layers-(multiple-z-levels)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 300 particles at 3 z-levels (10×10 per level)
+config = particles_in_layers([π/4, π/2, 3π/4]; nx=10, ny=10)
+
+# Custom horizontal domain
+config = particles_in_layers([0.5, 1.0, 1.5, 2.0];
+    x_min=0, x_max=π,
+    nx=5, ny=5
+)</code></pre><h3 id="Random-3D-Distribution"><a class="docs-heading-anchor" href="#Random-3D-Distribution">Random 3D Distribution</a><a id="Random-3D-Distribution-1"></a><a class="docs-heading-anchor-permalink" href="#Random-3D-Distribution" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 500 random particles in default domain
+config = particles_random_3d(500)
+
+# Custom domain with seed
+config = particles_random_3d(1000;
+    x_min=0, x_max=π,
+    z_min=0.5, z_max=2.5,
+    seed=42
+)</code></pre><h3 id="Custom-Positions"><a class="docs-heading-anchor" href="#Custom-Positions">Custom Positions</a><a id="Custom-Positions-1"></a><a class="docs-heading-anchor-permalink" href="#Custom-Positions" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Particles at specific (x, y, z) locations
+config = particles_custom([
+    (1.0, 1.0, 0.5),
+    (2.0, 2.0, 1.0),
+    (3.0, 1.5, 0.75),
+    (1.5, 3.0, 1.25)
+])</code></pre><h2 id="Boundary-Conditions"><a class="docs-heading-anchor" href="#Boundary-Conditions">Boundary Conditions</a><a id="Boundary-Conditions-1"></a><a class="docs-heading-anchor-permalink" href="#Boundary-Conditions" title="Permalink"></a></h2><h3 id="Horizontal-(Periodic)"><a class="docs-heading-anchor" href="#Horizontal-(Periodic)">Horizontal (Periodic)</a><a id="Horizontal-(Periodic)-1"></a><a class="docs-heading-anchor-permalink" href="#Horizontal-(Periodic)" title="Permalink"></a></h3><p>Particles wrap around domain edges:</p><pre><code class="language-julia hljs">x_new = mod(x, Lx)
+y_new = mod(y, Ly)</code></pre><h3 id="Vertical-(Reflective)"><a class="docs-heading-anchor" href="#Vertical-(Reflective)">Vertical (Reflective)</a><a id="Vertical-(Reflective)-1"></a><a class="docs-heading-anchor-permalink" href="#Vertical-(Reflective)" title="Permalink"></a></h3><p>Particles bounce off top and bottom:</p><pre><code class="language-julia hljs">if z &lt; 0
+    z = -z
+    w = -w  # Reverse vertical velocity
+elseif z &gt; Lz
+    z = 2*Lz - z
+    w = -w
+end</code></pre><p>Configure via:</p><pre><code class="language-julia hljs">config = particles_in_box(π/2;
+    periodic_x=true,
+    periodic_y=true,
+    reflect_z=true      # Reflective vertical BCs
+)</code></pre><h2 id="Delayed-Particle-Release"><a class="docs-heading-anchor" href="#Delayed-Particle-Release">Delayed Particle Release</a><a id="Delayed-Particle-Release-1"></a><a class="docs-heading-anchor-permalink" href="#Delayed-Particle-Release" title="Permalink"></a></h2><p>Start advecting particles after the flow has developed:</p><pre><code class="language-julia hljs">config = particles_in_box(π/2; particle_advec_time=1.0)  # Start at t=1.0</code></pre><p>Particles remain stationary until <code>current_time &gt;= particle_advec_time</code>.</p><h2 id="Trajectory-Output"><a class="docs-heading-anchor" href="#Trajectory-Output">Trajectory Output</a><a id="Trajectory-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Trajectory-Output" title="Permalink"></a></h2><h3 id="Save-Interval"><a class="docs-heading-anchor" href="#Save-Interval">Save Interval</a><a id="Save-Interval-1"></a><a class="docs-heading-anchor-permalink" href="#Save-Interval" title="Permalink"></a></h3><p>Control how often positions are recorded:</p><pre><code class="language-julia hljs">config = particles_in_box(π/2;
+    save_interval=0.1,       # Save every 0.1 time units
+    max_save_points=1000     # Max points per file
+)</code></pre><h3 id="Automatic-File-Splitting"><a class="docs-heading-anchor" href="#Automatic-File-Splitting">Automatic File Splitting</a><a id="Automatic-File-Splitting-1"></a><a class="docs-heading-anchor-permalink" href="#Automatic-File-Splitting" title="Permalink"></a></h3><p>For long simulations:</p><pre><code class="language-julia hljs">tracker = ParticleTracker(config, grid)
+enable_auto_file_splitting!(tracker, &quot;long_run&quot;, max_points_per_file=500)
+
+# Files created: long_run.nc, long_run_part1.nc, long_run_part2.nc, ...</code></pre><h3 id="Writing-Trajectories"><a class="docs-heading-anchor" href="#Writing-Trajectories">Writing Trajectories</a><a id="Writing-Trajectories-1"></a><a class="docs-heading-anchor-permalink" href="#Writing-Trajectories" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Standard output
+write_particle_trajectories(&quot;particles.nc&quot;, tracker)
+
+# With metadata
+write_particle_trajectories(&quot;particles.nc&quot;, tracker;
+    metadata = Dict(&quot;experiment&quot; =&gt; &quot;test1&quot;, &quot;description&quot; =&gt; &quot;...&quot;)
+)
+
+# By z-level (for layered distributions)
+write_particle_trajectories_by_zlevel(&quot;particles&quot;, tracker)
+# Creates: particles_z0.nc, particles_z1.nc, ...</code></pre><h2 id="Parallel-Algorithm"><a class="docs-heading-anchor" href="#Parallel-Algorithm">Parallel Algorithm</a><a id="Parallel-Algorithm-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-Algorithm" title="Permalink"></a></h2><p>When running with MPI, particle advection uses domain decomposition.</p><h3 id="Domain-Decomposition"><a class="docs-heading-anchor" href="#Domain-Decomposition">Domain Decomposition</a><a id="Domain-Decomposition-1"></a><a class="docs-heading-anchor-permalink" href="#Domain-Decomposition" title="Permalink"></a></h3><p>The domain is split in the x-direction across MPI ranks:</p><pre><code class="nohighlight hljs">┌─────────────────────────────────────────────────────┐
+│           Domain: [0, Lx] × [0, Ly] × [0, Lz]       │
+│                                                     │
+│   ┌──────────┬──────────┬──────────┬──────────┐     │
+│   │  Rank 0  │  Rank 1  │  Rank 2  │  Rank 3  │     │
+│   │x∈[0,Lx/4)│x∈[Lx/4,  │x∈[Lx/2,  │x∈[3Lx/4, │     │
+│   │          │   Lx/2)  │  3Lx/4)  │   Lx)    │     │
+│   └──────────┴──────────┴──────────┴──────────┘     │
+│                                                     │
+│   Each rank owns particles within its x-range       │
+└─────────────────────────────────────────────────────┘</code></pre><h3 id="Halo-Exchange"><a class="docs-heading-anchor" href="#Halo-Exchange">Halo Exchange</a><a id="Halo-Exchange-1"></a><a class="docs-heading-anchor-permalink" href="#Halo-Exchange" title="Permalink"></a></h3><p>For interpolation near domain boundaries, velocity data is exchanged between neighbors:</p><pre><code class="nohighlight hljs">┌─────────────────────────────────────────────────────────────┐
+│                     HALO EXCHANGE                           │
+│                                                             │
+│   Rank 0                        Rank 1                      │
+│   ┌─────────────────┐          ┌─────────────────┐          │
+│   │ Local │  Right  │          │ Left  │ Local   │          │
+│   │ Data  │  Halo   │  ←────→  │ Halo  │ Data    │          │
+│   │       │ (ghost) │          │(ghost)│         │          │
+│   └───────┴─────────┘          └───────┴─────────┘          │
+│                                                             │
+│   • Rank 0 sends RIGHT edge → Rank 1&#39;s LEFT halo            │
+│   • Rank 1 sends LEFT edge  → Rank 0&#39;s RIGHT halo           │
+│                                                             │
+│   Halo width = 2 cells (enough for trilinear/tricubic)      │
+└─────────────────────────────────────────────────────────────┘</code></pre><h3 id="Particle-Migration"><a class="docs-heading-anchor" href="#Particle-Migration">Particle Migration</a><a id="Particle-Migration-1"></a><a class="docs-heading-anchor-permalink" href="#Particle-Migration" title="Permalink"></a></h3><p>When particles cross domain boundaries, they are transferred:</p><pre><code class="nohighlight hljs">┌─────────────────────────────────────────────────────────────┐
+│                   PARTICLE MIGRATION                        │
+│                                                             │
+│   1. After advection, check each particle&#39;s position        │
+│   2. If x outside local domain → pack into send buffer      │
+│   3. MPI.Alltoall to exchange particle counts               │
+│   4. MPI.Send/Recv to transfer particle data                │
+│   5. Unpack received particles into local collection        │
+│                                                             │
+│   Particle data transferred: [x, y, z, u, v, w]             │
+└─────────────────────────────────────────────────────────────┘</code></pre><h3 id="Parallel-Timestep-Workflow"><a class="docs-heading-anchor" href="#Parallel-Timestep-Workflow">Parallel Timestep Workflow</a><a id="Parallel-Timestep-Workflow-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-Timestep-Workflow" title="Permalink"></a></h3><pre><code class="nohighlight hljs">┌───────────────────────────────────────────────────────────────┐
+│                  PARALLEL ADVECTION TIMESTEP                  │
+│                                                               │
+│  1. UPDATE VELOCITY FIELDS                                    │
+│     • Compute QG velocities (distributed FFT)                 │
+│     • Solve omega equation (tridiagonal in z)                 │
+│     • Add wave Stokes drift                                   │
+│     • Exchange velocity halos (MPI)                           │
+│                              ↓                                │
+│  2. ADVECT PARTICLES (each rank processes local particles)    │
+│     • Interpolate velocity (use halo for boundary particles)  │
+│     • Time integration (Euler/RK2/RK4)                        │
+│                              ↓                                │
+│  3. MIGRATE PARTICLES                                         │
+│     • Identify particles that left local domain               │
+│     • Exchange particle data between ranks (MPI)              │
+│                              ↓                                │
+│  4. APPLY BOUNDARY CONDITIONS                                 │
+│     • Periodic wrap in x, y                                   │
+│     • Reflective bounce in z                                  │
+│                              ↓                                │
+│  5. SAVE TRAJECTORIES (if save_interval reached)              │
+│     • Each rank saves local particles, or                     │
+│     • Gather to rank 0 for unified output                     │
+└───────────────────────────────────────────────────────────────┘</code></pre><h3 id="Using-Parallel-Particles"><a class="docs-heading-anchor" href="#Using-Parallel-Particles">Using Parallel Particles</a><a id="Using-Parallel-Particles-1"></a><a class="docs-heading-anchor-permalink" href="#Using-Parallel-Particles" title="Permalink"></a></h3><pre><code class="language-julia hljs">using MPI
+using QGYBJplus
+
+MPI.Init()
+
+# Set up parallel configuration
+parallel_config = setup_parallel_environment()
+
+# Create particle tracker with parallel support
+tracker = ParticleTracker(particle_config, grid, parallel_config)
+initialize_particles!(tracker, particle_config)
+
+# Advection automatically handles:
+# - Halo exchange for boundary interpolation
+# - Particle migration between ranks
+for step in 1:nsteps
+    timestep!(sim)
+    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
+end
+
+MPI.Finalize()</code></pre><h2 id="Key-Data-Structures"><a class="docs-heading-anchor" href="#Key-Data-Structures">Key Data Structures</a><a id="Key-Data-Structures-1"></a><a class="docs-heading-anchor-permalink" href="#Key-Data-Structures" title="Permalink"></a></h2><h3 id="ParticleConfig"><a class="docs-heading-anchor" href="#ParticleConfig">ParticleConfig</a><a id="ParticleConfig-1"></a><a class="docs-heading-anchor-permalink" href="#ParticleConfig" title="Permalink"></a></h3><pre><code class="language-julia hljs">struct ParticleConfig{T}
+    # Spatial domain
+    x_min, x_max, y_min, y_max::T
+    z_level::T
+
+    # Particle count
+    nx_particles, ny_particles::Int
+
+    # Physics
+    use_ybj_w::Bool           # YBJ vs QG vertical velocity
+    use_3d_advection::Bool    # Include vertical advection
+
+    # Timing
+    particle_advec_time::T    # Delayed start time
+
+    # Numerics
+    integration_method::Symbol        # :euler, :rk2, :rk4
+    interpolation_method::InterpolationMethod  # TRILINEAR, etc.
+
+    # Boundaries
+    periodic_x, periodic_y::Bool
+    reflect_z::Bool
+
+    # I/O
+    save_interval::T
+    max_save_points::Int
+end</code></pre><h3 id="ParticleTracker"><a class="docs-heading-anchor" href="#ParticleTracker">ParticleTracker</a><a id="ParticleTracker-1"></a><a class="docs-heading-anchor-permalink" href="#ParticleTracker" title="Permalink"></a></h3><pre><code class="language-julia hljs">mutable struct ParticleTracker{T}
+    config::ParticleConfig{T}
+    particles::ParticleState{T}   # x, y, z, u, v, w arrays
+
+    # Grid info
+    nx, ny, nz::Int
+    Lx, Ly, Lz, dx, dy, dz::T
+
+    # Velocity workspace
+    u_field, v_field, w_field::Array{T,3}
+
+    # MPI info (for parallel)
+    comm, rank, nprocs
+    local_domain::NamedTuple
+    halo_info::HaloInfo{T}
+    send_buffers, recv_buffers::Vector{Vector{T}}
+
+    # I/O
+    save_counter::Int
+    last_save_time::T
+end</code></pre><h2 id="Performance-Considerations"><a class="docs-heading-anchor" href="#Performance-Considerations">Performance Considerations</a><a id="Performance-Considerations-1"></a><a class="docs-heading-anchor-permalink" href="#Performance-Considerations" title="Permalink"></a></h2><table><tr><th style="text-align: left">Aspect</th><th style="text-align: left">Serial</th><th style="text-align: left">Parallel</th></tr><tr><td style="text-align: left">Velocity computation</td><td style="text-align: left">O(N)</td><td style="text-align: left">O(N/P) per rank</td></tr><tr><td style="text-align: left">Interpolation</td><td style="text-align: left">O(Np × stencil)</td><td style="text-align: left">O(Np/P × stencil)</td></tr><tr><td style="text-align: left">Halo exchange</td><td style="text-align: left">N/A</td><td style="text-align: left">O(ny × nz × halo_width)</td></tr><tr><td style="text-align: left">Migration</td><td style="text-align: left">N/A</td><td style="text-align: left">O(Np_crossing)</td></tr></table><p><strong>Tips:</strong></p><ul><li>Use <code>TRILINEAR</code> for speed, <code>TRICUBIC</code> for accuracy</li><li>RK4 costs 4× more than Euler but is much more accurate</li><li>Halo exchange overhead is small for typical particle counts</li><li>Migration cost depends on flow strength near boundaries</li></ul><h2 id="Visualization"><a class="docs-heading-anchor" href="#Visualization">Visualization</a><a id="Visualization-1"></a><a class="docs-heading-anchor-permalink" href="#Visualization" title="Permalink"></a></h2><h3 id="Plot-Particle-Positions"><a class="docs-heading-anchor" href="#Plot-Particle-Positions">Plot Particle Positions</a><a id="Plot-Particle-Positions-1"></a><a class="docs-heading-anchor-permalink" href="#Plot-Particle-Positions" title="Permalink"></a></h3><pre><code class="language-julia hljs">using Plots
+
+# 2D scatter plot
+scatter(tracker.particles.x, tracker.particles.y,
+    markersize=2, alpha=0.6,
+    xlabel=&quot;x&quot;, ylabel=&quot;y&quot;,
+    title=&quot;Particle Distribution&quot;
+)</code></pre><h3 id="Plot-Trajectories"><a class="docs-heading-anchor" href="#Plot-Trajectories">Plot Trajectories</a><a id="Plot-Trajectories-1"></a><a class="docs-heading-anchor-permalink" href="#Plot-Trajectories" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Load saved trajectories
+using NCDatasets
+ds = NCDataset(&quot;particles.nc&quot;)
+x_hist = ds[&quot;x&quot;][:]  # (np, ntime)
+y_hist = ds[&quot;y&quot;][:]
+close(ds)
+
+# Plot first 50 particle tracks
+p = plot(legend=false)
+for i in 1:50
+    plot!(p, x_hist[i,:], y_hist[i,:], alpha=0.3)
+end
+display(p)</code></pre><h3 id="Animation"><a class="docs-heading-anchor" href="#Animation">Animation</a><a id="Animation-1"></a><a class="docs-heading-anchor-permalink" href="#Animation" title="Permalink"></a></h3><pre><code class="language-julia hljs">anim = @animate for t in 1:10:size(x_hist, 2)
+    scatter(x_hist[:,t], y_hist[:,t],
+        markersize=2, xlim=(0,2π), ylim=(0,2π),
+        title=&quot;t = $(t)&quot;)
+end
+gif(anim, &quot;particles.gif&quot;, fps=20)</code></pre><h2 id="API-Reference"><a class="docs-heading-anchor" href="#API-Reference">API Reference</a><a id="API-Reference-1"></a><a class="docs-heading-anchor-permalink" href="#API-Reference" title="Permalink"></a></h2><p>See the <a href="../../api/particles/">Particle API Reference</a> for complete documentation of:</p><p><strong>Types:</strong></p><ul><li><a href="#ParticleConfig"><code>ParticleConfig</code></a> - Configuration options</li><li><a href="../../api/particles/#QGYBJplus.UnifiedParticleAdvection.ParticleState"><code>ParticleState</code></a> - Particle positions and velocities</li><li><a href="#ParticleTracker"><code>ParticleTracker</code></a> - Main tracking object</li></ul><p><strong>Initialization Constructors:</strong></p><ul><li><a href="@ref"><code>particles_in_box</code></a> - 2D box at fixed z-level</li><li><a href="@ref"><code>particles_in_circle</code></a> - Circular disk at fixed z-level</li><li><a href="@ref"><code>particles_in_grid_3d</code></a> - Uniform 3D grid</li><li><a href="@ref"><code>particles_in_layers</code></a> - Multiple z-levels</li><li><a href="@ref"><code>particles_random_3d</code></a> - Random 3D distribution</li><li><a href="@ref"><code>particles_custom</code></a> - User-specified positions</li></ul><p><strong>Core Functions:</strong></p><ul><li><a href="../../api/particles/#QGYBJplus.UnifiedParticleAdvection.initialize_particles!"><code>initialize_particles!</code></a> - Initialize particle positions</li><li><a href="../../api/particles/#QGYBJplus.UnifiedParticleAdvection.advect_particles!"><code>advect_particles!</code></a> - Advect particles one timestep</li><li><a href="../../api/particles/#QGYBJplus.UnifiedParticleAdvection.interpolate_velocity_at_position"><code>interpolate_velocity_at_position</code></a> - Velocity interpolation</li><li><a href="../../api/particles/#QGYBJplus.ParticleIO.write_particle_trajectories"><code>write_particle_trajectories</code></a> - Save to NetCDF</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../parallel/">« MPI Parallelization</a><a class="docs-footer-nextpage" href="../parallel_particles/">Parallel Particle Algorithm »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

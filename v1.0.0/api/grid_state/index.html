@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Grid &amp; State · QGYBJ+.jl</title><meta name="title" content="Grid &amp; State · QGYBJ+.jl"/><meta property="og:title" content="Grid &amp; State · QGYBJ+.jl"/><meta property="twitter:title" content="Grid &amp; State · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/api/grid_state/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/api/grid_state/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/api/grid_state/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../../advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../../advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="../../advanced/parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../../advanced/interpolation/">Interpolation</a></li><li><a class="tocitem" href="../../advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../types/">Core Types</a></li><li class="is-active"><a class="tocitem" href>Grid &amp; State</a><ul class="internal"><li><a class="tocitem" href="#Grid-Type"><span>Grid Type</span></a></li><li><a class="tocitem" href="#State-Type"><span>State Type</span></a></li><li><a class="tocitem" href="#MPI-Workspace"><span>MPI Workspace</span></a></li><li><a class="tocitem" href="#Allocating-Arrays"><span>Allocating Arrays</span></a></li><li><a class="tocitem" href="#Utility-Functions"><span>Utility Functions</span></a></li><li><a class="tocitem" href="#Serial-vs-Parallel-Comparison"><span>Serial vs Parallel Comparison</span></a></li><li><a class="tocitem" href="#API-Reference"><span>API Reference</span></a></li></ul></li><li><a class="tocitem" href="../physics/">Physics Functions</a></li><li><a class="tocitem" href="../timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../particles/">Particles</a></li><li><a class="tocitem" href="../">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">API Reference</a></li><li class="is-active"><a href>Grid &amp; State</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Grid &amp; State</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/api/grid_state.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="api-grid-state"><a class="docs-heading-anchor" href="#api-grid-state">Grid &amp; State</a><a id="api-grid-state-1"></a><a class="docs-heading-anchor-permalink" href="#api-grid-state" title="Permalink"></a></h1><p>This page documents the core data structures: <code>Grid</code> and <code>State</code>.</p><h2 id="Grid-Type"><a class="docs-heading-anchor" href="#Grid-Type">Grid Type</a><a id="Grid-Type-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-Type" title="Permalink"></a></h2><p>The <code>Grid</code> struct contains spatial coordinates, spectral wavenumbers, and parallel decomposition information.</p><h3 id="Definition"><a class="docs-heading-anchor" href="#Definition">Definition</a><a id="Definition-1"></a><a class="docs-heading-anchor-permalink" href="#Definition" title="Permalink"></a></h3><pre><code class="language-julia hljs">mutable struct Grid{T, AT}
+    # Grid dimensions
+    nx::Int                # Number of points in x (horizontal)
+    ny::Int                # Number of points in y (horizontal)
+    nz::Int                # Number of points in z (vertical)
+
+    # Domain sizes
+    Lx::T                  # Domain size in x
+    Ly::T                  # Domain size in y
+
+    # Grid spacings
+    dx::T                  # Grid spacing in x: dx = Lx/nx
+    dy::T                  # Grid spacing in y: dy = Ly/ny
+
+    # Vertical grid (unstaggered)
+    z::Vector{T}           # Vertical levels z[k], size nz
+    dz::Vector{T}          # Layer thicknesses: dz[k] = z[k+1] - z[k], size nz-1
+
+    # Spectral wavenumbers
+    kx::Vector{T}          # x-wavenumbers, size nx
+    ky::Vector{T}          # y-wavenumbers, size ny
+    kh2::AT                # kx² + ky² on spectral grid
+
+    # MPI decomposition (PencilArrays)
+    decomp::Any            # PencilDecomp or nothing for serial
+end</code></pre><h3 id="Type-Parameters"><a class="docs-heading-anchor" href="#Type-Parameters">Type Parameters</a><a id="Type-Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Parameters" title="Permalink"></a></h3><ul><li><code>T</code>: Floating point type (typically <code>Float64</code>)</li><li><code>AT</code>: Array type for <code>kh2</code> (<code>Array{T,2}</code> for serial, <code>PencilArray{T,3}</code> for parallel)</li></ul><h3 id="Constructors"><a class="docs-heading-anchor" href="#Constructors">Constructors</a><a id="Constructors-1"></a><a class="docs-heading-anchor-permalink" href="#Constructors" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Initialize from parameters (serial mode)
+params = default_params(Lx=500e3, Ly=500e3, Lz=4000.0, nx=64, ny=64, nz=32)
+grid = init_grid(params)
+
+# Initialize with MPI decomposition
+using MPI, PencilArrays, PencilFFTs
+MPI.Init()
+mpi_config = QGYBJplus.setup_mpi_environment()
+grid = QGYBJplus.init_mpi_grid(params, mpi_config)</code></pre><h3 id="Grid-Properties"><a class="docs-heading-anchor" href="#Grid-Properties">Grid Properties</a><a id="Grid-Properties-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-Properties" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Dimensions
+nx, ny, nz = grid.nx, grid.ny, grid.nz
+
+# Domain size
+Lx, Ly = grid.Lx, grid.Ly
+
+# Grid spacings
+dx, dy = grid.dx, grid.dy
+
+# Vertical levels
+z = grid.z       # Vector of length nz
+dz = grid.dz     # Vector of length nz-1
+
+# Check if parallel
+is_parallel = grid.decomp !== nothing</code></pre><h3 id="Wavenumber-Access"><a class="docs-heading-anchor" href="#Wavenumber-Access">Wavenumber Access</a><a id="Wavenumber-Access-1"></a><a class="docs-heading-anchor-permalink" href="#Wavenumber-Access" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Wavenumber vectors (global, same on all processes)
+kx = grid.kx     # Vector of length nx
+ky = grid.ky     # Vector of length ny
+
+# Horizontal wavenumber squared
+# Serial: 2D array (nx, ny)
+# Parallel: 3D PencilArray (local_nx, local_ny, local_nz)
+kh2 = grid.kh2
+
+# Convenience functions (handle serial/parallel automatically)
+kx_val = get_kx(i_local, grid)    # Get kx for local index
+ky_val = get_ky(j_local, grid)    # Get ky for local index
+kh2_val = get_kh2(i, j, k, arr, grid)  # Get kh² for local indices</code></pre><h3 id="Index-Mapping-(Parallel)"><a class="docs-heading-anchor" href="#Index-Mapping-(Parallel)">Index Mapping (Parallel)</a><a id="Index-Mapping-(Parallel)-1"></a><a class="docs-heading-anchor-permalink" href="#Index-Mapping-(Parallel)" title="Permalink"></a></h3><p>When using parallel decomposition, local indices must be mapped to global indices:</p><pre><code class="language-julia hljs"># Get local index ranges
+local_range = get_local_range(grid)   # (i_range, j_range, k_range)
+
+# Map local to global indices (xy-pencil)
+i_global = local_to_global(i_local, 1, grid)  # x dimension
+j_global = local_to_global(j_local, 2, grid)  # y dimension
+k_global = local_to_global(k_local, 3, grid)  # z dimension
+
+# Map local to global indices (z-pencil)
+i_global = local_to_global_z(i_local, 1, grid)
+j_global = local_to_global_z(j_local, 2, grid)
+
+# Get local dimensions of any array
+nx_local, ny_local, nz_local = get_local_dims(arr)
+
+# Check if array is parallel
+is_distributed = is_parallel_array(arr)</code></pre><h3 id="Decomposition-Access"><a class="docs-heading-anchor" href="#Decomposition-Access">Decomposition Access</a><a id="Decomposition-Access-1"></a><a class="docs-heading-anchor-permalink" href="#Decomposition-Access" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Access decomposition (parallel mode only)
+if grid.decomp !== nothing
+    decomp = grid.decomp
+
+    # Pencil configurations
+    pencil_xy = decomp.pencil_xy   # For horizontal FFTs
+    pencil_z = decomp.pencil_z     # For vertical operations
+
+    # Local ranges
+    range_xy = decomp.local_range_xy
+    range_z = decomp.local_range_z
+
+    # Global dimensions
+    global_dims = decomp.global_dims   # (nx, ny, nz)
+
+    # Process topology
+    topology = decomp.topology   # (px, py)
+end</code></pre><h2 id="State-Type"><a class="docs-heading-anchor" href="#State-Type">State Type</a><a id="State-Type-1"></a><a class="docs-heading-anchor-permalink" href="#State-Type" title="Permalink"></a></h2><p>The <code>State</code> struct contains all prognostic and diagnostic fields.</p><h3 id="Definition-2"><a class="docs-heading-anchor" href="#Definition-2">Definition</a><a class="docs-heading-anchor-permalink" href="#Definition-2" title="Permalink"></a></h3><pre><code class="language-julia hljs">mutable struct State{T, RT&lt;:AbstractArray{T,3}, CT&lt;:AbstractArray{Complex{T},3}}
+    # Prognostic fields (spectral space, complex)
+    q::CT           # QG potential vorticity
+    B::CT           # YBJ+ wave envelope (B = L⁺A)
+
+    # Diagnostic fields (spectral space, complex)
+    psi::CT         # Streamfunction (from q via inversion)
+    A::CT           # Wave amplitude (from B via YBJ+ inversion)
+    C::CT           # Vertical derivative A_z
+
+    # Velocity fields (real space, real)
+    u::RT           # Zonal velocity: u = -dψ/dy
+    v::RT           # Meridional velocity: v = dψ/dx
+    w::RT           # Vertical velocity (from omega equation)
+end</code></pre><h3 id="Type-Parameters-2"><a class="docs-heading-anchor" href="#Type-Parameters-2">Type Parameters</a><a class="docs-heading-anchor-permalink" href="#Type-Parameters-2" title="Permalink"></a></h3><ul><li><code>T</code>: Floating point type (<code>Float64</code>)</li><li><code>RT</code>: Real array type (<code>Array{T,3}</code> or <code>PencilArray{T,3}</code>)</li><li><code>CT</code>: Complex array type (<code>Array{Complex{T},3}</code> or <code>PencilArray{Complex{T},3}</code>)</li></ul><h3 id="Constructors-2"><a class="docs-heading-anchor" href="#Constructors-2">Constructors</a><a class="docs-heading-anchor-permalink" href="#Constructors-2" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Initialize from grid (serial mode)
+state = init_state(grid)
+
+# Initialize with MPI (parallel mode)
+state = QGYBJplus.init_mpi_state(grid, mpi_config)</code></pre><h3 id="Field-Access"><a class="docs-heading-anchor" href="#Field-Access">Field Access</a><a id="Field-Access-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Access" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Prognostic fields (time-stepped)
+q = state.q      # QG potential vorticity (spectral)
+B = state.B      # Wave envelope (spectral)
+
+# Diagnostic fields (computed)
+psi = state.psi  # Streamfunction (spectral)
+A = state.A      # Wave amplitude (spectral)
+C = state.C      # Vertical derivative dA/dz (spectral)
+
+# Velocity fields (real space)
+u = state.u      # Zonal velocity
+v = state.v      # Meridional velocity
+w = state.w      # Vertical velocity</code></pre><h3 id="Working-with-Arrays"><a class="docs-heading-anchor" href="#Working-with-Arrays">Working with Arrays</a><a id="Working-with-Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-Arrays" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Get underlying data (works for both Array and PencilArray)
+psi_data = parent(state.psi)
+
+# Get local dimensions
+nx_local, ny_local, nz_local = size(parent(state.psi))
+
+# Access single element
+val = state.psi[i, j, k]
+
+# Access slice
+surface = state.psi[:, :, end]
+profile = state.psi[i, j, :]
+
+# Set values
+state.psi[i, j, k] = complex_value
+state.psi[:, :, end] .= surface_values
+
+# Copy all of one field
+state.psi .= initial_psi</code></pre><h3 id="Physical-Interpretation"><a class="docs-heading-anchor" href="#Physical-Interpretation">Physical Interpretation</a><a id="Physical-Interpretation-1"></a><a class="docs-heading-anchor-permalink" href="#Physical-Interpretation" title="Permalink"></a></h3><table><tr><th style="text-align: left">Field</th><th style="text-align: left">Symbol</th><th style="text-align: left">Physical Meaning</th></tr><tr><td style="text-align: left"><code>q</code></td><td style="text-align: left">q</td><td style="text-align: left">QG potential vorticity: q = nabla²psi + (f²/N²)d²psi/dz²</td></tr><tr><td style="text-align: left"><code>B</code></td><td style="text-align: left">B</td><td style="text-align: left">YBJ+ wave envelope: B = L⁺A</td></tr><tr><td style="text-align: left"><code>psi</code></td><td style="text-align: left">psi</td><td style="text-align: left">Streamfunction</td></tr><tr><td style="text-align: left"><code>A</code></td><td style="text-align: left">A</td><td style="text-align: left">Wave amplitude</td></tr><tr><td style="text-align: left"><code>C</code></td><td style="text-align: left">dA/dz</td><td style="text-align: left">Vertical derivative of wave amplitude</td></tr><tr><td style="text-align: left"><code>u</code></td><td style="text-align: left">u</td><td style="text-align: left">Zonal velocity: u = -dpsi/dy</td></tr><tr><td style="text-align: left"><code>v</code></td><td style="text-align: left">v</td><td style="text-align: left">Meridional velocity: v = dpsi/dx</td></tr><tr><td style="text-align: left"><code>w</code></td><td style="text-align: left">w</td><td style="text-align: left">Vertical velocity (from omega equation or YBJ)</td></tr></table><h2 id="MPI-Workspace"><a class="docs-heading-anchor" href="#MPI-Workspace">MPI Workspace</a><a id="MPI-Workspace-1"></a><a class="docs-heading-anchor-permalink" href="#MPI-Workspace" title="Permalink"></a></h2><p>For 2D parallel decomposition, workspace arrays store z-pencil data:</p><h3 id="Definition-3"><a class="docs-heading-anchor" href="#Definition-3">Definition</a><a class="docs-heading-anchor-permalink" href="#Definition-3" title="Permalink"></a></h3><pre><code class="language-julia hljs">struct MPIWorkspace{T, PA}
+    q_z::PA      # q in z-pencil configuration
+    psi_z::PA    # psi in z-pencil configuration
+    B_z::PA      # B in z-pencil configuration
+    A_z::PA      # A in z-pencil configuration
+    C_z::PA      # C in z-pencil configuration
+    work_z::PA   # General workspace
+end</code></pre><h3 id="Constructor"><a class="docs-heading-anchor" href="#Constructor">Constructor</a><a id="Constructor-1"></a><a class="docs-heading-anchor-permalink" href="#Constructor" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Initialize workspace (parallel mode only)
+workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)</code></pre><h3 id="Usage"><a class="docs-heading-anchor" href="#Usage">Usage</a><a id="Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Usage" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Pass workspace to functions requiring vertical operations
+invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
+invert_B_to_A!(state, grid, params, a_vec; workspace=workspace)
+compute_vertical_velocity!(state, grid, plans, params; workspace=workspace)</code></pre><h2 id="Allocating-Arrays"><a class="docs-heading-anchor" href="#Allocating-Arrays">Allocating Arrays</a><a id="Allocating-Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Allocating-Arrays" title="Permalink"></a></h2><h3 id="Serial-Mode"><a class="docs-heading-anchor" href="#Serial-Mode">Serial Mode</a><a id="Serial-Mode-1"></a><a class="docs-heading-anchor-permalink" href="#Serial-Mode" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Allocate using grid
+q = allocate_field(Float64, grid; complex=true)   # Complex spectral
+u = allocate_field(Float64, grid; complex=false)  # Real physical</code></pre><h3 id="Parallel-Mode"><a class="docs-heading-anchor" href="#Parallel-Mode">Parallel Mode</a><a id="Parallel-Mode-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-Mode" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Allocate in xy-pencil (for FFTs, horizontal operations)
+arr_xy = QGYBJplus.allocate_xy_pencil(grid, ComplexF64)
+
+# Allocate in z-pencil (for vertical operations)
+arr_z = QGYBJplus.allocate_z_pencil(grid, ComplexF64)</code></pre><h2 id="Utility-Functions"><a class="docs-heading-anchor" href="#Utility-Functions">Utility Functions</a><a id="Utility-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Utility-Functions" title="Permalink"></a></h2><h3 id="Grid-Utilities"><a class="docs-heading-anchor" href="#Grid-Utilities">Grid Utilities</a><a id="Grid-Utilities-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-Utilities" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Compute wavenumbers (after changing Lx, Ly)
+compute_wavenumbers!(grid)
+
+# Get dealiasing mask
+mask = dealias_mask(grid)  # 2D Bool array (nx, ny)</code></pre><h3 id="State-Utilities"><a class="docs-heading-anchor" href="#State-Utilities">State Utilities</a><a id="State-Utilities-1"></a><a class="docs-heading-anchor-permalink" href="#State-Utilities" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Zero all fields
+fill!(state.q, 0)
+fill!(state.B, 0)
+fill!(state.psi, 0)
+
+# Check for NaN
+has_nan = any(isnan, parent(state.psi))</code></pre><h2 id="Serial-vs-Parallel-Comparison"><a class="docs-heading-anchor" href="#Serial-vs-Parallel-Comparison">Serial vs Parallel Comparison</a><a id="Serial-vs-Parallel-Comparison-1"></a><a class="docs-heading-anchor-permalink" href="#Serial-vs-Parallel-Comparison" title="Permalink"></a></h2><table><tr><th style="text-align: left">Operation</th><th style="text-align: left">Serial</th><th style="text-align: left">Parallel</th></tr><tr><td style="text-align: left">Grid initialization</td><td style="text-align: left"><code>init_grid(params)</code></td><td style="text-align: left"><code>init_mpi_grid(params, mpi_config)</code></td></tr><tr><td style="text-align: left">State initialization</td><td style="text-align: left"><code>init_state(grid)</code></td><td style="text-align: left"><code>init_mpi_state(grid, mpi_config)</code></td></tr><tr><td style="text-align: left">Array type</td><td style="text-align: left"><code>Array{T,3}</code></td><td style="text-align: left"><code>PencilArray{T,3}</code></td></tr><tr><td style="text-align: left">Index access</td><td style="text-align: left">Direct <code>arr[i,j,k]</code></td><td style="text-align: left">Via <code>parent(arr)[i,j,k]</code></td></tr><tr><td style="text-align: left">Wavenumber lookup</td><td style="text-align: left">Direct <code>grid.kx[i]</code></td><td style="text-align: left"><code>grid.kx[local_to_global(i,1,grid)]</code></td></tr><tr><td style="text-align: left"><code>grid.decomp</code></td><td style="text-align: left"><code>nothing</code></td><td style="text-align: left"><code>PencilDecomp</code> struct</td></tr></table><h2 id="API-Reference"><a class="docs-heading-anchor" href="#API-Reference">API Reference</a><a id="API-Reference-1"></a><a class="docs-heading-anchor-permalink" href="#API-Reference" title="Permalink"></a></h2><h3 id="Grid-Initialization"><a class="docs-heading-anchor" href="#Grid-Initialization">Grid Initialization</a><a id="Grid-Initialization-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-Initialization" title="Permalink"></a></h3><article><details class="docstring" open="true"><summary id="QGYBJplus.init_grid"><a class="docstring-binding" href="#QGYBJplus.init_grid"><code>QGYBJplus.init_grid</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">init_grid(par::QGParams) -&gt; Grid</code></pre><p>Initialize the spatial grid and spectral wavenumbers from parameters.</p><p><strong>Grid Setup</strong></p><ul><li>Horizontal: Uniform grid with spacing dx = Lx/nx, dy = Ly/ny</li><li>Vertical: Uniform grid from 0 to Lz with spacing dz = Lz/(nz-1)</li><li>Domain size (Lx, Ly, Lz) is REQUIRED - specify in meters (e.g., 500e3 for 500 km)</li></ul><p><strong>Wavenumber Arrays</strong></p><p>Computes kx, ky following FFTW conventions for periodic domain:</p><pre><code class="nohighlight hljs">kx[i] = (i-1)           for i = 1, ..., (nx+1)÷2
+        (i-1-nx)        for i = (nx+1)÷2+1, ..., nx</code></pre><p>multiplied by 2π/Lx.</p><p><strong>Arguments</strong></p><ul><li><code>par::QGParams</code>: Parameter struct with nx, ny, nz, Lx, Ly, Lz</li></ul><p><strong>Returns</strong></p><p>Initialized <code>Grid</code> struct with all arrays allocated.</p><p><strong>Example</strong></p><pre><code class="language-julia hljs"># Domain size is REQUIRED - specify in meters
+par = default_params(nx=64, ny=64, nz=32, Lx=500e3, Ly=500e3, Lz=4000.0)  # 500km × 500km × 4km
+G = init_grid(par)</code></pre><p><strong>Fortran Correspondence</strong></p><p>This matches <code>init_arrays</code> in init.f90.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L136-L169">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.compute_wavenumbers!"><a class="docstring-binding" href="#QGYBJplus.compute_wavenumbers!"><code>QGYBJplus.compute_wavenumbers!</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">compute_wavenumbers!(G::Grid)</code></pre><p>Recompute wavenumber arrays <code>kx</code>, <code>ky</code>, <code>kh2</code> if grid parameters changed.</p><p>This is useful after modifying grid dimensions or domain size.</p><p><strong>Example</strong></p><pre><code class="language-julia hljs">G.Lx = 4π  # Change domain size
+compute_wavenumbers!(G)  # Update wavenumbers</code></pre></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L211-L223">source</a></section></details></article><h3 id="State-Initialization"><a class="docs-heading-anchor" href="#State-Initialization">State Initialization</a><a id="State-Initialization-1"></a><a class="docs-heading-anchor-permalink" href="#State-Initialization" title="Permalink"></a></h3><article><details class="docstring" open="true"><summary id="QGYBJplus.init_state"><a class="docstring-binding" href="#QGYBJplus.init_state"><code>QGYBJplus.init_state</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">init_state(G::Grid; T=Float64) -&gt; State</code></pre><p>Allocate and initialize a State with all fields set to zero.</p><p><strong>Arguments</strong></p><ul><li><code>G::Grid</code>: Grid struct (determines array sizes)</li><li><code>T::Type</code>: Floating point type (default Float64)</li></ul><p><strong>Returns</strong></p><p>State struct with:</p><ul><li>Spectral fields (q, psi, A, B, C): Complex arrays, initialized to 0</li><li>Real fields (u, v, w): Real arrays, initialized to 0</li></ul><p><strong>Example</strong></p><pre><code class="language-julia hljs">G = init_grid(par)
+S = init_state(G)
+
+# All fields are zero - use init_random_psi! or similar to set ICs
+init_random_psi!(S, G, par, plans)</code></pre><p>See also: <a href="@ref"><code>State</code></a>, <a href="@ref"><code>init_random_psi!</code></a></p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L518-L542">source</a></section></details></article><p>Field allocation is handled internally by <code>init_state</code>. For manual array creation, use standard Julia array allocation or <code>allocate_xy_pencil</code>/<code>allocate_z_pencil</code> for parallel mode.</p><h3 id="Index-Mapping-Functions"><a class="docs-heading-anchor" href="#Index-Mapping-Functions">Index Mapping Functions</a><a id="Index-Mapping-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Index-Mapping-Functions" title="Permalink"></a></h3><article><details class="docstring" open="true"><summary id="QGYBJplus.get_local_range"><a class="docstring-binding" href="#QGYBJplus.get_local_range"><code>QGYBJplus.get_local_range</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">get_local_range(G::Grid) -&gt; NTuple{3, UnitRange{Int}}</code></pre><p>Get the local index range for the current process (xy-pencil configuration).</p><p>For 2D decomposition, this returns the xy-pencil ranges where x is local and y,z are distributed. Use <code>get_local_range_z</code> for z-pencil configuration.</p><p><strong>Returns</strong></p><ul><li>Serial mode: <code>(1:nx, 1:ny, 1:nz)</code></li><li>Parallel mode: The local range from the xy-pencil decomposition</li></ul><p><strong>Example</strong></p><pre><code class="language-julia hljs">local_range = get_local_range(grid)
+for k in local_range[3], j in local_range[2], i in local_range[1]
+    # Access data at local indices
+end</code></pre></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L287-L306">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.local_to_global"><a class="docstring-binding" href="#QGYBJplus.local_to_global"><code>QGYBJplus.local_to_global</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">local_to_global(local_idx::Int, dim::Int, G::Grid) -&gt; Int</code></pre><p>Convert a local array index to a global index (xy-pencil configuration).</p><p>For 2D decomposition, this uses xy-pencil ranges. Use <code>local_to_global_z</code> for operations on z-pencil arrays.</p><p><strong>Arguments</strong></p><ul><li><code>local_idx</code>: Local index in the array</li><li><code>dim</code>: Dimension (1, 2, or 3 for x, y, z)</li><li><code>G::Grid</code>: Grid with optional decomposition</li></ul><p><strong>Returns</strong></p><p>Global index for wavenumber lookup.</p><p><strong>Example</strong></p><pre><code class="language-julia hljs">for j_local in axes(arr, 2), i_local in axes(arr, 1)
+    i_global = local_to_global(i_local, 1, grid)
+    j_global = local_to_global(j_local, 2, grid)
+    kx = grid.kx[i_global]
+    ky = grid.ky[j_global]
+end</code></pre></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L316-L341">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.get_local_dims"><a class="docstring-binding" href="#QGYBJplus.get_local_dims"><code>QGYBJplus.get_local_dims</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">get_local_dims(arr) -&gt; Tuple{Int, Int, Int}</code></pre><p>Get the local dimensions of an array (works for both Array and PencilArray).</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L390-L394">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.get_kx"><a class="docstring-binding" href="#QGYBJplus.get_kx"><code>QGYBJplus.get_kx</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">get_kx(i_local::Int, G::Grid) -&gt; Real</code></pre><p>Get the x-wavenumber for a local index, handling both serial and parallel cases.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L351-L355">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.get_ky"><a class="docstring-binding" href="#QGYBJplus.get_ky"><code>QGYBJplus.get_ky</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">get_ky(j_local::Int, G::Grid) -&gt; Real</code></pre><p>Get the y-wavenumber for a local index, handling both serial and parallel cases.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L361-L365">source</a></section></details></article><article><details class="docstring" open="true"><summary id="QGYBJplus.get_kh2"><a class="docstring-binding" href="#QGYBJplus.get_kh2"><code>QGYBJplus.get_kh2</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">get_kh2(i_local::Int, j_local::Int, k_local::Int, arr, G::Grid) -&gt; Real</code></pre><p>Get horizontal wavenumber squared for local indices.</p><p>For serial mode, accesses G.kh2 directly. For parallel mode, accesses the local PencilArray element.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/subhk/QGYBJplus.jl/blob/d88a098081275c72ba7214bcfbf0451e6bdbb35b/src/grid.jl#L371-L378">source</a></section></details></article></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../types/">« Core Types</a><a class="docs-footer-nextpage" href="../physics/">Physics Functions »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

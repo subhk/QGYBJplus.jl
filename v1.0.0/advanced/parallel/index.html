@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>MPI Parallelization · QGYBJ+.jl</title><meta name="title" content="MPI Parallelization · QGYBJ+.jl"/><meta property="og:title" content="MPI Parallelization · QGYBJ+.jl"/><meta property="twitter:title" content="MPI Parallelization · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li class="is-active"><a class="tocitem" href>MPI Parallelization</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Key-Concept:-Pencil-Configurations"><span>Key Concept: Pencil Configurations</span></a></li><li><a class="tocitem" href="#Requirements"><span>Requirements</span></a></li><li><a class="tocitem" href="#Quick-Start"><span>Quick Start</span></a></li><li><a class="tocitem" href="#2D-Pencil-Decomposition-Details"><span>2D Pencil Decomposition Details</span></a></li><li><a class="tocitem" href="#Workspace-Arrays"><span>Workspace Arrays</span></a></li><li><a class="tocitem" href="#Index-Mapping"><span>Index Mapping</span></a></li><li><a class="tocitem" href="#Parallel-FFTs"><span>Parallel FFTs</span></a></li><li><a class="tocitem" href="#Communication-Patterns"><span>Communication Patterns</span></a></li><li><a class="tocitem" href="#Complete-Example"><span>Complete Example</span></a></li><li><a class="tocitem" href="#Allocating-Distributed-Arrays"><span>Allocating Distributed Arrays</span></a></li><li><a class="tocitem" href="#Performance-Considerations"><span>Performance Considerations</span></a></li><li><a class="tocitem" href="#Job-Submission-Scripts"><span>Job Submission Scripts</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>Troubleshooting</span></a></li><li><a class="tocitem" href="#API-Reference"><span>API Reference</span></a></li></ul></li><li><a class="tocitem" href="../particles/">Particle Advection</a></li><li><a class="tocitem" href="../parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../interpolation/">Interpolation</a></li><li><a class="tocitem" href="../performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Advanced Topics</a></li><li class="is-active"><a href>MPI Parallelization</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>MPI Parallelization</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/advanced/parallel.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="parallel"><a class="docs-heading-anchor" href="#parallel">MPI Parallelization</a><a id="parallel-1"></a><a class="docs-heading-anchor-permalink" href="#parallel" title="Permalink"></a></h1><p>This page describes how to run QGYBJ+.jl on distributed memory systems using MPI with <strong>2D pencil decomposition</strong> via PencilArrays and PencilFFTs.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>QGYBJ+.jl uses <strong>2D pencil decomposition</strong> for optimal parallel scalability:</p><pre><code class="nohighlight hljs">           Serial (Full Domain)                2D Pencil Decomposition
+        ┌─────────────────────┐         ┌───────┬───────┬───────┐
+        │                     │         │  P0   │  P1   │  P2   │
+        │                     │         ├───────┼───────┼───────┤
+        │    nx × ny × nz     │   →     │  P3   │  P4   │  P5   │
+        │                     │         ├───────┼───────┼───────┤
+        │                     │         │  P6   │  P7   │  P8   │
+        └─────────────────────┘         └───────┴───────┴───────┘
+                                              9 processes in 3×3 grid</code></pre><p>The domain is distributed across a 2D process grid (px × py), allowing scaling to O(N²) processes for an N³ grid.</p><h2 id="Key-Concept:-Pencil-Configurations"><a class="docs-heading-anchor" href="#Key-Concept:-Pencil-Configurations">Key Concept: Pencil Configurations</a><a id="Key-Concept:-Pencil-Configurations-1"></a><a class="docs-heading-anchor-permalink" href="#Key-Concept:-Pencil-Configurations" title="Permalink"></a></h2><p>Different operations require data arranged differently. QGYBJplus uses <strong>three pencil configurations</strong>:</p><table><tr><th style="text-align: left">Configuration</th><th style="text-align: left"><code>decomp_dims</code></th><th style="text-align: left">Distribution</th><th style="text-align: left">Local Dim</th><th style="text-align: left">Use Case</th></tr><tr><td style="text-align: left"><strong>xy-pencil</strong></td><td style="text-align: left">(2, 3)</td><td style="text-align: left">y,z distributed</td><td style="text-align: left">x</td><td style="text-align: left">Horizontal FFTs</td></tr><tr><td style="text-align: left"><strong>xz-pencil</strong></td><td style="text-align: left">(1, 3)</td><td style="text-align: left">x,z distributed</td><td style="text-align: left">y</td><td style="text-align: left">Intermediate transpose</td></tr><tr><td style="text-align: left"><strong>z-pencil</strong></td><td style="text-align: left">(1, 2)</td><td style="text-align: left">x,y distributed</td><td style="text-align: left"><strong>z</strong></td><td style="text-align: left">Vertical operations</td></tr></table><p><strong>Why three configurations?</strong></p><ul><li>Horizontal FFTs need consecutive x-data → xy-pencil</li><li>Vertical tridiagonal solves need all z-data → z-pencil</li><li><strong>PencilArrays constraint</strong>: Transpose requires decomp_dims to differ by at most ONE dimension</li><li>Since (2,3)→(1,2) differs by TWO dimensions, we need intermediate xz-pencil (1,3)</li><li><strong>Two-step transpose</strong> automatically switches between configurations</li></ul><h2 id="Requirements"><a class="docs-heading-anchor" href="#Requirements">Requirements</a><a id="Requirements-1"></a><a class="docs-heading-anchor-permalink" href="#Requirements" title="Permalink"></a></h2><p>Install MPI-related packages:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.add([&quot;MPI&quot;, &quot;PencilArrays&quot;, &quot;PencilFFTs&quot;])</code></pre><p>Ensure you have a working MPI installation (OpenMPI, MPICH, Intel MPI, etc.).</p><h2 id="Quick-Start"><a class="docs-heading-anchor" href="#Quick-Start">Quick Start</a><a id="Quick-Start-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Start" title="Permalink"></a></h2><h3 id="Basic-MPI-Script"><a class="docs-heading-anchor" href="#Basic-MPI-Script">Basic MPI Script</a><a id="Basic-MPI-Script-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-MPI-Script" title="Permalink"></a></h3><pre><code class="language-julia hljs"># parallel_run.jl
+using MPI
+using PencilArrays
+using PencilFFTs
+using QGYBJplus
+
+# Initialize MPI
+MPI.Init()
+
+# Setup MPI environment with automatic 2D topology
+mpi_config = QGYBJplus.setup_mpi_environment()
+
+# Create parameters
+params = default_params(Lx=1000e3, Ly=1000e3, Lz=5000.0, nx=256, ny=256, nz=128)
+
+# Initialize distributed grid and state
+grid = QGYBJplus.init_mpi_grid(params, mpi_config)
+state = QGYBJplus.init_mpi_state(grid, mpi_config)
+workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
+
+# Plan parallel FFTs
+plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
+
+# Get physics coefficients
+a_vec = a_ell_ut(params, grid)
+dealias = dealias_mask(grid)
+
+# Time stepping loop
+dt = 0.001
+for step in 1:1000
+    # All operations automatically handle 2D decomposition
+    invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
+    compute_velocities!(state, grid; plans=plans, params=params, workspace=workspace)
+    leapfrog_step!(state, state, state, grid, params, plans;
+                   a=a_vec, dealias_mask=dealias, workspace=workspace)
+
+    if step % 100 == 0 &amp;&amp; mpi_config.is_root
+        println(&quot;Step $step completed&quot;)
+    end
+end
+
+if mpi_config.is_root
+    println(&quot;Simulation complete!&quot;)
+end
+
+MPI.Finalize()</code></pre><h3 id="Running"><a class="docs-heading-anchor" href="#Running">Running</a><a id="Running-1"></a><a class="docs-heading-anchor-permalink" href="#Running" title="Permalink"></a></h3><pre><code class="language-bash hljs"># Run on 16 processes (auto-decomposed to 4×4 grid)
+mpiexec -n 16 julia --project parallel_run.jl
+
+# Run on 64 processes (auto-decomposed to 8×8 grid)
+mpiexec -n 64 julia --project parallel_run.jl</code></pre><h2 id="2D-Pencil-Decomposition-Details"><a class="docs-heading-anchor" href="#2D-Pencil-Decomposition-Details">2D Pencil Decomposition Details</a><a id="2D-Pencil-Decomposition-Details-1"></a><a class="docs-heading-anchor-permalink" href="#2D-Pencil-Decomposition-Details" title="Permalink"></a></h2><h3 id="Process-Topology"><a class="docs-heading-anchor" href="#Process-Topology">Process Topology</a><a id="Process-Topology-1"></a><a class="docs-heading-anchor-permalink" href="#Process-Topology" title="Permalink"></a></h3><p>The <code>setup_mpi_environment()</code> function automatically computes an optimal 2D process grid:</p><pre><code class="language-julia hljs"># Automatic topology (recommended)
+mpi_config = QGYBJplus.setup_mpi_environment()
+
+# For 16 processes: creates (4, 4) topology
+# For 12 processes: creates (3, 4) topology
+
+# Manual topology specification
+mpi_config = QGYBJplus.setup_mpi_environment(topology=(4, 4))</code></pre><h3 id="PencilDecomp-Structure"><a class="docs-heading-anchor" href="#PencilDecomp-Structure">PencilDecomp Structure</a><a id="PencilDecomp-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#PencilDecomp-Structure" title="Permalink"></a></h3><p>The decomposition is stored in <code>grid.decomp</code>:</p><pre><code class="language-julia hljs"># Access decomposition info
+decomp = grid.decomp
+
+# Three pencil configurations
+decomp.pencil_xy  # decomp_dims=(2,3): y,z distributed, x local - for FFTs
+decomp.pencil_xz  # decomp_dims=(1,3): x,z distributed, y local - INTERMEDIATE
+decomp.pencil_z   # decomp_dims=(1,2): x,y distributed, z local - for vertical ops
+
+# Local index ranges for each configuration
+decomp.local_range_xy  # (1:nx, y_start:y_end, z_start:z_end)
+decomp.local_range_xz  # (x_start:x_end, 1:ny, z_start:z_end)
+decomp.local_range_z   # (x_start:x_end, y_start:y_end, 1:nz)
+
+# Global dimensions and topology
+decomp.global_dims  # (nx, ny, nz)
+decomp.topology     # (px, py) process grid</code></pre><h3 id="How-Transposes-Work"><a class="docs-heading-anchor" href="#How-Transposes-Work">How Transposes Work</a><a id="How-Transposes-Work-1"></a><a class="docs-heading-anchor-permalink" href="#How-Transposes-Work" title="Permalink"></a></h3><p>QGYBJplus uses <strong>two-step transpose</strong> because PencilArrays requires that pencil decompositions differ by at most one dimension. Since xy-pencil (2,3) and z-pencil (1,2) differ in both dimensions, we use an intermediate xz-pencil (1,3):</p><pre><code class="nohighlight hljs">                         QGYBJplus Two-Step Transpose Architecture
+
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                         xy-pencil (2,3)                                     │
+    │                    y,z distributed; x local                                 │
+    │                  Used for: FFTs, horizontal operations                      │
+    └─────────────────────────────┬───────────────────────────────────────────────┘
+                                  │
+                    transpose!(buffer, src)  [changes 2→1]
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                         xz-pencil (1,3)                                     │
+    │                    x,z distributed; y local                                 │
+    │                       INTERMEDIATE for transposes                           │
+    └─────────────────────────────┬───────────────────────────────────────────────┘
+                                  │
+                    transpose!(dst, buffer)  [changes 3→2]
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │                          z-pencil (1,2)                                     │
+    │                    x,y distributed; z local                                 │
+    │               Used for: Tridiagonal solves, vertical ops                    │
+    └─────────────────────────────────────────────────────────────────────────────┘
+
+    Transpose path satisfies PencilArrays constraint (max 1 dim change per step):
+    • xy→z: (2,3) → (1,3) → (1,2)  ✓
+    • z→xy: (1,2) → (1,3) → (2,3)  ✓</code></pre><p>The two-step transpose is handled automatically by <code>transpose_to_z_pencil!</code> and <code>transpose_to_xy_pencil!</code>.</p><p><strong>Example:</strong> Inverting q to ψ requires a vertical tridiagonal solve:</p><pre><code class="language-julia hljs">function invert_q_to_psi!(S, G; a, workspace)
+    # Detect if 2D decomposition is active
+    need_transpose = G.decomp !== nothing &amp;&amp; hasfield(typeof(G.decomp), :pencil_z)
+
+    if need_transpose
+        # 1. Two-step transpose: xy(2,3) → xz(1,3) → z(1,2)
+        transpose_to_z_pencil!(workspace.q_z, S.q, G)
+
+        # 2. Solve tridiagonal system (z now fully local!)
+        # ... Thomas algorithm for each (i,j) column ...
+
+        # 3. Two-step transpose back: z(1,2) → xz(1,3) → xy(2,3)
+        transpose_to_xy_pencil!(S.psi, workspace.psi_z, G)
+    else
+        # Serial: direct solve
+        _invert_q_to_psi_direct!(S, G, a)
+    end
+end</code></pre><h2 id="Workspace-Arrays"><a class="docs-heading-anchor" href="#Workspace-Arrays">Workspace Arrays</a><a id="Workspace-Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Workspace-Arrays" title="Permalink"></a></h2><p>For 2D decomposition, pre-allocated z-pencil workspace arrays avoid repeated allocation:</p><pre><code class="language-julia hljs"># Initialize workspace once
+workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
+
+# Workspace contains z-pencil arrays:
+# workspace.q_z     - for q transpose
+# workspace.psi_z   - for ψ transpose
+# workspace.B_z     - for B transpose
+# workspace.A_z     - for A transpose
+# workspace.C_z     - for C transpose
+# workspace.work_z  - general workspace
+
+# Pass workspace to functions
+invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
+invert_B_to_A!(state, grid, params, a_vec; workspace=workspace)</code></pre><h2 id="Index-Mapping"><a class="docs-heading-anchor" href="#Index-Mapping">Index Mapping</a><a id="Index-Mapping-1"></a><a class="docs-heading-anchor-permalink" href="#Index-Mapping" title="Permalink"></a></h2><h3 id="Local-to-Global-Indices"><a class="docs-heading-anchor" href="#Local-to-Global-Indices">Local to Global Indices</a><a id="Local-to-Global-Indices-1"></a><a class="docs-heading-anchor-permalink" href="#Local-to-Global-Indices" title="Permalink"></a></h3><p>When iterating over distributed arrays, use local indices but map to global for wavenumbers:</p><pre><code class="language-julia hljs"># For xy-pencil arrays (default)
+for k_local in axes(arr, 3)
+    for j_local in axes(arr, 2)
+        for i_local in axes(arr, 1)
+            # Map to global indices for wavenumber lookup
+            i_global = local_to_global(i_local, 1, grid)
+            j_global = local_to_global(j_local, 2, grid)
+
+            kx = grid.kx[i_global]
+            ky = grid.ky[j_global]
+
+            # Use local indices for array access
+            arr[i_local, j_local, k_local] = ...
+        end
+    end
+end
+
+# For z-pencil arrays (after transpose)
+i_global = local_to_global_z(i_local, 1, grid)
+j_global = local_to_global_z(j_local, 2, grid)</code></pre><h3 id="Helper-Functions"><a class="docs-heading-anchor" href="#Helper-Functions">Helper Functions</a><a id="Helper-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Helper-Functions" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Get local index ranges
+local_range = get_local_range(grid)       # xy-pencil
+local_range_z = get_local_range_z(grid)   # z-pencil
+
+# Get local dimensions of an array
+nx_local, ny_local, nz_local = get_local_dims(arr)
+
+# Check if array is distributed
+is_distributed = is_parallel_array(arr)
+
+# Access underlying data (works for both Array and PencilArray)
+data = parent(arr)</code></pre><h2 id="Parallel-FFTs"><a class="docs-heading-anchor" href="#Parallel-FFTs">Parallel FFTs</a><a id="Parallel-FFTs-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-FFTs" title="Permalink"></a></h2><p>PencilFFTs handles the distributed FFTs automatically:</p><pre><code class="language-julia hljs"># Plan creation
+plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
+
+# Forward FFT (physical → spectral)
+fft_forward!(dst, src, plans)
+
+# Backward FFT (spectral → physical)
+fft_backward!(dst, src, plans)</code></pre><p>PencilFFTs automatically handles:</p><ul><li>X-FFT in xy-pencil</li><li>Transpose to appropriate configuration for Y-FFT</li><li>Transpose back to output configuration</li></ul><h2 id="Communication-Patterns"><a class="docs-heading-anchor" href="#Communication-Patterns">Communication Patterns</a><a id="Communication-Patterns-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Patterns" title="Permalink"></a></h2><h3 id="Global-Reductions"><a class="docs-heading-anchor" href="#Global-Reductions">Global Reductions</a><a id="Global-Reductions-1"></a><a class="docs-heading-anchor-permalink" href="#Global-Reductions" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Sum a value across all processes
+local_energy = flow_kinetic_energy(state.u, state.v)
+global_energy = QGYBJplus.mpi_reduce_sum(local_energy, mpi_config)
+
+# Only root has the correct sum
+if mpi_config.is_root
+    println(&quot;Total KE: $global_energy&quot;)
+end</code></pre><h3 id="Gather/Scatter"><a class="docs-heading-anchor" href="#Gather/Scatter">Gather/Scatter</a><a id="Gather/Scatter-1"></a><a class="docs-heading-anchor-permalink" href="#Gather/Scatter" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Gather full field to root process
+global_psi = QGYBJplus.gather_to_root(state.psi, grid, mpi_config)
+# Returns full array on rank 0, nothing on others
+
+# Scatter from root to all processes
+distributed_psi = QGYBJplus.scatter_from_root(initial_psi, grid, mpi_config)</code></pre><h3 id="Synchronization"><a class="docs-heading-anchor" href="#Synchronization">Synchronization</a><a id="Synchronization-1"></a><a class="docs-heading-anchor-permalink" href="#Synchronization" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Barrier - wait for all processes
+QGYBJplus.mpi_barrier(mpi_config)</code></pre><h2 id="Complete-Example"><a class="docs-heading-anchor" href="#Complete-Example">Complete Example</a><a id="Complete-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example" title="Permalink"></a></h2><pre><code class="language-julia hljs"># full_mpi_simulation.jl
+using MPI
+using PencilArrays
+using PencilFFTs
+using QGYBJplus
+
+function main()
+    MPI.Init()
+
+    # Setup MPI with 2D decomposition
+    mpi_config = QGYBJplus.setup_mpi_environment()
+
+    if mpi_config.is_root
+        println(&quot;Running on $(mpi_config.nprocs) processes&quot;)
+        println(&quot;Topology: $(mpi_config.topology)&quot;)
+    end
+
+    # Parameters (domain size REQUIRED)
+    params = default_params(
+        Lx = 1000e3, Ly = 1000e3, Lz = 5000.0,  # Domain size in meters
+        nx = 256, ny = 256, nz = 128,
+        f₀ = 1.0,
+        stratification = :constant_N,
+        ybj_plus = true
+    )
+
+    # Initialize distributed grid, state, workspace
+    grid = QGYBJplus.init_mpi_grid(params, mpi_config)
+    state = QGYBJplus.init_mpi_state(grid, mpi_config)
+    workspace = QGYBJplus.init_mpi_workspace(grid, mpi_config)
+
+    # FFT plans
+    plans = QGYBJplus.plan_mpi_transforms(grid, mpi_config)
+
+    # Physics setup
+    a_vec = a_ell_ut(params, grid)
+    dealias = dealias_mask(grid)
+
+    # Initialize with random field (deterministic across processes)
+    QGYBJplus.init_mpi_random_field!(state.psi, grid, 1.0, 42)
+    QGYBJplus.init_mpi_random_field!(state.B, grid, 0.1, 123)
+
+    # Compute initial q from psi
+    invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
+
+    # Time stepping
+    dt = 0.001
+    nsteps = 10000
+    output_interval = 100
+
+    for step in 1:nsteps
+        # Main physics
+        invert_q_to_psi!(state, grid; a=a_vec, workspace=workspace)
+        compute_velocities!(state, grid; plans=plans, params=params, workspace=workspace)
+
+        # Time step
+        leapfrog_step!(state, state, state, grid, params, plans;
+                       a=a_vec, dealias_mask=dealias, workspace=workspace)
+
+        # Diagnostics
+        if step % output_interval == 0
+            local_ke = flow_kinetic_energy(state.u, state.v)
+            global_ke = QGYBJplus.mpi_reduce_sum(local_ke, mpi_config)
+
+            if mpi_config.is_root
+                println(&quot;Step $step / $nsteps: KE = $global_ke&quot;)
+            end
+        end
+    end
+
+    # Final output
+    if mpi_config.is_root
+        println(&quot;Simulation complete!&quot;)
+    end
+
+    MPI.Finalize()
+end
+
+main()</code></pre><h2 id="Allocating-Distributed-Arrays"><a class="docs-heading-anchor" href="#Allocating-Distributed-Arrays">Allocating Distributed Arrays</a><a id="Allocating-Distributed-Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Allocating-Distributed-Arrays" title="Permalink"></a></h2><pre><code class="language-julia hljs"># Allocate array in xy-pencil configuration (for FFTs)
+# decomp_dims=(2,3): y,z distributed; x local
+arr_xy = QGYBJplus.allocate_xy_pencil(grid, ComplexF64)
+
+# Allocate array in xz-pencil configuration (intermediate for transposes)
+# decomp_dims=(1,3): x,z distributed; y local
+arr_xz = QGYBJplus.allocate_xz_pencil(grid, ComplexF64)
+
+# Allocate array in z-pencil configuration (for vertical ops)
+# decomp_dims=(1,2): x,y distributed; z local
+arr_z = QGYBJplus.allocate_z_pencil(grid, ComplexF64)</code></pre><p>In serial mode, all three functions return standard <code>Array{T,3}</code> of size <code>(nx, ny, nz)</code>.</p><h2 id="Performance-Considerations"><a class="docs-heading-anchor" href="#Performance-Considerations">Performance Considerations</a><a id="Performance-Considerations-1"></a><a class="docs-heading-anchor-permalink" href="#Performance-Considerations" title="Permalink"></a></h2><h3 id="Scaling"><a class="docs-heading-anchor" href="#Scaling">Scaling</a><a id="Scaling-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling" title="Permalink"></a></h3><table><tr><th style="text-align: left">Regime</th><th style="text-align: left">Description</th></tr><tr><td style="text-align: left">Strong scaling</td><td style="text-align: left">Fixed problem size, increase processes</td></tr><tr><td style="text-align: left">Weak scaling</td><td style="text-align: left">Fixed work per process, increase total size</td></tr></table><p>QGYBJ+.jl with 2D decomposition scales to O(N²) processes for N³ grid.</p><h3 id="Communication-Costs"><a class="docs-heading-anchor" href="#Communication-Costs">Communication Costs</a><a id="Communication-Costs-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Costs" title="Permalink"></a></h3><table><tr><th style="text-align: left">Operation</th><th style="text-align: left">Communication Pattern</th><th style="text-align: left">Cost</th></tr><tr><td style="text-align: left">Transpose xy↔z</td><td style="text-align: left"><strong>Two-step</strong> all-to-all via xz-pencil</td><td style="text-align: left">2 × O(N³/P) data moved</td></tr><tr><td style="text-align: left">FFT</td><td style="text-align: left">Internal transposes</td><td style="text-align: left">Handled by PencilFFTs</td></tr><tr><td style="text-align: left">Reduction</td><td style="text-align: left">Global sum</td><td style="text-align: left">O(log P)</td></tr></table><p><strong>Note:</strong> The two-step transpose (xy↔xz↔z) doubles the communication compared to a single transpose, but is required by PencilArrays&#39; constraint that decomp_dims can only differ by one dimension per transpose.</p><h3 id="Optimization-Tips"><a class="docs-heading-anchor" href="#Optimization-Tips">Optimization Tips</a><a id="Optimization-Tips-1"></a><a class="docs-heading-anchor-permalink" href="#Optimization-Tips" title="Permalink"></a></h3><ol><li><strong>Use power-of-2 process counts</strong> for optimal topology</li><li><strong>Match decomposition to problem</strong>: More processes in larger dimensions</li><li><strong>Minimize transpose frequency</strong>: Batch vertical operations</li><li><strong>Pre-allocate workspace</strong>: Avoid allocation in time loop</li></ol><pre><code class="language-julia hljs"># Good: Power of 2
+mpiexec -n 16 julia script.jl   # 4×4 topology
+mpiexec -n 64 julia script.jl   # 8×8 topology
+
+# May be slower: Awkward factorization
+mpiexec -n 15 julia script.jl   # 3×5 topology</code></pre><h2 id="Job-Submission-Scripts"><a class="docs-heading-anchor" href="#Job-Submission-Scripts">Job Submission Scripts</a><a id="Job-Submission-Scripts-1"></a><a class="docs-heading-anchor-permalink" href="#Job-Submission-Scripts" title="Permalink"></a></h2><h3 id="SLURM"><a class="docs-heading-anchor" href="#SLURM">SLURM</a><a id="SLURM-1"></a><a class="docs-heading-anchor-permalink" href="#SLURM" title="Permalink"></a></h3><pre><code class="language-bash hljs">#!/bin/bash
+#SBATCH --job-name=qgybj
+#SBATCH --nodes=4
+#SBATCH --ntasks-per-node=16
+#SBATCH --time=24:00:00
+#SBATCH --mem=32G
+
+module load julia openmpi
+
+export JULIA_NUM_THREADS=1  # Use MPI parallelism
+mpiexec -n 64 julia --project run_simulation.jl</code></pre><h3 id="PBS"><a class="docs-heading-anchor" href="#PBS">PBS</a><a id="PBS-1"></a><a class="docs-heading-anchor-permalink" href="#PBS" title="Permalink"></a></h3><pre><code class="language-bash hljs">#!/bin/bash
+#PBS -N qgybj
+#PBS -l nodes=4:ppn=16
+#PBS -l walltime=24:00:00
+#PBS -l mem=128gb
+
+module load julia openmpi
+
+cd $PBS_O_WORKDIR
+mpiexec -n 64 julia --project run_simulation.jl</code></pre><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">Troubleshooting</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="MPI-Not-Found"><a class="docs-heading-anchor" href="#MPI-Not-Found">MPI Not Found</a><a id="MPI-Not-Found-1"></a><a class="docs-heading-anchor-permalink" href="#MPI-Not-Found" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Use system MPI instead of Julia&#39;s binary
+using MPIPreferences
+MPIPreferences.use_system_binary()
+# Restart Julia</code></pre><h3 id="Memory-Errors"><a class="docs-heading-anchor" href="#Memory-Errors">Memory Errors</a><a id="Memory-Errors-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Errors" title="Permalink"></a></h3><ul><li>Local arrays too large → increase process count</li><li>Check with: <code>size(parent(state.psi))</code> on each rank</li></ul><h3 id="Deadlock"><a class="docs-heading-anchor" href="#Deadlock">Deadlock</a><a id="Deadlock-1"></a><a class="docs-heading-anchor-permalink" href="#Deadlock" title="Permalink"></a></h3><ul><li>Ensure ALL ranks call collective operations (gather, reduce, barrier)</li><li>Check for mismatched send/receive</li></ul><h3 id="Debugging"><a class="docs-heading-anchor" href="#Debugging">Debugging</a><a id="Debugging-1"></a><a class="docs-heading-anchor-permalink" href="#Debugging" title="Permalink"></a></h3><pre><code class="language-julia hljs">function debug_print(msg, mpi_config)
+    for r in 0:(mpi_config.nprocs-1)
+        if mpi_config.rank == r
+            println(&quot;[Rank $r] $msg&quot;)
+            flush(stdout)
+        end
+        QGYBJplus.mpi_barrier(mpi_config)
+    end
+end</code></pre><h2 id="API-Reference"><a class="docs-heading-anchor" href="#API-Reference">API Reference</a><a id="API-Reference-1"></a><a class="docs-heading-anchor-permalink" href="#API-Reference" title="Permalink"></a></h2><p>The following MPI functions are provided:</p><h3 id="Setup-Functions"><a class="docs-heading-anchor" href="#Setup-Functions">Setup Functions</a><a id="Setup-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Setup-Functions" title="Permalink"></a></h3><ul><li><code>setup_mpi_environment</code> - Initialize MPI environment and configuration</li><li><code>init_mpi_grid</code> - Create grid with 2D pencil decomposition</li><li><code>init_mpi_state</code> - Create distributed state arrays</li><li><code>init_mpi_workspace</code> - Allocate workspace for z-pencil operations</li><li><code>plan_mpi_transforms</code> - Create PencilFFT plans</li></ul><h3 id="Communication-Functions"><a class="docs-heading-anchor" href="#Communication-Functions">Communication Functions</a><a id="Communication-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Functions" title="Permalink"></a></h3><ul><li><code>gather_to_root</code> - Collect distributed array to rank 0</li><li><code>scatter_from_root</code> - Distribute array from rank 0</li><li><code>mpi_barrier</code> - Synchronize all processes</li><li><code>mpi_reduce_sum</code> - Sum values across all processes</li></ul><h3 id="Transpose-Functions"><a class="docs-heading-anchor" href="#Transpose-Functions">Transpose Functions</a><a id="Transpose-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Transpose-Functions" title="Permalink"></a></h3><ul><li><code>transpose_to_z_pencil!</code> - Two-step transpose: xy(2,3) → xz(1,3) → z(1,2)</li><li><code>transpose_to_xy_pencil!</code> - Two-step transpose: z(1,2) → xz(1,3) → xy(2,3)</li></ul><h3 id="Index-Mapping-Functions"><a class="docs-heading-anchor" href="#Index-Mapping-Functions">Index Mapping Functions</a><a id="Index-Mapping-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Index-Mapping-Functions" title="Permalink"></a></h3><ul><li><code>local_to_global</code> - Map local index to global (xy-pencil), with dimension argument</li><li><code>local_to_global_z</code> - Map local index to global (z-pencil)</li><li><code>range_local</code> - Get local index range (from PencilArrays)</li><li><code>range_remote</code> - Get remote (global) index range (from PencilArrays)</li></ul><h3 id="Helper-Functions-2"><a class="docs-heading-anchor" href="#Helper-Functions-2">Helper Functions</a><a class="docs-heading-anchor-permalink" href="#Helper-Functions-2" title="Permalink"></a></h3><ul><li><code>get_kh2</code> - Get horizontal wavenumber squared array</li><li><code>is_dealiased</code> - Check if a mode is within dealiasing radius</li></ul><h3 id="Array-Allocation"><a class="docs-heading-anchor" href="#Array-Allocation">Array Allocation</a><a id="Array-Allocation-1"></a><a class="docs-heading-anchor-permalink" href="#Array-Allocation" title="Permalink"></a></h3><ul><li><code>allocate_xy_pencil</code> - Allocate array in xy-pencil layout (for FFTs)</li><li><code>allocate_xz_pencil</code> - Allocate array in xz-pencil layout (intermediate)</li><li><code>allocate_z_pencil</code> - Allocate array in z-pencil layout (for vertical ops)</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../guide/diagnostics/">« Diagnostics</a><a class="docs-footer-nextpage" href="../particles/">Particle Advection »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

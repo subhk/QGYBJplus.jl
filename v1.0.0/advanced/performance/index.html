@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Performance Tips · QGYBJ+.jl</title><meta name="title" content="Performance Tips · QGYBJ+.jl"/><meta property="og:title" content="Performance Tips · QGYBJ+.jl"/><meta property="twitter:title" content="Performance Tips · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/performance/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/performance/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/advanced/performance/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../particles/">Particle Advection</a></li><li><a class="tocitem" href="../parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../interpolation/">Interpolation</a></li><li class="is-active"><a class="tocitem" href>Performance Tips</a><ul class="internal"><li><a class="tocitem" href="#Quick-Performance-Wins"><span>Quick Performance Wins</span></a></li><li><a class="tocitem" href="#Memory-Optimization"><span>Memory Optimization</span></a></li><li><a class="tocitem" href="#Computational-Bottlenecks"><span>Computational Bottlenecks</span></a></li><li><a class="tocitem" href="#Numerical-Efficiency"><span>Numerical Efficiency</span></a></li><li><a class="tocitem" href="#Loop-Optimization"><span>Loop Optimization</span></a></li><li><a class="tocitem" href="#GPU-Acceleration"><span>GPU Acceleration</span></a></li><li><a class="tocitem" href="#Parallelization-Strategy"><span>Parallelization Strategy</span></a></li><li><a class="tocitem" href="#I/O-Performance"><span>I/O Performance</span></a></li><li><a class="tocitem" href="#Benchmarking-Guide"><span>Benchmarking Guide</span></a></li><li><a class="tocitem" href="#Summary-Checklist"><span>Summary Checklist</span></a></li></ul></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Advanced Topics</a></li><li class="is-active"><a href>Performance Tips</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Performance Tips</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/advanced/performance.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="performance"><a class="docs-heading-anchor" href="#performance">Performance Tips</a><a id="performance-1"></a><a class="docs-heading-anchor-permalink" href="#performance" title="Permalink"></a></h1><p>This page provides guidance for optimizing QGYBJ+.jl performance.</p><h2 id="Quick-Performance-Wins"><a class="docs-heading-anchor" href="#Quick-Performance-Wins">Quick Performance Wins</a><a id="Quick-Performance-Wins-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Performance-Wins" title="Permalink"></a></h2><h3 id="1.-Use-FFTW-Wisdom"><a class="docs-heading-anchor" href="#1.-Use-FFTW-Wisdom">1. Use FFTW Wisdom</a><a id="1.-Use-FFTW-Wisdom-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Use-FFTW-Wisdom" title="Permalink"></a></h3><p>Pre-compute optimal FFT plans:</p><pre><code class="language-julia hljs">using FFTW
+
+# Measure FFT plans (slower startup, faster runtime)
+FFTW.set_num_threads(Threads.nthreads())
+plans = plan_transforms!(grid; flags=FFTW.MEASURE)
+
+# For production: save and load wisdom
+FFTW.export_wisdom(&quot;fftw_wisdom.txt&quot;)
+# Later:
+FFTW.import_wisdom(&quot;fftw_wisdom.txt&quot;)</code></pre><h3 id="2.-Enable-Multi-threading"><a class="docs-heading-anchor" href="#2.-Enable-Multi-threading">2. Enable Multi-threading</a><a id="2.-Enable-Multi-threading-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Enable-Multi-threading" title="Permalink"></a></h3><pre><code class="language-bash hljs"># Set threads before running Julia
+export JULIA_NUM_THREADS=8
+julia --threads=8 simulation.jl</code></pre><p>In Julia:</p><pre><code class="language-julia hljs"># Check thread count
+Threads.nthreads()
+
+# FFTW uses its own threading
+FFTW.set_num_threads(8)</code></pre><h3 id="3.-Use-Appropriate-Precision"><a class="docs-heading-anchor" href="#3.-Use-Appropriate-Precision">3. Use Appropriate Precision</a><a id="3.-Use-Appropriate-Precision-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Use-Appropriate-Precision" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Double precision (default, most accurate)
+state = init_state(grid)
+
+# Single precision (2x memory savings, faster)
+# Note: Requires initializing parameters and grid with Float32</code></pre><div class="admonition is-warning" id="Warning-bcfa4b4e38946434"><header class="admonition-header">Warning<a class="admonition-anchor" href="#Warning-bcfa4b4e38946434" title="Permalink"></a></header><div class="admonition-body"><p>Single precision may cause numerical instabilities for long simulations.</p></div></div><h2 id="Memory-Optimization"><a class="docs-heading-anchor" href="#Memory-Optimization">Memory Optimization</a><a id="Memory-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Optimization" title="Permalink"></a></h2><h3 id="Pre-allocation"><a class="docs-heading-anchor" href="#Pre-allocation">Pre-allocation</a><a id="Pre-allocation-1"></a><a class="docs-heading-anchor-permalink" href="#Pre-allocation" title="Permalink"></a></h3><p>All arrays are pre-allocated to avoid GC:</p><pre><code class="language-julia hljs"># All arrays are pre-allocated in setup_model()
+G, S, plans, a_ell = setup_model(params)
+
+# Reused every time step
+leapfrog_step!(S, G, params, plans, a_ell)</code></pre><h3 id="Memory-Usage-Estimate"><a class="docs-heading-anchor" href="#Memory-Usage-Estimate">Memory Usage Estimate</a><a id="Memory-Usage-Estimate-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Usage-Estimate" title="Permalink"></a></h3><pre><code class="language-julia hljs">function estimate_memory(nx, ny, nz; T=Float64)
+    # Main arrays
+    complex_size = sizeof(Complex{T}) * (nx÷2+1) * ny * nz
+    real_size = sizeof(T) * nx * ny * nz
+
+    n_complex = 10  # psi, q, B, A, etc.
+    n_real = 5      # u, v, work arrays
+
+    total = n_complex * complex_size + n_real * real_size
+    return total / 1e9  # GB
+end
+
+println(&quot;Memory: &quot;, estimate_memory(256, 256, 128), &quot; GB&quot;)</code></pre><h3 id="Memory-Efficient-Output"><a class="docs-heading-anchor" href="#Memory-Efficient-Output">Memory-Efficient Output</a><a id="Memory-Efficient-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Efficient-Output" title="Permalink"></a></h3><p>Write in chunks rather than storing everything:</p><pre><code class="language-julia hljs"># Don&#39;t do this (stores all data)
+all_psi = zeros(nx, ny, nz, nsteps)
+
+# Do this (stream to disk)
+for step = 1:nsteps
+    timestep!(state, ...)
+    if step % output_interval == 0
+        write_to_disk(state.psi, step)
+    end
+end</code></pre><h2 id="Computational-Bottlenecks"><a class="docs-heading-anchor" href="#Computational-Bottlenecks">Computational Bottlenecks</a><a id="Computational-Bottlenecks-1"></a><a class="docs-heading-anchor-permalink" href="#Computational-Bottlenecks" title="Permalink"></a></h2><h3 id="Profiling"><a class="docs-heading-anchor" href="#Profiling">Profiling</a><a id="Profiling-1"></a><a class="docs-heading-anchor-permalink" href="#Profiling" title="Permalink"></a></h3><pre><code class="language-julia hljs">using Profile
+
+@profile run_simulation(config)
+Profile.print(mincount=100)
+
+# Flamegraph visualization
+using ProfileSVG
+ProfileSVG.save(&quot;profile.svg&quot;)</code></pre><h3 id="Typical-Time-Distribution"><a class="docs-heading-anchor" href="#Typical-Time-Distribution">Typical Time Distribution</a><a id="Typical-Time-Distribution-1"></a><a class="docs-heading-anchor-permalink" href="#Typical-Time-Distribution" title="Permalink"></a></h3><table><tr><th style="text-align: left">Operation</th><th style="text-align: left">Fraction</th><th style="text-align: left">Optimization</th></tr><tr><td style="text-align: left">FFT/IFFT</td><td style="text-align: left">40-50%</td><td style="text-align: left">FFTW wisdom, threading</td></tr><tr><td style="text-align: left">Tridiagonal solves</td><td style="text-align: left">20-30%</td><td style="text-align: left">Pre-factorization</td></tr><tr><td style="text-align: left">Array operations</td><td style="text-align: left">15-25%</td><td style="text-align: left">Loop fusion with <code>@.</code></td></tr><tr><td style="text-align: left">I/O</td><td style="text-align: left">5-10%</td><td style="text-align: left">Buffering, compression</td></tr></table><h3 id="Timing-Individual-Components"><a class="docs-heading-anchor" href="#Timing-Individual-Components">Timing Individual Components</a><a id="Timing-Individual-Components-1"></a><a class="docs-heading-anchor-permalink" href="#Timing-Individual-Components" title="Permalink"></a></h3><pre><code class="language-julia hljs">using BenchmarkTools
+
+# Time FFT
+@btime fft_forward!($work.tmp_k, $work.tmp, $plans)
+
+# Time elliptic solve
+@btime invert_q_to_psi!($state, $grid, $params, $a_ell)
+
+# Time full step
+@btime leapfrog_step!($S, $G, $params, $plans, $a_ell)</code></pre><h2 id="Numerical-Efficiency"><a class="docs-heading-anchor" href="#Numerical-Efficiency">Numerical Efficiency</a><a id="Numerical-Efficiency-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-Efficiency" title="Permalink"></a></h2><h3 id="Time-Step-Selection"><a class="docs-heading-anchor" href="#Time-Step-Selection">Time Step Selection</a><a id="Time-Step-Selection-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Step-Selection" title="Permalink"></a></h3><p>Use the largest stable time step:</p><pre><code class="language-julia hljs"># CFL-based time step
+u_max = maximum(abs.(state.u))
+dt_cfl = 0.5 * grid.dx / u_max
+
+# Use slightly smaller for safety
+dt = 0.8 * dt_cfl</code></pre><h3 id="Adaptive-Time-Stepping"><a class="docs-heading-anchor" href="#Adaptive-Time-Stepping">Adaptive Time Stepping</a><a id="Adaptive-Time-Stepping-1"></a><a class="docs-heading-anchor-permalink" href="#Adaptive-Time-Stepping" title="Permalink"></a></h3><pre><code class="language-julia hljs">function adaptive_dt(state, grid, params; cfl=0.5, dt_max=0.01)
+    u_max = maximum(abs.(state.u))
+    v_max = maximum(abs.(state.v))
+
+    dx = grid.Lx / grid.nx
+    dy = grid.Ly / grid.ny
+
+    dt = cfl * min(dx/u_max, dy/v_max)
+    return min(dt, dt_max)
+end</code></pre><h3 id="Dissipation-Tuning"><a class="docs-heading-anchor" href="#Dissipation-Tuning">Dissipation Tuning</a><a id="Dissipation-Tuning-1"></a><a class="docs-heading-anchor-permalink" href="#Dissipation-Tuning" title="Permalink"></a></h3><p>Too much dissipation wastes resolution. Too little causes instability.</p><pre><code class="language-julia hljs"># Minimal dissipation for given resolution
+nu_h2 = 1e-4 * (2π/nx)^8  # Scales with grid spacing
+
+# Or based on energy pile-up check
+E_k = horizontal_energy_spectrum(state.psi, grid)
+if E_k[end] &gt; 0.01 * maximum(E_k)
+    @warn &quot;Energy piling up at small scales, increase dissipation&quot;
+end</code></pre><h2 id="Loop-Optimization"><a class="docs-heading-anchor" href="#Loop-Optimization">Loop Optimization</a><a id="Loop-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#Loop-Optimization" title="Permalink"></a></h2><h3 id="Broadcasting"><a class="docs-heading-anchor" href="#Broadcasting">Broadcasting</a><a id="Broadcasting-1"></a><a class="docs-heading-anchor-permalink" href="#Broadcasting" title="Permalink"></a></h3><p>Use <code>@.</code> for fused operations:</p><pre><code class="language-julia hljs"># Slow (multiple allocations)
+result = a .+ b .* c
+
+# Fast (single pass, no allocation)
+@. result = a + b * c</code></pre><h3 id="In-place-Operations"><a class="docs-heading-anchor" href="#In-place-Operations">In-place Operations</a><a id="In-place-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#In-place-Operations" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Allocating
+b = fft(a)
+
+# In-place
+mul!(b, plan, a)</code></pre><h3 id="Loop-Order"><a class="docs-heading-anchor" href="#Loop-Order">Loop Order</a><a id="Loop-Order-1"></a><a class="docs-heading-anchor-permalink" href="#Loop-Order" title="Permalink"></a></h3><p>Julia is column-major (like Fortran):</p><pre><code class="language-julia hljs"># Fast (memory-contiguous)
+for k in 1:nz
+    for j in 1:ny
+        for i in 1:nx
+            a[i, j, k] = ...
+        end
+    end
+end
+
+# Slow (cache-unfriendly)
+for i in 1:nx
+    for j in 1:ny
+        for k in 1:nz
+            a[i, j, k] = ...
+        end
+    end
+end</code></pre><h3 id="SIMD-and-LoopVectorization"><a class="docs-heading-anchor" href="#SIMD-and-LoopVectorization">SIMD and LoopVectorization</a><a id="SIMD-and-LoopVectorization-1"></a><a class="docs-heading-anchor-permalink" href="#SIMD-and-LoopVectorization" title="Permalink"></a></h3><pre><code class="language-julia hljs">using LoopVectorization
+
+# Auto-vectorized loop
+@turbo for i in eachindex(a)
+    a[i] = b[i] * c[i] + d[i]
+end</code></pre><h2 id="GPU-Acceleration"><a class="docs-heading-anchor" href="#GPU-Acceleration">GPU Acceleration</a><a id="GPU-Acceleration-1"></a><a class="docs-heading-anchor-permalink" href="#GPU-Acceleration" title="Permalink"></a></h2><h3 id="CUDA-Support"><a class="docs-heading-anchor" href="#CUDA-Support">CUDA Support</a><a id="CUDA-Support-1"></a><a class="docs-heading-anchor-permalink" href="#CUDA-Support" title="Permalink"></a></h3><pre><code class="language-julia hljs">using CUDA
+
+# Note: GPU support is experimental/future feature
+# Move arrays to GPU
+S_gpu = cu(S)
+G_gpu = cu(G)
+
+# GPU FFT plans
+plans_gpu = plan_gpu_transforms!(G_gpu)
+
+# Run on GPU
+leapfrog_step!(S_gpu, G_gpu, params, plans_gpu, a_ell_gpu)</code></pre><h3 id="When-to-Use-GPU"><a class="docs-heading-anchor" href="#When-to-Use-GPU">When to Use GPU</a><a id="When-to-Use-GPU-1"></a><a class="docs-heading-anchor-permalink" href="#When-to-Use-GPU" title="Permalink"></a></h3><table><tr><th style="text-align: left">Scenario</th><th style="text-align: left">Recommendation</th></tr><tr><td style="text-align: left">nx, ny &lt; 256</td><td style="text-align: left">CPU often faster</td></tr><tr><td style="text-align: left">nx, ny ≥ 512</td><td style="text-align: left">GPU beneficial</td></tr><tr><td style="text-align: left">Many particles</td><td style="text-align: left">GPU for interpolation</td></tr><tr><td style="text-align: left">MPI cluster</td><td style="text-align: left">CPU per node</td></tr></table><h2 id="Parallelization-Strategy"><a class="docs-heading-anchor" href="#Parallelization-Strategy">Parallelization Strategy</a><a id="Parallelization-Strategy-1"></a><a class="docs-heading-anchor-permalink" href="#Parallelization-Strategy" title="Permalink"></a></h2><h3 id="Shared-Memory-(OpenMP/Threads)"><a class="docs-heading-anchor" href="#Shared-Memory-(OpenMP/Threads)">Shared Memory (OpenMP/Threads)</a><a id="Shared-Memory-(OpenMP/Threads)-1"></a><a class="docs-heading-anchor-permalink" href="#Shared-Memory-(OpenMP/Threads)" title="Permalink"></a></h3><p>Best for:</p><ul><li>Single node</li><li>nx × ny &lt; 512²</li><li>Memory-bound operations</li></ul><pre><code class="language-julia hljs"># Set threads
+Threads.@threads for k in 1:nz
+    process_layer!(state, k)
+end</code></pre><h3 id="Distributed-Memory-(MPI)"><a class="docs-heading-anchor" href="#Distributed-Memory-(MPI)">Distributed Memory (MPI)</a><a id="Distributed-Memory-(MPI)-1"></a><a class="docs-heading-anchor-permalink" href="#Distributed-Memory-(MPI)" title="Permalink"></a></h3><p>Best for:</p><ul><li>Multiple nodes</li><li>nx × ny ≥ 512²</li><li>Large domains</li></ul><pre><code class="language-bash hljs">mpiexec -n 64 julia simulation.jl</code></pre><h3 id="Hybrid-(MPI-Threads)"><a class="docs-heading-anchor" href="#Hybrid-(MPI-Threads)">Hybrid (MPI + Threads)</a><a id="Hybrid-(MPI-Threads)-1"></a><a class="docs-heading-anchor-permalink" href="#Hybrid-(MPI-Threads)" title="Permalink"></a></h3><pre><code class="language-bash hljs"># 4 MPI ranks × 8 threads each = 32 cores
+export JULIA_NUM_THREADS=8
+mpiexec -n 4 julia simulation.jl</code></pre><h2 id="I/O-Performance"><a class="docs-heading-anchor" href="#I/O-Performance">I/O Performance</a><a id="I/O-Performance-1"></a><a class="docs-heading-anchor-permalink" href="#I/O-Performance" title="Permalink"></a></h2><h3 id="Buffered-Output"><a class="docs-heading-anchor" href="#Buffered-Output">Buffered Output</a><a id="Buffered-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Buffered-Output" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Write less frequently
+output_interval = 1000  # Not every step
+
+# Buffer multiple snapshots
+buffer_size = 10
+output_buffer = zeros(nx, ny, nz, buffer_size)</code></pre><h3 id="Compression"><a class="docs-heading-anchor" href="#Compression">Compression</a><a id="Compression-1"></a><a class="docs-heading-anchor-permalink" href="#Compression" title="Permalink"></a></h3><pre><code class="language-julia hljs">using NCDatasets
+
+# Compressed NetCDF
+defVar(ds, &quot;psi&quot;, Float64, (&quot;x&quot;, &quot;y&quot;, &quot;z&quot;, &quot;t&quot;);
+    deflatelevel = 5,
+    chunksizes = (nx, ny, nz, 1)
+)</code></pre><h3 id="Parallel-I/O"><a class="docs-heading-anchor" href="#Parallel-I/O">Parallel I/O</a><a id="Parallel-I/O-1"></a><a class="docs-heading-anchor-permalink" href="#Parallel-I/O" title="Permalink"></a></h3><pre><code class="language-julia hljs"># HDF5 with MPI I/O
+using HDF5
+
+h5open(&quot;output.h5&quot;, &quot;w&quot;, mpi_comm) do fid
+    write_mpi(fid, &quot;psi&quot;, local_psi, global_dims, local_range)
+end</code></pre><h2 id="Benchmarking-Guide"><a class="docs-heading-anchor" href="#Benchmarking-Guide">Benchmarking Guide</a><a id="Benchmarking-Guide-1"></a><a class="docs-heading-anchor-permalink" href="#Benchmarking-Guide" title="Permalink"></a></h2><h3 id="Full-Benchmark-Suite"><a class="docs-heading-anchor" href="#Full-Benchmark-Suite">Full Benchmark Suite</a><a id="Full-Benchmark-Suite-1"></a><a class="docs-heading-anchor-permalink" href="#Full-Benchmark-Suite" title="Permalink"></a></h3><pre><code class="language-julia hljs">function benchmark_simulation(nx, ny, nz; nsteps=100, Lx=500e3, Ly=500e3, Lz=4000.0)
+    params = default_params(Lx=Lx, Ly=Ly, Lz=Lz, nx=nx, ny=ny, nz=nz)
+    G, S, plans, a_ell = setup_model(params)
+
+    # Initialize
+    init_random_psi!(S, G; amplitude=0.1)
+    compute_q_from_psi!(S, G, plans, a_ell)
+
+    # Warm-up
+    first_projection_step!(S, G, params, plans, a_ell)
+    for _ in 1:9
+        leapfrog_step!(S, G, params, plans, a_ell)
+    end
+
+    # Timed run
+    t_start = time()
+    for _ in 1:nsteps
+        leapfrog_step!(S, G, params, plans, a_ell)
+    end
+    t_end = time()
+
+    dt_avg = (t_end - t_start) / nsteps
+    throughput = nx * ny * nz / dt_avg / 1e6  # Million cells/second
+
+    return (dt_avg=dt_avg, throughput=throughput)
+end
+
+# Run benchmark
+result = benchmark_simulation(128, 128, 64)
+println(&quot;Time per step: $(result.dt_avg*1000) ms&quot;)
+println(&quot;Throughput: $(result.throughput) Mcells/s&quot;)</code></pre><h3 id="Scaling-Tests"><a class="docs-heading-anchor" href="#Scaling-Tests">Scaling Tests</a><a id="Scaling-Tests-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling-Tests" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Strong scaling
+for nprocs in [1, 2, 4, 8, 16]
+    # Run with mpiexec -n $nprocs
+    run_benchmark(256, 256, 128)
+end
+
+# Weak scaling
+for n in [64, 128, 256, 512]
+    run_benchmark(n, n, n÷2)
+end</code></pre><h2 id="Summary-Checklist"><a class="docs-heading-anchor" href="#Summary-Checklist">Summary Checklist</a><a id="Summary-Checklist-1"></a><a class="docs-heading-anchor-permalink" href="#Summary-Checklist" title="Permalink"></a></h2><ol><li><p><strong>Before running:</strong></p><ul><li>[ ] Set <code>JULIA_NUM_THREADS</code> appropriately</li><li>[ ] Enable FFTW threading</li><li>[ ] Use FFTW.MEASURE for plans</li><li>[ ] Pre-allocate all arrays</li></ul></li><li><p><strong>For production:</strong></p><ul><li>[ ] Profile to find bottlenecks</li><li>[ ] Use appropriate time step (CFL)</li><li>[ ] Minimize I/O frequency</li><li>[ ] Enable compression for output</li></ul></li><li><p><strong>For large runs:</strong></p><ul><li>[ ] Use MPI for distributed memory</li><li>[ ] Consider GPU for large grids</li><li>[ ] Use parallel I/O</li><li>[ ] Monitor memory usage</li></ul></li></ol></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../interpolation/">« Interpolation</a><a class="docs-footer-nextpage" href="../../api/types/">Core Types »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

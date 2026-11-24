@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Parallel Particle Algorithm · QGYBJ+.jl</title><meta name="title" content="Parallel Particle Algorithm · QGYBJ+.jl"/><meta property="og:title" content="Parallel Particle Algorithm · QGYBJ+.jl"/><meta property="twitter:title" content="Parallel Particle Algorithm · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel_particles/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel_particles/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/advanced/parallel_particles/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../guide/configuration/">Configuration</a></li><li><a class="tocitem" href="../../guide/stratification/">Stratification</a></li><li><a class="tocitem" href="../../guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../../guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="../../guide/io/">I/O and Output</a></li><li><a class="tocitem" href="../../guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../particles/">Particle Advection</a></li><li class="is-active"><a class="tocitem" href>Parallel Particle Algorithm</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Domain-Decomposition"><span>Domain Decomposition</span></a></li><li><a class="tocitem" href="#Halo-Exchange"><span>Halo Exchange</span></a></li><li><a class="tocitem" href="#Particle-Migration"><span>Particle Migration</span></a></li><li><a class="tocitem" href="#Complete-Parallel-Timestep"><span>Complete Parallel Timestep</span></a></li><li><a class="tocitem" href="#Scalability-Analysis"><span>Scalability Analysis</span></a></li><li><a class="tocitem" href="#Data-Structures"><span>Data Structures</span></a></li><li><a class="tocitem" href="#Usage-Example"><span>Usage Example</span></a></li><li><a class="tocitem" href="#Debugging-Tips"><span>Debugging Tips</span></a></li><li><a class="tocitem" href="#See-Also"><span>See Also</span></a></li></ul></li><li><a class="tocitem" href="../interpolation/">Interpolation</a></li><li><a class="tocitem" href="../performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Advanced Topics</a></li><li class="is-active"><a href>Parallel Particle Algorithm</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Parallel Particle Algorithm</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/advanced/parallel_particles.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="parallel-particles"><a class="docs-heading-anchor" href="#parallel-particles">Parallel Particle Algorithm</a><a id="parallel-particles-1"></a><a class="docs-heading-anchor-permalink" href="#parallel-particles" title="Permalink"></a></h1><p>This page provides detailed technical documentation of the parallel particle advection algorithm in QGYBJ+.jl.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>The parallel particle algorithm enables efficient Lagrangian particle tracking on distributed-memory systems using MPI. Key features:</p><ul><li><strong>1D domain decomposition</strong> in x-direction</li><li><strong>Halo exchange</strong> for cross-boundary velocity interpolation</li><li><strong>Automatic particle migration</strong> between MPI ranks</li><li><strong>Non-blocking MPI communication</strong> for efficiency</li><li><strong>Load balancing</strong> as particles redistribute</li></ul><h2 id="Domain-Decomposition"><a class="docs-heading-anchor" href="#Domain-Decomposition">Domain Decomposition</a><a id="Domain-Decomposition-1"></a><a class="docs-heading-anchor-permalink" href="#Domain-Decomposition" title="Permalink"></a></h2><h3 id="Slab-Decomposition"><a class="docs-heading-anchor" href="#Slab-Decomposition">Slab Decomposition</a><a id="Slab-Decomposition-1"></a><a class="docs-heading-anchor-permalink" href="#Slab-Decomposition" title="Permalink"></a></h3><p>The physical domain <code>[0, Lx] × [0, Ly] × [0, Lz]</code> is partitioned into slabs along the x-direction:</p><pre><code class="nohighlight hljs">         Physical Domain
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│   x=0                                                     x=Lx  │
+│    │                                                        │   │
+│    ▼                                                        ▼   │
+│   ┌──────────┬──────────┬──────────┬──────────┬──────────┐      │
+│   │          │          │          │          │          │      │
+│   │  Rank 0  │  Rank 1  │  Rank 2  │  Rank 3  │  Rank 4  │      │
+│   │          │          │          │          │          │      │
+│   │ x ∈ [0,  │ x ∈ [L/5,│ x ∈ [2L/5│ x ∈ [3L/5│ x ∈ [4L/5│      │
+│   │    L/5)  │   2L/5)  │   3L/5)  │   4L/5)  │    L)    │      │
+│   │          │          │          │          │          │      │
+│   └──────────┴──────────┴──────────┴──────────┴──────────┘      │
+│                                                                 │
+│   • Each rank owns a contiguous x-range                         │
+│   • Full y and z dimensions on each rank                        │
+│   • Particles &quot;belong&quot; to the rank containing their x-position  │
+└─────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Local-Domain-Calculation"><a class="docs-heading-anchor" href="#Local-Domain-Calculation">Local Domain Calculation</a><a id="Local-Domain-Calculation-1"></a><a class="docs-heading-anchor-permalink" href="#Local-Domain-Calculation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function compute_local_domain(grid::Grid, rank::Int, nprocs::Int)
+    # Base points per rank
+    nx_local = grid.nx ÷ nprocs
+    remainder = grid.nx % nprocs
+
+    # Handle uneven division (first &#39;remainder&#39; ranks get +1 point)
+    if rank &lt; remainder
+        nx_local += 1
+        x_start = rank * nx_local
+    else
+        x_start = remainder * (nx_local + 1) + (rank - remainder) * nx_local
+    end
+
+    x_end = x_start + nx_local - 1
+
+    # Convert grid indices to physical coordinates
+    dx = grid.Lx / grid.nx
+    x_start_phys = x_start * dx
+    x_end_phys = (x_end + 1) * dx
+
+    return (
+        x_start = x_start_phys,
+        x_end = x_end_phys,
+        y_start = 0.0,
+        y_end = grid.Ly,
+        z_start = 0.0,
+        z_end = grid.Lz,
+        nx_local = nx_local
+    )
+end</code></pre><p><strong>Example</strong>: 256 grid points, 4 ranks → 64 points per rank</p><table><tr><th style="text-align: left">Rank</th><th style="text-align: left">Grid Indices</th><th style="text-align: left">Physical Range (Lx=2π)</th></tr><tr><td style="text-align: left">0</td><td style="text-align: left">[0, 63]</td><td style="text-align: left">[0, π/2)</td></tr><tr><td style="text-align: left">1</td><td style="text-align: left">[64, 127]</td><td style="text-align: left">[π/2, π)</td></tr><tr><td style="text-align: left">2</td><td style="text-align: left">[128, 191]</td><td style="text-align: left">[π, 3π/2)</td></tr><tr><td style="text-align: left">3</td><td style="text-align: left">[192, 255]</td><td style="text-align: left">[3π/2, 2π)</td></tr></table><h2 id="Halo-Exchange"><a class="docs-heading-anchor" href="#Halo-Exchange">Halo Exchange</a><a id="Halo-Exchange-1"></a><a class="docs-heading-anchor-permalink" href="#Halo-Exchange" title="Permalink"></a></h2><h3 id="Purpose"><a class="docs-heading-anchor" href="#Purpose">Purpose</a><a id="Purpose-1"></a><a class="docs-heading-anchor-permalink" href="#Purpose" title="Permalink"></a></h3><p>When a particle is near a domain boundary, velocity interpolation requires data from the neighboring rank. <strong>Halo regions</strong> (ghost cells) store copies of neighbor data.</p><h3 id="Extended-Array-Structure"><a class="docs-heading-anchor" href="#Extended-Array-Structure">Extended Array Structure</a><a id="Extended-Array-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Extended-Array-Structure" title="Permalink"></a></h3><pre><code class="nohighlight hljs">┌────────────────────────────────────────────────────────────────────────┐
+│                    EXTENDED ARRAY LAYOUT (Rank 1)                      │
+│                                                                        │
+│   Index:   1    2   ...  hw   hw+1  ...  hw+nx  hw+nx+1 ... hw+nx+hw   │
+│           ┌────┬────┬───┬────┬─────┬───┬───────┬───────┬───┬────────┐  │
+│           │    │    │   │    │     │   │       │       │   │        │  │
+│           │ Left Halo   │ ←── Local Data ──→   │ Right Halo│        │  │
+│           │ (from R0)   │      (owned)         │ (from R2) │        │  │
+│           └────┴────┴───┴────┴─────┴───┴───────┴───────┴───┴────────┘  │
+│                                                                        │
+│   hw = halo_width (default: 2)                                         │
+│   nx = local grid points                                               │
+│                                                                        │
+│   Total extended size: nx + 2*hw                                       │
+└────────────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Communication-Pattern-(Periodic-Boundaries)"><a class="docs-heading-anchor" href="#Communication-Pattern-(Periodic-Boundaries)">Communication Pattern (Periodic Boundaries)</a><a id="Communication-Pattern-(Periodic-Boundaries)-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Pattern-(Periodic-Boundaries)" title="Permalink"></a></h3><p>For doubly-periodic domains, the halo exchange wraps around:</p><pre><code class="nohighlight hljs">┌────────────────────────────────────────────────────────────────────────┐
+│                  PERIODIC HALO EXCHANGE COMMUNICATION                  │
+│                                                                        │
+│   RANK 0                 RANK 1                 RANK 2 (last)          │
+│   ┌──────────────┐       ┌──────────────┐       ┌──────────────┐       │
+│   │ L │ Local│ R │       │ L │ Local│ R │       │ L │ Local│ R │       │
+│   │   │      │   │       │   │      │   │       │   │      │   │       │
+│   └───┴──────┴───┘       └───┴──────┴───┘       └───┴──────┴───┘       │
+│     ↑                                                      │           │
+│     └──────────────── Periodic wrap ──────────────────────┘           │
+│                                                                        │
+│   Interior Communication (same as before):                             │
+│   ═════════════════════════════════════                                │
+│   Rank 0 → Rank 1:  send_right → recv_left                             │
+│   Rank 1 → Rank 0:  send_left  → recv_right                            │
+│   Rank 1 → Rank 2:  send_right → recv_left                             │
+│   Rank 2 → Rank 1:  send_left  → recv_right                            │
+│                                                                        │
+│   Periodic Boundary Communication:                                     │
+│   ════════════════════════════════                                     │
+│   Rank 2 → Rank 0:  send_right (R2&#39;s right edge) → recv_left (R0)      │
+│   Rank 0 → Rank 2:  send_left  (R0&#39;s left edge)  → recv_right (R2)     │
+│                                                                        │
+│   After exchange:                                                      │
+│   • R0&#39;s left halo contains R2&#39;s right edge data (periodic wrap!)      │
+│   • R2&#39;s right halo contains R0&#39;s left edge data (periodic wrap!)      │
+│   • All particles can interpolate correctly near boundaries            │
+└────────────────────────────────────────────────────────────────────────┘</code></pre><p><strong>Key</strong>: With <code>periodic_x=true</code> (default), rank 0&#39;s left neighbor is the last rank, and the last rank&#39;s right neighbor is rank 0. This ensures correct velocity interpolation for particles near the periodic boundaries.</p><h3 id="Implementation"><a class="docs-heading-anchor" href="#Implementation">Implementation</a><a id="Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function exchange_velocity_halos!(halo_info, u_field, v_field, w_field)
+    # 1. Copy local data to center of extended arrays
+    copy_local_to_extended!(halo_info, u_field, v_field, w_field)
+
+    # 2. Pack boundary data into send buffers
+    pack_halo_data!(halo_info)
+    # send_left  ← our LEFT edge  (for left neighbor&#39;s RIGHT halo)
+    # send_right ← our RIGHT edge (for right neighbor&#39;s LEFT halo)
+
+    # 3. Post non-blocking receives
+    if left_neighbor &gt;= 0
+        MPI.Irecv!(recv_left, left_neighbor, tag=0, comm)
+    end
+    if right_neighbor &gt;= 0
+        MPI.Irecv!(recv_right, right_neighbor, tag=1, comm)
+    end
+
+    # 4. Send to neighbors (non-blocking)
+    if right_neighbor &gt;= 0
+        MPI.Isend(send_right, right_neighbor, tag=0, comm)
+    end
+    if left_neighbor &gt;= 0
+        MPI.Isend(send_left, left_neighbor, tag=1, comm)
+    end
+
+    # 5. Wait for receives and unpack
+    MPI.Waitall(recv_reqs)
+    unpack_halo_data!(halo_info)
+    # recv_left  → our LEFT halo region
+    # recv_right → our RIGHT halo region
+
+    # 6. Wait for sends to complete
+    MPI.Waitall(send_reqs)
+end</code></pre><h3 id="Buffer-Layout"><a class="docs-heading-anchor" href="#Buffer-Layout">Buffer Layout</a><a id="Buffer-Layout-1"></a><a class="docs-heading-anchor-permalink" href="#Buffer-Layout" title="Permalink"></a></h3><p>Each buffer contains packed velocity components:</p><pre><code class="nohighlight hljs">Buffer layout: [u₁, v₁, w₁, u₂, v₂, w₂, ..., uₙ, vₙ, wₙ]
+
+where n = halo_width × ny × nz
+
+Total buffer size = 3 × halo_width × ny × nz × sizeof(T)</code></pre><h2 id="Particle-Migration"><a class="docs-heading-anchor" href="#Particle-Migration">Particle Migration</a><a id="Particle-Migration-1"></a><a class="docs-heading-anchor-permalink" href="#Particle-Migration" title="Permalink"></a></h2><h3 id="When-Migration-Occurs"><a class="docs-heading-anchor" href="#When-Migration-Occurs">When Migration Occurs</a><a id="When-Migration-Occurs-1"></a><a class="docs-heading-anchor-permalink" href="#When-Migration-Occurs" title="Permalink"></a></h3><p>After advection, particles may have moved outside their owning rank&#39;s domain:</p><pre><code class="nohighlight hljs">┌────────────────────────────────────────────────────────────────────────┐
+│                     PARTICLE CROSSING BOUNDARY                         │
+│                                                                        │
+│   Before advection:                                                    │
+│   ┌───────────────────────┬───────────────────────┐                    │
+│   │       RANK 0          │       RANK 1          │                    │
+│   │                    •  │                       │                    │
+│   │                   ↗   │                       │                    │
+│   │     Particle moving   │                       │                    │
+│   │     toward boundary   │                       │                    │
+│   └───────────────────────┴───────────────────────┘                    │
+│                                                                        │
+│   After advection:                                                     │
+│   ┌───────────────────────┬───────────────────────┐                    │
+│   │       RANK 0          │       RANK 1          │                    │
+│   │                       │  •                    │                    │
+│   │                       │  ↑ Particle now in    │                    │
+│   │                       │    Rank 1&#39;s domain    │                    │
+│   └───────────────────────┴───────────────────────┘                    │
+│                                                                        │
+│   → Particle must be migrated from Rank 0 to Rank 1                    │
+└────────────────────────────────────────────────────────────────────────┘</code></pre><h3 id="Migration-Algorithm"><a class="docs-heading-anchor" href="#Migration-Algorithm">Migration Algorithm</a><a id="Migration-Algorithm-1"></a><a class="docs-heading-anchor-permalink" href="#Migration-Algorithm" title="Permalink"></a></h3><pre><code class="language-julia hljs">function migrate_particles!(tracker)
+    particles = tracker.particles
+    local_domain = tracker.local_domain
+
+    # 1. Clear send buffers
+    for buf in tracker.send_buffers
+        empty!(buf)
+    end
+
+    # 2. Identify particles to keep vs migrate
+    keep_indices = Int[]
+
+    for i in 1:particles.np
+        x = particles.x[i]
+        target_rank = find_target_rank(x, tracker)
+
+        if target_rank == tracker.rank
+            # Particle stays local
+            push!(keep_indices, i)
+        else
+            # Package particle for migration: [x, y, z, u, v, w]
+            particle_data = [
+                particles.x[i], particles.y[i], particles.z[i],
+                particles.u[i], particles.v[i], particles.w[i]
+            ]
+            append!(tracker.send_buffers[target_rank + 1], particle_data)
+        end
+    end
+
+    # 3. Remove migrated particles from local arrays
+    particles.x = particles.x[keep_indices]
+    particles.y = particles.y[keep_indices]
+    # ... same for z, u, v, w
+    particles.np = length(keep_indices)
+
+    # 4. Exchange particle data via MPI
+    exchange_particles!(tracker)
+
+    # 5. Add received particles to local collection
+    add_received_particles!(tracker)
+end
+
+function find_target_rank(x, tracker)
+    # Handle periodic boundary
+    x_periodic = tracker.config.periodic_x ? mod(x, tracker.Lx) : x
+
+    # Determine owning rank based on x-position
+    dx_rank = tracker.Lx / tracker.nprocs
+    rank = min(tracker.nprocs - 1, floor(Int, x_periodic / dx_rank))
+
+    return rank
+end</code></pre><h3 id="All-to-All-Communication"><a class="docs-heading-anchor" href="#All-to-All-Communication">All-to-All Communication</a><a id="All-to-All-Communication-1"></a><a class="docs-heading-anchor-permalink" href="#All-to-All-Communication" title="Permalink"></a></h3><pre><code class="language-julia hljs">function exchange_particles!(tracker)
+    comm = tracker.comm
+    nprocs = tracker.nprocs
+
+    # 1. Exchange particle counts (how many to send to each rank)
+    send_counts = [length(tracker.send_buffers[i]) ÷ 6 for i in 1:nprocs]
+    recv_counts = MPI.Alltoall(send_counts, comm)
+
+    # 2. Point-to-point sends/receives for particle data
+    for other_rank in 0:nprocs-1
+        if other_rank == tracker.rank
+            continue
+        end
+
+        # Send to other_rank
+        if !isempty(tracker.send_buffers[other_rank + 1])
+            MPI.Send(tracker.send_buffers[other_rank + 1], other_rank, tag=0, comm)
+        end
+
+        # Receive from other_rank
+        if recv_counts[other_rank + 1] &gt; 0
+            n_values = recv_counts[other_rank + 1] * 6
+            recv_data = Vector{T}(undef, n_values)
+            MPI.Recv!(recv_data, other_rank, tag=0, comm)
+            tracker.recv_buffers[other_rank + 1] = recv_data
+        end
+    end
+end</code></pre><h2 id="Complete-Parallel-Timestep"><a class="docs-heading-anchor" href="#Complete-Parallel-Timestep">Complete Parallel Timestep</a><a id="Complete-Parallel-Timestep-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Parallel-Timestep" title="Permalink"></a></h2><pre><code class="nohighlight hljs">┌──────────────────────────────────────────────────────────────────────────────┐
+│              PARALLEL PARTICLE ADVECTION TIMESTEP                            │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ STEP 1: UPDATE VELOCITY FIELDS                                         │  │
+│  │                                                                        │  │
+│  │   • Compute geostrophic velocities (distributed FFT):                  │  │
+│  │       û = -i·kᵧ·ψ̂,  v̂ = i·kₓ·ψ̂                                         │  │
+│  │                                                                        │  │
+│  │   • Solve omega equation for w (tridiagonal in z):                     │  │
+│  │       ∇²w + (N²/f²)∂²w/∂z² = 2·J(ψ_z, ∇²ψ)                             │  │
+│  │                                                                        │  │
+│  │   • Add wave Stokes drift (horizontal + vertical):                     │  │
+│  │       u += 2·Re[A*·∂A/∂x],  v += 2·Re[A*·∂A/∂y],  w += 2·Re[A*·∂A/∂z]  │  │
+│  │                                                                        │  │
+│  │   • Exchange velocity halos (MPI non-blocking)                         │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │ 
+│                                ↓                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │ STEP 2: ADVECT PARTICLES (each rank independently)              │         │
+│  │                                                                 │         │
+│  │   For each local particle:                                      │         │
+│  │     1. Interpolate velocity at (x, y, z)                        │         │
+│  │        • Use extended arrays (halos) if near boundary           │         │
+│  │        • Trilinear/Tricubic/Quintic interpolation               │         │
+│  │                                                                 │         │
+│  │     2. Time integration:                                        │         │
+│  │        • Euler:  x_{n+1} = x_n + dt·u                           │         │
+│  │        • RK2:    Midpoint method                                │         │
+│  │        • RK4:    Classical 4th order                            │         │
+│  └─────────────────────────────────────────────────────────────────┘         │
+│                                ↓                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │ STEP 3: MIGRATE PARTICLES                                       │         │
+│  │                                                                 │         │
+│  │   1. Identify particles outside local domain                    │         │
+│  │   2. Pack outgoing particles into send buffers                  │         │
+│  │   3. MPI.Alltoall - exchange particle counts                    │         │
+│  │   4. MPI.Send/Recv - transfer particle data                     │         │
+│  │   5. Unpack incoming particles into local arrays                │         │
+│  └─────────────────────────────────────────────────────────────────┘         │
+│                                ↓                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │ STEP 4: APPLY BOUNDARY CONDITIONS                               │         │
+│  │                                                                 │         │
+│  │   Horizontal (periodic):  x = mod(x, Lx),  y = mod(y, Ly)       │         │
+│  │                                                                 │         │
+│  │   Vertical (reflective):                                        │         │
+│  │     if z &lt; 0:   z = -z,        w = -w                           │         │
+│  │     if z &gt; Lz:  z = 2·Lz - z,  w = -w                           │         │
+│  └─────────────────────────────────────────────────────────────────┘         │
+│                                ↓                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │ STEP 5: SAVE TRAJECTORIES (if save_interval reached)            │         │
+│  │                                                                 │         │
+│  │   Option A: Each rank saves local particles independently       │         │
+│  │   Option B: Gather all particles to rank 0, unified output      │         │
+│  └─────────────────────────────────────────────────────────────────┘         │
+└──────────────────────────────────────────────────────────────────────────────┘</code></pre><h2 id="Scalability-Analysis"><a class="docs-heading-anchor" href="#Scalability-Analysis">Scalability Analysis</a><a id="Scalability-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#Scalability-Analysis" title="Permalink"></a></h2><h3 id="Communication-Costs"><a class="docs-heading-anchor" href="#Communication-Costs">Communication Costs</a><a id="Communication-Costs-1"></a><a class="docs-heading-anchor-permalink" href="#Communication-Costs" title="Permalink"></a></h3><table><tr><th style="text-align: left">Operation</th><th style="text-align: left">Data Volume</th><th style="text-align: left">Frequency</th></tr><tr><td style="text-align: left">Halo exchange</td><td style="text-align: left">O(ny × nz × halo_width × 3) per neighbor</td><td style="text-align: left">Every timestep</td></tr><tr><td style="text-align: left">Migration Alltoall</td><td style="text-align: left">O(nprocs) integers</td><td style="text-align: left">Every timestep</td></tr><tr><td style="text-align: left">Migration Send/Recv</td><td style="text-align: left">O(Np_crossing × 6) floats</td><td style="text-align: left">Every timestep</td></tr></table><h3 id="Scaling-Characteristics"><a class="docs-heading-anchor" href="#Scaling-Characteristics">Scaling Characteristics</a><a id="Scaling-Characteristics-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling-Characteristics" title="Permalink"></a></h3><p><strong>Strong Scaling</strong> (fixed problem size, varying ranks):</p><ul><li>Velocity computation: ~O(N/P) per rank</li><li>Particle advection: ~O(Np/P) per rank</li><li>Communication: O(boundary_size) - increases relative importance</li></ul><p><strong>Weak Scaling</strong> (fixed load per rank):</p><ul><li>Ideal scaling if particles are uniformly distributed</li><li>Load imbalance if particles cluster in few ranks</li></ul><h3 id="Load-Balancing-Considerations"><a class="docs-heading-anchor" href="#Load-Balancing-Considerations">Load Balancing Considerations</a><a id="Load-Balancing-Considerations-1"></a><a class="docs-heading-anchor-permalink" href="#Load-Balancing-Considerations" title="Permalink"></a></h3><p>Particle load can become imbalanced if:</p><ol><li>Flow concentrates particles (e.g., in eddies)</li><li>Initial distribution is non-uniform</li><li>Some ranks have many boundary crossings</li></ol><p><strong>Mitigation strategies:</strong></p><ul><li>Use sufficiently many particles for statistical averaging</li><li>Initialize particles uniformly</li><li>Monitor particle count per rank</li></ul><h2 id="Data-Structures"><a class="docs-heading-anchor" href="#Data-Structures">Data Structures</a><a id="Data-Structures-1"></a><a class="docs-heading-anchor-permalink" href="#Data-Structures" title="Permalink"></a></h2><h3 id="HaloInfo"><a class="docs-heading-anchor" href="#HaloInfo">HaloInfo</a><a id="HaloInfo-1"></a><a class="docs-heading-anchor-permalink" href="#HaloInfo" title="Permalink"></a></h3><pre><code class="language-julia hljs">mutable struct HaloInfo{T}
+    halo_width::Int              # Ghost cell width (default: 2)
+
+    # Extended arrays with halos
+    u_extended::Array{T,3}       # Size: (nx_local + 2*hw, ny, nz)
+    v_extended::Array{T,3}
+    w_extended::Array{T,3}
+
+    # Local data position in extended arrays
+    local_start::NTuple{3,Int}   # (hw+1, 1, 1)
+    local_end::NTuple{3,Int}     # (hw+nx, ny, nz)
+
+    # Neighbor ranks (-1 if at boundary)
+    left_neighbor::Int
+    right_neighbor::Int
+
+    # Communication buffers
+    send_left::Vector{T}         # Size: 3 × hw × ny × nz
+    send_right::Vector{T}
+    recv_left::Vector{T}
+    recv_right::Vector{T}
+
+    # MPI info
+    comm::Any
+    rank::Int
+    nprocs::Int
+end</code></pre><h3 id="ParticleTracker-(Parallel-Fields)"><a class="docs-heading-anchor" href="#ParticleTracker-(Parallel-Fields)">ParticleTracker (Parallel Fields)</a><a id="ParticleTracker-(Parallel-Fields)-1"></a><a class="docs-heading-anchor-permalink" href="#ParticleTracker-(Parallel-Fields)" title="Permalink"></a></h3><pre><code class="language-julia hljs">mutable struct ParticleTracker{T}
+    # ... common fields ...
+
+    # MPI configuration
+    comm::Any                    # MPI.COMM_WORLD
+    rank::Int                    # This process&#39;s rank
+    nprocs::Int                  # Total processes
+    is_parallel::Bool            # true if nprocs &gt; 1
+
+    # Domain decomposition
+    local_domain::NamedTuple     # (x_start, x_end, y_start, y_end, ...)
+
+    # Halo exchange
+    halo_info::HaloInfo{T}       # Extended arrays + buffers
+
+    # Migration buffers (one per rank)
+    send_buffers::Vector{Vector{T}}  # Length: nprocs
+    recv_buffers::Vector{Vector{T}}  # Length: nprocs
+
+    # I/O configuration
+    is_io_rank::Bool             # true if rank == 0
+    gather_for_io::Bool          # Gather particles to rank 0 for output
+end</code></pre><h2 id="Usage-Example"><a class="docs-heading-anchor" href="#Usage-Example">Usage Example</a><a id="Usage-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Usage-Example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using MPI
+using QGYBJplus
+
+# Initialize MPI
+MPI.Init()
+comm = MPI.COMM_WORLD
+rank = MPI.Comm_rank(comm)
+nprocs = MPI.Comm_size(comm)
+
+# Set up parallel configuration
+parallel_config = ParallelConfig(
+    use_mpi = true,
+    comm = comm,
+    n_processes = nprocs
+)
+
+# Create simulation (distributed grid and state)
+config = SimulationConfig(...)
+sim = setup_simulation(config; parallel_config=parallel_config)
+
+# Create particle configuration
+particle_config = create_particle_config(
+    x_min = 0.0, x_max = 2π,
+    y_min = 0.0, y_max = 2π,
+    z_level = π,
+    nx_particles = 100,
+    ny_particles = 100,
+    integration_method = :rk4,
+    interpolation_method = TRILINEAR
+)
+
+# Create particle tracker with parallel support
+tracker = ParticleTracker(particle_config, sim.grid, parallel_config)
+initialize_particles!(tracker, particle_config)
+
+# Main simulation loop
+for step in 1:nsteps
+    # Advance fluid state
+    timestep!(sim)
+
+    # Advect particles (handles halo exchange + migration automatically)
+    advect_particles!(tracker, sim.state, sim.grid, dt, sim.current_time)
+end
+
+# Save trajectories (rank 0 gathers and writes, or each rank writes independently)
+if rank == 0 || !tracker.gather_for_io
+    write_particle_trajectories(&quot;particles_rank$(rank).nc&quot;, tracker)
+end
+
+MPI.Finalize()</code></pre><h2 id="Debugging-Tips"><a class="docs-heading-anchor" href="#Debugging-Tips">Debugging Tips</a><a id="Debugging-Tips-1"></a><a class="docs-heading-anchor-permalink" href="#Debugging-Tips" title="Permalink"></a></h2><h3 id="Check-Particle-Distribution"><a class="docs-heading-anchor" href="#Check-Particle-Distribution">Check Particle Distribution</a><a id="Check-Particle-Distribution-1"></a><a class="docs-heading-anchor-permalink" href="#Check-Particle-Distribution" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Print particle count per rank
+println(&quot;Rank $rank has $(tracker.particles.np) particles&quot;)
+MPI.Barrier(comm)</code></pre><h3 id="Verify-Halo-Exchange"><a class="docs-heading-anchor" href="#Verify-Halo-Exchange">Verify Halo Exchange</a><a id="Verify-Halo-Exchange-1"></a><a class="docs-heading-anchor-permalink" href="#Verify-Halo-Exchange" title="Permalink"></a></h3><pre><code class="language-julia hljs"># After halo exchange, check extended array values
+if rank == 0
+    println(&quot;Left halo (should be from neighbor): &quot;, halo_info.u_extended[1:2, 1, 1])
+    println(&quot;Local data start: &quot;, halo_info.u_extended[3:4, 1, 1])
+end</code></pre><h3 id="Monitor-Migration"><a class="docs-heading-anchor" href="#Monitor-Migration">Monitor Migration</a><a id="Monitor-Migration-1"></a><a class="docs-heading-anchor-permalink" href="#Monitor-Migration" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Track particles crossing boundaries
+n_migrated = sum(length.(tracker.send_buffers)) ÷ 6
+println(&quot;Rank $rank migrating $n_migrated particles&quot;)</code></pre><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../particles/">Particle Advection</a> - General particle documentation</li><li><a href="../parallel/">MPI Parallelization</a> - Overall parallel architecture</li><li><a href="../../api/particles/">API Reference</a> - Function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../particles/">« Particle Advection</a><a class="docs-footer-nextpage" href="../interpolation/">Interpolation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

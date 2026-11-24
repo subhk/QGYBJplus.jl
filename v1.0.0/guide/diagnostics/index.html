@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Diagnostics · QGYBJ+.jl</title><meta name="title" content="Diagnostics · QGYBJ+.jl"/><meta property="og:title" content="Diagnostics · QGYBJ+.jl"/><meta property="twitter:title" content="Diagnostics · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/guide/diagnostics/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/guide/diagnostics/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/guide/diagnostics/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../getting_started/">Installation</a></li><li><a class="tocitem" href="../../quickstart/">Quick Start</a></li><li><a class="tocitem" href="../../worked_example/">Worked Example</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="../../physics/overview/">Model Overview</a></li><li><a class="tocitem" href="../../physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="../../physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="../../physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="../../physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../configuration/">Configuration</a></li><li><a class="tocitem" href="../stratification/">Stratification</a></li><li><a class="tocitem" href="../initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="../simulation/">Running Simulations</a></li><li><a class="tocitem" href="../io/">I/O and Output</a></li><li class="is-active"><a class="tocitem" href>Diagnostics</a><ul class="internal"><li><a class="tocitem" href="#Energy-Diagnostics"><span>Energy Diagnostics</span></a></li><li><a class="tocitem" href="#Energy-Diagnostics-Output-Files"><span>Energy Diagnostics Output Files</span></a></li><li><a class="tocitem" href="#Enstrophy"><span>Enstrophy</span></a></li><li><a class="tocitem" href="#Spectral-Diagnostics"><span>Spectral Diagnostics</span></a></li><li><a class="tocitem" href="#Vorticity-Statistics"><span>Vorticity Statistics</span></a></li><li><a class="tocitem" href="#Wave-Diagnostics"><span>Wave Diagnostics</span></a></li><li><a class="tocitem" href="#Omega-Equation"><span>Omega Equation</span></a></li><li><a class="tocitem" href="#Eddy-Identification"><span>Eddy Identification</span></a></li><li><a class="tocitem" href="#Time-Series-Analysis"><span>Time Series Analysis</span></a></li><li><a class="tocitem" href="#Budget-Analysis"><span>Budget Analysis</span></a></li><li><a class="tocitem" href="#Spatial-Averaging"><span>Spatial Averaging</span></a></li><li><a class="tocitem" href="#Correlation-Functions"><span>Correlation Functions</span></a></li><li><a class="tocitem" href="#Diagnostic-Output"><span>Diagnostic Output</span></a></li><li><a class="tocitem" href="#API-Reference"><span>API Reference</span></a></li></ul></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="../../advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="../../advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="../../advanced/parallel_particles/">Parallel Particle Algorithm</a></li><li><a class="tocitem" href="../../advanced/interpolation/">Interpolation</a></li><li><a class="tocitem" href="../../advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../../api/types/">Core Types</a></li><li><a class="tocitem" href="../../api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="../../api/physics/">Physics Functions</a></li><li><a class="tocitem" href="../../api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="../../api/particles/">Particles</a></li><li><a class="tocitem" href="../../api/">Full Index</a></li></ul></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>Diagnostics</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Diagnostics</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/guide/diagnostics.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="diagnostics"><a class="docs-heading-anchor" href="#diagnostics">Diagnostics</a><a id="diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#diagnostics" title="Permalink"></a></h1><p>This page describes diagnostic quantities and analysis tools in QGYBJ+.jl.</p><h2 id="Energy-Diagnostics"><a class="docs-heading-anchor" href="#Energy-Diagnostics">Energy Diagnostics</a><a id="Energy-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Diagnostics" title="Permalink"></a></h2><h3 id="Flow-Kinetic-Energy"><a class="docs-heading-anchor" href="#Flow-Kinetic-Energy">Flow Kinetic Energy</a><a id="Flow-Kinetic-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Flow-Kinetic-Energy" title="Permalink"></a></h3><p>The kinetic energy of the balanced flow:</p><p class="math-container">\[KE = \frac{1}{2}\int (u^2 + v^2) \, dV\]</p><pre><code class="language-julia hljs">KE = flow_kinetic_energy(state.u, state.v, grid)</code></pre><h3 id="Flow-Potential-Energy"><a class="docs-heading-anchor" href="#Flow-Potential-Energy">Flow Potential Energy</a><a id="Flow-Potential-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Flow-Potential-Energy" title="Permalink"></a></h3><p>Available potential energy:</p><p class="math-container">\[PE = \frac{1}{2}\int \frac{f_0^2}{N^2}\left(\frac{\partial\psi}{\partial z}\right)^2 dV\]</p><pre><code class="language-julia hljs">PE = flow_potential_energy(state.psi, grid, params)</code></pre><h3 id="Total-Flow-Energy"><a class="docs-heading-anchor" href="#Total-Flow-Energy">Total Flow Energy</a><a id="Total-Flow-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Total-Flow-Energy" title="Permalink"></a></h3><pre><code class="language-julia hljs">E_flow = flow_total_energy(state, grid, params)
+# Equivalent to: KE + PE</code></pre><h3 id="Wave-Energy"><a class="docs-heading-anchor" href="#Wave-Energy">Wave Energy</a><a id="Wave-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Energy" title="Permalink"></a></h3><p class="math-container">\[E_{wave} = \frac{1}{2}\int |A|^2 \, dV\]</p><pre><code class="language-julia hljs">E_B, E_A = wave_energy(state.B, state.A, grid)</code></pre><div class="admonition is-info" id="Note-12e900f2242f1fe4"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-12e900f2242f1fe4" title="Permalink"></a></header><div class="admonition-body"><p><span>$E_B$</span> and <span>$E_A$</span> differ because the <span>$L^+$</span> operator is not unitary. <span>$E_A$</span> is the physical wave energy.</p></div></div><h2 id="Energy-Diagnostics-Output-Files"><a class="docs-heading-anchor" href="#Energy-Diagnostics-Output-Files">Energy Diagnostics Output Files</a><a id="Energy-Diagnostics-Output-Files-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Diagnostics-Output-Files" title="Permalink"></a></h2><p>QGYBJ+.jl automatically saves energy diagnostics to separate files in a dedicated <code>diagnostic/</code> folder, following the structure used in the Fortran QG_YBJp code.</p><h3 id="Output-Folder-Structure"><a class="docs-heading-anchor" href="#Output-Folder-Structure">Output Folder Structure</a><a id="Output-Folder-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Output-Folder-Structure" title="Permalink"></a></h3><pre><code class="nohighlight hljs">output_dir/
+├── state0001.nc              # Field snapshots
+├── state0002.nc
+├── diagnostics_0001.nc       # Legacy combined diagnostics
+└── diagnostic/               # Separate energy files
+    ├── wave_KE.nc            # Wave kinetic energy time series
+    ├── wave_PE.nc            # Wave potential energy time series
+    ├── wave_CE.nc            # Wave correction energy (YBJ+)
+    ├── mean_flow_KE.nc       # Mean flow kinetic energy
+    ├── mean_flow_PE.nc       # Mean flow potential energy
+    └── total_energy.nc       # Summary file with all energies</code></pre><h3 id="Wave-Kinetic-Energy-(WKE)"><a class="docs-heading-anchor" href="#Wave-Kinetic-Energy-(WKE)">Wave Kinetic Energy (WKE)</a><a id="Wave-Kinetic-Energy-(WKE)-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Kinetic-Energy-(WKE)" title="Permalink"></a></h3><p>The wave kinetic energy is computed from the wave envelope <span>$B = B_R + iB_I$</span>:</p><p class="math-container">\[\text{WKE} = \frac{1}{2} \sum_{k_x, k_y, z} \left( |B_R|^2 + |B_I|^2 \right) - \frac{1}{2} |B(k_h=0)|^2\]</p><p>where the second term is the dealiasing correction (2/3 rule).</p><p><strong>Physical interpretation</strong>: WKE represents the kinetic energy contained in the near-inertial wave field, analogous to <span>$\frac{1}{2}(u_w^2 + v_w^2)$</span> for wave velocities.</p><h3 id="Wave-Potential-Energy-(WPE)"><a class="docs-heading-anchor" href="#Wave-Potential-Energy-(WPE)">Wave Potential Energy (WPE)</a><a id="Wave-Potential-Energy-(WPE)-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Potential-Energy-(WPE)" title="Permalink"></a></h3><p>The wave potential energy captures vertical wave structure through <span>$C = \partial A/\partial z$</span>:</p><p class="math-container">\[\text{WPE} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{k_h^2}{2 a_{ell}} \left( |C_R|^2 + |C_I|^2 \right)\]</p><p>where:</p><ul><li><span>$a_{ell} = f_0^2 / N^2$</span> is the elliptic coefficient</li><li><span>$C = \partial A / \partial z$</span> is the vertical derivative of wave amplitude</li><li><span>$k_h^2 = k_x^2 + k_y^2$</span> is the horizontal wavenumber squared</li></ul><p><strong>Physical interpretation</strong>: WPE represents the potential energy from wave-induced isopycnal displacements. It scales with <span>$N^2 \eta^2$</span> where <span>$\eta$</span> is the vertical displacement.</p><h3 id="Wave-Correction-Energy-(WCE)"><a class="docs-heading-anchor" href="#Wave-Correction-Energy-(WCE)">Wave Correction Energy (WCE)</a><a id="Wave-Correction-Energy-(WCE)-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Correction-Energy-(WCE)" title="Permalink"></a></h3><p>The YBJ+ formulation includes a higher-order correction term:</p><p class="math-container">\[\text{WCE} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{k_h^4}{8 a_{ell}^2} \left( |A_R|^2 + |A_I|^2 \right)\]</p><p><strong>Physical interpretation</strong>: WCE is a higher-order correction from the YBJ+ equation that accounts for horizontal wave dispersion. It becomes important for short horizontal wavelengths.</p><h3 id="Mean-Flow-Kinetic-Energy"><a class="docs-heading-anchor" href="#Mean-Flow-Kinetic-Energy">Mean Flow Kinetic Energy</a><a id="Mean-Flow-Kinetic-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Mean-Flow-Kinetic-Energy" title="Permalink"></a></h3><p>The balanced flow kinetic energy is computed from the geostrophic velocities:</p><p class="math-container">\[\text{KE}_{flow} = \frac{1}{2} \sum_{k_x, k_y, z} \left( |u_k|^2 + |v_k|^2 \right) - \frac{1}{2} |u(k_h=0)|^2\]</p><p>where the velocities are derived from the streamfunction:</p><p class="math-container">\[u = -\frac{\partial \psi}{\partial y} = -ik_y \hat{\psi}, \quad v = \frac{\partial \psi}{\partial x} = ik_x \hat{\psi}\]</p><p>This gives:</p><p class="math-container">\[|u|^2 + |v|^2 = k_h^2 |\hat{\psi}|^2\]</p><p><strong>Physical interpretation</strong>: <span>$\text{KE}_{flow}$</span> represents the kinetic energy of the large-scale quasi-geostrophic eddies and jets.</p><h3 id="Mean-Flow-Potential-Energy"><a class="docs-heading-anchor" href="#Mean-Flow-Potential-Energy">Mean Flow Potential Energy</a><a id="Mean-Flow-Potential-Energy-1"></a><a class="docs-heading-anchor-permalink" href="#Mean-Flow-Potential-Energy" title="Permalink"></a></h3><p>The available potential energy from buoyancy:</p><p class="math-container">\[\text{PE}_{flow} = \frac{1}{2} \sum_{k_x, k_y, z} \frac{f_0^2}{N^2} |b_k|^2\]</p><p>where buoyancy <span>$b$</span> is related to the streamfunction via thermal wind balance:</p><p class="math-container">\[b = \frac{\partial \psi}{\partial z}\]</p><p><strong>Physical interpretation</strong>: <span>$\text{PE}_{flow}$</span> represents the energy stored in tilted isopycnals (density surfaces). It can be released through baroclinic instability.</p><h3 id="Total-Energy-Conservation"><a class="docs-heading-anchor" href="#Total-Energy-Conservation">Total Energy Conservation</a><a id="Total-Energy-Conservation-1"></a><a class="docs-heading-anchor-permalink" href="#Total-Energy-Conservation" title="Permalink"></a></h3><p>In the inviscid limit, the total energy is conserved:</p><p class="math-container">\[E_{total} = \underbrace{\text{KE}_{flow} + \text{PE}_{flow}}_{\text{Mean flow}} + \underbrace{\text{WKE} + \text{WPE} + \text{WCE}}_{\text{Waves}} = \text{const}\]</p><p>Energy exchange between waves and mean flow occurs via:</p><ul><li><strong>Refraction</strong>: Waves gain/lose energy from vorticity gradients</li><li><strong>Wave feedback</strong> <span>$q^w$</span>: Waves modify the effective PV</li></ul><h3 id="Using-the-EnergyDiagnosticsManager"><a class="docs-heading-anchor" href="#Using-the-EnergyDiagnosticsManager">Using the EnergyDiagnosticsManager</a><a id="Using-the-EnergyDiagnosticsManager-1"></a><a class="docs-heading-anchor-permalink" href="#Using-the-EnergyDiagnosticsManager" title="Permalink"></a></h3><p>The energy diagnostics manager is automatically created during simulation setup:</p><pre><code class="language-julia hljs"># Energy diagnostics are computed and saved automatically during simulation
+sim = setup_simulation(config)
+run_simulation!(sim)
+
+# After simulation, files are in:
+# output_dir/diagnostic/wave_KE.nc
+# output_dir/diagnostic/wave_PE.nc
+# etc.</code></pre><p>For manual control:</p><pre><code class="language-julia hljs">using QGYBJplus
+
+# Create manager manually
+energy_manager = EnergyDiagnosticsManager(
+    &quot;output_dir&quot;;
+    output_interval=1.0  # Time between outputs
+)
+
+# Record energies at each diagnostic time
+record_energies!(
+    energy_manager,
+    current_time,
+    wave_KE, wave_PE, wave_CE,
+    mean_flow_KE, mean_flow_PE
+)
+
+# Write all files at end
+write_all_energy_files!(energy_manager)</code></pre><h3 id="Reading-Energy-Output-Files"><a class="docs-heading-anchor" href="#Reading-Energy-Output-Files">Reading Energy Output Files</a><a id="Reading-Energy-Output-Files-1"></a><a class="docs-heading-anchor-permalink" href="#Reading-Energy-Output-Files" title="Permalink"></a></h3><pre><code class="language-julia hljs">using NCDatasets
+
+# Read wave KE time series
+ds = NCDataset(&quot;output_dir/diagnostic/wave_KE.nc&quot;, &quot;r&quot;)
+time = ds[&quot;time&quot;][:]
+wave_KE = ds[&quot;wave_KE&quot;][:]
+close(ds)
+
+# Read total energy summary
+ds = NCDataset(&quot;output_dir/diagnostic/total_energy.nc&quot;, &quot;r&quot;)
+time = ds[&quot;time&quot;][:]
+total_wave = ds[&quot;total_wave_energy&quot;][:]
+total_flow = ds[&quot;total_flow_energy&quot;][:]
+total = ds[&quot;total_energy&quot;][:]
+close(ds)
+
+# Plot energy evolution
+using Plots
+plot(time, total, label=&quot;Total&quot;, linewidth=2)
+plot!(time, total_flow, label=&quot;Mean flow&quot;, linestyle=:dash)
+plot!(time, total_wave, label=&quot;Waves&quot;, linestyle=:dot)
+xlabel!(&quot;Time&quot;)
+ylabel!(&quot;Energy&quot;)</code></pre><h3 id="Energy-Budget-Verification"><a class="docs-heading-anchor" href="#Energy-Budget-Verification">Energy Budget Verification</a><a id="Energy-Budget-Verification-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Budget-Verification" title="Permalink"></a></h3><p>Check energy conservation:</p><pre><code class="language-julia hljs"># After simulation
+ds = NCDataset(&quot;output_dir/diagnostic/total_energy.nc&quot;, &quot;r&quot;)
+E = ds[&quot;total_energy&quot;][:]
+close(ds)
+
+# Relative change
+dE_rel = (E[end] - E[1]) / E[1]
+println(&quot;Relative energy change: $(dE_rel)&quot;)
+
+if abs(dE_rel) &lt; 1e-6
+    println(&quot;✓ Energy well conserved&quot;)
+else
+    println(&quot;⚠ Check time step or dissipation settings&quot;)
+end</code></pre><h2 id="Enstrophy"><a class="docs-heading-anchor" href="#Enstrophy">Enstrophy</a><a id="Enstrophy-1"></a><a class="docs-heading-anchor-permalink" href="#Enstrophy" title="Permalink"></a></h2><h3 id="Relative-Enstrophy"><a class="docs-heading-anchor" href="#Relative-Enstrophy">Relative Enstrophy</a><a id="Relative-Enstrophy-1"></a><a class="docs-heading-anchor-permalink" href="#Relative-Enstrophy" title="Permalink"></a></h3><p class="math-container">\[Z_{\zeta} = \frac{1}{2}\int \zeta^2 \, dV\]</p><p>where <span>$\zeta = \nabla^2\psi$</span> is relative vorticity.</p><pre><code class="language-julia hljs">Z_rel = relative_enstrophy(state.psi, grid)</code></pre><h3 id="Potential-Enstrophy"><a class="docs-heading-anchor" href="#Potential-Enstrophy">Potential Enstrophy</a><a id="Potential-Enstrophy-1"></a><a class="docs-heading-anchor-permalink" href="#Potential-Enstrophy" title="Permalink"></a></h3><p class="math-container">\[Z_q = \frac{1}{2}\int q^2 \, dV\]</p><pre><code class="language-julia hljs">Z_pot = potential_enstrophy(state.q, grid)</code></pre><h2 id="Spectral-Diagnostics"><a class="docs-heading-anchor" href="#Spectral-Diagnostics">Spectral Diagnostics</a><a id="Spectral-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#Spectral-Diagnostics" title="Permalink"></a></h2><h3 id="Energy-Spectra"><a class="docs-heading-anchor" href="#Energy-Spectra">Energy Spectra</a><a id="Energy-Spectra-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Spectra" title="Permalink"></a></h3><p>Compute 1D energy spectrum:</p><pre><code class="language-julia hljs"># Horizontal wavenumber spectrum
+k, E_k = horizontal_energy_spectrum(state.psi, grid)
+
+# Plot
+using Plots
+plot(k, E_k, xscale=:log10, yscale=:log10,
+    xlabel=&quot;k&quot;, ylabel=&quot;E(k)&quot;, label=&quot;Energy&quot;)
+plot!(k, 0.1 .* k.^(-3), label=&quot;k⁻³&quot;, linestyle=:dash)</code></pre><h3 id="Vertical-Spectra"><a class="docs-heading-anchor" href="#Vertical-Spectra">Vertical Spectra</a><a id="Vertical-Spectra-1"></a><a class="docs-heading-anchor-permalink" href="#Vertical-Spectra" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Vertical mode decomposition
+m, E_m = vertical_energy_spectrum(state.psi, grid, params)</code></pre><h3 id="2D-Spectrum"><a class="docs-heading-anchor" href="#2D-Spectrum">2D Spectrum</a><a id="2D-Spectrum-1"></a><a class="docs-heading-anchor-permalink" href="#2D-Spectrum" title="Permalink"></a></h3><pre><code class="language-julia hljs"># 2D spectrum E(kx, ky)
+E_2d = compute_2d_spectrum(state.psi, grid)
+heatmap(log10.(E_2d), xlabel=&quot;kx&quot;, ylabel=&quot;ky&quot;)</code></pre><h2 id="Vorticity-Statistics"><a class="docs-heading-anchor" href="#Vorticity-Statistics">Vorticity Statistics</a><a id="Vorticity-Statistics-1"></a><a class="docs-heading-anchor-permalink" href="#Vorticity-Statistics" title="Permalink"></a></h2><h3 id="Vorticity-Field"><a class="docs-heading-anchor" href="#Vorticity-Field">Vorticity Field</a><a id="Vorticity-Field-1"></a><a class="docs-heading-anchor-permalink" href="#Vorticity-Field" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Compute vorticity
+zeta = compute_vorticity(state.psi, grid, plans)</code></pre><h3 id="Statistics"><a class="docs-heading-anchor" href="#Statistics">Statistics</a><a id="Statistics-1"></a><a class="docs-heading-anchor-permalink" href="#Statistics" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Mean, variance, skewness, kurtosis
+stats = vorticity_statistics(zeta)
+
+println(&quot;Mean: $(stats.mean)&quot;)
+println(&quot;Variance: $(stats.variance)&quot;)
+println(&quot;Skewness: $(stats.skewness)&quot;)
+println(&quot;Kurtosis: $(stats.kurtosis)&quot;)</code></pre><h3 id="PDF"><a class="docs-heading-anchor" href="#PDF">PDF</a><a id="PDF-1"></a><a class="docs-heading-anchor-permalink" href="#PDF" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Probability density function
+bins, pdf = vorticity_pdf(zeta; nbins=100)
+
+plot(bins, pdf, xlabel=&quot;ζ&quot;, ylabel=&quot;P(ζ)&quot;)</code></pre><h2 id="Wave-Diagnostics"><a class="docs-heading-anchor" href="#Wave-Diagnostics">Wave Diagnostics</a><a id="Wave-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Diagnostics" title="Permalink"></a></h2><h3 id="Wave-Amplitude"><a class="docs-heading-anchor" href="#Wave-Amplitude">Wave Amplitude</a><a id="Wave-Amplitude-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Amplitude" title="Permalink"></a></h3><pre><code class="language-julia hljs"># |A|² field
+A2 = abs2.(state.A)
+
+# Maximum amplitude
+A_max = maximum(sqrt.(A2))
+
+# Volume-averaged amplitude
+A_rms = sqrt(mean(A2))</code></pre><h3 id="Wave-Fluxes"><a class="docs-heading-anchor" href="#Wave-Fluxes">Wave Fluxes</a><a id="Wave-Fluxes-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Fluxes" title="Permalink"></a></h3><p>Energy flux in vertical:</p><pre><code class="language-julia hljs"># Vertical wave energy flux
+Fz = compute_wave_energy_flux_z(state.A, grid, params)</code></pre><h3 id="Wave-Polarization"><a class="docs-heading-anchor" href="#Wave-Polarization">Wave Polarization</a><a id="Wave-Polarization-1"></a><a class="docs-heading-anchor-permalink" href="#Wave-Polarization" title="Permalink"></a></h3><p>Horizontal wave velocity components:</p><pre><code class="language-julia hljs">u_wave, v_wave = compute_wave_velocities(state.A, grid, plans)
+
+# Polarization (should be ~1 for pure inertial oscillation)
+polarization = mean(abs2.(u_wave) ./ abs2.(v_wave))</code></pre><h2 id="Omega-Equation"><a class="docs-heading-anchor" href="#Omega-Equation">Omega Equation</a><a id="Omega-Equation-1"></a><a class="docs-heading-anchor-permalink" href="#Omega-Equation" title="Permalink"></a></h2><p>Compute ageostrophic vertical velocity:</p><pre><code class="language-julia hljs"># Solve omega equation
+w = compute_omega(state.psi, grid, params, plans)
+
+# Maximum vertical velocity
+w_max = maximum(abs.(w))</code></pre><p>The omega equation:</p><p class="math-container">\[\nabla^2 w + \frac{N^2}{f_0^2}\frac{\partial^2 w}{\partial z^2} = 2J\left(\frac{\partial\psi}{\partial z}, \nabla^2\psi\right)\]</p><h2 id="Eddy-Identification"><a class="docs-heading-anchor" href="#Eddy-Identification">Eddy Identification</a><a id="Eddy-Identification-1"></a><a class="docs-heading-anchor-permalink" href="#Eddy-Identification" title="Permalink"></a></h2><h3 id="Vortex-Cores"><a class="docs-heading-anchor" href="#Vortex-Cores">Vortex Cores</a><a id="Vortex-Cores-1"></a><a class="docs-heading-anchor-permalink" href="#Vortex-Cores" title="Permalink"></a></h3><p>Identify coherent vortices:</p><pre><code class="language-julia hljs"># Okubo-Weiss parameter
+OW = compute_okubo_weiss(state.psi, grid, plans)
+
+# Vortex cores: OW &lt; 0
+vortex_mask = OW .&lt; -threshold</code></pre><h3 id="Eddy-Census"><a class="docs-heading-anchor" href="#Eddy-Census">Eddy Census</a><a id="Eddy-Census-1"></a><a class="docs-heading-anchor-permalink" href="#Eddy-Census" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Count and characterize eddies
+eddies = identify_eddies(state.psi, grid;
+    threshold = 0.1,
+    min_radius = 3  # grid points
+)
+
+println(&quot;Found $(length(eddies)) eddies&quot;)
+for e in eddies
+    println(&quot;  Radius: $(e.radius), Intensity: $(e.intensity)&quot;)
+end</code></pre><h2 id="Time-Series-Analysis"><a class="docs-heading-anchor" href="#Time-Series-Analysis">Time Series Analysis</a><a id="Time-Series-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#Time-Series-Analysis" title="Permalink"></a></h2><h3 id="Recording-Diagnostics"><a class="docs-heading-anchor" href="#Recording-Diagnostics">Recording Diagnostics</a><a id="Recording-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#Recording-Diagnostics" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Initialize time series storage
+ts = DiagnosticsTimeSeries()
+
+for step = 1:nsteps
+    timestep!(state, ...)
+
+    # Record diagnostics
+    push!(ts.time, step * dt)
+    push!(ts.KE, flow_kinetic_energy(state.u, state.v, grid))
+    push!(ts.PE, flow_potential_energy(state.psi, grid, params))
+    push!(ts.WE, wave_energy(state.B, state.A, grid)[2])
+end</code></pre><h3 id="Energy-Conservation-Check"><a class="docs-heading-anchor" href="#Energy-Conservation-Check">Energy Conservation Check</a><a id="Energy-Conservation-Check-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Conservation-Check" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Total energy should be conserved (inviscid)
+E_total = ts.KE .+ ts.PE .+ ts.WE
+
+# Check conservation
+dE = (E_total[end] - E_total[1]) / E_total[1]
+println(&quot;Relative energy change: $dE&quot;)
+
+if abs(dE) &gt; 1e-6
+    @warn &quot;Energy not well conserved!&quot;
+end</code></pre><h3 id="Growth-Rates"><a class="docs-heading-anchor" href="#Growth-Rates">Growth Rates</a><a id="Growth-Rates-1"></a><a class="docs-heading-anchor-permalink" href="#Growth-Rates" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Compute growth rate from time series
+using Statistics
+
+# Linear fit in log space
+log_E = log.(ts.KE)
+t = ts.time
+
+growth_rate = (log_E[end] - log_E[1]) / (t[end] - t[1])
+println(&quot;KE growth rate: $growth_rate&quot;)</code></pre><h2 id="Budget-Analysis"><a class="docs-heading-anchor" href="#Budget-Analysis">Budget Analysis</a><a id="Budget-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#Budget-Analysis" title="Permalink"></a></h2><h3 id="Energy-Budget"><a class="docs-heading-anchor" href="#Energy-Budget">Energy Budget</a><a id="Energy-Budget-1"></a><a class="docs-heading-anchor-permalink" href="#Energy-Budget" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Compute all energy budget terms
+budget = energy_budget(state, state_old, grid, params, dt)
+
+println(&quot;dKE/dt = $(budget.dKE_dt)&quot;)
+println(&quot;Advection: $(budget.advection)&quot;)
+println(&quot;Dissipation: $(budget.dissipation)&quot;)
+println(&quot;Wave feedback: $(budget.wave_feedback)&quot;)
+println(&quot;Residual: $(budget.residual)&quot;)</code></pre><h3 id="Enstrophy-Budget"><a class="docs-heading-anchor" href="#Enstrophy-Budget">Enstrophy Budget</a><a id="Enstrophy-Budget-1"></a><a class="docs-heading-anchor-permalink" href="#Enstrophy-Budget" title="Permalink"></a></h3><pre><code class="language-julia hljs">budget_Z = enstrophy_budget(state, grid, params)</code></pre><h2 id="Spatial-Averaging"><a class="docs-heading-anchor" href="#Spatial-Averaging">Spatial Averaging</a><a id="Spatial-Averaging-1"></a><a class="docs-heading-anchor-permalink" href="#Spatial-Averaging" title="Permalink"></a></h2><h3 id="Horizontal-Mean"><a class="docs-heading-anchor" href="#Horizontal-Mean">Horizontal Mean</a><a id="Horizontal-Mean-1"></a><a class="docs-heading-anchor-permalink" href="#Horizontal-Mean" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Average over horizontal domain
+psi_z = horizontal_mean(state.psi, grid)  # Function of z only</code></pre><h3 id="Vertical-Mean"><a class="docs-heading-anchor" href="#Vertical-Mean">Vertical Mean</a><a id="Vertical-Mean-1"></a><a class="docs-heading-anchor-permalink" href="#Vertical-Mean" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Depth-averaged field
+psi_xy = vertical_mean(state.psi, grid)  # Function of x, y only</code></pre><h3 id="Zonal-Mean"><a class="docs-heading-anchor" href="#Zonal-Mean">Zonal Mean</a><a id="Zonal-Mean-1"></a><a class="docs-heading-anchor-permalink" href="#Zonal-Mean" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Average over x (zonal direction)
+psi_yz = zonal_mean(state.psi, grid)</code></pre><h2 id="Correlation-Functions"><a class="docs-heading-anchor" href="#Correlation-Functions">Correlation Functions</a><a id="Correlation-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Correlation-Functions" title="Permalink"></a></h2><h3 id="Autocorrelation"><a class="docs-heading-anchor" href="#Autocorrelation">Autocorrelation</a><a id="Autocorrelation-1"></a><a class="docs-heading-anchor-permalink" href="#Autocorrelation" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Spatial autocorrelation of vorticity
+lag, R = spatial_autocorrelation(zeta, grid; direction=:x)
+
+# Integral length scale
+L_int = sum(R .* diff([0; lag])) / R[1]</code></pre><h3 id="Cross-Correlation"><a class="docs-heading-anchor" href="#Cross-Correlation">Cross-Correlation</a><a id="Cross-Correlation-1"></a><a class="docs-heading-anchor-permalink" href="#Cross-Correlation" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Correlation between wave amplitude and vorticity
+R_wave_zeta = cross_correlation(abs.(state.A), zeta, grid)</code></pre><h2 id="Diagnostic-Output"><a class="docs-heading-anchor" href="#Diagnostic-Output">Diagnostic Output</a><a id="Diagnostic-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Diagnostic-Output" title="Permalink"></a></h2><h3 id="Comprehensive-Diagnostics"><a class="docs-heading-anchor" href="#Comprehensive-Diagnostics">Comprehensive Diagnostics</a><a id="Comprehensive-Diagnostics-1"></a><a class="docs-heading-anchor-permalink" href="#Comprehensive-Diagnostics" title="Permalink"></a></h3><pre><code class="language-julia hljs">function compute_all_diagnostics(state, grid, params, plans)
+    diag = Dict{String, Any}()
+
+    # Energy
+    diag[&quot;KE&quot;] = flow_kinetic_energy(state.u, state.v, grid)
+    diag[&quot;PE&quot;] = flow_potential_energy(state.psi, grid, params)
+    diag[&quot;WE_B&quot;], diag[&quot;WE_A&quot;] = wave_energy(state.B, state.A, grid)
+
+    # Enstrophy
+    diag[&quot;Z_rel&quot;] = relative_enstrophy(state.psi, grid)
+    diag[&quot;Z_pot&quot;] = potential_enstrophy(state.q, grid)
+
+    # Extrema
+    zeta = compute_vorticity(state.psi, grid, plans)
+    diag[&quot;zeta_max&quot;] = maximum(zeta)
+    diag[&quot;zeta_min&quot;] = minimum(zeta)
+    diag[&quot;A_max&quot;] = maximum(abs.(state.A))
+
+    return diag
+end</code></pre><h3 id="Formatted-Output"><a class="docs-heading-anchor" href="#Formatted-Output">Formatted Output</a><a id="Formatted-Output-1"></a><a class="docs-heading-anchor-permalink" href="#Formatted-Output" title="Permalink"></a></h3><pre><code class="language-julia hljs">function print_diagnostics(diag, step, time)
+    println(&quot;=&quot; ^ 60)
+    println(&quot;Step: $step, Time: $(round(time, digits=4))&quot;)
+    println(&quot;-&quot; ^ 60)
+    println(&quot;  KE = $(round(diag[&quot;KE&quot;], sigdigits=6))&quot;)
+    println(&quot;  PE = $(round(diag[&quot;PE&quot;], sigdigits=6))&quot;)
+    println(&quot;  WE = $(round(diag[&quot;WE_A&quot;], sigdigits=6))&quot;)
+    println(&quot;  ζ_max = $(round(diag[&quot;zeta_max&quot;], sigdigits=4))&quot;)
+    println(&quot;  |A|_max = $(round(diag[&quot;A_max&quot;], sigdigits=4))&quot;)
+    println(&quot;=&quot; ^ 60)
+end</code></pre><h2 id="API-Reference"><a class="docs-heading-anchor" href="#API-Reference">API Reference</a><a id="API-Reference-1"></a><a class="docs-heading-anchor-permalink" href="#API-Reference" title="Permalink"></a></h2><p>See the <a href="../../api/physics/">Physics API Reference</a> for complete documentation of diagnostic functions:</p><ul><li><code>wave_energy</code> - Wave energy diagnostics</li><li><code>omega_eqn_rhs!</code> - Omega equation RHS computation</li></ul><p>Additional diagnostic utilities are available through the model interface.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../io/">« I/O and Output</a><a class="docs-footer-nextpage" href="../../advanced/parallel/">MPI Parallelization »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Wednesday 24 December 2025 18:11">Wednesday 24 December 2025</span>. Using Julia version 1.10.10.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

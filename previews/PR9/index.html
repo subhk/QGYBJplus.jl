@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Home · QGYBJ+.jl</title><meta name="title" content="Home · QGYBJ+.jl"/><meta property="og:title" content="Home · QGYBJ+.jl"/><meta property="twitter:title" content="Home · QGYBJ+.jl"/><meta name="description" content="Documentation for QGYBJ+.jl."/><meta property="og:description" content="Documentation for QGYBJ+.jl."/><meta property="twitter:description" content="Documentation for QGYBJ+.jl."/><meta property="og:url" content="https://subhk.github.io/QGYBJplus.jl/stable/"/><meta property="twitter:url" content="https://subhk.github.io/QGYBJplus.jl/stable/"/><link rel="canonical" href="https://subhk.github.io/QGYBJplus.jl/stable/"/><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="search_index.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script><link href="assets/custom.css" rel="stylesheet" type="text/css"/></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href>QGYBJ+.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li class="is-active"><a class="tocitem" href>Home</a><ul class="internal"><li><a class="tocitem" href="#Start-Here"><span>Start Here</span></a></li><li><a class="tocitem" href="#Minimal-Example"><span>Minimal Example</span></a></li><li><a class="tocitem" href="#What-Is-Included"><span>What Is Included</span></a></li><li><a class="tocitem" href="#Documentation-Map"><span>Documentation Map</span></a></li><li><a class="tocitem" href="#Citation"><span>Citation</span></a></li></ul></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="getting_started/">Installation</a></li><li><a class="tocitem" href="quickstart/">Quick Start</a></li><li><a class="tocitem" href="worked_example/">Worked Example</a></li><li><a class="tocitem" href="concepts/">Key Concepts</a></li></ul></li><li><span class="tocitem">Physics &amp; Theory</span><ul><li><a class="tocitem" href="physics/overview/">Model Overview</a></li><li><a class="tocitem" href="physics/qg_equations/">QG Equations</a></li><li><a class="tocitem" href="physics/ybj_plus/">YBJ+ Wave Model</a></li><li><a class="tocitem" href="physics/wave_mean/">Wave-Mean Interaction</a></li><li><a class="tocitem" href="physics/numerical_methods/">Numerical Methods</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="guide/configuration/">Configuration</a></li><li><a class="tocitem" href="guide/stratification/">Stratification</a></li><li><a class="tocitem" href="guide/initial_conditions/">Initial Conditions</a></li><li><a class="tocitem" href="guide/simulation/">Running Simulations</a></li><li><a class="tocitem" href="guide/io/">I/O and Output</a></li><li><a class="tocitem" href="guide/diagnostics/">Diagnostics</a></li></ul></li><li><span class="tocitem">Advanced Topics</span><ul><li><a class="tocitem" href="advanced/parallel/">MPI Parallelization</a></li><li><a class="tocitem" href="advanced/particles/">Particle Advection</a></li><li><a class="tocitem" href="advanced/performance/">Performance Tips</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="api/">Overview</a></li><li><a class="tocitem" href="api/types/">Core Types</a></li><li><a class="tocitem" href="api/grid_state/">Grid &amp; State</a></li><li><a class="tocitem" href="api/physics/">Physics Functions</a></li><li><a class="tocitem" href="api/timestepping/">Time Stepping</a></li><li><a class="tocitem" href="api/particles/">Particles</a></li></ul></li><li><a class="tocitem" href="troubleshooting/">Troubleshooting</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Home</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Home</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/subhk/QGYBJplus.jl/blob/main/docs/src/index.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="QGYBJplus.jl"><a class="docs-heading-anchor" href="#QGYBJplus.jl">QGYBJplus.jl</a><a id="QGYBJplus.jl-1"></a><a class="docs-heading-anchor-permalink" href="#QGYBJplus.jl" title="Permalink"></a></h1><p class="doc-lede">
+QGYBJplus.jl is a dimensional Julia implementation of the QG-YBJ+ model for
+near-inertial waves interacting with balanced quasi-geostrophic flow.
+</p><h2 id="Start-Here"><a class="docs-heading-anchor" href="#Start-Here">Start Here</a><a id="Start-Here-1"></a><a class="docs-heading-anchor-permalink" href="#Start-Here" title="Permalink"></a></h2><div class="doc-grid">
+<div class="doc-tile">
+<strong><a href="quickstart/">Quick Start</a></strong>
+<p>Build and run a minimal high-level simulation.</p>
+</div>
+<div class="doc-tile">
+<strong><a href="guide/configuration/">Configuration</a></strong>
+<p>Grid, model, initial conditions, and output options.</p>
+</div>
+<div class="doc-tile">
+<strong><a href="guide/io/">I/O and Output</a></strong>
+<p>NetCDF output, selected z levels, and reading results.</p>
+</div>
+<div class="doc-tile">
+<strong><a href="worked_example/">Worked Example</a></strong>
+<p>A complete script with full-domain and surface output.</p>
+</div>
+</div><h2 id="Minimal-Example"><a class="docs-heading-anchor" href="#Minimal-Example">Minimal Example</a><a id="Minimal-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Minimal-Example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using QGYBJplus
+
+grid = RectilinearGrid(size = (64, 64, 32),
+                       x = (-250e3, 250e3),
+                       y = (-250e3, 250e3),
+                       z = (-4000.0, 0.0))
+
+model = QGYBJModel(grid = grid,
+                   coriolis = FPlane(f = 1e-4),
+                   stratification = ConstantStratification(N² = 1e-5),
+                   flow = :fixed,
+                   feedback = :none,
+                   Δt = 300.0)
+
+set!(model;
+     ψ = (x, y, z) -&gt; 1e3 * sin(2π * x / 500e3) * cos(2π * y / 500e3),
+     pv_method = :barotropic,
+     waves = SurfaceWave(amplitude = 0.05, scale = 500.0))
+
+simulation = Simulation(model; stop_time = 2inertial_period(model))
+run!(simulation)
+finalize_simulation!(simulation)</code></pre><h2 id="What-Is-Included"><a class="docs-heading-anchor" href="#What-Is-Included">What Is Included</a><a id="What-Is-Included-1"></a><a class="docs-heading-anchor-permalink" href="#What-Is-Included" title="Permalink"></a></h2><ul><li>Dimensional QG-YBJ+ equations.</li><li>Constant, analytic, and file-backed stratification.</li><li>Exponential RK2 time stepping.</li><li>NetCDF output for full fields or selected nearest z levels.</li><li>MPI pencil decomposition for larger runs.</li><li>Optional Lagrangian particle tracking.</li></ul><h2 id="Documentation-Map"><a class="docs-heading-anchor" href="#Documentation-Map">Documentation Map</a><a id="Documentation-Map-1"></a><a class="docs-heading-anchor-permalink" href="#Documentation-Map" title="Permalink"></a></h2><div class="doc-grid">
+<div class="doc-tile">
+<strong>Physics</strong>
+<p><a href="physics/overview/">Overview</a>, <a href="physics/qg_equations/">QG</a>, <a href="physics/ybj_plus/">YBJ+</a>, and numerical methods.</p>
+</div>
+<div class="doc-tile">
+<strong>User Guide</strong>
+<p><a href="guide/simulation/">Running</a>, <a href="guide/stratification/">stratification</a>, initial conditions, diagnostics, and output.</p>
+</div>
+<div class="doc-tile">
+<strong>Advanced</strong>
+<p><a href="advanced/parallel/">MPI</a>, performance, interpolation, and particle tracking.</p>
+</div>
+<div class="doc-tile">
+<strong>API</strong>
+<p>Reference pages for public types, solvers, diagnostics, and particles.</p>
+</div>
+</div><h2 id="Citation"><a class="docs-heading-anchor" href="#Citation">Citation</a><a id="Citation-1"></a><a class="docs-heading-anchor-permalink" href="#Citation" title="Permalink"></a></h2><pre><code class="language-bibtex hljs">@software{qgybj_jl,
+  author = {Kar, Subhajit},
+  title = {QGYBJplus.jl: A Julia Implementation of the QG-YBJ+ Model},
+  year = {2025},
+  url = {https://github.com/subhk/QGYBJplus.jl}
+}</code></pre></article><nav class="docs-footer"><a class="docs-footer-nextpage" href="getting_started/">Installation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 8 June 2026 09:28">Monday 8 June 2026</span>. Using Julia version 1.10.11.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
