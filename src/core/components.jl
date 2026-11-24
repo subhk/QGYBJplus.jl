@@ -232,7 +232,7 @@ for any time step. This is the rule by which
 automatically, and the model's default closure. With `order = 8`, a mode at
 half of `kₘₐₓ` is damped 256 times more weakly. A model takes `kₘₐₓ` from its
 grid when it is built, so the closure to ask for damping rates
-([`int_factor`](@ref)) is the model's, `model.numerics.closure`; one that no
+(`QGYBJplus.int_factor`) is the model's, `model.numerics.closure`; one that no
 model has taken has no `kₘₐₓ`, and asking it is an error.
 """
 struct GridScaleHyperdiffusivity <: AbstractClosure

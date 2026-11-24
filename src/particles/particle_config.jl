@@ -12,10 +12,11 @@ module EnhancedParticleConfig
 
 using Random
 using ..InterpolationSchemes: InterpolationMethod, TRICUBIC
+# Imported, not a `const` alias, which docstring links would not follow.
+using ..UnifiedParticleAdvection: ParticleConfig
 
-# Access ParticleConfig from parent module (UnifiedParticleAdvection)
+# Access helpers from parent module (UnifiedParticleAdvection)
 const _PARENT = parentmodule(@__MODULE__)
-const ParticleConfig = _PARENT.ParticleConfig
 const _check_wave_motion = _PARENT._check_wave_motion
 const _check_horizontal_advection = _PARENT._check_horizontal_advection
 const _check_particle_methods = _PARENT._check_particle_methods
